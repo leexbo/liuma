@@ -36,7 +36,13 @@ fn styled_view(view: TextView) -> gpui_kit::AnyElement {
         // w_full:宽度锚(assistant_block 已 max_w(col_w))必须在此层
         // 维持——断链则 taffy 文本测量回落混合模式,真机平台 shape 报宽
         // 大于 wrapper 时行末整段被 overflow_hidden 剪进卡内空白带。
+        //
+        // pr 16:content box 收到可视宽 − 16——真机平台 shape 的折行/
+        // 绘制宽对盒宽存在正向偏差(红圈空白带 ≈ 90px 取证),收窄后
+        // 行末落在余量内,不再进 overflow_hidden 剪裁区。tv-body probe
+        // 应显示 732,验证 content box 传导。
         .overflow_hidden()
+        .pr(px(16.))
         // 布局取证(LIUMA_PROBE=layout):量 styled_view 自身盒宽,
         // 与 asst-body(748)对比——若此处 > 748,断链在 asst-body 之下;
         // 若 == 748,截断在 TextView 内部折行(上游 shape 缓存/测量)。
