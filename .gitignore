@@ -15,3 +15,4 @@ docs/plans/
 .tmp/
 .tmp-clippy/
 .dsh-workspaces.json
+.zcodeignore
