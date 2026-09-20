@@ -45,6 +45,32 @@ impl Appearance {
     }
 }
 
+// ── 正文文本族 ───────────────────────────────────────────────
+
+/// 全局正文字体族(双盘共用)。唯一入口 = `Theme::font_family`:
+/// gpui-component 的 `Root` 以 `.font_family(cx.theme().font_family)`
+/// 铺满整棵树(root.rs:594),`Theme::typography_tokens()` 的 `sans`
+/// 亦由它派生(theme/mod.rs:486-492)→ 一处设置,聊天正文/工具卡/
+/// composer/标签全局同源。
+///
+/// **不可回退到系统字体(`.SystemUIFont`)**:GPUI 折行定价是逐字符
+/// 「孤立」量宽(gpui-0.2.2 `text_system/line_wrapper.rs:211-224`
+/// `compute_width_for_char` → `layout_line(单字符)`),绘制却按整行
+/// shape——`.AppleSystemUIFont` 下 CoreText 对孤立 CJK 标点做行界
+/// 压缩:实测 `，` 孤立 **7.082pt** / 行内实宽 **14.082pt**,整行
+/// Σ逐字 646.72 vs shape 659.58 = **少算 +12.86pt ≈ 一个全角字**。
+/// 折行据此多塞一字,行尾越出后又被 markdown 列表项内容盒的
+/// `overflow_hidden` 硬裁(gpui-base `text/node.rs:2424`,裁剪宽 ==
+/// 折行宽 = 零余量)→ 真机症状:「key 稳定」的「定」缺一段、后随的
+/// 全角逗号整字消失(session 源文可对账)。
+/// 显式族实测偏差恒为 +0.00(PingFang SC / Helvetica Neue / Menlo
+/// 皆然);钉死 CJK 回退(cascade)无效——压缩是系统字体**当主字体**
+/// 时的固有行为,换族是唯一不 fork 的根治路径。
+/// 残留:粗体拉丁 span 仍按常规宽计价(Semibold `key` 23.044 vs
+/// Regular 22.148 = +0.896pt/处;CJK 粗体同宽),量级 <1pt,不足把
+/// 整字推出边界。
+pub const FONT_SANS: &str = "PingFang SC";
+
 // ── 双盘色板 ─────────────────────────────────────────────────
 
 /// 一套完整色板(深浅两盘同构;字段语义见各取值 fn 文档)
@@ -534,6 +560,12 @@ fn apply_tokens(m: ThemeMode, cx: &mut App) {
     // (语义面),Theme::change 已把库默认色烤进 tokens——漏镜像则
     // 画布永远是库默认底(实测:摘掉 app 层铺底后露出库默认 #0A0A0A)
     t.tokens = ThemeTokens::from(&t.colors);
+    // 字体族收口(见 [`FONT_SANS`])。必须在 `Theme::change` 与任何
+    // semantic token 应用**之后**:theme/mod.rs:536 的
+    // `self.font_family = tokens.typography.sans` 会把族覆盖回库默认
+    // `.SystemUIFont`。mono 不动(Menlo):行内代码 chip / 代码块的族
+    // 走 markdown highlight 的 font_family,不经此字段。
+    t.font_family = FONT_SANS.into();
     // Base 层镜像(滚动条等直接取样 gpui_base::Theme,global_mut 直改不下推)
     Theme::sync_base(cx);
 }
@@ -624,5 +656,169 @@ mod tests {
                 Hsla::from(palette_of(ThemeMode::Light).base)
             );
         });
+    }
+
+    /// 正文族锁(机制见 [`FONT_SANS`]):必须是显式族、不得回落系统
+    /// 字体,且派生面(组件读 `tokens.typography.sans`)同源。
+    /// 改回 `.SystemUIFont` 时本用例先于真机「行尾被裁」失败
+    #[gpui_kit::test]
+    fn body_font_family_is_explicit_and_derived(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            // 走生产同款次序:`Theme::change` 打底 → `apply_tokens` 收口。
+            // 刻意不经 `apply`——那会写进程级档位静态量(MODE/LAST_*),
+            // 并行用例下徒增互相干扰
+            Theme::change(ThemeMode::Dark, None, cx);
+            apply_tokens(ThemeMode::Dark, cx);
+            let t = Theme::global(cx);
+            assert_eq!(t.font_family.as_ref(), FONT_SANS);
+            assert_ne!(t.font_family.as_ref(), ".SystemUIFont");
+            assert_ne!(t.font_family.as_ref(), ".ZedSans");
+            assert_eq!(t.typography_tokens().sans.as_ref(), FONT_SANS);
+        });
+    }
+
+    /// 真机度量不变式锁(机制见 [`FONT_SANS`]):GPUI 折行按「逐字孤立
+    /// 量宽」定价、按「整行 shape」绘制,两者必须同源。`.SystemUIFont`
+    /// 下 CoreText 对孤立 CJK 标点做行界压缩(实测 `，` 孤立 7.082 /
+    /// 行内 14.082,整行少算 ≈ 一个全角字)→ 折行多塞一字 → 行尾被
+    /// markdown 列表项内容盒的 overflow_hidden 硬裁。测试环境是
+    /// NoopTextSystem(gpui `platform/test/platform.rs:105`)量不到真
+    /// 字体,故本用例直连 CoreText 取真度量(系统框架,零新增依赖)。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn body_font_metrics_are_context_independent() {
+        use core_text_ffi as ct;
+
+        let font = ct::font(FONT_SANS, 14.);
+        // 1) 标点:孤立量宽必须等于行内实宽——压缩即本 bug 的定价来源
+        let isolated = ct::width("，", font);
+        let in_line = ct::width("稳，定", font) - ct::width("稳定", font);
+        assert!(
+            (isolated - in_line).abs() < 0.01,
+            "正文族 {FONT_SANS} 的 CJK 标点孤立量宽 {isolated} != 行内实宽 {in_line}:\
+             折行定价将与绘制不一致(换族理由见 kits::theme::FONT_SANS)"
+        );
+        // 2) 记账不得低于绘制(行尾越界只可能由「记账偏小」引起;反
+        // 方向即 kerning 使整行略窄,无害,不作断言)
+        let line = "期间顺带发现并保留了设计要点：刻度 id/selector 改 key 基\
+                    (nav-point-user:<seq>)——分页后 slot 会漂移，key 稳定，";
+        let summed = line
+            .chars()
+            .map(|c| ct::width(&c.to_string(), font))
+            .sum::<f64>();
+        let shaped = ct::width(line, font);
+        assert!(
+            summed - shaped <= 0.01,
+            "正文族 {FONT_SANS} 逐字孤立量宽合计 {summed} 低于整行 shape {shaped}\
+             (差 {:+.2}pt):折行会多塞字,行尾越界后被 overflow_hidden 裁掉",
+            shaped - summed
+        );
+        // 3) 机制自检:确认本用例真的量到了「行界压缩」——系统字体族必须
+        // 违反上述不变式(真名是 .AppleSystemUIFont;占位名 .SystemUIFont
+        // CoreText 解析不到,落到兜底族上反而不触发,故不拿它当基准)。
+        // 若哪天这里不再失败,说明底层行为变了,上面两条断言的前提失效
+        let sys = ct::font(".AppleSystemUIFont", 14.);
+        let sys_iso = ct::width("，", sys);
+        let sys_in_line = ct::width("稳，定", sys) - ct::width("稳定", sys);
+        assert!(
+            sys_in_line - sys_iso > 1.,
+            "基线自检失效:系统字体族下孤立量宽 {sys_iso} 与行内实宽 {sys_in_line} \
+             不再有行界压缩差——机制前提已变,请复核 FONT_SANS 的说明"
+        );
+    }
+
+    /// CoreText / CoreFoundation 最小 FFI(macOS 系统框架,仅测试用:
+    /// 取真字体度量,绕开测试环境的 NoopTextSystem)
+    #[cfg(target_os = "macos")]
+    mod core_text_ffi {
+        use core::ffi::{c_double, c_void};
+
+        type Ref = *const c_void;
+
+        /// 只取地址、不解引用的框架全局量(回调结构体)
+        #[repr(C)]
+        struct Opaque([u8; 0]);
+
+        #[link(name = "CoreFoundation", kind = "framework")]
+        unsafe extern "C" {
+            static kCFTypeDictionaryKeyCallBacks: Opaque;
+            static kCFTypeDictionaryValueCallBacks: Opaque;
+            fn CFStringCreateWithBytes(
+                alloc: Ref,
+                bytes: *const u8,
+                len: isize,
+                encoding: u32,
+                external: u8,
+            ) -> Ref;
+            fn CFAttributedStringCreate(alloc: Ref, text: Ref, attrs: Ref) -> Ref;
+            fn CFDictionaryCreate(
+                alloc: Ref,
+                keys: *const Ref,
+                values: *const Ref,
+                count: isize,
+                key_callbacks: *const Opaque,
+                value_callbacks: *const Opaque,
+            ) -> Ref;
+        }
+
+        #[link(name = "CoreText", kind = "framework")]
+        unsafe extern "C" {
+            static kCTFontAttributeName: Ref;
+            fn CTFontCreateWithName(name: Ref, size: c_double, matrix: Ref) -> Ref;
+            fn CTLineCreateWithAttributedString(text: Ref) -> Ref;
+            fn CTLineGetTypographicBounds(
+                line: Ref,
+                ascent: *mut c_double,
+                descent: *mut c_double,
+                leading: *mut c_double,
+            ) -> c_double;
+        }
+
+        const UTF8: u32 = 0x0800_0100;
+
+        fn cfstring(s: &str) -> Ref {
+            // SAFETY: s 是有效 UTF-8 缓冲,长度按字节给;CoreFoundation
+            // 拷贝内容,返回对象由进程持有(测试生命周期内不释放)
+            unsafe {
+                CFStringCreateWithBytes(std::ptr::null(), s.as_ptr(), s.len() as isize, UTF8, 0)
+            }
+        }
+
+        /// 按族名 + 字号解析字体(族名不存在时 CoreText 回兜底字体,
+        /// 故本函数不报错——族名的正确性由 `body_font_family_*` 用例守)
+        pub(super) fn font(family: &str, size: f64) -> Ref {
+            // SAFETY: 名称/字号合法;matrix 传空 = 单位矩阵
+            unsafe { CTFontCreateWithName(cfstring(family), size, std::ptr::null()) }
+        }
+
+        /// 单行排布宽度(与 gpui `TextSystem::layout_line` 同一底层调用)
+        pub(super) fn width(text: &str, font: Ref) -> f64 {
+            // SAFETY: 属性字典 = {kCTFontAttributeName: font},键/值回调
+            // 取框架全局常量;返回的 CTLine 仅本函数内使用
+            unsafe {
+                let keys = [kCTFontAttributeName];
+                let values = [font];
+                let attrs = CFDictionaryCreate(
+                    std::ptr::null(),
+                    keys.as_ptr(),
+                    values.as_ptr(),
+                    1,
+                    &raw const kCFTypeDictionaryKeyCallBacks,
+                    &raw const kCFTypeDictionaryValueCallBacks,
+                );
+                let line = CTLineCreateWithAttributedString(CFAttributedStringCreate(
+                    std::ptr::null(),
+                    cfstring(text),
+                    attrs,
+                ));
+                CTLineGetTypographicBounds(
+                    line,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            }
+        }
     }
 }

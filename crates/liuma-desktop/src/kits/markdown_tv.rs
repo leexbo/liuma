@@ -13,7 +13,6 @@
 use std::collections::HashMap;
 
 use gpui_kit::component::text::{TextView, TextViewState, TextViewStyle};
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Entity, IntoElement, ParentElement as _, SharedString, StyleRefinement,
     Styled, div, px, relative,
@@ -26,47 +25,19 @@ use gpui_kit::{
 fn styled_view(view: TextView) -> gpui_kit::AnyElement {
     div()
         .w_full()
-        // 宽度取证(LIUMA_PROBE=width):tv-body 层盒宽(与 asst-body/col_w 对账)
-        .when(
-            std::env::var_os("LIUMA_PROBE").is_some_and(|v| v == "width"),
-            |el| {
-                el.child(
-                    gpui_kit::canvas(
-                        |b, _, _| {
-                            static N: std::sync::atomic::AtomicUsize =
-                                std::sync::atomic::AtomicUsize::new(0);
-                            let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            if n < 24 {
-                                eprintln!(
-                                    "[widthprobe] tv-body x={:.1} w={:.1}",
-                                    f32::from(b.origin.x),
-                                    f32::from(b.size.width)
-                                );
-                            }
-                        },
-                        |_, _, _, _| {},
-                    )
-                    .absolute()
-                    .inset_0(),
-                )
-            },
-        )
         .text_size(px(14.))
         .line_height(relative(1.75))
-        // 行尾不可断段(行内代码 chip)的少量溢出由裁剪兜底。
-        // 滚动条槽不在内层预留:外层列表容器已让位 SCROLLBAR_GUTTER
-        // (悬浮滚动条在槽内,不在列上),内层再扣一份 = 正文比
-        // composer 窄一截、右缘不齐
+        // 宽度只靠 w_full 传导(assistant_block 已显式确定宽,锚链完好:
+        // 探针实测 asst-body = tv-body = col_w)。**不设 overflow_hidden、
+        // 不设左右 padding**:真机「行尾字形被裁」(「现在还在」丢「在」、
+        // 「稳定」丢「定」+ 全角逗号整字消失)的根因不在盒宽,而在折行
+        // **定价**——GPUI 逐字符孤立量宽 vs 绘制按整行 shape 的偏差,
+        // 机制与实测见 kits::theme::FONT_SANS。盒内 padding 只挪动断行
+        // 位置、且列宽与裁剪盒同步收窄(余量恒为 0),兜不住漂移,反而
+        // 让正文比 composer 窄一截、右缘不齐。
         //
-        // w_full 维持宽度传导(assistant_block 已显式确定宽,锚链完
-        // 好,probe 实测 asst-body = tv-body = col_w)。
-        //
-        // **不设 overflow_hidden / padding**:文本系统的折行宽取自身
-        // 布局盒,任何盒内 padding 都会让「折行宽 ≠ 裁剪宽」——跨边界
-        // 的行末字形被裁掉半个甚至整个(真机红框:「现在还在」丢「在」、
-        // 「稳定」丢「定」,随内容必现)。去除 padding 后折行宽 = 裁剪
-        // 宽,shape 的行末悬挂字形落入右侧留白,文本完整;窗口硬缘是
-        // 最终边界。TextView 内部代码块自带横向滚动,不受此影响。
+        // 滚动条槽同理不在内层预留:外层列表容器已让位 SCROLLBAR_GUTTER
+        // (悬浮滚动条在槽内,不在列上),内层再扣一份 = 右缘不齐。
         .relative()
         .child(view)
         .into_any_element()
@@ -178,6 +149,51 @@ mod tests {
             gpui_kit::component::init(app);
             crate::kits::theme::init(app);
         });
+    }
+
+    /// 正文族交付链锁(机制见 kits::theme::FONT_SANS):主题族必须经
+    /// gpui-component `Root` 落到窗口文本样式栈——正文折行取的就是栈上的
+    /// 族(InlineFlow 在 request_layout 读 `window.text_style()`)。只改
+    /// theme 而没落到栈 = 修复不生效,真机照旧「行尾被裁」
+    #[gpui_kit::test]
+    fn chat_body_text_style_carries_theme_font_family(cx: &mut TestAppContext) {
+        use std::sync::{Arc, Mutex};
+        init(cx);
+        let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        struct Probe(Arc<Mutex<Option<String>>>);
+        impl Render for Probe {
+            fn render(
+                &mut self,
+                _: &mut Window,
+                _: &mut gpui_kit::Context<Self>,
+            ) -> impl IntoElement {
+                let slot = self.0.clone();
+                div().size_full().child(
+                    // canvas 首闭包 = prepaint 期(祖先文本样式已在栈上),
+                    // 与正文 request_layout 读的是同一个栈
+                    gpui_kit::canvas(
+                        move |_bounds, window, _cx| {
+                            *slot.lock().unwrap_or_else(|p| p.into_inner()) =
+                                Some(window.text_style().font_family.to_string());
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .size_full(),
+                )
+            }
+        }
+        let slot = seen.clone();
+        let (_root, wcx) = cx.add_window_view(|window, cx| {
+            let v = cx.new(move |_| Probe(slot));
+            Root::new(v, window, cx)
+        });
+        wcx.refresh().expect("刷新失败");
+        let family = seen.lock().unwrap_or_else(|p| p.into_inner()).take();
+        assert_eq!(
+            family.as_deref(),
+            Some(crate::kits::theme::FONT_SANS),
+            "Root 未把主题族推到文本样式栈——正文折行拿到的族不对"
+        );
     }
 
     /// 批量创建丢文本验证(0.5.1 历史坑 ①):200 条 keyed TextView 一次

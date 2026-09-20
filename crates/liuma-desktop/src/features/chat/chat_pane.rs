@@ -92,30 +92,6 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         panel_open,
         panel_px,
     );
-    // 宽度取证(LIUMA_PROBE=width):列宽 + 窗口视口 + 投影/行槽/列表
-    // 计数对账(与 asst-body 逐 key 读数对账)
-    if std::env::var_os("LIUMA_PROBE").is_some_and(|v| v == "width") {
-        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if n < 400 {
-            let st = store.read(cx);
-            let nodes = st
-                .state
-                .current_id
-                .as_deref()
-                .and_then(|id| st.state.chats.get(id))
-                .map(|c| c.nodes.len())
-                .unwrap_or(0);
-            eprintln!(
-                "[widthprobe] r{n} col_w={:.1} nodes={nodes} slots={} items={} session={:?}",
-                f32::from(col_w),
-                st.chat.row_slots.len(),
-                st.chat.chat_list.item_count(),
-                st.chat.chat_list_session,
-            );
-        }
-    }
-
     let list_state = store.read(cx).chat.chat_list.clone();
 
     // 导航轨(刻度列 + 正常滚动条)派生:锚点 = 用户消息
@@ -1711,19 +1687,16 @@ fn assistant_block(
     let key = key.to_string();
     let click_key = key.clone();
     // gap 10:Think 折叠行与正文之间留呼吸感(6 过贴,过程与结论糊在一起)
-    // 显式限宽 = col_w:链上(style 适配层→asst-body→styled_view→TextView)
-    // 此前无绝对宽,taffy 文本测量回落 MaxContent/混合——真机平台 shape
-    // 报宽大于 wrapper(col_w)时 asst-body 伸出(flex_shrink_0 不缩),
-    // styled_view 的 overflow_hidden 把每行末尾整段剪进卡内空白带
-    // (真机反馈「内容右边缘被截断」,红圈宽约 90px)。
+    // 显式限宽 = col_w:链上(style 适配层→asst-body→styled_view→
+    // TextView)不给绝对宽,taffy 对 auto 宽祖先链的文本测量会回落
+    // MaxContent/混合相,盒宽与列宽不再同源。钉死确定宽后折行宽恒 =
+    // 裁剪盒宽(与下方行包装 `div().w(col_w)` 同源)。
+    // 注:真机「行尾字形被裁」的根因不在此——是折行逐字定价与整行
+    // shape 的偏差,机制与实测见 kits::theme::FONT_SANS。
     let mut col = div()
         .v_flex()
         .flex_shrink_0()
         .relative()
-        // 显式确定宽(非 max_w 约束):taffy 对 auto 宽祖先链的
-        // available-width 解析在测量/绘制两相可能不一致,TextView 按
-        // 更宽的 available 折行、按盒裁剪 → 行末字形缺失。钉死确定宽
-        // 后折行宽恒 = col_w − 右缘余量,与裁剪盒同源
         .w(col_w)
         .gap(px(10.));
     if !reasoning.is_empty() {
@@ -1804,36 +1777,6 @@ fn assistant_block(
             .min_w(px(0.))
             .relative()
             .child(body_view)
-            // 宽度取证(LIUMA_PROBE=width):量 asst-body 实际盒宽与
-            // 横向位置(「右缘截断」只在真机平台 shape 显形,测试系统
-            // 不可复现;每 key 首帧记一次)
-            .when(
-                std::env::var_os("LIUMA_PROBE").is_some_and(|v| v == "width"),
-                |el| {
-                    el.child({
-                        let probe_key = key.clone();
-                        gpui_kit::canvas(
-                            move |b, _, _| {
-                                static N: std::sync::atomic::AtomicUsize =
-                                    std::sync::atomic::AtomicUsize::new(0);
-                                let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                if n < 400 {
-                                    eprintln!(
-                                        "[widthprobe] p{n} {} x={:.1} w={:.1} y={:.1}",
-                                        probe_key,
-                                        f32::from(b.origin.x),
-                                        f32::from(b.size.width),
-                                        f32::from(b.origin.y)
-                                    );
-                                }
-                            },
-                            |_, _, _, _| {},
-                        )
-                        .absolute()
-                        .inset_0()
-                    })
-                },
-            )
             .when(streaming, |el| {
                 el.child(
                     div()

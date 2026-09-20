@@ -4947,7 +4947,18 @@ fn trajectory_tab_entry_repulls_stale_blank_cache(cx: &mut TestAppContext) {
         });
     });
     redraw(cx, &mut wcx);
-    let n = cx.update(|app| store.read(app).trajectory.trajectory.records.len());
+    // 重拉是异步任务:并行用例占满 CPU 时单次 redraw 后可能尚未落地
+    // (全量跑曾偶发「实得 0 条」)→ 有界轮询等它落档,不用固定 sleep
+    // 赌时长(仓库禁 skip/ignore 掩盖偶发,故在此收口)
+    let mut n = 0;
+    for _ in 0..50 {
+        n = cx.update(|app| store.read(app).trajectory.trajectory.records.len());
+        if n >= 2 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        redraw(cx, &mut wcx);
+    }
     assert!(n >= 2, "切入 tab 应重拉轨迹(空白缓存失效),实得 {n} 条");
     assert!(
         wcx.debug_bounds("trajectory-view").is_some(),
