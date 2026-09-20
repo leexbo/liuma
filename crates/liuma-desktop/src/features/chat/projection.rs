@@ -317,7 +317,6 @@ impl ChatState {
         self.retry_deadlines
             .retain(|k, _| live.contains(k.as_str()));
     }
-
     /// 应用单个客方事件
     pub fn apply(&mut self, ev: &SessionEvent) {
         match ev.ty.as_str() {
@@ -891,17 +890,50 @@ pub fn group_counts(nodes: &[ChatNode], first: usize, last: usize) -> (usize, us
 // ---- 导航轨锚点(读取层派生)----
 
 /// 锚点类别(轨上点的语义标签)
-/// 导航轨锚点:一个用户消息行槽 = 轨上一个点
+/// 导航轨锚点:一个用户消息轮次(轨上一个点)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NavAnchor {
-    /// 行槽下标(点击跳转目标;当前位置高亮也按它比较)
-    pub slot_ix: usize,
+    /// 行槽下标(点击跳转目标;当前位置高亮也按它比较)。None = 轮次
+    /// **尚未加载进列表**(全量索引里有、聊天列尾窗外)——点击 = 向前
+    /// 分页覆盖该轮后自动跳转。
+    pub slot_ix: Option<usize>,
     /// 用户节点稳定 key(user:<seq>)
     pub key: String,
     /// hover 卡标题:消息首行单行化截断(粗体)
     pub title: String,
     /// hover 卡正文预览:次行起单行化 ~240 字(无次行则为空)
     pub preview: String,
+}
+
+/// 全量锚点派生:已加载锚点来自行槽(nav_anchors),未加载锚点来自
+/// anchor_index(全量轮次索引,key 不在已投影 nodes 中的部分,排在
+/// 已加载之前——seq 更小)。合并序 = seq 升序。
+pub fn nav_anchors_full(
+    slots: &[RowSlot],
+    nodes: &[ChatNode],
+    anchor_index: &[(u64, String)],
+) -> Vec<NavAnchor> {
+    let loaded = nav_anchors(slots, nodes);
+    let loaded_keys: std::collections::HashSet<&str> =
+        loaded.iter().map(|a| a.key.as_str()).collect();
+    // 未加载:key 不在已加载集合(全量索引 seq 与投影 key 的 user:<seq>
+    // 对应);title 取索引摘要
+    let unloaded: Vec<NavAnchor> = anchor_index
+        .iter()
+        .filter(|(seq, _)| {
+            let key = format!("user:{seq}");
+            !loaded_keys.contains(key.as_str())
+        })
+        .map(|(seq, title)| NavAnchor {
+            slot_ix: None,
+            key: format!("user:{seq}"),
+            title: title.clone(),
+            preview: String::new(),
+        })
+        .collect();
+    let mut out = unloaded;
+    out.extend(loaded);
+    out
 }
 
 fn first_and_rest(text: &str) -> (String, String) {
@@ -913,6 +945,20 @@ fn first_and_rest(text: &str) -> (String, String) {
 
 /// 行槽 → 导航锚点(纯函数)。**锚点 = 用户消息(轮次开始)**——导航的
 /// 语义就是在轮次之间跳转,其余(答复/组行/收尾/通告)一概不是锚点。
+/// 视口顶 → 当前轮锚的序号(anchors 中最近一个行槽 ≤ top 的**已加载**
+/// 锚;未加载锚 slot_ix=None 永不命中)。导航轨当前位置标记的权威口径
+/// ——paint 相期逐帧调用(读实时滚动位),与元素渲染无关,滚动零延迟
+/// 跟手;事件回调口径(先于布局 settle)不可与之混用,否则两套判断在
+/// 轮次边界互相打架 = 高亮闪烁
+pub fn current_nav_ix(anchor_slots: &[Option<usize>], top: usize) -> Option<usize> {
+    anchor_slots
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, slot)| slot.is_some_and(|ix| ix <= top))
+        .map(|(i, _)| i)
+}
+
 pub fn nav_anchors(slots: &[RowSlot], nodes: &[ChatNode]) -> Vec<NavAnchor> {
     let mut out = Vec::new();
     for (slot_ix, slot) in slots.iter().enumerate() {
@@ -924,7 +970,7 @@ pub fn nav_anchors(slots: &[RowSlot], nodes: &[ChatNode]) -> Vec<NavAnchor> {
         };
         let (title, preview) = first_and_rest(text);
         out.push(NavAnchor {
-            slot_ix,
+            slot_ix: Some(slot_ix),
             key: key.clone(),
             title,
             preview,
@@ -1102,6 +1148,21 @@ fn truncate_chars(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// 视口顶 → 当前轮锚:最近一个行槽 ≤ top 的已加载锚(未加载锚
+    /// slot_ix=None 永不命中;钉底跟随态 top=行槽数,命中最后一个)。
+    /// 导航轨 paint 相期位置标记的权威口径回归锁
+    #[test]
+    fn current_nav_ix_picks_nearest_loaded_anchor_at_or_above_top() {
+        let slots = vec![Some(0), Some(5), None, Some(9)];
+        assert_eq!(current_nav_ix(&slots, 0), Some(0), "视口在第 1 轮");
+        assert_eq!(current_nav_ix(&slots, 4), Some(0), "未过下一锚维持第 1 轮");
+        assert_eq!(current_nav_ix(&slots, 5), Some(1), "边界行本身上算跨入");
+        assert_eq!(current_nav_ix(&slots, 8), Some(1));
+        assert_eq!(current_nav_ix(&slots, 7), Some(1), "未加载锚不是位置");
+        assert_eq!(current_nav_ix(&slots, 100), Some(3), "钉底 = 最后一个");
+        assert_eq!(current_nav_ix(&[], 0), None, "无锚无位置");
+        assert_eq!(current_nav_ix(&[None, None], 5), None, "全未加载无位置");
+    }
 
     /// session/queue items 解析:queued/steering 分流、preview 拼接、
     /// 非文本块置不可编辑
@@ -2524,12 +2585,12 @@ mod tests {
         let anchors = nav_anchors(&slots, &nodes);
         // 两轮 → 恰好两个用户消息锚点;key 为用户节点稳定 key
         assert_eq!(anchors.len(), 2);
-        assert_eq!(anchors[0].slot_ix, 0);
+        assert_eq!(anchors[0].slot_ix, Some(0));
         assert_eq!(anchors[0].key, "user:2");
         // 单行消息:标题 = 全文,预览为空(卡只出标题行)
         assert_eq!(anchors[0].title, "第一问");
         assert_eq!(anchors[0].preview, "");
-        assert_eq!(anchors[1].slot_ix, 3);
+        assert_eq!(anchors[1].slot_ix, Some(3));
         assert_eq!(anchors[1].key, "user:7");
         assert_eq!(anchors[1].title, "第二问");
         // 轮2 展开:成员行不占点,用户锚点仍在(槽位按当时行槽计)

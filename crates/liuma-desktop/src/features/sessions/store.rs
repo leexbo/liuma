@@ -64,9 +64,14 @@ impl AppStore {
         // 会话,发送时被拼上 /plan 等——跨会话污染)
         self.chat.pending_command = None;
         // TextView 流式注册表随旧会话焚毁(重开重解析一次;防跨会话
-        // key 残留与 map 无界增长);观察者订阅一并退订
+        // key 残留与 map 无界增长);观察者订阅一并退订。轮次锚点索引
+        // 与行槽缓存同属会话视图态:不清则上一会话的锚点/行槽在新会话
+        // 渲染(refresh_stats 异步回填与下一次 sync 前尤其可见)
         self.chat.tv_streams.clear();
         self.chat.tv_subs.clear();
+        self.chat.anchor_index.clear();
+        self.chat.row_slots.clear();
+        self.chat.row_slots_sig = None;
         self.sync_active_workspace_from_current();
         self.refresh_session_cfg(id);
         // 统计异步回填:冷路径全量折叠大日志,同步跑 GPUI 线程会
@@ -83,20 +88,23 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 历史尾窗加载:未投影时后台折叠写入(标题投影一并落);
+    /// 历史全量加载(打开即投影整段会话;渲染层虚拟化,只画可见行)。
+    /// 分页方案(每页 fetch 全量翻译日志,比一次性翻译更贵)连同其
+    /// 游标/合并重建/挂起跳转机器整体不采用。
     /// 直播帧可能先行到达——以已投影状态为基线回放,节点 key 幂等。
     /// **必须经 [`HostBridge::call`] 上 tokio**:history 内部 attach 会
     /// `tokio::spawn` 每-会话 worker,GPUI 后台线程无 reactor 会 panic。
     fn load_history(&mut self, id: String, cx: &mut Context<Self>) {
         if self.state.chats.contains_key(&id) {
-            return; // 已投影;更早历史分页未接入
+            return; // 已投影
         }
         let store = cx.entity().clone();
         let host = self.bridge.host().clone();
         let sid = id.clone();
+        // max_messages 取大数 = 不分页,一次带回全部事件
         let rx = self
             .bridge
-            .call(async move { host.history(&sid, None, 100).await });
+            .call(async move { host.history(&sid, None, u32::MAX as usize).await });
         cx.spawn(async move |_this, cx| {
             let page = rx.await;
             store.update(cx, |s, cx| {
@@ -116,24 +124,28 @@ impl AppStore {
                     projections,
                     ..
                 } = page;
-                let chat = s.state.chats.entry(id.clone()).or_default();
-                chat.merge_history(events.into_iter().map(|e| e.event));
-                // 历史消息含 image 块 → 收集 aid,异步拉取缓存
-                // (与实时帧同路径;避免 chat 可变借用与 s 再借用冲突)
-                let mut aids: Vec<String> = Vec::new();
-                for node in &chat.nodes {
-                    if let ChatNode::User { images, .. } = node {
-                        for b in images {
-                            if let Some(aid) = b["attachment"]["attachmentId"].as_str() {
-                                aids.push(aid.to_string());
+                let page_events: Vec<liuma_core::proto::SessionEvent> =
+                    events.into_iter().map(|e| e.event).collect();
+                {
+                    let chat = s.state.chats.entry(id.clone()).or_default();
+                    chat.merge_history(page_events);
+                    // 历史消息含 image 块 → 收集 aid,异步拉取缓存
+                    // (与实时帧同路径;避免 chat 可变借用与 s 再借用冲突)
+                    let mut aids: Vec<String> = Vec::new();
+                    for node in &chat.nodes {
+                        if let ChatNode::User { images, .. } = node {
+                            for b in images {
+                                if let Some(aid) = b["attachment"]["attachmentId"].as_str() {
+                                    aids.push(aid.to_string());
+                                }
                             }
                         }
                     }
-                }
-                let sid = id.clone();
-                for aid in aids {
-                    s.ensure_image_loaded(&sid, &aid, cx);
-                }
+                    let sid = id.clone();
+                    for aid in aids {
+                        s.ensure_image_loaded(&sid, &aid, cx);
+                    }
+                };
                 if let Some(p) = projections
                     && let Some(t) = p.values.get("title")
                     && let Some(t) = t.as_str().filter(|t| !t.is_empty())

@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 
 use gpui_kit::component::text::{TextView, TextViewState, TextViewStyle};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Entity, IntoElement, ParentElement as _, SharedString, StyleRefinement,
     Styled, div, px, relative,
@@ -25,6 +26,31 @@ use gpui_kit::{
 fn styled_view(view: TextView) -> gpui_kit::AnyElement {
     div()
         .w_full()
+        // 宽度取证(LIUMA_PROBE=width):tv-body 层盒宽(与 asst-body/col_w 对账)
+        .when(
+            std::env::var_os("LIUMA_PROBE").is_some_and(|v| v == "width"),
+            |el| {
+                el.child(
+                    gpui_kit::canvas(
+                        |b, _, _| {
+                            static N: std::sync::atomic::AtomicUsize =
+                                std::sync::atomic::AtomicUsize::new(0);
+                            let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if n < 24 {
+                                eprintln!(
+                                    "[widthprobe] tv-body x={:.1} w={:.1}",
+                                    f32::from(b.origin.x),
+                                    f32::from(b.size.width)
+                                );
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+            },
+        )
         .text_size(px(14.))
         .line_height(relative(1.75))
         // 行尾不可断段(行内代码 chip)的少量溢出由裁剪兜底。
@@ -32,15 +58,15 @@ fn styled_view(view: TextView) -> gpui_kit::AnyElement {
         // (悬浮滚动条在槽内,不在列上),内层再扣一份 = 正文比
         // composer 窄一截、右缘不齐
         //
-        // w_full + pr 16(真机「右缘截断」的根治,probe 定案):
-        // 宽度链双层锚定——assistant_block max_w(col_w) 锚卡,此层
-        // w_full 维持传导;缺任一层,TextView 的 content box 走 taffy
-        // 混合测量,macOS 平台 shape 的折行/绘制宽对盒宽存在 ~90px
-        // 正向偏差,行末被 overflow_hidden 剪进卡内空白带。pr 把
-        // content box 收到可视宽 − 16,行末落在余量内。probe 定案:
-        // asst-body = tv-body = col_w = 748(锚完好),pr 后截断消失。
-        .overflow_hidden()
-        .pr(px(16.))
+        // w_full 维持宽度传导(assistant_block 已显式确定宽,锚链完
+        // 好,probe 实测 asst-body = tv-body = col_w)。
+        //
+        // **不设 overflow_hidden / padding**:文本系统的折行宽取自身
+        // 布局盒,任何盒内 padding 都会让「折行宽 ≠ 裁剪宽」——跨边界
+        // 的行末字形被裁掉半个甚至整个(真机红框:「现在还在」丢「在」、
+        // 「稳定」丢「定」,随内容必现)。去除 padding 后折行宽 = 裁剪
+        // 宽,shape 的行末悬挂字形落入右侧留白,文本完整;窗口硬缘是
+        // 最终边界。TextView 内部代码块自带横向滚动,不受此影响。
         .relative()
         .child(view)
         .into_any_element()

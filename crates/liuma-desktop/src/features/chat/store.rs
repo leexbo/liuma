@@ -178,10 +178,21 @@ pub(crate) struct ChatStore {
     /// 重渲染(可见项含 markdown 重建)= 滚动卡顿;合并为 ≤每 250ms
     /// 一帧额外渲染,滚动本身的连续帧已足够把点带出来)
     nav_reflow: Option<gpui_kit::Task<()>>,
-    /// 渲染行槽缓存(每帧随 sync_chat_list 重建:O(n) 纯扫描,直接
-    /// 重建避免缓存失效面——测试/旁路直接改 chats 不经 version bump;
-    /// 列表行数以此为准,非 nodes 原始数)
+    /// 渲染行槽缓存(签名守卫下按需重建,见 row_slots_sig;列表行数
+    /// 以此为准,非 nodes 原始数)
     pub(crate) row_slots: Vec<RowSlot>,
+    /// 行槽签名((节点数, 末节点 key, 组展开版次)):匹配即跳过重建。
+    /// 每帧 sync_chat_list 都会调用,O(n) 重建在大会话是渲染热路径;
+    /// 行槽只随「节点结构(增删)与组展开态」变化——流式正文原地追加
+    /// 不动结构。旁路/测试直改 chats 只要动结构必经 push/clear,
+    /// len/末键必变,签名失效面已覆盖(原地换 kind 的变异全仓不存在)
+    pub(crate) row_slots_sig: Option<(usize, Option<String>, u64)>,
+    /// 组展开版次(toggle_turn_group 递增;行槽签名分量)
+    pub(crate) open_turns_ver: u64,
+    /// 轮次锚点**全量索引**((seq, 首行摘要);open_session 后台拉取,
+    /// 实时新 user/message 追加)——左侧锚点栏显示全量轮次,与聊天列表
+    /// 的分页进度无关;未加载轮次的锚点点击 = 向前分页覆盖后跳转
+    pub anchor_index: Vec<(u64, String)>,
     /// TodoDock 展开
     pub todo_open: bool,
     /// 消息列虚拟化状态(gpui 内建 list:逐项测高缓存 + Bottom 对齐;
@@ -202,9 +213,9 @@ pub(crate) struct ChatStore {
     /// 永不生效——描述溢出的根因)
     pub composer_w: f32,
     /// 上次同步进 ListState 的条数(splice 增量通知的记账)
-    chat_list_count: usize,
+    pub(crate) chat_list_count: usize,
     /// ListState 当前归属会话(失配 → reset 重建缓存与滚动位)
-    chat_list_session: Option<String>,
+    pub(crate) chat_list_session: Option<String>,
     /// ListState 最近一次落地的列宽(渲染侧写回;宽变 → settle 后全量重测)
     list_col_w: Option<f32>,
     /// 列宽 settle 定时任务(每次宽变重启;tick 后重臂 measure_all 全量测高;
@@ -328,6 +339,9 @@ impl Default for ChatStore {
             nav_track: None,
             nav_reflow: None,
             row_slots: Vec::new(),
+            row_slots_sig: None,
+            open_turns_ver: 0,
+            anchor_index: Vec::new(),
             todo_open: false,
             chat_list: gpui_kit::ListState::new(
                 0,
@@ -724,35 +738,39 @@ impl AppStore {
     pub fn sync_chat_list(&mut self, cx: &mut Context<Self>) {
         self.ensure_row_slots();
         // TextView 流式驱动(渲染前 flush:前缀匹配 push_str 增量/漂移
-        // set_text;幂等,文本未变零开销。须在任何提前 return 之前)
-        let assistant_feed: Vec<(String, String)> = self
-            .current_chat()
-            .map(|c| {
-                c.nodes
-                    .iter()
-                    .filter_map(|n| match n {
-                        ChatNode::Assistant { key, text, .. } => Some((key.clone(), text.clone())),
-                        _ => None,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        // TextView 驱动 + 行高重测:外层虚拟化列表的行高缓存不会自愈,
-        // 两个重测触发面——①drive 文本变化(流式增长,尾部两行)
-        // ②新视图挂观察者(>4KiB 历史的首轮解析是异步的,落地晚于挂载)
+        // set_text;幂等,文本未变零开销。须在任何提前 return 之前)。
+        // 逐节点直读:整帧克隆全部正文(Vec<(String,String)>)在大会话
+        // 是每帧 MB 级分配 = 滚动/流式卡顿源;state(读)与
+        // chat.tv_streams(写)字段级不相交,可同帧拆借用
         let mut tv_touched = false;
         let mut tv_created: Vec<gpui_kit::Entity<gpui_kit::component::text::TextViewState>> =
             Vec::new();
-        for (k, t) in &assistant_feed {
-            match self.chat.tv_streams.drive(k, t, cx) {
-                crate::kits::markdown_tv::DriveOutcome::Created(state) => {
-                    tv_created.push(state);
-                    tv_touched = true;
+        {
+            let nodes: &[ChatNode] = match self
+                .state
+                .current_id
+                .as_deref()
+                .and_then(|id| self.state.chats.get(id))
+            {
+                Some(c) => &c.nodes,
+                None => &[],
+            };
+            for node in nodes {
+                if let ChatNode::Assistant { key, text, .. } = node {
+                    match self.chat.tv_streams.drive(key, text, cx) {
+                        crate::kits::markdown_tv::DriveOutcome::Created(state) => {
+                            tv_created.push(state);
+                            tv_touched = true;
+                        }
+                        crate::kits::markdown_tv::DriveOutcome::Updated => tv_touched = true,
+                        crate::kits::markdown_tv::DriveOutcome::None => {}
+                    }
                 }
-                crate::kits::markdown_tv::DriveOutcome::Updated => tv_touched = true,
-                crate::kits::markdown_tv::DriveOutcome::None => {}
             }
         }
+        // TextView 驱动 + 行高重测:外层虚拟化列表的行高缓存不会自愈,
+        // 两个重测触发面——①drive 文本变化(流式增长,尾部两行)
+        // ②新视图挂观察者(>4KiB 历史的首轮解析是异步的,落地晚于挂载)
         if tv_touched {
             let n = self.chat.chat_list.item_count();
             let start = n.saturating_sub(2);
@@ -782,10 +800,15 @@ impl AppStore {
             .unwrap_or(0);
         let count = self.chat.row_slots.len() + steering;
         if self.chat.chat_list_session.as_deref() != sid.as_deref() {
-            self.chat.chat_list.reset(count);
+            // 全量加载打开:未测项带固定行高 hint——滚动范围/导航轨
+            // 显隐立即成立(按可见性测高下未测行 0 高,总高塌着),真实
+            // 高度随滚动渐进替换。不再全量重测(数千行一次性测高 =
+            // 打开卡死)
+            self.chat
+                .chat_list
+                .reset_with_uniform_height(count, gpui_kit::px(60.));
             self.chat.chat_list_session = sid;
             self.chat.chat_list_count = count;
-            self.schedule_chat_remeasure(cx);
             return;
         }
         if count == self.chat.chat_list_count {
@@ -794,20 +817,38 @@ impl AppStore {
         if count > self.chat.chat_list_count {
             let at = self.chat.chat_list_count;
             self.chat.chat_list.splice(at..at, count - at);
+            // 追加行补固定行高 hint:未测项按可见性测高(视口外 0 高),
+            // 不补 hint 则总高塌缩、滚动范围/导航轨显隐失真。实测打开
+            // 时序:mismatch 分支先以 count=0 执行,历史落位后经由本分支
+            // 入列——hint 必须在此覆盖(已测行不受影响)
+            self.chat.chat_list = self
+                .chat
+                .chat_list
+                .clone()
+                .with_uniform_item_height(gpui_kit::px(60.));
         } else {
             let anchor = self.viewport_anchor();
-            self.reset_chat_list_anchored(anchor, cx);
+            self.reset_chat_list_anchored(anchor);
         }
         self.chat.chat_list_count = count;
     }
 
-    /// 重建行槽缓存(纯扫描直接重建,无失效追踪)
+    /// 重建行槽缓存(签名守卫,见 row_slots_sig;结构未变直接复用)
     pub(crate) fn ensure_row_slots(&mut self) {
         let nodes = self
             .current_chat()
             .map(|c| c.nodes.as_slice())
             .unwrap_or(&[]);
+        let sig = (
+            nodes.len(),
+            nodes.last().map(|n| n.key().to_string()),
+            self.chat.open_turns_ver,
+        );
+        if self.chat.row_slots_sig.as_ref() == Some(&sig) {
+            return;
+        }
         self.chat.row_slots = build_row_slots(nodes, &self.chat.open_turns);
+        self.chat.row_slots_sig = Some(sig);
     }
 
     /// 视口锚:非钉底时取视口顶槽的稳定 key 与项内偏移(重建后据此恢复);
@@ -866,9 +907,32 @@ impl AppStore {
     /// 不可依赖,悬挂的旧位会让 Bottom 跟随失效出现底部空隙);
     /// 非钉底 → 锚定项**顶对齐**(offset 归零:锚定项常因收拢变身份,
     /// 保留旧项内偏移会把视口推出内容之外)
-    fn reset_chat_list_anchored(&mut self, anchor: Option<(String, f32)>, cx: &mut Context<Self>) {
+    fn reset_chat_list_anchored(&mut self, anchor: Option<(String, f32)>) {
         let count = self.chat.row_slots.len();
-        self.chat.chat_list.reset(count);
+        // 高度 hint(reset 清全部测高 → 未测项 0 高 → 总高塌缩 = thumb
+        // 「忽长忽短」实测):hint = 旧总高 ÷ 新行数——**总高连续性**,
+        // 而非行高平均。整段重放会重组行数(组边界移动,实测 10→30→8
+        // 波动),平均行高 × 波动行数照样震荡;恒定总高让 thumb 在重建
+        // 期间稳定,渲染期真实测高渐进替换收敛。跨会话 reset(旧总高
+        // 无意义)回落固定档
+        let hint = {
+            let same_session = self
+                .chat
+                .chat_list_session
+                .as_deref()
+                .is_some_and(|s| self.state.current_id.as_deref() == Some(s));
+            let list = self.chat.chat_list.clone();
+            let prev_total = if same_session {
+                f32::from(list.max_offset_for_scrollbar().y)
+                    + f32::from(list.viewport_bounds().size.height)
+            } else {
+                60. * list.item_count().max(1) as f32
+            };
+            (prev_total / count.max(1) as f32).clamp(12., 400.)
+        };
+        self.chat
+            .chat_list
+            .reset_with_uniform_height(count, gpui_kit::px(hint));
         self.chat.chat_list_count = count;
         match anchor
             .as_ref()
@@ -883,7 +947,9 @@ impl AppStore {
                 offset_in_item: gpui_kit::px(0.),
             }),
         }
-        self.schedule_chat_remeasure(cx);
+        // 不再全量重测:全量加载下数千行一次性测高 = 每次 toggle 卡死;
+        // hint 高度撑滚动域,真实高度按可见性渐进替换(滚动条已按
+        // 条目比例映射,与测高解耦)
     }
 
     /// 轮过程组展开/收拢(组头点击)
@@ -893,8 +959,9 @@ impl AppStore {
         if !self.chat.open_turns.insert(key.to_string()) {
             self.chat.open_turns.remove(key);
         }
+        self.chat.open_turns_ver += 1;
         self.ensure_row_slots();
-        self.reset_chat_list_anchored(anchor, cx);
+        self.reset_chat_list_anchored(anchor);
         cx.notify();
     }
 

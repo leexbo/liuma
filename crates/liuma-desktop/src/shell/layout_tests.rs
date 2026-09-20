@@ -518,6 +518,24 @@ fn send_roundtrip(
     let store = store_cell.borrow().clone().expect("store 未捕获");
     let current = cx.update(|app| store.read(app).state.current_id.clone());
     assert!(current.is_some(), "新建会话应已成为当前会话");
+    {
+        // 全量投影取证(种子场景):60 轮种子应整段投影(≥120 surface),
+        // 回归锁不退化为空会话链路
+        let nodes = cx.update(|app| {
+            store
+                .read(app)
+                .state
+                .chats
+                .get(current.as_ref().unwrap())
+                .map(|c| c.nodes.len())
+        });
+        if seeded {
+            assert!(
+                nodes.unwrap_or(0) >= 100,
+                "全量投影应已就位,nodes={nodes:?}"
+            );
+        }
+    }
 
     // 用户气泡应到达(user/message 事件经帧泵);回复流式较慢,
     // 轮询等待(真时序:fake ~16s / 真实 LLM ~90s)
@@ -575,6 +593,55 @@ fn send_roundtrip(
 #[gpui_kit::test]
 fn composer_enter_sends_end_to_end(cx: &mut TestAppContext) {
     send_roundtrip(cx, true, "hello from test", None);
+}
+
+/// 种子日志:turns 个完成轮(每轮 user/message + assistant/message 两个
+/// surface 消息)。seq 连续(EventLog 守卫拒载跳号日志)。
+fn seed_history_log(turns: usize) -> String {
+    let mut out = String::new();
+    let mut seq = 1u64;
+    let mut line = |ty: &str, data: serde_json::Value, ignorable: bool| {
+        out.push_str(&format!(
+            "{{\"type\":\"{ty}\",\"seq\":{seq},\"time\":{},\"data\":{data},\"ignorable\":{ignorable}}}\n",
+            seq as i64 * 1000
+        ));
+        seq += 1;
+    };
+    for i in 0..turns {
+        line("turn/start", serde_json::json!({}), false);
+        line("step/start", serde_json::json!({}), false);
+        line(
+            "user/message",
+            serde_json::json!({ "content": format!("历史问题{i}"), "id": format!("seed-u-{i}") }),
+            false,
+        );
+        line(
+            "assistant/chunk",
+            serde_json::json!({ "delta": format!("历史回答{i}") }),
+            true,
+        );
+        line(
+            "assistant/message",
+            serde_json::json!({ "content": format!("历史回答{i}"), "id": format!("seed-a-{i}") }),
+            false,
+        );
+        line("step/end", serde_json::json!({}), false);
+        line("turn/end", serde_json::json!({}), false);
+    }
+    out
+}
+
+/// 分页尾窗 + 直播发送回归锁:长历史(60 轮 = 120 surface 消息 >
+/// 尾窗 100)重开后 history 走分页(has_more=true,仅尾窗投影),
+/// 此时发送新消息,用户气泡必须照常出现。
+#[gpui_kit::test]
+fn seeded_tail_history_live_send_shows_user_bubble(cx: &mut TestAppContext) {
+    let dir = std::env::temp_dir().join(format!("liuma-seed-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("种子目录创建失败");
+    let seed = dir.join("seed-history.jsonl");
+    std::fs::write(&seed, seed_history_log(60)).expect("种子日志写入失败");
+    send_roundtrip(cx, true, "分页后直播消息", Some(&seed));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// @ 补全回归锁:①长标题会话行必须单行截断——换行文本会溢出定高
@@ -7600,12 +7667,18 @@ fn nav_rail_show_hover_card_and_jump(cx: &mut TestAppContext) {
     let rail_b = wcx.debug_bounds("nav-rail").expect("刻度列 bounds");
     // 锚点刻度列(窗口左缘):用户消息出线,组行不是锚
     assert!(
-        wcx.debug_bounds("nav-line-0").is_some() && wcx.debug_bounds("nav-line-4").is_some(),
+        wcx.debug_bounds("nav-line-user:0").is_some()
+            && wcx.debug_bounds("nav-line-user:4").is_some(),
         "用户消息锚点应出线(槽 4t)"
     );
-    assert!(wcx.debug_bounds("nav-line-1").is_none(), "组行不应再是锚点");
-    let l0 = wcx.debug_bounds("nav-line-0").expect("首刻度 bounds");
-    let l36 = wcx.debug_bounds("nav-line-36").expect("当前轮刻度 bounds");
+    assert!(
+        wcx.debug_bounds("nav-line-a:0:1").is_none(),
+        "答复/组行不应是锚点(锚 = 用户消息)"
+    );
+    let l0 = wcx.debug_bounds("nav-line-user:0").expect("首刻度 bounds");
+    let l36 = wcx
+        .debug_bounds("nav-line-user:9")
+        .expect("当前轮刻度 bounds");
     // 常态一律 6×2——当前轮只用白色区分不改长(实测)
     assert_eq!(l0.size.width, px(6.), "普通刻度应为 6px");
     assert_eq!(l36.size.width, px(6.), "当前轮刻度同宽,只白不改长");
@@ -7619,7 +7692,7 @@ fn nav_rail_show_hover_card_and_jump(cx: &mut TestAppContext) {
     let c0 = l0.top() + l0.size.height / 2.;
     let c36 = l36.top() + l36.size.height / 2.;
     let c4 = wcx
-        .debug_bounds("nav-line-4")
+        .debug_bounds("nav-line-user:4")
         .expect("轮1刻度 bounds")
         .top()
         + px(1.);
@@ -7636,7 +7709,7 @@ fn nav_rail_show_hover_card_and_jump(cx: &mut TestAppContext) {
         rail_b.top() + rail_b.size.height / 2.
     );
     assert!(
-        wcx.debug_bounds("nav-card-0").is_none(),
+        wcx.debug_bounds("nav-card-user:0").is_none(),
         "未 hover 不应浮摘要卡"
     );
 
@@ -7653,14 +7726,16 @@ fn nav_rail_show_hover_card_and_jump(cx: &mut TestAppContext) {
     cx.run_until_parked();
     redraw(cx, &mut wcx);
     // 渐变宽度:激活 26,距离 1 → 20,距离 9(≥4)→ 常态 6
-    let l0h = wcx.debug_bounds("nav-line-0").expect("激活刻度 bounds");
-    let l4h = wcx.debug_bounds("nav-line-4").expect("邻刻度 bounds");
-    let l36h = wcx.debug_bounds("nav-line-36").expect("远刻度 bounds");
+    let l0h = wcx
+        .debug_bounds("nav-line-user:0")
+        .expect("激活刻度 bounds");
+    let l4h = wcx.debug_bounds("nav-line-user:1").expect("邻刻度 bounds");
+    let l36h = wcx.debug_bounds("nav-line-user:9").expect("远刻度 bounds");
     assert_eq!(l0h.size.width, px(26.), "激活刻度应加长为 26px");
     assert_eq!(l4h.size.width, px(20.), "距离 1 的邻刻度应渐变为 20px");
     assert_eq!(l36h.size.width, px(6.), "距离 ≥4 刻度应保持常态 6px");
     let card = wcx
-        .debug_bounds("nav-card-0")
+        .debug_bounds("nav-card-user:0")
         .expect("hover 刻度后应浮出摘要卡");
     assert_eq!(card.size.width, px(320.), "摘要卡应为 320px 宽");
     assert!(
@@ -7690,12 +7765,13 @@ fn nav_rail_show_hover_card_and_jump(cx: &mut TestAppContext) {
     cx.run_until_parked();
     redraw(cx, &mut wcx);
     assert!(
-        wcx.debug_bounds("nav-card-0").is_none(),
+        wcx.debug_bounds("nav-card-user:0").is_none(),
         "移出刻度后摘要卡应收起"
     );
 
-    // 点击轮 2 用户锚(槽 8 = 行 node-8)→ 目标行顶对齐在场 + 解锁钉底
-    click_sel(&mut wcx, "nav-point-8");
+    // 点击轮 2 用户锚(key user:2,槽 8 = 行 node-8)→ 目标行顶对齐
+    // 在场 + 解锁钉底
+    click_sel(&mut wcx, "nav-point-user:2");
     redraw(cx, &mut wcx);
     let top = cx.update(|app| store.read(app).chat.chat_list.logical_scroll_top());
     assert_eq!(top.item_ix, 8, "点击导航刻度应顶对齐目标槽");
@@ -8453,12 +8529,6 @@ fn tv_wrap_width_matches_container(cx: &mut TestAppContext) {
         }
     }
     let b = body.expect("助手正文应在场");
-    eprintln!(
-        "[probe] asst-body: x={} w={} right={}",
-        f32::from(b.origin.x),
-        f32::from(b.size.width),
-        f32::from(b.origin.x) + f32::from(b.size.width)
-    );
     // 宽度锚定锁:助手正文卡不得超出对话列宽(MIN_COL=748)——链上无
     // 绝对宽时真机平台 shape 报宽大于 wrapper,正文伸出被裁出卡内空白
     // 带(真机反馈「内容右边缘被截断」)。旧形态 w 可超 748(无锚)。
@@ -8698,4 +8768,314 @@ fn tv_typography_probe_block_height(cx: &mut TestAppContext) {
         .unwrap_or(0.);
     eprintln!("[probe] 10 行段落块高 = {h}px");
     assert!(h > 0., "块应有高度");
+}
+
+/// 行槽签名守卫回归锁:流式正文原地追加(结构不变)不得触发行槽重建,
+/// 结构变化(push)必须失效重建——保证缓存与直改旁路不脱节
+#[gpui_kit::test]
+fn row_slots_sig_skips_text_only_rebuild(cx: &mut TestAppContext) {
+    cx.update(|app| {
+        gpui_kit::component::init(app);
+        crate::kits::theme::init(app);
+    });
+    allow_host_parking(cx);
+    let root = std::env::temp_dir().join(format!("liuma-desktop-rowsig-{}", std::process::id()));
+    let (bridge, _rx) = HostBridge::new_at(root.join("ws"), true, "", Some(root.join("sessions")))
+        .expect("桥构建失败");
+    let store = cx.update(|app| app.new(|cx| AppStore::new(bridge, cx)));
+
+    cx.update(|app| {
+        store.update(app, |s, _| {
+            let id = s.bridge.host().create_session(None, None, None);
+            let mut chat = ChatState::default();
+            chat.nodes.push(ChatNode::User {
+                key: "user:1".into(),
+                text: "问".into(),
+                images: Vec::new(),
+                files: Vec::new(),
+            });
+            chat.nodes.push(ChatNode::Assistant {
+                key: "a:1:1".into(),
+                text: "答".into(),
+                reasoning: String::new(),
+                streaming: true,
+                usage: None,
+                message_id: String::new(),
+            });
+            s.state.chats.insert(id.clone(), chat);
+            s.state.current_id = Some(id);
+            s.ensure_row_slots();
+        });
+    });
+    let sig0 = cx.update(|app| store.read(app).chat.row_slots_sig.clone());
+    let slots0 = cx.update(|app| store.read(app).chat.row_slots.clone());
+    assert!(slots0.len() >= 2, "行槽应已构建");
+
+    // 流式追加(原地改末节点正文,流式态):签名不变 → 跳过重建
+    cx.update(|app| {
+        store.update(app, |s, _| {
+            let id = s.state.current_id.clone().unwrap();
+            let chat = s.state.chats.get_mut(&id).unwrap();
+            if let ChatNode::Assistant { text, .. } = chat.nodes.last_mut().unwrap() {
+                text.push_str("更多正文");
+            }
+            s.ensure_row_slots();
+        });
+    });
+    let sig1 = cx.update(|app| store.read(app).chat.row_slots_sig.clone());
+    assert_eq!(sig0, sig1, "正文原地追加不应失效行槽签名");
+
+    // 结构变化(新用户消息 push):签名失效 → 行槽重建
+    cx.update(|app| {
+        store.update(app, |s, _| {
+            let id = s.state.current_id.clone().unwrap();
+            let chat = s.state.chats.get_mut(&id).unwrap();
+            chat.nodes.push(ChatNode::User {
+                key: "user:2".into(),
+                text: "再问".into(),
+                images: Vec::new(),
+                files: Vec::new(),
+            });
+            s.ensure_row_slots();
+        });
+    });
+    let (sig2, slots2) = cx.update(|app| {
+        let st = store.read(app);
+        (st.chat.row_slots_sig.clone(), st.chat.row_slots.clone())
+    });
+    assert_ne!(sig0, sig2, "结构变化应失效行槽签名");
+    assert!(
+        slots2.len() > slots0.len(),
+        "新节点应进行槽(重建发生):{} → {}",
+        slots0.len(),
+        slots2.len()
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 真实大会话日志全链路回归(种子 = 线上 58k 事件会话原样拷贝;全量
+/// 加载 + 虚拟滚动架构):打开即整段投影(无分页)→ 当前轮标记绘制
+/// (「不亮」回归)→ 点击任意远端锚点**直达**(无翻页)→ 滚动条比例
+/// 域连续(thumb 位置 = 顶行序号/总条数,与测高解耦,「到顶跳中间/
+/// 忽长忽短」回归)
+#[gpui_kit::test]
+fn real_log_full_load_direct_anchor_and_stable_scrollbar(cx: &mut TestAppContext) {
+    use gpui_kit::component::scroll::ScrollbarHandle as _;
+    const REAL_LOG: &str = "/Users/leexbo/.liuma/--Volumes-DATA-projects-liuma--/s-367e20369b584ddebffbc0b9d04501da/session.jsonl";
+    if !std::path::Path::new(REAL_LOG).exists() {
+        eprintln!("[skip] 真实日志不在场({REAL_LOG})");
+        return;
+    }
+    cx.update(|app| {
+        gpui_kit::component::init(app);
+        crate::kits::theme::init(app);
+    });
+    allow_host_parking(cx);
+    let root = std::env::temp_dir().join(format!("liuma-desktop-reallog-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (bridge, _rx) = HostBridge::new_at(root.join("ws"), true, "", Some(root.join("sessions")))
+        .expect("桥构建失败");
+    let sid = bridge.host().create_session(None, None, None);
+    let proj_dir = std::fs::read_dir(root.join("sessions"))
+        .expect("会话根可读")
+        .flatten()
+        .find(|e| e.path().is_dir())
+        .map(|e| e.path())
+        .expect("项目目录存在");
+    std::fs::copy(REAL_LOG, proj_dir.join(&sid).join("session.jsonl")).expect("真实日志拷贝失败");
+
+    crate::features::chat::chat_pane::nav_marker_reset();
+    let store_cell = std::rc::Rc::new(std::cell::RefCell::new(None::<gpui_kit::Entity<AppStore>>));
+    let store_capture = store_cell.clone();
+    let (_view, wcx) = cx.add_window_view(|_window, cx| {
+        let store = cx.new(|cx| AppStore::new(bridge, cx));
+        *store_capture.borrow_mut() = Some(store.clone());
+        WorkspaceView::new(store, cx)
+    });
+    let mut wcx = wcx.clone();
+    let store = store_cell.borrow().clone().expect("store 未捕获");
+
+    // 全量投影 + 锚点索引落位(58k 事件翻译在后台,轮询收敛)
+    let mut ok = false;
+    for _ in 0..120 {
+        wcx.refresh().expect("刷新失败");
+        cx.run_until_parked();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let ready = cx.update(|app| {
+            let st = store.read(app);
+            st.state
+                .chats
+                .get(&sid)
+                .is_some_and(|c| c.nodes.len() > 1000)
+                && !st.chat.anchor_index.is_empty()
+        });
+        if ready {
+            ok = true;
+            break;
+        }
+    }
+    assert!(ok, "全量投影未落位(超时)");
+    let nodes = cx.update(|app| store.read(app).state.chats.get(&sid).unwrap().nodes.len());
+    assert!(nodes > 1000, "真实日志应整段投影: nodes={nodes}");
+
+    // 诊断:导航轨显隐三条件
+    let diag = cx.update(|app| {
+        let st = store.read(app);
+        let list = &st.chat.chat_list;
+        (
+            st.chat.anchor_index.len(),
+            f32::from(list.viewport_bounds().size.height),
+            f32::from(list.max_offset_for_scrollbar().y),
+            list.item_count(),
+        )
+    });
+    let rail = wcx.debug_bounds("nav-rail");
+    eprintln!(
+        "[diag] anchors={} vp={:?} scrollable={:?} items={:?} rail={:?}",
+        diag.0,
+        diag.1,
+        diag.2,
+        diag.3,
+        rail.is_some()
+    );
+
+    // 当前轮标记已绘制且 x 在画布内(离屏 = 「不亮」)
+    let marker = crate::features::chat::chat_pane::nav_marker_last();
+    let (_, _mix, mx, _my, mbx, mbw) = marker.expect("当前轮标记从未绘制(「不亮」)");
+    assert!(
+        mx >= mbx + 16. && mx <= mbx + mbw && mbw > 0.,
+        "标记 x 应在画布内: x={mx} canvas=[{mbx}, {}]",
+        mbx + mbw
+    );
+
+    // 滚动条比例域连续性:比例 = |offset.y| / extent 应恒等于
+    // 顶行序号/总条数(构造保证;破坏即映射回退到了测高域)
+    let check_ratio = |app: &gpui_kit::App| -> (f32, f32) {
+        let st = store.read(app);
+        let handle = crate::shell::scroll::FullTrackHandle::new(&st.chat.chat_list, px(0.));
+        let content = f32::from(handle.content_size().height);
+        let offset = f32::from(-handle.offset().y);
+        let top = st.chat.chat_list.logical_scroll_top().item_ix;
+        let count = st.chat.chat_list.item_count();
+        (offset / content.max(1.), top as f32 / count.max(1) as f32)
+    };
+
+    // 点击最远端(第一个)锚点:直达目标轮,无翻页等待
+    let target = cx.update(|app| {
+        let idx = &store.read(app).chat.anchor_index;
+        idx.first()
+            .map(|(seq, _)| format!("user:{seq}"))
+            .expect("锚点索引非空")
+    });
+    cx.update(|app| {
+        store.update(app, |s, cx| {
+            let ix = s
+                .chat
+                .row_slots
+                .iter()
+                .position(|slot| match slot {
+                    crate::features::chat::RowSlot::Node(n)
+                    | crate::features::chat::RowSlot::GroupMember(n) => {
+                        s.current_nodes().get(*n).map(|nd| nd.key()) == Some(target.as_str())
+                    }
+                    _ => false,
+                })
+                .expect("全量加载后首锚必在行槽内");
+            s.jump_to_nav(ix, cx);
+        });
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+
+    let at_target = cx.update(|app| {
+        let st = store.read(app);
+        let top = st.chat.chat_list.logical_scroll_top().item_ix;
+        st.chat.row_slots.get(top).is_some_and(|s| match s {
+            crate::features::chat::RowSlot::Node(n)
+            | crate::features::chat::RowSlot::GroupMember(n) => {
+                st.current_nodes().get(*n).map(|nd| nd.key()) == Some(target.as_str())
+            }
+            _ => false,
+        })
+    });
+    assert!(at_target, "点击首锚应直达目标轮 {target}");
+
+    // 宽度锚定链(「右缘截断」回归锁):可见 assistant 正文盒
+    // (asst-body)宽不得超出其外层行包裹(node-*,宽 = col_w)——
+    // 链上任一层失去 Definite 宽(测量模式回落 MaxContent)即超宽
+    let probe_pairs: Vec<(String, usize)> = cx.update(|app| {
+        let st = store.read(app);
+        let top = st.chat.chat_list.logical_scroll_top().item_ix;
+        st.chat
+            .row_slots
+            .iter()
+            .skip(top)
+            .take(8)
+            .filter_map(|slot| match slot {
+                crate::features::chat::RowSlot::Node(n) => match st.current_nodes().get(*n) {
+                    Some(crate::features::chat::ChatNode::Assistant { key, text, .. })
+                        if !text.is_empty() =>
+                    {
+                        Some((key.clone(), *n))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    });
+    let mut samples = Vec::new();
+    for (key, n) in &probe_pairs {
+        let body_sel: &'static str = Box::leak(format!("asst-body-{key}").into_boxed_str());
+        let node_sel: &'static str = Box::leak(format!("node-{n}").into_boxed_str());
+        if let (Some(body), Some(node)) = (wcx.debug_bounds(body_sel), wcx.debug_bounds(node_sel)) {
+            samples.push((f32::from(body.size.width), f32::from(node.size.width)));
+        }
+    }
+    assert!(
+        !samples.is_empty(),
+        "可见区应有 assistant 正文样本(宽度链取证)"
+    );
+    for (body_w, node_w) in &samples {
+        assert!(
+            *body_w <= *node_w + 1.,
+            "正文盒超出行宽(锚定链断): asst-body={body_w} node={node_w}"
+        );
+    }
+
+    // 跳到顶部后滚动条比例 ≈ 0(顶行序号 0)——「到顶跳中间」回归:
+    // 到顶再取一次读数,比例不得漂移(测高落定不得影响 thumb 位置)
+    let (r1, l1) = cx.update(|app| check_ratio(app));
+    assert!(l1 <= 0.05, "首锚在列表头部,逻辑比例应≈0: {l1}");
+    assert!(
+        (r1 - l1).abs() <= 0.03,
+        "滚动条比例应等于逻辑比例(连续性构造): bar={r1} logical={l1}"
+    );
+    // 测高收尾(重测全量)后比例不变:thumb 位置与测高解耦
+    cx.update(|app| {
+        store.update(app, |s, cx| s.remeasure_chat_list(cx));
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    let (r2, l2) = cx.update(|app| check_ratio(app));
+    assert!(
+        (r2 - l2).abs() <= 0.03 && (l2 - l1).abs() <= 0.01,
+        "重测后滚动条比例不得漂移: bar={r2} logical={l2}(前值 {l1})"
+    );
+
+    // 滚到底:比例 ≈ 1(钉底跟随 = 条数比例)
+    cx.update(|app| {
+        store.update(app, |s, _| {
+            s.chat.pinned = true;
+            s.chat.chat_list.scroll_to(gpui_kit::ListOffset {
+                item_ix: usize::MAX,
+                offset_in_item: px(0.),
+            });
+        });
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    let (_r3, l3) = cx.update(|app| check_ratio(app));
+    assert!(l3 >= 0.95, "钉底后逻辑比例应≈1: {l3}");
+    let _ = std::fs::remove_dir_all(root);
 }

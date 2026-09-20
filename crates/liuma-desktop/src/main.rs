@@ -102,10 +102,15 @@ fn main() {
             // 关窗即退出(单窗口应用;订阅泄漏存续于进程生命周期)
             std::mem::forget(cx.on_window_closed(|cx, _| cx.quit()));
 
-            // LIUMA_PROBE 探针:3s 后经 bridge runtime 建会话并发一条消息
-            // (与 UI store.send 同一路径;免 GUI 输入测生产 runloop 节奏)
+            // LIUMA_PROBE 主动探针(须显式 `prompt:<文本>` 值;被动探针
+            // 只要变量在场即开,与主动探针共用变量名,此前按「在场」触发
+            // ——取证时设 LIUMA_PROBE=anchors 起第二个实例,3s 后凭空建
+            // 出一只探针会话并发真消息,侧栏多会话 + 烧 token,实测事故):
+            // 3s 后经 bridge runtime 建会话并发一条消息(与 UI store.send
+            // 同一路径;免 GUI 输入测生产 runloop 节奏)
             if let Some(text) = std::env::var_os("LIUMA_PROBE")
                 && let Some(text) = text.to_str()
+                && let Some(text) = text.strip_prefix("prompt:")
             {
                 let host = probe_host.clone();
                 let text = text.to_string();
@@ -183,6 +188,10 @@ fn main() {
                     if std::env::var_os("LIUMA_WINPROBE").is_some() {
                         crate::shell::winprobe::dump(window);
                     }
+                    // 启动即激活到前台:终端/nohup 拉起时窗口默认留在
+                    // 启动方背后,macOS 对被遮挡窗口停发绘制帧,首帧之后
+                    // 界面冻结(实测空面板)直到用户手动点到它
+                    window.activate_window();
                     root
                 })?;
                 // 探针延迟二次取证:模糊机制挂载发生在首帧显示之后,

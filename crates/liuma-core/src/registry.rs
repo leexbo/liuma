@@ -319,6 +319,15 @@ struct SessionSlot {
     path: PathBuf,
     inner: std::sync::OnceLock<SlotInner>,
     running: std::sync::atomic::AtomicBool,
+    /// 装配单飞闸:open_session 瞬间 history/stats/锚点索引三路并发
+    /// 打到同一冷会话,窗口必须互斥——后到者在闸上等,前者装完直接
+    /// 复用。无闸时两路同时进装配,各自 load_log/开 backend,输家在
+    /// OnceLock 认输处静默弃装配:双倍装配开销之外,输家路径上的
+    /// 瞬态失败(凭据/传输/工具组装)会把本可复用的旁路调用
+    /// (session_anchor_index 等)一起拖死(桌面锚点栏静默落空)
+    assembly: std::sync::Mutex<()>,
+    /// 进入装配窗口的计数(单飞回归锁观测面;固定 = 冷附着恰一次)
+    assembly_started: std::sync::atomic::AtomicUsize,
 }
 
 impl SessionSlot {
@@ -3346,6 +3355,8 @@ impl AppHost {
                     path,
                     inner: std::sync::OnceLock::new(),
                     running: std::sync::atomic::AtomicBool::new(false),
+                    assembly: std::sync::Mutex::new(()),
+                    assembly_started: std::sync::atomic::AtomicUsize::new(0),
                 })
             })
             .clone()
@@ -3753,6 +3764,15 @@ impl AppHost {
         if slot.inner.get().is_some() {
             return Ok(slot);
         }
+        // 装配单飞:并发 attach 串行过窗口;闸后重查(等到的这轮直接
+        // 复用前者成果)。热路径(inner 已设)不碰闸
+        let _assembly_gate = slot.assembly.lock_recover();
+        if slot.inner.get().is_some() {
+            drop(_assembly_gate);
+            return Ok(slot);
+        }
+        slot.assembly_started
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         // 装配(同步;与 liuma chat 同配方;工作区/模型/preset/推理等级覆盖优先)
         let (ws_root, _) = self.resolve_session(id);
@@ -3993,7 +4013,11 @@ impl AppHost {
             traj: Mutex::new(crate::trajectory::TrajectoryFolder::new()),
             closed: std::sync::atomic::AtomicBool::new(false),
         };
-        if slot.inner.set(inner).is_err() {
+        let assembly_won = slot.inner.set(inner).is_ok();
+        // 装配窗关闭:守卫先于 slot 的移动放闸(此后 broadcast/spawn
+        // 无需在闸内)
+        drop(_assembly_gate);
+        if !assembly_won {
             return Ok(slot); // 并发装配:另一线程赢了,worker 已由它起
         }
 
@@ -4330,6 +4354,57 @@ impl AppHost {
         }))
     }
 
+    /// 会话轮次锚点全量索引:扫日志提取 user/message(真实用户,排除
+    /// 注入上下文)的 (seq, 首行摘要)——左侧锚点栏显示**全量轮次**,
+    /// 与聊天列表的分页进度无关。附着为懒加载,内存日志直扫(大会话
+    /// 一次 O(n),调用方走后台线程)。轻量只读方法,同步返回。
+    pub fn session_anchor_index(
+        self: &Arc<Self>,
+        session_id: &str,
+    ) -> Result<Vec<(u64, String)>, RpcError> {
+        let slot = self.attach(session_id)?;
+        let inner = slot.inner()?;
+        let log_snapshot: Vec<EventEnvelope> = {
+            let l = inner
+                .log
+                .lock()
+                .map_err(|_| RpcError::internal("log 锁中毒"))?;
+            l.iter().cloned().collect()
+        };
+        let mut out = Vec::new();
+        for ev in &log_snapshot {
+            if ev.r#type != "user/message" {
+                continue;
+            }
+            // 注入上下文(source.kind != user)不是轮次开始,不算锚点
+            if ev.data["source"]["kind"]
+                .as_str()
+                .is_some_and(|k| k != "user")
+            {
+                continue;
+            }
+            let text = ev.data["content"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    ev.data["content"]
+                        .as_array()
+                        .map(|blocks| {
+                            blocks
+                                .iter()
+                                .filter(|b| b["type"].as_str() == Some("text"))
+                                .filter_map(|b| b["text"].as_str())
+                                .collect::<Vec<_>>()
+                                .join("")
+                        })
+                        .unwrap_or_default()
+                });
+            let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            out.push((ev.seq, collapsed));
+        }
+        Ok(out)
+    }
+
     /// session.history:附着(懒)→ 活日志快照 → 翻译 + 分页 + 投影
     pub async fn history(
         self: &Arc<Self>,
@@ -4354,7 +4429,9 @@ impl AppHost {
             &log_snapshot,
         );
         let Page {
-            events, has_more, ..
+            events,
+            has_more,
+            cut,
         } = paginate(&translated, before_seq, max_messages.max(1));
         let high_water = log_snapshot.len() as u64;
         let title = self
@@ -4366,6 +4443,7 @@ impl AppHost {
                 .map(|event| HistoryEntry { event, view: None })
                 .collect(),
             has_more,
+            cut,
             // title 仅真实存在时下发(None = 无标题,客户端回落占位)
             projections: title.map(|t| Projections {
                 as_of_seq: if high_water == 0 {
@@ -9564,6 +9642,71 @@ mod tests {
         let unknown = host.respond("nope", &ok);
         assert!(!unknown.accepted);
         assert_eq!(unknown.reason.as_deref(), Some("not-pending"));
+    }
+
+    /// 并发冷附着单飞回归锁:open_session 瞬间 history/stats/锚点索引
+    /// 三路并发打到同一冷会话,装配窗口互斥——全部调用成功,且装配
+    /// 恰启动一次。此前无闸,两路同时进装配(输家静默弃装配),输家
+    /// 路径上的瞬态失败会把旁路调用(session_anchor_index)一起拖死
+    /// (桌面锚点栏静默落空,探针实测 index=0)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_cold_attach_single_flight() {
+        let host = temp_host("attach-race");
+        let id = host.create_session(None, None, None);
+        // 冷会话种子:40 完成轮(160 事件;seq 连续,EventLog 守卫拒跳号)
+        let mut log = String::new();
+        let mut seq = 1u64;
+        for i in 0..40usize {
+            for (ty, data) in [
+                ("turn/start", json!({})),
+                (
+                    "user/message",
+                    json!({ "content": format!("问{i}"), "id": format!("u-{i}") }),
+                ),
+                (
+                    "assistant/message",
+                    json!({ "content": format!("答{i}"), "id": format!("a-{i}") }),
+                ),
+                ("turn/end", json!({})),
+            ] {
+                log.push_str(
+                    &json!({ "type": ty, "seq": seq, "time": seq as i64 * 1000, "data": data, "ignorable": false })
+                        .to_string(),
+                );
+                log.push('\n');
+                seq += 1;
+            }
+        }
+        let target = proj_dir(&host, &host.workspace)
+            .join(&id)
+            .join("session.jsonl");
+        std::fs::write(&target, log).unwrap();
+
+        let mut tasks = Vec::new();
+        for _ in 0..12usize {
+            let h = host.clone();
+            let sid = id.clone();
+            tasks.push(tokio::spawn(async move {
+                let hist = h.history(&sid, None, 50).await.is_ok();
+                let anchors = h.session_anchor_index(&sid).is_ok();
+                (hist, anchors)
+            }));
+        }
+        for t in tasks {
+            let (hist, anchors) = t.await.unwrap();
+            assert!(hist, "并发冷附着下 history 必须成功");
+            assert!(anchors, "并发冷附着下锚点索引必须成功");
+        }
+        let assemblies = host
+            .sessions
+            .read_recover()
+            .values()
+            .map(|s| {
+                s.assembly_started
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            })
+            .sum::<usize>();
+        assert_eq!(assemblies, 1, "并发冷附着必须单飞装配恰一次");
     }
 
     /// session.list:扫描会话根项目目录 + blank 判定 + 旧布局迁移

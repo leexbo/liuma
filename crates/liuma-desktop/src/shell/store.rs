@@ -603,6 +603,40 @@ impl AppStore {
         let rx = self
             .bridge
             .call(async move { host.session_stats(&sid_compute) });
+        // 轮次锚点全量索引(同一后台:扫日志提取 user/message 轮次;
+        // 左侧锚点栏显示全量,与聊天列表分页进度无关)
+        let host2 = self.bridge.host().clone();
+        let sid_anchors = sid.clone();
+        let rx_anchors = self
+            .bridge
+            .call(async move { host2.session_anchor_index(&sid_anchors) });
+        let store_a = store.clone();
+        let sid_anchors_done = sid.clone();
+        cx.spawn(async move |_this, cx| {
+            let anchors = rx_anchors.await;
+            store_a.update(cx, |s, cx| {
+                match anchors {
+                    // 落地时会话已切走 → 丢弃(晚到索引不得覆盖当前
+                    // 会话的锚点栏;与 load_history 的 entry 定位不同,
+                    // anchor_index 是全局单份,必须按当前会话过滤)
+                    Ok(Ok(index))
+                        if s.state.current_id.as_deref() == Some(sid_anchors_done.as_str()) =>
+                    {
+                        s.chat.anchor_index = index;
+                        cx.notify();
+                    }
+                    Ok(Ok(_)) => {}
+                    // fail-loud:此前静默吞错,锚点栏恒空且零痕迹
+                    // (探针实测 index=0 无法归因)
+                    Ok(Err(e)) => eprintln!(
+                        "[liuma-desktop] 锚点索引拉取被拒: {} ({})",
+                        e.message, e.code
+                    ),
+                    Err(e) => eprintln!("[liuma-desktop] 锚点索引拉取失败: {e}"),
+                }
+            });
+        })
+        .detach();
         // 本仓调度器 Task 语义 = 丢弃即取消,后台任务必须 detach
         cx.spawn(async move |_this, cx| {
             let v = rx.await;

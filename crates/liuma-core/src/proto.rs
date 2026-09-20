@@ -336,6 +336,8 @@ pub struct HistoryValue {
     pub events: Vec<HistoryEntry>,
     /// 是否还有更早页
     pub has_more: bool,
+    /// 本页截断 seq(下一页 `before_seq`;0 = 到头)
+    pub cut: u64,
     /// 投影基线(仅尾页带)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub projections: Option<Projections>,
@@ -640,6 +642,7 @@ mod tests {
                 view: None,
             }],
             has_more: false,
+            cut: 0,
             projections: Some(Projections {
                 as_of_seq: 1,
                 values: json!({ "title": "t" }),

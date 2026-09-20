@@ -15,9 +15,7 @@ use gpui_kit::{
     Window, actions, div, px,
 };
 
-use super::projection::{
-    ChatNode, NavAnchor, PlanStatus, RetryState, RowSlot, ToolState, nav_anchors,
-};
+use super::projection::{ChatNode, NavAnchor, PlanStatus, RetryState, RowSlot, ToolState};
 use crate::kits::icons::{self, LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::metrics::{H_PAD, NAV_GUTTER_W, RUN_CLOCK_AFTER_SECS, SCROLLBAR_GUTTER_W};
@@ -29,8 +27,56 @@ use crate::shell::store::AppStore;
 // 时抓取,动作经 App 级全局 on_action 收口写剪贴板(见 shell/mod.rs)。
 actions!(chat_pane, [CopyChatSelection]);
 
+/// 标记绘制取证快照:(top, 锚序, x, y, 画布x, 画布宽)
+#[cfg(test)]
+pub(crate) type NavMarkerSnapshot = (usize, usize, f32, f32, f32, f32);
+
+/// 标记绘制取证钩子(仅测试):记录最近一次绘制
+#[cfg(test)]
+pub(crate) fn nav_marker_probe(snap: NavMarkerSnapshot) {
+    NAV_MARKER_PROBE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .replace(snap);
+}
+
+/// 标记取证快照(None = 从未绘制 = 「不亮」)
+#[cfg(test)]
+pub(crate) fn nav_marker_last() -> Option<NavMarkerSnapshot> {
+    *NAV_MARKER_PROBE.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// 清零取证(用例隔离)
+#[cfg(test)]
+pub(crate) fn nav_marker_reset() {
+    *NAV_MARKER_PROBE.lock().unwrap_or_else(|p| p.into_inner()) = None;
+}
+
+#[cfg(test)]
+static NAV_MARKER_PROBE: std::sync::Mutex<Option<NavMarkerSnapshot>> = std::sync::Mutex::new(None);
+
 /// 消息区整体(相对容器 + 虚拟化列 + 回底钮)
 pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    // 布局取证(LIUMA_PROBE=anchors):锚点索引/投影快照
+    if std::env::var_os("LIUMA_PROBE").is_some_and(|v| v == "anchors") {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 8
+            && let Some(id) = store.read(cx).state.current_id.clone()
+        {
+            let st = store.read(cx);
+            let page = st
+                .state
+                .chats
+                .get(&id)
+                .map(|c| format!("nodes={}", c.nodes.len()))
+                .unwrap_or_else(|| "entry 缺失".into());
+            eprintln!(
+                "[probe-anchors] sid={id} index={} page [{page}] slots={}",
+                st.chat.anchor_index.len(),
+                st.chat.row_slots.len()
+            );
+        }
+    }
     // 列宽先算(短借用;长借用与 window 互不冲突)
     let sidebar_collapsed = store.read(cx).sidebar_collapsed;
     let sidebar_px = store.read(cx).sidebar_px;
@@ -46,27 +92,49 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         panel_open,
         panel_px,
     );
+    // 宽度取证(LIUMA_PROBE=width):列宽 + 窗口视口 + 投影/行槽/列表
+    // 计数对账(与 asst-body 逐 key 读数对账)
+    if std::env::var_os("LIUMA_PROBE").is_some_and(|v| v == "width") {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if n < 400 {
+            let st = store.read(cx);
+            let nodes = st
+                .state
+                .current_id
+                .as_deref()
+                .and_then(|id| st.state.chats.get(id))
+                .map(|c| c.nodes.len())
+                .unwrap_or(0);
+            eprintln!(
+                "[widthprobe] r{n} col_w={:.1} nodes={nodes} slots={} items={} session={:?}",
+                f32::from(col_w),
+                st.chat.row_slots.len(),
+                st.chat.chat_list.item_count(),
+                st.chat.chat_list_session,
+            );
+        }
+    }
 
     let list_state = store.read(cx).chat.chat_list.clone();
 
     // 导航轨(刻度列 + 正常滚动条)派生:锚点 = 用户消息
     // (轮次开始);显示条件 = 有锚点且内容明显可滚(> 1/4 视口——刚溢出
-    // 几行的短会话不值得一条轨;viewport 未布局时为 0,守卫跳过)。当前
-    // 位置 = 视口顶最近用户锚(白色刻度标记读到哪一轮;跨轮才移动)
-    let (nav_anchors_vec, show_nav_rail, nav_current_key) = {
+    // 几行的短会话不值得一条轨;viewport 未布局时为 0,守卫跳过)。
+    // 当前位置标记在 paint 相期逐帧绘制(见 nav_ticks),不走元素态
+    let (nav_anchors_vec, show_nav_rail) = {
         let st = store.read(cx);
-        let anchors = nav_anchors(&st.chat.row_slots, st.current_nodes());
+        // 全量锚点:已加载(nav_anchors)+ 未加载(anchor_index 索引,
+        // 点击向前分页覆盖后跳转)——左侧轨恒显示全部轮次
+        let anchors = crate::features::chat::projection::nav_anchors_full(
+            &st.chat.row_slots,
+            st.current_nodes(),
+            &st.chat.anchor_index,
+        );
         let vp_h = f32::from(list_state.viewport_bounds().size.height);
         let scrollable = f32::from(list_state.max_offset_for_scrollbar().y);
         let show = !anchors.is_empty() && vp_h > 0. && scrollable > vp_h * 0.25;
-        let top_ix = list_state.logical_scroll_top().item_ix;
-        let max_slot = st.chat.row_slots.len().saturating_sub(1);
-        let current = anchors
-            .iter()
-            .rev()
-            .find(|a| a.slot_ix <= top_ix.min(max_slot))
-            .map(|a| a.key.clone());
-        (anchors, show, current)
+        (anchors, show)
     };
     // 轨道几何(paint 捕获),供刻度带等距居中
     let nav_track = store.read(cx).chat.nav_track;
@@ -109,7 +177,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
     // 恒定于可视项数)。列 gap(16)由每项包裹容器 py(8) 承担。
     // 行源 = 行槽(Node 平铺 / 轮过程组行),非 nodes 原始序
     let item_store = store.clone();
-    let list = gpui_kit::list(list_state, move |ix, _window, cx| {
+    let list = gpui_kit::list(list_state.clone(), move |ix, _window, cx| {
         let st = item_store.read(cx);
         // 流尾伪行:插队待投递气泡(session/queue 权威快照;行号 = 行槽之后)
         let Some(slot) = st.chat.row_slots.get(ix) else {
@@ -356,11 +424,16 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         .when(show_nav_rail, |el| {
             let s = store.read(cx);
             let ui = NavUiState {
-                current_key: nav_current_key.clone(),
                 hovered: s.chat.nav_hover,
             };
             // 刻度列挂面板左缘;滚动条用组件库默认件,挂内容列(shell/mod.rs)
-            el.child(nav_ticks(store, &nav_anchors_vec, nav_track, ui))
+            el.child(nav_ticks(
+                store,
+                &nav_anchors_vec,
+                nav_track,
+                ui,
+                list_state.clone(),
+            ))
         })
 }
 
@@ -437,9 +510,11 @@ fn tool_sweep(ix: usize) -> impl IntoElement {
 /// 递减 20/14/10,距离 ≥4 及常态一律 6;左对齐、当前轮只变白不改长)
 const TICK_WIDTHS: [f32; 5] = [26., 20., 14., 10., 6.];
 
-/// 导航轨 UI 态(渲染期从 ListState 读好传入,轨内不再取 cx)
+/// 导航轨 UI 态(渲染期从 ListState 读好传入,轨内不再取 cx)。
+/// 当前轮**不在**元素态:滚动只重绘列表自身,元素颜色要等 store
+/// notify 才刷新(冻结/闪烁源)——位置标记由 paint 相期 canvas 逐帧
+/// 实时绘制(见 nav_ticks 内 marker),与滚动条同款机制
 struct NavUiState {
-    current_key: Option<String>,
     hovered: Option<usize>,
 }
 
@@ -453,18 +528,19 @@ struct NavUiState {
 /// 卡挂刻度右侧、垂直居中对准激活线)。点刻度跳轮次。容器不做鼠标
 /// 阻挡(卡要伸出容器右缘,挡了会吃掉消息区点击);点击阻挡下沉到
 /// 刻度行与卡本体。
+///
+/// **当前轮标记在 paint 相期逐帧绘制**(白色覆盖当前刻度线,读实时
+/// 滚动位):滚动每帧重绘列表与画布,标记零延迟跟手。此前走元素态
+/// (颜色烤进刻度元素),而滚动只重绘列表不重绘兄弟元素——高亮冻结,
+/// 事件回调口径与渲染口径在轮次边界互相打架又造成闪烁,实测双症状
 fn nav_ticks(
     store: &Entity<AppStore>,
     anchors: &[NavAnchor],
     track: Option<(f32, f32)>,
     ui: NavUiState,
+    list_state: gpui_kit::ListState,
 ) -> impl IntoElement {
-    let NavUiState {
-        current_key,
-        hovered,
-        ..
-    } = ui;
-    let current_key = current_key.as_deref();
+    let NavUiState { hovered } = ui;
     let (_, track_h) = match track {
         Some((top, bottom)) => (top, (bottom - top).max(0.)),
         None => (0., 0.),
@@ -479,20 +555,21 @@ fn nav_ticks(
     };
     let band_top = (track_h - (n.max(1) - 1) as f32 * pitch) / 2.;
     // hover 激活的刻度序号(锚点列表下标),渐变宽度按距离取
-    let hovered_ix = hovered.and_then(|slot| anchors.iter().position(|a| a.slot_ix == slot));
+    let hovered_ix = hovered;
     let tick = |i: usize, a: &NavAnchor, y_track: f32| {
         let slot = a.slot_ix;
+        let key = a.key.clone();
+        let card_key = key.clone();
         let sc = store.clone();
         let hh = store.clone();
-        let sel = format!("nav-point-{slot}");
-        let line_sel = format!("nav-line-{slot}");
+        let sel = format!("nav-point-{key}");
+        let line_sel = format!("nav-line-{key}");
         let dist = hovered_ix
             .map(|h| (h as i32 - i as i32).unsigned_abs() as usize)
             .unwrap_or(usize::MAX);
         let w = TICK_WIDTHS[dist.min(4)];
         let is_active = dist == 0;
-        let is_current = current_key == Some(a.key.as_str());
-        let color = if is_active || is_current {
+        let color = if is_active {
             theme::LABEL()
         } else {
             theme::TICK_IDLE()
@@ -501,7 +578,8 @@ fn nav_ticks(
         let mut el = div()
             .debug_selector(move || sel.clone())
             .id(gpui_kit::ElementId::Name(SharedString::from(format!(
-                "nav-point-{slot}"
+                "nav-point-{}",
+                key.replace(':', "_")
             ))))
             .absolute()
             .left_0()
@@ -515,15 +593,21 @@ fn nav_ticks(
             .block_mouse_except_scroll()
             .on_hover(move |entered, _, cx| {
                 if *entered {
-                    hh.update(cx, |st, cx| st.set_nav_hover(Some(slot), cx));
-                } else if hh.read(cx).chat.nav_hover == Some(slot) {
+                    hh.update(cx, |st, cx| st.set_nav_hover(Some(i), cx));
+                } else if hh.read(cx).chat.nav_hover == Some(i) {
                     // 移出即清(带守卫:先进入邻行/卡时不清,deferred 按
                     // 绘制序执行,enter 在后则守卫挡掉旧行的 exit)
                     hh.update(cx, |st, cx| st.set_nav_hover(None, cx));
                 }
             })
             .on_click(move |_, _, cx| {
-                sc.update(cx, |st, cx| st.jump_to_nav(slot, cx));
+                sc.update(cx, |st, cx| {
+                    // 全量加载后所有锚点都在列表内,slot 恒 Some(None
+                    // 分支是历史分页遗留,索引与投影瞬态不一致的兜底)
+                    if let Some(ix) = slot {
+                        st.jump_to_nav(ix, cx);
+                    }
+                });
             })
             .child(
                 div()
@@ -552,9 +636,13 @@ fn nav_ticks(
             // 绘制序,卡是行后代后画,指针从行移入卡不闪卡)
             let cc = store.clone();
             let mut card = div()
-                .debug_selector(move || format!("nav-card-{slot}"))
+                .debug_selector({
+                    let card_key = card_key.clone();
+                    move || format!("nav-card-{card_key}")
+                })
                 .id(gpui_kit::ElementId::Name(SharedString::from(format!(
-                    "nav-card-{slot}"
+                    "nav-card-{}",
+                    card_key.replace(':', "_")
                 ))))
                 .absolute()
                 .left(px(60.))
@@ -567,8 +655,8 @@ fn nav_ticks(
                 .block_mouse_except_scroll()
                 .on_hover(move |entered, _, cx| {
                     if *entered {
-                        cc.update(cx, |st, cx| st.set_nav_hover(Some(slot), cx));
-                    } else if cc.read(cx).chat.nav_hover == Some(slot) {
+                        cc.update(cx, |st, cx| st.set_nav_hover(Some(i), cx));
+                    } else if cc.read(cx).chat.nav_hover == Some(i) {
                         cc.update(cx, |st, cx| st.set_nav_hover(None, cx));
                     }
                 })
@@ -641,6 +729,46 @@ fn nav_ticks(
                 .enumerate()
                 .map(|(i, a)| tick(i, a, band_top + i as f32 * pitch)),
         )
+        // 当前轮标记(paint 相期):读实时滚动位选锚,白色 6×2 覆盖当前
+        // 刻度线(「变白不改长」)。每帧随滚动重绘 = 零延迟跟手、无
+        // notify 无闪烁。线左缘 24 与刻度行 pl(24) 同源
+        .child({
+            let marker_slots: Vec<Option<usize>> = anchors.iter().map(|a| a.slot_ix).collect();
+            gpui_kit::canvas(
+                move |_, _, _| marker_slots,
+                move |b, marker_slots, window, _| {
+                    let top = list_state.logical_scroll_top().item_ix;
+                    // 首锚之上(视口顶还没到第一个用户行)兜底首锚:
+                    // 标记常亮不灭(此前 None 直接不画 = 「偶尔灭掉」)
+                    let ix = crate::features::chat::projection::current_nav_ix(&marker_slots, top)
+                        .unwrap_or(0);
+                    // 坐标必须以画布 bounds 原点为基(容器在侧栏右侧,
+                    // 窗口绝对 x=24 会画进侧栏底下 = 标记「不亮」实测)
+                    let y = b.origin.y + px(band_top + ix as f32 * pitch);
+                    let x = b.origin.x + px(24.);
+                    #[cfg(test)]
+                    crate::features::chat::chat_pane::nav_marker_probe((
+                        top,
+                        ix,
+                        f32::from(x),
+                        f32::from(y),
+                        f32::from(b.origin.x),
+                        f32::from(b.size.width),
+                    ));
+                    let mut quad = gpui_kit::fill(
+                        gpui_kit::Bounds {
+                            origin: gpui_kit::point(x, y - px(1.)),
+                            size: gpui_kit::size(px(6.), px(2.)),
+                        },
+                        theme::LABEL(),
+                    );
+                    quad.corner_radii = gpui_kit::px(1.).into();
+                    window.paint_quad(quad);
+                },
+            )
+            .absolute()
+            .inset_0()
+        })
 }
 
 /// 注入行的展示头:从 `source` 派生 role 与 label。
@@ -1592,7 +1720,11 @@ fn assistant_block(
         .v_flex()
         .flex_shrink_0()
         .relative()
-        .max_w(col_w)
+        // 显式确定宽(非 max_w 约束):taffy 对 auto 宽祖先链的
+        // available-width 解析在测量/绘制两相可能不一致,TextView 按
+        // 更宽的 available 折行、按盒裁剪 → 行末字形缺失。钉死确定宽
+        // 后折行宽恒 = col_w − 右缘余量,与裁剪盒同源
+        .w(col_w)
         .gap(px(10.));
     if !reasoning.is_empty() {
         col = col.child(
@@ -1672,6 +1804,36 @@ fn assistant_block(
             .min_w(px(0.))
             .relative()
             .child(body_view)
+            // 宽度取证(LIUMA_PROBE=width):量 asst-body 实际盒宽与
+            // 横向位置(「右缘截断」只在真机平台 shape 显形,测试系统
+            // 不可复现;每 key 首帧记一次)
+            .when(
+                std::env::var_os("LIUMA_PROBE").is_some_and(|v| v == "width"),
+                |el| {
+                    el.child({
+                        let probe_key = key.clone();
+                        gpui_kit::canvas(
+                            move |b, _, _| {
+                                static N: std::sync::atomic::AtomicUsize =
+                                    std::sync::atomic::AtomicUsize::new(0);
+                                let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                if n < 400 {
+                                    eprintln!(
+                                        "[widthprobe] p{n} {} x={:.1} w={:.1} y={:.1}",
+                                        probe_key,
+                                        f32::from(b.origin.x),
+                                        f32::from(b.size.width),
+                                        f32::from(b.origin.y)
+                                    );
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0()
+                    })
+                },
+            )
             .when(streaming, |el| {
                 el.child(
                     div()
