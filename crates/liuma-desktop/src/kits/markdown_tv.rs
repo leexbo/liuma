@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 
 use gpui_kit::component::text::{TextView, TextViewState, TextViewStyle};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Entity, IntoElement, ParentElement as _, SharedString, StyleRefinement,
     Styled, div, px, relative,
@@ -36,6 +37,31 @@ fn styled_view(view: TextView) -> gpui_kit::AnyElement {
         // 维持——断链则 taffy 文本测量回落混合模式,真机平台 shape 报宽
         // 大于 wrapper 时行末整段被 overflow_hidden 剪进卡内空白带。
         .overflow_hidden()
+        // 布局取证(LIUMA_PROBE=layout):量 styled_view 自身盒宽,
+        // 与 asst-body(748)对比——若此处 > 748,断链在 asst-body 之下;
+        // 若 == 748,截断在 TextView 内部折行(上游 shape 缓存/测量)。
+        .when(
+            std::env::var_os("LIUMA_PROBE").is_some_and(|v| v == "layout"),
+            |el| {
+                el.child(div().absolute().inset_0().child(gpui_kit::canvas(
+                    move |bounds: gpui_kit::Bounds<gpui_kit::Pixels>, _, _| {
+                        static N: std::sync::atomic::AtomicUsize =
+                            std::sync::atomic::AtomicUsize::new(0);
+                        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if n <= 8 {
+                            eprintln!(
+                                "[probe-layout] tv-body x={} w={} right={}",
+                                f32::from(bounds.origin.x),
+                                f32::from(bounds.size.width),
+                                f32::from(bounds.origin.x) + f32::from(bounds.size.width)
+                            );
+                        }
+                    },
+                    |_, _, _, _| {},
+                )))
+            },
+        )
+        .relative()
         .child(view)
         .into_any_element()
 }
