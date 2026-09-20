@@ -13,7 +13,6 @@
 use std::collections::HashMap;
 
 use gpui_kit::component::text::{TextView, TextViewState, TextViewStyle};
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Entity, IntoElement, ParentElement as _, SharedString, StyleRefinement,
     Styled, div, px, relative,
@@ -33,40 +32,15 @@ fn styled_view(view: TextView) -> gpui_kit::AnyElement {
         // (悬浮滚动条在槽内,不在列上),内层再扣一份 = 正文比
         // composer 窄一截、右缘不齐
         //
-        // w_full:宽度锚(assistant_block 已 max_w(col_w))必须在此层
-        // 维持——断链则 taffy 文本测量回落混合模式,真机平台 shape 报宽
-        // 大于 wrapper 时行末整段被 overflow_hidden 剪进卡内空白带。
-        //
-        // pr 16:content box 收到可视宽 − 16——真机平台 shape 的折行/
-        // 绘制宽对盒宽存在正向偏差(红圈空白带 ≈ 90px 取证),收窄后
-        // 行末落在余量内,不再进 overflow_hidden 剪裁区。tv-body probe
-        // 应显示 732,验证 content box 传导。
+        // w_full + pr 16(真机「右缘截断」的根治,probe 定案):
+        // 宽度链双层锚定——assistant_block max_w(col_w) 锚卡,此层
+        // w_full 维持传导;缺任一层,TextView 的 content box 走 taffy
+        // 混合测量,macOS 平台 shape 的折行/绘制宽对盒宽存在 ~90px
+        // 正向偏差,行末被 overflow_hidden 剪进卡内空白带。pr 把
+        // content box 收到可视宽 − 16,行末落在余量内。probe 定案:
+        // asst-body = tv-body = col_w = 748(锚完好),pr 后截断消失。
         .overflow_hidden()
         .pr(px(16.))
-        // 布局取证(LIUMA_PROBE=layout):量 styled_view 自身盒宽,
-        // 与 asst-body(748)对比——若此处 > 748,断链在 asst-body 之下;
-        // 若 == 748,截断在 TextView 内部折行(上游 shape 缓存/测量)。
-        .when(
-            std::env::var_os("LIUMA_PROBE").is_some_and(|v| v == "layout"),
-            |el| {
-                el.child(div().absolute().inset_0().child(gpui_kit::canvas(
-                    move |bounds: gpui_kit::Bounds<gpui_kit::Pixels>, _, _| {
-                        static N: std::sync::atomic::AtomicUsize =
-                            std::sync::atomic::AtomicUsize::new(0);
-                        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if n <= 8 {
-                            eprintln!(
-                                "[probe-layout] tv-body x={} w={} right={}",
-                                f32::from(bounds.origin.x),
-                                f32::from(bounds.size.width),
-                                f32::from(bounds.origin.x) + f32::from(bounds.size.width)
-                            );
-                        }
-                    },
-                    |_, _, _, _| {},
-                )))
-            },
-        )
         .relative()
         .child(view)
         .into_any_element()
