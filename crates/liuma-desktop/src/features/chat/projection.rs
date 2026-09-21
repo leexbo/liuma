@@ -57,6 +57,9 @@ pub enum ChatNode {
         key: String,
         /// 正文
         text: String,
+        /// 正文版本号(text 每次突变 +1;流式 drive 帧首 O(1) 判「未变」
+        /// ——稳态帧原实现逐节点全文 memcmp,大会话每帧 O(全部正文字节))
+        text_ver: u32,
         /// 思考内容(Think 折叠行,点击展开)
         reasoning: String,
         /// 流式进行中
@@ -282,6 +285,12 @@ pub struct ChatState {
     /// 重试行退避截止时刻(直播帧到达时刻 + delayMs;渲染期推算剩余秒,
     /// 1s tick 只触发重绘)。纯 UI 元数据,不参与相等性;重放不记。
     pub retry_deadlines: std::collections::HashMap<String, std::time::Instant>,
+    /// 节点 key → nodes 下标索引(定位 O(1))。历史合并的 chunk 追加
+    /// 原为每次 `position` 线性扫,O(节点数 × 事件数) 二次复杂度——
+    /// 3k 节点 × 3 万 chunk ≈ 10⁸ 次 key 比较,是打开长会话主线程冻结
+    /// 的第二来源。节点只追加与就地改、无删除/重排(全文件变更面核查),
+    /// 索引随 push 维护即可,无需失效路径。
+    node_index: std::collections::HashMap<String, usize>,
     /// 历史合并中(born 不记录:载入的历史行不做入场动画;仅方法内瞬态)
     merging: bool,
 }
@@ -396,8 +405,12 @@ impl ChatState {
             "assistant/chunk" => {
                 let text = ev.data["chunk"]["text"].as_str().unwrap_or_default();
                 self.with_streaming_node(&ev.data, |node| {
-                    if let ChatNode::Assistant { text: t, .. } = node {
+                    if let ChatNode::Assistant {
+                        text: t, text_ver, ..
+                    } = node
+                    {
                         t.push_str(text);
+                        *text_ver = text_ver.wrapping_add(1);
                     }
                 });
             }
@@ -419,12 +432,14 @@ impl ChatState {
                 if let Some(ix) = self.position(&key)
                     && let ChatNode::Assistant {
                         text,
+                        text_ver,
                         reasoning,
                         streaming,
                         ..
                     } = &mut self.nodes[ix]
                 {
                     text.clear();
+                    *text_ver = text_ver.wrapping_add(1);
                     reasoning.clear();
                     *streaming = true;
                 }
@@ -477,6 +492,7 @@ impl ChatState {
                     Some(ix) => {
                         if let ChatNode::Assistant {
                             text: t,
+                            text_ver,
                             streaming,
                             usage: u,
                             message_id: mid,
@@ -485,6 +501,7 @@ impl ChatState {
                         {
                             if !text.is_empty() {
                                 *t = text;
+                                *text_ver = text_ver.wrapping_add(1);
                             }
                             *streaming = false;
                             if usage.is_some() {
@@ -499,6 +516,7 @@ impl ChatState {
                         self.push_node(ChatNode::Assistant {
                             key,
                             text,
+                            text_ver: 1,
                             reasoning: String::new(),
                             streaming: false,
                             usage,
@@ -576,7 +594,7 @@ impl ChatState {
             // cancelled 更新最后一个待批节点的状态(事件序保证配对)
             "plan/submitted" => {
                 let plan = ev.data["plan"].as_str().unwrap_or_default().to_string();
-                self.nodes.push(ChatNode::Plan {
+                self.push_indexed(ChatNode::Plan {
                     key: format!("plan:{}", ev.seq),
                     plan,
                     status: PlanStatus::Pending,
@@ -587,7 +605,7 @@ impl ChatState {
             "compaction/summary" => {
                 self.compact_running = false;
                 self.compact_queued = false;
-                self.nodes.push(ChatNode::Compaction {
+                self.push_indexed(ChatNode::Compaction {
                     key: format!("cpt:{}", ev.seq),
                     summary: ev.data["summary"].as_str().unwrap_or_default().to_string(),
                     items: ev.data["items"].as_u64(),
@@ -655,13 +673,23 @@ impl ChatState {
         }
     }
 
+    /// 尾部追加已定位的节点并登记 key 索引(调用方负责 key 去重语义)
+    fn push_indexed(&mut self, node: ChatNode) -> usize {
+        self.nodes.push(node);
+        let ix = self.nodes.len() - 1;
+        // node 已移入 nodes,借尾元素 key 登记(免额外克隆)
+        let key = self.nodes[ix].key().to_string();
+        self.node_index.insert(key, ix);
+        ix
+    }
+
     /// 尾部追加节点(key 去重:同 key 已存在则跳过——历史/直播重放幂等)
     pub(crate) fn push_node(&mut self, node: ChatNode) {
         if self.position(node.key()).is_some() {
             return;
         }
         self.record_born(node.key());
-        self.nodes.push(node);
+        self.push_indexed(node);
     }
 
     /// 记录节点出生(仅直播帧;历史合并载入的行不做入场动画)
@@ -680,22 +708,22 @@ impl ChatState {
             Some(ix) => ix,
             None => {
                 self.record_born(&key);
-                self.nodes.push(ChatNode::Assistant {
-                    key: key.clone(),
+                self.push_indexed(ChatNode::Assistant {
+                    key,
                     text: String::new(),
+                    text_ver: 0,
                     reasoning: String::new(),
                     streaming: true,
                     usage: None,
                     message_id: String::new(),
-                });
-                self.nodes.len() - 1
+                })
             }
         };
         f(&mut self.nodes[ix]);
     }
 
     fn position(&self, key: &str) -> Option<usize> {
-        self.nodes.iter().position(|n| n.key() == key)
+        self.node_index.get(key).copied()
     }
 
     // 回合用量摘要已退役(旧「耗时 · 首 token · tok/s」文本行):轮尾
@@ -2072,6 +2100,7 @@ mod tests {
         let mk = |text: &str, reasoning: &str, streaming: bool| ChatNode::Assistant {
             key: "a:1:1".into(),
             text: text.into(),
+            text_ver: 1,
             reasoning: reasoning.into(),
             streaming,
             usage: None,
@@ -2614,5 +2643,57 @@ mod tests {
         assert_eq!(t.chars().count(), 49, "超长首行截 48 + 省略号");
         let (_, p) = first_and_rest(&format!("标题\n{}", "正".repeat(300)));
         assert_eq!(p.chars().count(), 241, "预览截 240 + 省略号");
+    }
+
+    /// 节点 key 索引回归锁:多步交错流式的 chunk 各自命中正确节点,
+    /// 索引与线性扫描同答案,同日志双次 merge 幂等。原 `position`
+    /// 线性扫在万级节点 × 数万 chunk 下是 O(N²)(打开长会话主线程
+    /// 冻结的第二来源),索引化后答案不得漂移。
+    #[test]
+    fn node_index_agrees_with_linear_scan_and_merge_is_idempotent() {
+        // 60 步 × 每步 3 chunk 交错(交错保证定位跨已存在节点)
+        let mut evs: Vec<SessionEvent> = vec![ev("turn/start", 1, json!({ "turn": 1 }))];
+        let mut seq = 1u64;
+        let mut expect: Vec<(String, String)> = Vec::new();
+        for step in 1..=60u64 {
+            for part in ["一", "二", "三"] {
+                seq += 1;
+                evs.push(ev(
+                    "assistant/chunk",
+                    seq,
+                    json!({
+                        "turn": 1, "step": step,
+                        "chunk": { "type": "text-delta", "index": 0, "text": part },
+                    }),
+                ));
+            }
+            expect.push((format!("a:1:{step}"), "一二三".to_string()));
+        }
+        let mut state = ChatState::default();
+        for e in &evs {
+            state.apply(e);
+        }
+        // 每 chunk 落在各自 step 节点,全文按步拼接
+        for (key, text) in &expect {
+            let node = state.nodes.iter().find(|n| n.key() == key);
+            let ChatNode::Assistant { text: got, .. } = node.expect("节点存在") else {
+                panic!("{key} 不是 Assistant 节点");
+            };
+            assert_eq!(got, text, "{key} 正文拼接");
+        }
+        // 索引与线性扫描逐 key 同答案(不变式直锁)
+        for (ix, node) in state.nodes.iter().enumerate() {
+            assert_eq!(
+                state.node_index.get(node.key()),
+                Some(&ix),
+                "{} 索引下标漂移",
+                node.key()
+            );
+        }
+        // merge_history 与逐事件 apply 同结果(索引不改变回放语义;
+        // chunk 是增量 delta,重复 merge 本就叠加,不在此断言)
+        let mut merged = ChatState::default();
+        merged.merge_history(evs);
+        assert_eq!(merged.nodes, state.nodes, "merge 与 apply 等价");
     }
 }

@@ -4,7 +4,7 @@
 //! (chat_pane/composer/terminal/toolcard/todo_dock/context_meter);纯投影
 //! 与 UI 纯算法见 chat.rs / reference.rs。
 
-use crate::features::chat::QueuePlacement;
+use crate::features::chat::{NavAnchor, QueuePlacement};
 use gpui_kit::component::input::InputState;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -297,14 +297,35 @@ pub(crate) struct ChatStore {
     /// 聊天正文 TextView 流式注册表(渲染前 flush 驱动;见
     /// kits::markdown_tv)
     pub tv_streams: crate::kits::markdown_tv::TvStreamRegistry,
-    /// TextView 观察者订阅(异步解析落地 → 外层行重测;随会话清理)
+    /// TextView 观察者订阅(异步解析落地 → 置脏标记;随会话清理)
     pub tv_subs: Vec<gpui_kit::Subscription>,
+    /// 异步解析落地待重测标记(帧合并:同帧 N 次落地只付一次全量重测。
+    /// 原观察者每次落地立即 remeasure_items(0..n) + notify——打开初期
+    /// 滚动滚过未渲染长文时,每秒几十次全量重臂是掉帧直接来源)
+    pub tv_remeasure_dirty: bool,
+    /// 导航轨全量锚点缓存(签名守卫;nav_anchors_cached 读)。原 chat_pane
+    /// 渲染每帧全量重建——遍历全部行槽并为每条用户消息重造 title/preview
+    /// 字符串,长会话每帧固定成本随历史线性涨
+    pub(crate) nav_anchors_cache: Option<NavAnchorsCache>,
     /// 轮尾统计卡开态(用量/用时 pill 点击;点击坐标锚定,根级渲染)
     pub tail_card: Option<TailCard>,
     /// 轮号用量桶,键 = (会话 id, 轮号)。挂应用级 ChatStore 而非会话
     /// 投影:回填 RPC 与投影建立谁先到都不丢(投影重建不焚毁),重开
     /// 会话由冷读 turnList 再灌一次
     pub turn_usage: HashMap<(String, u64), serde_json::Value>,
+}
+
+/// 导航轨全量锚点缓存条目(签名 = (row_slots_sig, anchor_index.len(),
+/// chat_version);见 [`ChatStore::nav_anchors_cache`])
+pub(crate) struct NavAnchorsCache {
+    /// 行槽签名快照
+    pub sig: (usize, Option<String>, u64),
+    /// 全量锚点索引长度快照
+    pub anchor_count: usize,
+    /// 投影版本快照
+    pub version: u64,
+    /// 缓存的全量锚点
+    pub anchors: Vec<NavAnchor>,
 }
 
 /// 轮尾统计卡(用量/用时 pill 的详情弹层)
@@ -393,6 +414,8 @@ impl Default for ChatStore {
             mermaid_cards: HashMap::new(),
             tv_streams: crate::kits::markdown_tv::TvStreamRegistry::default(),
             tv_subs: Vec::new(),
+            tv_remeasure_dirty: false,
+            nav_anchors_cache: None,
         }
     }
 }
@@ -751,6 +774,13 @@ impl AppStore {
     /// (flush 伴生)。行数以 row_slots(派生行槽)为准,非 nodes 原始数
     pub fn sync_chat_list(&mut self, cx: &mut Context<Self>) {
         self.ensure_row_slots();
+        // 异步解析落地重测的帧合并消费点(须在任何提前 return 之前):
+        // 同帧 N 次落地只付一次全量重测,下一帧按真实高度布局
+        if self.chat.tv_remeasure_dirty {
+            self.chat.tv_remeasure_dirty = false;
+            let n = self.chat.chat_list.item_count();
+            self.chat.chat_list.remeasure_items(0..n);
+        }
         // TextView 流式驱动(渲染前 flush:前缀匹配 push_str 增量/漂移
         // set_text;幂等,文本未变零开销。须在任何提前 return 之前)。
         // 逐节点直读:整帧克隆全部正文(Vec<(String,String)>)在大会话
@@ -770,8 +800,14 @@ impl AppStore {
                 None => &[],
             };
             for node in nodes {
-                if let ChatNode::Assistant { key, text, .. } = node {
-                    match self.chat.tv_streams.drive(key, text, cx) {
+                if let ChatNode::Assistant {
+                    key,
+                    text,
+                    text_ver,
+                    ..
+                } = node
+                {
+                    match self.chat.tv_streams.drive(key, text, *text_ver, cx) {
                         crate::kits::markdown_tv::DriveOutcome::Created(state) => {
                             tv_created.push(state);
                             tv_touched = true;
@@ -790,13 +826,12 @@ impl AppStore {
             let start = n.saturating_sub(2);
             self.chat.chat_list.remeasure_items(start..n);
         }
-        // 新视图挂观察者:异步解析落地 → 全量重测(历史批量载入被
-        // schedule_chat_remeasure 的 250ms 防抖收敛为一次)
+        // 新视图挂观察者:异步解析落地 → 置脏 + notify,重测在下一帧
+        // sync_chat_list 帧首合并消费(同帧 N 次落地只付一次全量重测;
+        // 原每次落地立即 remeasure_items(0..n),打开初期滚动是 N 连发)
         for state in tv_created {
             let sub = cx.observe(&state, |host, _state, cx| {
-                // 异步解析落地:全行重臂测量,下一帧按真实高度布局
-                let n = host.chat.chat_list.item_count();
-                host.chat.chat_list.remeasure_items(0..n);
+                host.chat.tv_remeasure_dirty = true;
                 cx.notify();
             });
             self.chat.tv_subs.push(sub);
@@ -863,6 +898,36 @@ impl AppStore {
         }
         self.chat.row_slots = build_row_slots(nodes, &self.chat.open_turns);
         self.chat.row_slots_sig = Some(sig);
+    }
+
+    /// 导航轨全量锚点(缓存读;签名 = (row_slots_sig, anchor_index.len(),
+    /// chat_version),与 ensure_row_slots 的守卫同构)。命中免每帧全行槽
+    /// 扫描 + 逐用户消息 title/preview 字符串重建——长会话稳态渲染每帧
+    /// O(历史) 的固定成本。流式期 version 逐帧失效(与缓存前同价),
+    /// 稳态滚动/静态帧 O(1)。
+    pub(crate) fn nav_anchors_cached(&mut self) -> Vec<NavAnchor> {
+        let sig = self.chat.row_slots_sig.clone().unwrap_or((0, None, 0));
+        let version = self.chat.chat_version;
+        let anchor_count = self.chat.anchor_index.len();
+        if let Some(cached) = &self.chat.nav_anchors_cache
+            && cached.sig == sig
+            && cached.anchor_count == anchor_count
+            && cached.version == version
+        {
+            return cached.anchors.clone();
+        }
+        let anchors = crate::features::chat::projection::nav_anchors_full(
+            &self.chat.row_slots,
+            self.current_nodes(),
+            &self.chat.anchor_index,
+        );
+        self.chat.nav_anchors_cache = Some(NavAnchorsCache {
+            sig,
+            anchor_count,
+            version,
+            anchors: anchors.clone(),
+        });
+        anchors
     }
 
     /// 视口锚:非钉底时取视口顶槽的稳定 key 与项内偏移(重建后据此恢复);
@@ -1695,7 +1760,7 @@ impl AppStore {
             .and_then(|s| s.parse::<u64>().ok());
         match self.bridge.host().fork_session(session_id, at_seq) {
             Ok(new_id) => {
-                self.refresh_list();
+                self.refresh_list(cx);
                 self.open_session(&new_id, cx);
             }
             Err(e) => self.push_local_notice(&format!("分支失败:{}", e.message), cx),

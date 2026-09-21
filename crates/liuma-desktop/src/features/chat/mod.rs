@@ -15,7 +15,7 @@ mod toolcard;
 
 pub(crate) mod queue_dock;
 pub(crate) use projection::{
-    ChatNode, ChatState, PlanStatus, QueueEntry, QueuePlacement, parse_queue_items,
+    ChatNode, ChatState, NavAnchor, PlanStatus, QueueEntry, QueuePlacement, parse_queue_items,
 };
 // RowSlot 仅测试(layout_tests 行槽形状断言)直接引用
 #[cfg(test)]

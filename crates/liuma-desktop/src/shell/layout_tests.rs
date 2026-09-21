@@ -54,6 +54,7 @@ fn workspace_chat_nodes_do_not_overlap(cx: &mut TestAppContext) {
                 chat.nodes.push(ChatNode::Assistant {
                     key: format!("a:1:{i}"),
                     text: big_md(&format!("消息{}", i)),
+                    text_ver: 1,
                     reasoning: long_para(i + 1),
                     streaming: false,
                     usage: None,
@@ -668,7 +669,7 @@ fn at_completion_rows_truncate_and_cap(cx: &mut TestAppContext) {
         let id = host.create_session(Some(format!("s-at-{i:02}")), None, None);
         host.rename(&id, &title(i)).expect("rename 失败");
     }
-    cx.update(|app| store.update(app, |st, _| st.refresh_list()));
+    cx.update(|app| store.update(app, |st, cx| st.refresh_list(cx)));
     // 聚焦 composer 输入「@」,触发补全(Change → update_at_completion)
     let bounds = wcx
         .debug_bounds("composer-hit")
@@ -2304,6 +2305,7 @@ fn chat_body_text_is_drag_selectable(cx: &mut TestAppContext) {
             chat.nodes.push(ChatNode::Assistant {
                 key: "a:0:0".into(),
                 text: "这是一段可被选择复制的助手正文内容。".into(),
+                text_ver: 1,
                 reasoning: String::new(),
                 streaming: false,
                 usage: None,
@@ -3080,7 +3082,9 @@ fn session_menu_renders_at_root(cx: &mut TestAppContext) {
         cx.update(|_: &mut gpui_kit::App| {});
         cx.run_until_parked();
     };
-    let btn = wcx.debug_bounds("session-menu-btn").expect("标题栏 ⋯ 钮缺失");
+    let btn = wcx
+        .debug_bounds("session-menu-btn")
+        .expect("标题栏 ⋯ 钮缺失");
     click_sel(&mut wcx, "session-menu-btn");
     redraw(cx, &mut wcx);
     let card = wcx.debug_bounds("session-menu-card").expect("菜单卡未渲染");
@@ -3136,7 +3140,7 @@ fn session_menu_archives_current_session(cx: &mut TestAppContext) {
         store.update(app, |st, cx| {
             let s2 = st.bridge.host().create_session(None, None, None);
             let s3 = st.bridge.host().create_session(None, None, None);
-            st.refresh_list();
+            st.refresh_list(cx);
             st.open_session(&s3, cx);
             (s2, s3)
         })
@@ -3214,7 +3218,9 @@ fn session_row_archive_button(cx: &mut TestAppContext) {
         .expect("前置:当前会话在场");
     // 再建一个旁观会话(非当前),按 id 几何定位其行右缘归档钮
     let s2 = cx.update(|app| {
-        store.update(app, |st, _| st.bridge.host().create_session(None, None, None))
+        store.update(app, |st, _| {
+            st.bridge.host().create_session(None, None, None)
+        })
     });
     redraw(cx, &mut wcx);
     let s2_sel: &'static str = Box::leak(format!("session-row-{s2}").into_boxed_str());
@@ -5590,7 +5596,10 @@ fn sidebar_view_options_menu(cx: &mut TestAppContext) {
     click_sel(&mut wcx, "header-btn-1");
     cx.run_until_parked();
     wcx.refresh().expect("刷新失败");
-    assert!(wcx.debug_bounds("view-menu-card").is_some(), "视图菜单未渲染");
+    assert!(
+        wcx.debug_bounds("view-menu-card").is_some(),
+        "视图菜单未渲染"
+    );
     assert!(
         wcx.debug_bounds("view-item-view-group-ws").is_some(),
         "按工作区项应渲染"
@@ -5881,6 +5890,7 @@ fn turn_tail_pills_open_detail_cards(cx: &mut TestAppContext) {
             chat.nodes.push(crate::features::chat::ChatNode::Assistant {
                 key: "a:1:1".into(),
                 text: "答复".into(),
+                text_ver: 1,
                 reasoning: String::new(),
                 streaming: false,
                 usage: None,
@@ -6999,6 +7009,7 @@ fn chat_scroll_survives_window_width_change(cx: &mut TestAppContext) {
             chat.nodes.push(ChatNode::Assistant {
                 key: format!("a:1:{i}"),
                 text: big_md(&format!("消息{}", i)),
+                text_ver: 1,
                 reasoning: long_para(i + 1),
                 streaming: false,
                 usage: None,
@@ -7356,6 +7367,7 @@ fn turn_group_collapse_expand_roundtrip(cx: &mut TestAppContext) {
             chat.nodes.push(ChatNode::Assistant {
                 key: "a:1:1".into(),
                 text: String::new(),
+                text_ver: 0,
                 reasoning: "思考中".into(),
                 streaming: false,
                 usage: None,
@@ -7466,6 +7478,7 @@ fn collapsed_turn_has_no_gap_before_notice(cx: &mut TestAppContext) {
                 chat.nodes.push(ChatNode::Assistant {
                     key: format!("a:1:{s}"),
                     text: format!("Step {s} narration text, a bit longer to take space."),
+                    text_ver: 1,
                     reasoning: format!("thinking {s}"),
                     streaming: false,
                     usage: None,
@@ -7485,6 +7498,7 @@ fn collapsed_turn_has_no_gap_before_notice(cx: &mut TestAppContext) {
             chat.nodes.push(ChatNode::Assistant {
                 key: "a:1:61".into(),
                 text: "最终答复:测试失败,结论如下。".into(),
+                text_ver: 1,
                 reasoning: String::new(),
                 streaming: false,
                 usage: None,
@@ -7711,6 +7725,7 @@ fn composer_aligns_with_message_column(cx: &mut TestAppContext) {
             chat.nodes.push(ChatNode::Assistant {
                 key: "a:1:1".into(),
                 text: "正文".into(),
+                text_ver: 1,
                 reasoning: String::new(),
                 streaming: false,
                 usage: None,
@@ -7763,6 +7778,7 @@ fn nav_rail_show_hover_card_and_jump(cx: &mut TestAppContext) {
                 chat.nodes.push(ChatNode::Assistant {
                     key: format!("a:{t}:1"),
                     text: String::new(),
+                    text_ver: 0,
                     reasoning: "思考".into(),
                     streaming: false,
                     usage: None,
@@ -7772,6 +7788,7 @@ fn nav_rail_show_hover_card_and_jump(cx: &mut TestAppContext) {
                 chat.nodes.push(ChatNode::Assistant {
                     key: format!("a:{t}:2"),
                     text: "答案".repeat(160),
+                    text_ver: 1,
                     reasoning: String::new(),
                     streaming: false,
                     usage: None,
@@ -8590,6 +8607,7 @@ fn chat_history_assistant_body_visible(cx: &mut TestAppContext) {
             chat.nodes.push(ChatNode::Assistant {
                 key: "a:0:1".into(),
                 text: big,
+                text_ver: 1,
                 reasoning: String::new(),
                 streaming: false,
                 usage: None,
@@ -8730,13 +8748,14 @@ fn tv_wrap_width_matches_container(cx: &mut TestAppContext) {
             chat.nodes.push(crate::features::chat::ChatNode::Assistant {
                 key: key.into(),
                 text: md.into(),
+                text_ver: 1,
                 reasoning: String::new(),
                 streaming: false,
                 usage: None,
                 message_id: "m1".into(),
             });
             // 走 drive 装配 TextViewState
-            st.chat.tv_streams.drive(key, md, cx);
+            st.chat.tv_streams.drive(key, md, 1, cx);
         });
     });
     let mut body = None;
@@ -8791,6 +8810,7 @@ fn cross_domain_drag_selection_stays_in_chat(cx: &mut TestAppContext) {
             chat.nodes.push(ChatNode::Assistant {
                 key: "a:sel:0".into(),
                 text: ASST_MARK.into(),
+                text_ver: 1,
                 reasoning: String::new(),
                 streaming: false,
                 usage: None,
@@ -8890,6 +8910,7 @@ fn chat_drag_across_user_bubbles_excludes_textview_body(cx: &mut TestAppContext)
                     chat.nodes.push(ChatNode::Assistant {
                         key: key.into(),
                         text,
+                        text_ver: 1,
                         reasoning: String::new(),
                         streaming: false,
                         usage: None,
@@ -9020,6 +9041,7 @@ fn row_slots_sig_skips_text_only_rebuild(cx: &mut TestAppContext) {
             chat.nodes.push(ChatNode::Assistant {
                 key: "a:1:1".into(),
                 text: "答".into(),
+                text_ver: 1,
                 reasoning: String::new(),
                 streaming: true,
                 usage: None,
@@ -9344,6 +9366,7 @@ fn back_to_bottom_button_tracks_scroll(cx: &mut TestAppContext) {
             chat.nodes.push(ChatNode::Assistant {
                 key: format!("a:1:{i}"),
                 text: big_md(&format!("消息{}", i)),
+                text_ver: 1,
                 reasoning: long_para(i + 1),
                 streaming: false,
                 usage: None,

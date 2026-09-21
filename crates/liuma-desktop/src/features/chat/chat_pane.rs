@@ -99,14 +99,8 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
     // 几行的短会话不值得一条轨;viewport 未布局时为 0,守卫跳过)。
     // 当前位置标记在 paint 相期逐帧绘制(见 nav_ticks),不走元素态
     let (nav_anchors_vec, show_nav_rail) = {
-        let st = store.read(cx);
-        // 全量锚点:已加载(nav_anchors)+ 未加载(anchor_index 索引,
-        // 点击向前分页覆盖后跳转)——左侧轨恒显示全部轮次
-        let anchors = crate::features::chat::projection::nav_anchors_full(
-            &st.chat.row_slots,
-            st.current_nodes(),
-            &st.chat.anchor_index,
-        );
+        // 全量锚点走签名缓存(nav_anchors_cached;稳态帧免全量重建)
+        let anchors = store.update(cx, |s, _| s.nav_anchors_cached());
         let vp_h = f32::from(list_state.viewport_bounds().size.height);
         let scrollable = f32::from(list_state.max_offset_for_scrollbar().y);
         let show = !anchors.is_empty() && vp_h > 0. && scrollable > vp_h * 0.25;

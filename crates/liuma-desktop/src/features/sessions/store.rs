@@ -83,11 +83,17 @@ impl AppStore {
         // 渲染(refresh_stats 异步回填与下一次 sync 前尤其可见)
         self.chat.tv_streams.clear();
         self.chat.tv_subs.clear();
+        // 旧会话晚到落地的重测标记一并焚毁:新列表刚吃 60px uniform
+        // hint,残留脏标记会在下一帧触发 0..n 全量重测 = 打开优化破功
+        self.chat.tv_remeasure_dirty = false;
+        self.chat.nav_anchors_cache = None;
         self.chat.anchor_index.clear();
         self.chat.row_slots.clear();
         self.chat.row_slots_sig = None;
         self.sync_active_workspace_from_current();
-        self.refresh_session_cfg(id);
+        // 配置异步回填:permission fold 大日志,同步跑主线程冻结切换瞬间
+        // (见 shell::AppStore::refresh_session_cfg)
+        self.refresh_session_cfg(id, cx);
         // 统计异步回填:冷路径全量折叠大日志,同步跑 GPUI 线程会
         // 冻结切换瞬间(见 shell::AppStore::refresh_stats)
         self.refresh_stats(id, cx);
@@ -177,7 +183,7 @@ impl AppStore {
     pub fn create_session(&mut self, cx: &mut Context<Self>) {
         let ws = self.non_default_workspace();
         let id = self.bridge.host().create_session(None, None, ws);
-        self.refresh_list();
+        self.refresh_list(cx);
         self.open_session(&id, cx);
     }
 
@@ -204,7 +210,7 @@ impl AppStore {
                     Some(ws.to_string())
                 };
                 let id = self.bridge.host().create_session(None, None, target);
-                self.refresh_list();
+                self.refresh_list(cx);
                 self.open_session(&id, cx);
             }
         }
@@ -294,7 +300,7 @@ impl AppStore {
             Some(ws.to_string())
         };
         let id = self.bridge.host().create_session(None, None, target);
-        self.refresh_list();
+        self.refresh_list(cx);
         self.open_session(&id, cx);
     }
 
@@ -352,8 +358,11 @@ impl AppStore {
         pos: gpui_kit::Point<gpui_kit::Pixels>,
         cx: &mut Context<Self>,
     ) {
-        self.sessions.session_menu_pos =
-            if self.sessions.session_menu_pos.is_some() { None } else { Some(pos) };
+        self.sessions.session_menu_pos = if self.sessions.session_menu_pos.is_some() {
+            None
+        } else {
+            Some(pos)
+        };
         cx.notify();
     }
 
@@ -415,13 +424,18 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 移除工作区(默认工作区拒绝;当前工作区被移除 → 切回首会话/新建)
+    /// 移除工作区(默认工作区拒绝;当前工作区被移除 → 切回首会话/新建)。
+    /// 刷新已异步化:同 archive,本地先同步剔除被移除工作区的会话
     pub fn remove_workspace(&mut self, name: &str, cx: &mut Context<Self>) {
         match self.bridge.host().remove_workspace(name) {
             Ok(()) => {
                 self.sessions.menu_open_ws = None;
                 self.refresh_workspaces();
-                self.refresh_list();
+                let default = self.default_workspace();
+                self.state
+                    .sessions
+                    .retain(|s| reducer::workspace_of(&s.session_id, &default) != name);
+                self.refresh_list(cx);
                 if self.state.active_workspace.as_deref() == Some(name) {
                     self.state.active_workspace =
                         self.bridge.host().workspace_names().first().cloned();
@@ -471,7 +485,7 @@ impl AppStore {
                 match self.bridge.host().rename_workspace(&ws, &title) {
                     Ok(()) => {
                         self.refresh_workspaces();
-                        self.refresh_list();
+                        self.refresh_list(cx);
                     }
                     Err(e) => self.push_local_notice(&format!("重命名失败:{}", e.message), cx),
                 }
@@ -484,7 +498,7 @@ impl AppStore {
         };
         if !title.is_empty() && self.bridge.host().rename(&id, &title).is_ok() {
             self.state.titles.insert(id.clone(), title);
-            self.refresh_list();
+            self.refresh_list(cx);
         }
         self.sessions.rename_target = None;
         cx.notify();
@@ -500,17 +514,20 @@ impl AppStore {
     pub fn fork(&mut self, id: &str, cx: &mut Context<Self>) {
         match self.bridge.host().fork_session(id, None) {
             Ok(new_id) => {
-                self.refresh_list();
+                self.refresh_list(cx);
                 self.open_session(&new_id, cx);
             }
             Err(e) => self.push_local_notice(&format!("分叉失败:{}", e.message), cx),
         }
     }
 
-    /// 归档会话(当前会话被归档 → 打开剩余首个,无则新建)
+    /// 归档会话(当前会话被归档 → 打开剩余首个,无则新建)。
+    /// 刷新已异步化:切走判定不得依赖尚未回填的清单,本地先同步剔除
+    /// 被归档项(回填后以宿主清单为权威)
     pub fn archive(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.bridge.host().archive_session(id).is_ok() {
-            self.refresh_list();
+            self.state.sessions.retain(|s| s.session_id != id);
+            self.refresh_list(cx);
             if self.state.current_id.as_deref() == Some(id) {
                 match self.state.sessions.first().map(|s| s.session_id.clone()) {
                     Some(next) => self.open_session(&next, cx),

@@ -75,36 +75,48 @@ pub(crate) enum DriveOutcome {
 /// 流式驱动注册表(挂 ChatStore;渲染前 flush 驱动,渲染闭包只读)
 #[derive(Default)]
 pub(crate) struct TvStreamRegistry {
-    /// 节点 key → (state, 已同步文本记账;TextViewState 无 text
-    /// getter,记账由本层维护)
-    map: HashMap<String, (Entity<TextViewState>, String)>,
+    /// 节点 key → (state, 已同步文本记账, 正文版本号;TextViewState 无
+    /// text getter,记账由本层维护。ver 来自 ChatNode::Assistant.text_ver,
+    /// 未变节点 O(1) 短路——原稳态帧逐节点全文 memcmp,大会话每帧
+    /// O(全部正文字节))
+    map: HashMap<String, (Entity<TextViewState>, String, u32)>,
 }
 
 impl TvStreamRegistry {
-    /// 渲染前 flush 驱动:前缀匹配 → push_str 增量;文本漂移(回退/
-    /// 重写)→ set_text 全量;新 key → 建状态。幂等(无变化零开销)。
+    /// 渲染前 flush 驱动:版本号 O(1) 判未变;前缀匹配 → push_str 增量;
+    /// 文本漂移(回退/重写)→ set_text 全量;新 key → 建状态。幂等。
     /// 返回结果类别(新建视图须挂观察者:异步解析落地会改变高度,
     /// 外层虚拟化列表的行高缓存不会自愈)
-    pub(crate) fn drive(&mut self, key: &str, text: &str, cx: &mut App) -> DriveOutcome {
+    pub(crate) fn drive(
+        &mut self,
+        key: &str,
+        text: &str,
+        text_ver: u32,
+        cx: &mut App,
+    ) -> DriveOutcome {
         match self.map.get_mut(key) {
-            Some((state, last)) => {
+            Some((state, last, last_ver)) => {
+                // 稳态帧:版本号未动 = 文本未变(版本号只在 text 突变点
+                // 自增,O(1);len 判等不可靠,等长漂移会漏)
+                if *last_ver == text_ver {
+                    return DriveOutcome::None;
+                }
                 if text.len() > last.len() && text.starts_with(last.as_str()) {
                     let delta = text[last.len()..].to_string();
                     state.update(cx, |s, cx| s.push_str(&delta, cx));
                     last.push_str(&delta);
+                    *last_ver = text_ver;
                     return DriveOutcome::Updated;
                 }
-                if text != last {
-                    state.update(cx, |s, cx| s.set_text(text, cx));
-                    *last = text.to_string();
-                    return DriveOutcome::Updated;
-                }
-                DriveOutcome::None
+                state.update(cx, |s, cx| s.set_text(text, cx));
+                *last = text.to_string();
+                *last_ver = text_ver;
+                DriveOutcome::Updated
             }
             None => {
                 let state = cx.new(|cx| TextViewState::markdown(text, cx));
                 self.map
-                    .insert(key.to_string(), (state.clone(), text.to_string()));
+                    .insert(key.to_string(), (state.clone(), text.to_string(), text_ver));
                 DriveOutcome::Created(state)
             }
         }
@@ -119,7 +131,7 @@ impl TvStreamRegistry {
         compose: impl FnOnce(TextView) -> TextView,
     ) -> gpui_kit::AnyElement {
         let view = match self.map.get(key) {
-            Some((state, _)) => compose(TextView::new(state)),
+            Some((state, _, _)) => compose(TextView::new(state)),
             None => compose(TextView::markdown(
                 SharedString::from(key.to_string()),
                 fallback_text,
@@ -473,9 +485,9 @@ mod tests {
             .collect();
         let pick = |want: usize| *boundaries.iter().find(|b| **b >= want).expect("边界存在");
         let mut prev_h = 0.0f32;
-        for want in [8usize, 20, 45, 70, target.len()] {
+        for (round, want) in [8usize, 20, 45, 70, target.len()].into_iter().enumerate() {
             let part = target[..pick(want)].to_string();
-            view.update(cx, |v, cx| v.reg.drive("k", &part, cx));
+            view.update(cx, |v, cx| v.reg.drive("k", &part, round as u32 + 1, cx));
             cx.refresh().expect("刷新失败");
             cx.run_until_parked();
             let h = cx

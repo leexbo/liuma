@@ -596,7 +596,7 @@ impl AppStore {
 
     fn run_effect(&mut self, effect: Effect, cx: &mut Context<Self>) {
         match effect {
-            Effect::Sessions => self.refresh_list(),
+            Effect::Sessions => self.refresh_list(cx),
             Effect::HostInfo => {
                 self.state.host_info = self.bridge.describe();
                 // 工作区增减连带路径/分支表
@@ -626,9 +626,25 @@ impl AppStore {
         }
     }
 
-    /// 重拉会话清单
-    pub fn refresh_list(&mut self) {
-        self.state.sessions = self.bridge.host().list_sessions();
+    /// 异步重拉会话清单(Effect::Sessions / 增删改会话等触发面)。
+    /// list_sessions 对全清单逐文件读盘派生 blank/标题,同步跑 GPUI
+    /// 线程在大会话清单上可感知卡顿(归档/分叉等动作瞬间恰在读长文);
+    /// 照 refresh_stats 先例经 bridge 上 tokio,回包 update+notify 回填,
+    /// 期间沿用旧清单。host 侧另有 stat 缓存收敛重复读放大
+    pub fn refresh_list(&mut self, cx: &mut Context<Self>) {
+        let store = cx.entity().clone();
+        let host = self.bridge.host().clone();
+        let rx = self.bridge.call(async move { host.list_sessions() });
+        cx.spawn(async move |_this, cx| {
+            let items = rx.await;
+            store.update(cx, |s, cx| {
+                if let Ok(items) = items {
+                    s.state.sessions = items;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// 异步拉会话统计(打开会话/状态边沿)。session_stats 冷路径
@@ -700,18 +716,34 @@ impl AppStore {
 
     // ── 会话配置(composer 下拉)───────────────────────────────
 
-    /// 拉/刷新会话配置缓存(同步四 getter;open_session 与设置成功后)
-    pub fn refresh_session_cfg(&mut self, id: &str) {
-        let host = self.bridge.host();
-        self.session_cfg_by_id.insert(
-            id.to_string(),
-            SessionCfg {
-                model: host.session_model(id),
-                permission: host.session_permission(id),
-                effort: host.session_effort(id),
-                preset: host.session_preset(id),
-            },
-        );
+    /// 异步拉/刷新会话配置缓存(open_session 与设置成功后)。四 getter
+    /// 中 permission/approval 需 fold 会话日志——同步跑 GPUI 线程时冷
+    /// 路径整读整解析 JSONL,大会话切换瞬间冻结;照 refresh_stats 先例
+    /// 经 bridge 上 tokio,回包按 id 落位(晚到回包落的是有效缓存项,
+    /// 无串扰),缺失期间渲染走 current_cfg_or_default 回落形态。
+    pub fn refresh_session_cfg(&mut self, id: &str, cx: &mut Context<Self>) {
+        let store = cx.entity().clone();
+        let host = self.bridge.host().clone();
+        let sid = id.to_string();
+        let rx = self.bridge.call(async move {
+            let cfg = SessionCfg {
+                model: host.session_model(&sid),
+                permission: host.session_permission(&sid),
+                effort: host.session_effort(&sid),
+                preset: host.session_preset(&sid),
+            };
+            (sid, cfg)
+        });
+        cx.spawn(async move |_this, cx| {
+            let landed = rx.await;
+            store.update(cx, |s, cx| {
+                if let Ok((sid, cfg)) = landed {
+                    s.session_cfg_by_id.insert(sid, cfg);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// 当前会话配置展示值(缓存缺失时回落宿主默认形态)
@@ -773,7 +805,7 @@ impl AppStore {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(TIP_DELAY_MS))
                 .await;
-            let _ = store.update(cx, |st, cx| {
+            store.update(cx, |st, cx| {
                 if st.header_tip_gen == tip_gen {
                     st.header_tip = Some((text.into(), bounds));
                     cx.notify();
@@ -1052,7 +1084,7 @@ impl AppStore {
         if let Err(e) = f(self.bridge.host(), &id) {
             self.push_local_notice(&format!("切换失败:{}", e.message), cx);
         } else {
-            self.refresh_session_cfg(&id);
+            self.refresh_session_cfg(&id, cx);
         }
         self.chat.composer_menu = ComposerMenu::None;
         self.hero_menu = HeroMenu::None;
