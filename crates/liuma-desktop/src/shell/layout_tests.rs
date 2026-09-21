@@ -9090,3 +9090,113 @@ fn real_log_full_load_direct_anchor_and_stable_scrollbar(cx: &mut TestAppContext
     assert!(l3 >= 0.95, "钉底后逻辑比例应≈1: {l3}");
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// 回底钮回归锁:离开底部(滚轮上滚,未跟随尾行)时按钮出现,
+/// 滚回底部后消失。可见性走滚动回调的翻转缓存 + 渲染期权威
+/// at_bottom() 双保险(初排瞬态 is_following_tail=false 不得误显)。
+#[gpui_kit::test]
+fn back_to_bottom_button_tracks_scroll(cx: &mut TestAppContext) {
+    use gpui_kit::{ScrollDelta, ScrollWheelEvent};
+    cx.update(|app| {
+        gpui_kit::component::init(app);
+        crate::kits::theme::init(app);
+    });
+    allow_host_parking(cx);
+    let root = std::env::temp_dir().join(format!("liuma-desktop-b2b-{}", std::process::id()));
+    let (bridge, _rx) = HostBridge::new_at(root.join("ws"), true, "", Some(root.join("sessions")))
+        .expect("桥构建失败");
+
+    let store_cell = std::rc::Rc::new(std::cell::RefCell::new(None::<gpui_kit::Entity<AppStore>>));
+    let store_capture = store_cell.clone();
+    let (_view, wcx) = cx.add_window_view(|window, cx| {
+        let store = cx.new(|cx| AppStore::new(bridge, cx));
+        // 滚动回调在 attach_window_state 安装(生产同路径)
+        store.update(cx, |s, cx| s.attach_window_state(window, cx));
+        let id = store
+            .read(cx)
+            .state
+            .current_id
+            .clone()
+            .expect("启动后有当前会话");
+        let mut chat = ChatState::default();
+        // 足够滚两屏的内容
+        for i in 0..28usize {
+            if i % 4 == 0 {
+                chat.nodes.push(ChatNode::User {
+                    key: format!("user:{i}"),
+                    text: long_para(i),
+                    images: Vec::new(),
+                    files: Vec::new(),
+                });
+            }
+            chat.nodes.push(ChatNode::Assistant {
+                key: format!("a:1:{i}"),
+                text: big_md(&format!("消息{}", i)),
+                reasoning: long_para(i + 1),
+                streaming: false,
+                usage: None,
+                message_id: format!("mid-{i}"),
+            });
+        }
+        store.update(cx, |s, _| {
+            s.state.chats.insert(id, chat);
+        });
+        *store_capture.borrow_mut() = Some(store.clone());
+        WorkspaceView::new(store, cx)
+    });
+    let mut wcx = wcx.clone();
+    wcx.refresh().expect("窗口刷新失败");
+    cx.run_until_parked();
+    let store = store_cell.borrow().clone().expect("store 未捕获");
+
+    // 全量测高(直调同款)后滚动距离可信
+    cx.update(|app| {
+        store.update(app, |s, cx| s.remeasure_chat_list(cx));
+    });
+    wcx.refresh().expect("窗口刷新失败");
+    cx.run_until_parked();
+
+    let scroll = |wcx: &mut gpui_kit::VisualTestContext, dy: f32| {
+        let cc = wcx
+            .debug_bounds("content-card")
+            .expect("content-card bounds 缺失");
+        wcx.simulate_event(ScrollWheelEvent {
+            position: gpui_kit::point(
+                cc.origin.x + cc.size.width / 2.,
+                cc.origin.y + cc.size.height / 2.,
+            ),
+            delta: ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(dy))),
+            ..Default::default()
+        });
+        wcx.run_until_parked();
+    };
+
+    // 初始钉底:按钮不在场
+    assert!(
+        wcx.debug_bounds("back-to-bottom").is_none(),
+        "钉底时回底钮不应显示"
+    );
+
+    // 上滚离开底部:按钮出现 + 缓存翻假
+    scroll(&mut wcx, 1500.);
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("back-to-bottom").is_some(),
+        "上滚后回底钮应出现"
+    );
+    assert!(
+        !cx.update(|app| store.read(app).chat.at_bottom_ui),
+        "滚动回调应翻转缓存"
+    );
+
+    // 大幅下滚回底部:按钮消失
+    scroll(&mut wcx, -20000.);
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("back-to-bottom").is_none(),
+        "回到底部后回底钮应消失"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}

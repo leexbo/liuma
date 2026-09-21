@@ -224,6 +224,10 @@ pub(crate) struct ChatStore {
     /// 列宽重排代次(每次调度 +1;settle 比对当前代,过期任务直接返回)
     col_w_gen: u64,
     pub pinned: bool,
+    /// 回底钮可见性缓存(滚动回调写入):true = 在底部(钮隐藏)。滚动
+    /// 事件每 tick 一次,只在翻转时 notify——不守卫即每 tick 全 pane
+    /// 重渲染(可见项含 markdown 重建)= 滚动卡顿
+    pub(crate) at_bottom_ui: bool,
     /// 消息流版本号(每次当前会话事件 +1;渲染侧比对驱动滚动)
     pub chat_version: u64,
     /// 渲染侧已消费的消息流版本(render 回写)
@@ -355,6 +359,7 @@ impl Default for ChatStore {
             col_w_reflow: None,
             col_w_gen: 0,
             pinned: true,
+            at_bottom_ui: true,
             chat_version: 0,
             rendered_version: 0,
             composer_menu: ComposerMenu::None,

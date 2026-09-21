@@ -287,6 +287,24 @@ impl AppStore {
         self.start_billing_tick(cx);
         // 模型探测兜底(挂窗一次):清单缺席的 provider 静默拉 /models
         self.ensure_models_probed(cx);
+        // 回底钮滚动跟手(挂窗一次):gpui list 滚动只 notify 列表视图,
+        // 兄弟元素(回底钮)不重渲染——可见性会滞留在旧状态直到下一次
+        // 无关 notify。滚动事件自带 `is_following_tail`(列表自身跟随
+        // 态),与缓存比对,仅翻转时 notify。**不得在此 handler 内读
+        // ListState**:handler 在其内部 borrow_mut 期间被调,会
+        // BorrowMut panic(实测教训)
+        let scroll_store = cx.entity().downgrade();
+        self.chat.chat_list.set_scroll_handler(move |ev, _, cx| {
+            scroll_store
+                .update(cx, |s, cx| {
+                    let at_bottom = ev.is_following_tail;
+                    if s.chat.at_bottom_ui != at_bottom {
+                        s.chat.at_bottom_ui = at_bottom;
+                        cx.notify();
+                    }
+                })
+                .ok();
+        });
         // 剪贴板快捷键 App 级拦截(挂窗一次)。gpui 分发序 = interceptor
         // → key binding → 元素 listener;输入框的 Paste/Copy binding 在
         // 第二步就消费掉 cmd-v/cmd-c,元素级 capture 与 Root on_action

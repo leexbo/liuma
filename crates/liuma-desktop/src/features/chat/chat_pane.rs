@@ -135,6 +135,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
 
     // 手动压缩状态行(/compact 受理 → 终局事件清位;瞬态不入节点):
     // 排队(回合进行中受理,驱动等 turn 间隙)与进行两态
+    let has_run_status = run_status.is_some();
     let (compact_queued, compact_running) = {
         let st = store.read(cx);
         match st
@@ -410,6 +411,48 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 ui,
                 list_state.clone(),
             ))
+        })
+        // 回底钮:离开底部时出现,右下角悬浮(与 composer 发送钮同
+        // 列)。可见性读
+        // 权威的 at_bottom()(实时);at_bottom_ui 只是滚动回调的
+        // notify 去重缓存,初排瞬态事件翻转它时不代表真实位置
+        // 运行态上移让位「深入探索中…」状态行(它在下方正常流中)
+        .when(!store.read(cx).at_bottom(), |el| {
+            let s = store.clone();
+            let lift = if has_run_status { 44. } else { 16. };
+            el.child(
+                div()
+                    .id("back-to-bottom")
+                    .debug_selector(|| "back-to-bottom".to_string())
+                    .absolute()
+                    .bottom(px(lift))
+                    // 右下角:离卡片右缘留出呼吸间隙
+                    .right(px(28.))
+                    .flex()
+                    .size(px(28.))
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .bg(theme::DOCK())
+                    .border_1()
+                    .border_color(theme::BORDER_2())
+                    .shadow_sm()
+                    .cursor_pointer()
+                    // 挡点击不挡滚轮:悬浮于滚动区上,滚轮要穿透
+                    .block_mouse_except_scroll()
+                    .hover(|s| s.opacity(0.85))
+                    .on_click(move |_, _, cx| {
+                        s.update(cx, |st, cx| {
+                            st.chat.pinned = true;
+                            st.chat.chat_list.scroll_to(gpui_kit::ListOffset {
+                                item_ix: usize::MAX,
+                                offset_in_item: px(0.),
+                            });
+                            cx.notify();
+                        });
+                    })
+                    .child(fixed(IconName::ArrowDown, 12.).text_color(theme::LABEL())),
+            )
         })
 }
 
