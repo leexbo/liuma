@@ -42,7 +42,7 @@ use crate::settings::{
     json_percent,
 };
 use crate::stats;
-use crate::translate::{Page, ProviderInfo, Translator, paginate, translate_events};
+use crate::translate::{ProviderInfo, Translator};
 
 /// 任意会话(真实 / fake 双臂;liuma-app Session 是泛型,非 trait 对象)
 enum AnySession {
@@ -608,6 +608,12 @@ pub struct AppHost {
     /// 会话 → 重命名标题(持久化 .liuma/titles.json;优先于首条投影)。
     /// LLM 语义标题(4b)也写入此映射——手动 rename 随时覆盖,二者不冲突。
     titles: std::sync::RwLock<HashMap<String, String>>,
+    /// 清单派生事实缓存(日志路径 → stat 指纹 + 派生值)。
+    /// list_sessions 对每个日志全文 read_to_string 仅为 blank 判定 +
+    /// 首条标题提取,桌面 13 个触发面高频重拉——稳态 13 次 × 全清单
+    /// 全文件读放大为 N 次 stat。stat 未变直接复用;append 即 len/mtime
+    /// 变化自然失效
+    list_cache: std::sync::Mutex<HashMap<PathBuf, ListFacts>>,
     /// LLM 标题生成中的会话集(去重:并发 turn 启动的重复生成只一个在跑;
     /// 以 in-flight 集合实现生成结果的覆盖/替换语义)
     title_gen_inflight: std::sync::Mutex<std::collections::HashSet<String>>,
@@ -851,12 +857,57 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// 从会话日志文件读全部事件(供权限 fold;无/损坏 = None)。
-/// 冷重放与 live 同源:权限值一律读盘,不依赖附着态。
+/// 从会话日志文件读全部事件(测试断言用;生产 fold 走
+/// [`with_session_events`] 借用路径,不克隆快照)。
+#[cfg(test)]
 fn load_envelopes(path: &Path) -> Option<Vec<EventEnvelope>> {
     liuma_app::load_log(path.to_str()?)
         .ok()
         .map(|log| log.iter().cloned().collect())
+}
+
+/// 清单派生事实(stat 指纹 + 由日志全文派生的 blank/标题;见
+/// [`AppHost::list_cache`])
+struct ListFacts {
+    len: u64,
+    mtime: std::time::SystemTime,
+    blank: bool,
+    log_title: Option<String>,
+}
+
+/// 单次全文读取派生 blank/标题(仅缓存 miss 与 stat 失败旁路走此路径)
+fn derive_list_facts(log: &Path) -> (bool, Option<String>) {
+    let text = std::fs::read_to_string(log).unwrap_or_default();
+    let blank = !text.contains("\"turn/start\"");
+    let log_title = text
+        .lines()
+        .find(|l| l.contains("\"user/message\""))
+        .and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .and_then(|v| v["data"]["content"].as_str().map(str::to_owned));
+    (blank, log_title)
+}
+
+/// 权限 fold 数据源:驻留日志优先(锁内借用,零克隆零读盘——切回已驻留
+/// 会话不再整档重解析),冷会话整读一次(借用 fold,不克隆快照)。
+/// 两源同语义:append 先落盘后入内存(盘不落后于内存),repair 只补
+/// tool/result、turn/end 类事件,不触碰权限 knob。
+/// `f` 对事件切片 fold;None = 会话不存在或日志不可读。
+fn with_session_events<T>(
+    host: &AppHost,
+    id: &str,
+    f: impl FnOnce(&[EventEnvelope]) -> T,
+) -> Option<T> {
+    // 驻留快路径:不触发装配(get_slot 非 attach),冷会话自然 miss
+    if let Some(slot) = host.get_slot(id)
+        && let Ok(inner) = slot.inner()
+    {
+        let log = inner.log.lock_recover();
+        return Some(f(log.iter().as_slice()));
+    }
+    // 冷路径:load_log 一次,直接借用 fold
+    let path = host.slot_path(id);
+    let log = liuma_app::load_log(path.to_str()?).ok()?;
+    Some(f(log.iter().as_slice()))
 }
 
 /// 会话血缘 header 文件路径(会话目录下;存 parent/origin)
@@ -1303,6 +1354,7 @@ impl AppHost {
             preset_overrides: std::sync::RwLock::new(HashMap::new()),
             effort_overrides: std::sync::RwLock::new(HashMap::new()),
             titles: std::sync::RwLock::new(titles),
+            list_cache: std::sync::Mutex::new(HashMap::new()),
             title_gen_inflight: std::sync::Mutex::new(std::collections::HashSet::new()),
             fake_title: std::sync::Mutex::new(None),
             mux,
@@ -1939,6 +1991,31 @@ impl AppHost {
         }
     }
 
+    /// 会话日志锁内借用执行 f(附着 = 活日志借用;冷会话 = load_log
+    /// 一次借用 fold,不克隆快照)。fold 型消费方(stats/锚点/轨迹/
+    /// 事件读)都是借用读,临界区内无 await(std::sync::Mutex);
+    /// 代价是运行中会话 fold 期间短暂阻塞 append(纯计数 fold 毫秒级)。
+    /// Err = 会话不存在/日志不可读。
+    fn with_session_log<T>(
+        &self,
+        id: &str,
+        f: impl FnOnce(&[EventEnvelope]) -> Result<T, RpcError>,
+    ) -> Result<T, RpcError> {
+        if let Some(slot) = self.get_slot(id)
+            && let Some(inner) = slot.inner.get()
+        {
+            let l = inner.log.lock_recover();
+            return f(l.iter().as_slice());
+        }
+        let path = self.slot_path(id);
+        if !path.exists() {
+            return Err(RpcError::session_not_found(id));
+        }
+        let log = liuma_app::load_log(&path.display().to_string())
+            .map_err(|e| RpcError::internal(format!("日志重载失败:{e}")))?;
+        f(log.iter().as_slice())
+    }
+
     /// session.trajectory:轨迹台账(记录尾窗 + 全量请求清单)。
     /// 分页按记录 index:before_index 给定时返回更早一窗(「加载更早」)。
     pub fn session_trajectory(
@@ -1976,31 +2053,40 @@ impl AppHost {
             }
             return Ok(page);
         }
-        let data = crate::trajectory::fold_trajectory(&self.session_log(id)?);
-        Ok(crate::trajectory::page_of(data, max_records, before_index))
+        let page = self.with_session_log(id, |log| {
+            Ok(crate::trajectory::page_of(
+                crate::trajectory::fold_trajectory(log),
+                max_records,
+                before_index,
+            ))
+        })?;
+        Ok(page)
     }
 
     /// session.stats:轮/步/LLM 与工具时长/首 token/速率/缓存/tokens/上下文占用,
     /// 另带 turnList(全部完成轮桶,桌面按轮号喂历史轮尾用量)。
     /// 全量 fold 与直播推送([`stats::StatsAgg`])共用同一 apply 逻辑;
-    /// 冷读(打开会话/丢帧自愈)走此路径,直播增量见 driver_loop
+    /// 冷读(打开会话/丢帧自愈)走此路径,直播增量见 driver_loop。
+    /// 锁内借用 fold,不克隆日志快照(原 session_log 路径深克隆全档)。
     pub fn session_stats(&self, id: &str) -> Result<Value, RpcError> {
-        let log = self.session_log(id)?;
-        let mut agg = stats::StatsAgg::with_retained_turns();
-        for ev in &log {
-            agg.apply(&ev.r#type, ev.time, &ev.data);
-        }
-        let breakdown = crate::context::context_breakdown(log.iter());
         let provider_label = self.provider_for(&self.resolve_session(id).0).id.clone();
-        Ok(agg.to_json_full(
-            stats::Breakdown {
-                system_tokens: breakdown.system_tokens,
-                tools_tokens: breakdown.tools_tokens,
-                message_tokens: breakdown.message_tokens,
-            },
-            self.session_context_window(id),
-            &provider_label,
-        ))
+        let ctx_window = self.session_context_window(id);
+        self.with_session_log(id, |log| {
+            let mut agg = stats::StatsAgg::with_retained_turns();
+            for ev in log {
+                agg.apply(&ev.r#type, ev.time, &ev.data);
+            }
+            let breakdown = crate::context::context_breakdown(log.iter());
+            Ok(agg.to_json_full(
+                stats::Breakdown {
+                    system_tokens: breakdown.system_tokens,
+                    tools_tokens: breakdown.tools_tokens,
+                    message_tokens: breakdown.message_tokens,
+                },
+                ctx_window,
+                &provider_label,
+            ))
+        })
     }
 
     /// 工作区 liuma.toml 显式配置(合并序中设置层的上位;读失败视为无)
@@ -2045,7 +2131,7 @@ impl AppHost {
     }
 
     /// 会话当前访问模式(fold 会话日志最后一个 sandbox/mode;无则默认
-    /// workspace-write)。可重放:从会话日志读,跨重启/子代理一致。
+    /// workspace-write)。可重放:驻留日志优先,冷会话读盘,跨重启/子代理一致。
     pub fn session_permission(&self, id: &str) -> String {
         self.session_sandbox_mode(id).to_string()
     }
@@ -2063,20 +2149,19 @@ impl AppHost {
             .unwrap_or(liuma_compaction::DEFAULT_CONTEXT_WINDOW)
     }
 
-    /// 会话当前 sandbox 模式(fold 磁盘会话日志;无则默认 workspace-write)。
+    /// 会话当前 sandbox 模式(fold 会话日志,驻留优先/冷读盘;无则默认
+    /// workspace-write)。原实现每次整读整解析磁盘 JSONL——桌面切换会话
+    /// 时它跑在 GPUI 主线程,大会话是秒级冻结的来源之一。
     fn session_sandbox_mode(&self, id: &str) -> &'static str {
-        match load_envelopes(&self.slot_path(id)) {
-            Some(events) => crate::permission::sandbox_mode_of(&events),
-            None => crate::permission::DEFAULT_SANDBOX_MODE,
-        }
+        with_session_events(self, id, crate::permission::sandbox_mode_of)
+            .unwrap_or(crate::permission::DEFAULT_SANDBOX_MODE)
     }
 
-    /// 会话当前审批策略(fold 磁盘会话日志;无则默认 ask)。
+    /// 会话当前审批策略(fold 会话日志,驻留优先/冷读盘;无则默认 ask)。
     pub fn session_approval(&self, id: &str) -> String {
-        match load_envelopes(&self.slot_path(id)) {
-            Some(events) => crate::permission::approval_policy_of(&events).to_string(),
-            None => crate::permission::DEFAULT_APPROVAL_POLICY.to_string(),
-        }
+        with_session_events(self, id, crate::permission::approval_policy_of)
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::permission::DEFAULT_APPROVAL_POLICY.to_string())
     }
 
     /// 会话当前 preset(覆盖 > 工作区 liuma.toml > 设置工作区默认 > standard)
@@ -3415,15 +3500,42 @@ impl AppHost {
                     .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
-                let text = std::fs::read_to_string(&log).unwrap_or_default();
-                let blank = !text.contains("\"turn/start\"");
-                // title 投影:重命名 > 首条 user/message 内容(60 字)
-                let title = self.session_title(&id).or_else(|| {
-                    text.lines()
-                        .find(|l| l.contains("\"user/message\""))
-                        .and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-                        .and_then(|v| v["data"]["content"].as_str().map(str::to_owned))
+                let text_meta = log.metadata().ok().and_then(|m| {
+                    let len = m.len();
+                    let mtime = m.modified().ok()?;
+                    Some((len, mtime))
                 });
+                // 派生事实(blank/日志侧标题)经 stat 缓存:全文读仅为
+                // 「contains turn/start + 首条 user/message 标题」,清单
+                // 高频重拉下是主要读放大;stat 未变直接复用
+                let derived = match text_meta {
+                    Some((len, mtime)) => {
+                        let mut cache = self.list_cache.lock_recover();
+                        match cache.get(&log) {
+                            Some(facts) if facts.len == len && facts.mtime == mtime => {
+                                (facts.blank, facts.log_title.clone())
+                            }
+                            _ => {
+                                let (blank, log_title) = derive_list_facts(&log);
+                                cache.insert(
+                                    log.clone(),
+                                    ListFacts {
+                                        len,
+                                        mtime,
+                                        blank,
+                                        log_title: log_title.clone(),
+                                    },
+                                );
+                                (blank, log_title)
+                            }
+                        }
+                    }
+                    // stat 失败的病态路径:原样即时读(缓存旁路)
+                    None => derive_list_facts(&log),
+                };
+                let (blank, log_title) = derived;
+                // title 投影:重命名 > 首条 user/message 内容(60 字)
+                let title = self.session_title(&id).or(log_title);
                 let projections = title.map(|t| Projections {
                     // 清单场景不统计 seq(0 = 未统计,客户端只读 values.title)
                     as_of_seq: 0,
@@ -4303,76 +4415,74 @@ impl AppHost {
         before: usize,
         after: usize,
     ) -> Result<Value, RpcError> {
-        let events = self.session_log(id)?;
-        let Some(ix) = events.iter().position(|ev| ev.seq == seq) else {
-            return Err(RpcError::bad_request("事件不存在(seq 越界)"));
-        };
-        let ev = &events[ix];
-        let summarize =
-            |e: &liuma_session::EventEnvelope| json!({ "seq": e.seq, "type": e.r#type });
-        let before_events: Vec<Value> = events[..ix]
-            .iter()
-            .rev()
-            .take(before)
-            .rev()
-            .map(summarize)
-            .collect();
-        let after_events: Vec<Value> = events[ix + 1..].iter().take(after).map(summarize).collect();
-        Ok(json!({
-            "session": id,
-            "event": { "seq": ev.seq, "type": ev.r#type, "data": ev.data },
-            "before": before_events,
-            "after": after_events,
-        }))
+        self.with_session_log(id, |events| {
+            let Some(ix) = events.iter().position(|ev| ev.seq == seq) else {
+                return Err(RpcError::bad_request("事件不存在(seq 越界)"));
+            };
+            let ev = &events[ix];
+            let summarize =
+                |e: &liuma_session::EventEnvelope| json!({ "seq": e.seq, "type": e.r#type });
+            let before_events: Vec<Value> = events[..ix]
+                .iter()
+                .rev()
+                .take(before)
+                .rev()
+                .map(summarize)
+                .collect();
+            let after_events: Vec<Value> =
+                events[ix + 1..].iter().take(after).map(summarize).collect();
+            Ok(json!({
+                "session": id,
+                "event": { "seq": ev.seq, "type": ev.r#type, "data": ev.data },
+                "before": before_events,
+                "after": after_events,
+            }))
+        })
     }
 
     /// 单事件溯源(session_event_trace):归因链(sourceEventSeqs)
     /// + 事件基础面
     pub fn event_trace(&self, id: &str, seq: u64) -> Result<Value, RpcError> {
-        let events = self.session_log(id)?;
-        let Some(ev) = events.iter().find(|ev| ev.seq == seq) else {
-            return Err(RpcError::bad_request("事件不存在(seq 越界)"));
-        };
-        let sources: Vec<Value> = ev
-            .source_event_seqs
-            .as_deref()
-            .unwrap_or(&[])
-            .iter()
-            .filter_map(|sseq| {
-                events
-                    .iter()
-                    .find(|e| e.seq == *sseq)
-                    .map(|e| json!({ "seq": e.seq, "type": e.r#type }))
-            })
-            .collect();
-        Ok(json!({
-            "session": id,
-            "seq": ev.seq,
-            "type": ev.r#type,
-            "sourceEventSeqs": ev.source_event_seqs.clone().unwrap_or_default(),
-            "sources": sources,
-        }))
+        self.with_session_log(id, |events| {
+            let Some(ev) = events.iter().find(|ev| ev.seq == seq) else {
+                return Err(RpcError::bad_request("事件不存在(seq 越界)"));
+            };
+            let sources: Vec<Value> = ev
+                .source_event_seqs
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|sseq| {
+                    events
+                        .iter()
+                        .find(|e| e.seq == *sseq)
+                        .map(|e| json!({ "seq": e.seq, "type": e.r#type }))
+                })
+                .collect();
+            Ok(json!({
+                "session": id,
+                "seq": ev.seq,
+                "type": ev.r#type,
+                "sourceEventSeqs": ev.source_event_seqs.clone().unwrap_or_default(),
+                "sources": sources,
+            }))
+        })
     }
 
     /// 会话轮次锚点全量索引:扫日志提取 user/message(真实用户,排除
     /// 注入上下文)的 (seq, 首行摘要)——左侧锚点栏显示**全量轮次**,
-    /// 与聊天列表的分页进度无关。附着为懒加载,内存日志直扫(大会话
-    /// 一次 O(n),调用方走后台线程)。轻量只读方法,同步返回。
+    /// 与聊天列表的分页进度无关。附着为懒加载,内存日志锁内直扫(大会话
+    /// 一次 O(n),调用方走后台线程;借用扫描,不克隆日志快照)。轻量只读方法,同步返回。
     pub fn session_anchor_index(
         self: &Arc<Self>,
         session_id: &str,
     ) -> Result<Vec<(u64, String)>, RpcError> {
         let slot = self.attach(session_id)?;
         let inner = slot.inner()?;
-        let log_snapshot: Vec<EventEnvelope> = {
-            let l = inner
-                .log
-                .lock()
-                .map_err(|_| RpcError::internal("log 锁中毒"))?;
-            l.iter().cloned().collect()
-        };
+        let l = inner.log.lock_recover();
+        let log_slice = l.iter().as_slice();
         let mut out = Vec::new();
-        for ev in &log_snapshot {
+        for ev in log_slice {
             if ev.r#type != "user/message" {
                 continue;
             }
@@ -4405,7 +4515,7 @@ impl AppHost {
         Ok(out)
     }
 
-    /// session.history:附着(懒)→ 活日志快照 → 翻译 + 分页 + 投影
+    /// session.history:附着(懒)→ 锁内窗口定位 + 窗口翻译(零克隆)
     pub async fn history(
         self: &Arc<Self>,
         session_id: &str,
@@ -4414,37 +4524,31 @@ impl AppHost {
     ) -> Result<HistoryValue, RpcError> {
         let slot = self.attach(session_id)?;
         let inner = slot.inner()?;
-        let log_snapshot: Vec<EventEnvelope> = {
-            let l = inner
-                .log
-                .lock()
-                .map_err(|_| RpcError::internal("log 锁中毒"))?;
-            l.iter().cloned().collect()
+        // 锁内零克隆:原实现整份快照 clone-out(深克隆全部 data Value,
+        // 大会话 = 数倍会话体积的瞬时分配)+ 全量翻译后才分页;现窗口
+        // 定位 + 窗口翻译都在锁内借用完成(临界区无 await)。全量路径
+        // (max_messages 取大数)翻译仍 O(全量) 但零克隆。
+        let l = inner.log.lock_recover();
+        let log_slice = l.iter().as_slice();
+        let cut = crate::translate::page_cut(log_slice, before_seq, max_messages);
+        let provider = ProviderInfo {
+            provider: self.base.dialect.clone(),
+            model: self.session_model(session_id),
         };
-        let translated = translate_events(
-            &ProviderInfo {
-                provider: self.base.dialect.clone(),
-                model: self.session_model(session_id),
-            },
-            &log_snapshot,
-        );
-        let Page {
-            events,
-            has_more,
-            cut,
-        } = paginate(&translated, before_seq, max_messages.max(1));
-        let high_water = log_snapshot.len() as u64;
-        let title = self
-            .session_title(session_id)
-            .or_else(|| title_of(&log_snapshot));
-        Ok(HistoryValue {
-            events: events
+        let events: Vec<HistoryEntry> =
+            crate::translate::translate_window(&provider, log_slice, cut, before_seq)
                 .into_iter()
                 .map(|event| HistoryEntry { event, view: None })
-                .collect(),
-            has_more,
+                .collect();
+        let high_water = l.high_water();
+        // title 仅真实存在时下发(None = 无标题,客户端回落占位):
+        // 重命名 > 日志侧首条投影
+        let title = self
+            .session_title(session_id)
+            .or_else(|| title_of(log_slice));
+        Ok(HistoryValue {
+            has_more: cut > 0,
             cut,
-            // title 仅真实存在时下发(None = 无标题,客户端回落占位)
             projections: title.map(|t| Projections {
                 as_of_seq: if high_water == 0 {
                     -1
@@ -4453,6 +4557,7 @@ impl AppHost {
                 },
                 values: json!({ "title": t }),
             }),
+            events,
         })
     }
 
@@ -9755,6 +9860,55 @@ mod tests {
         assert!(!ws2.join("s-legacy.jsonl").exists());
     }
 
+    /// 清单派生事实缓存(list_cache):stat 未变复用同值;文件变化
+    /// (append,len/mtime 变)后 blank/标题随之刷新——缓存不得固化
+    /// 旧事实。空白会话追加 turn/start + user/message 的演进即覆盖两条
+    /// 派生路径(blank 翻转 + 标题从无到有)。
+    #[tokio::test]
+    async fn list_sessions_cache_refreshes_on_append() {
+        let host = temp_host("listcache");
+        let proj = proj_dir(&host, &host.workspace);
+        std::fs::create_dir_all(proj.join("c")).unwrap();
+        std::fs::write(proj.join("c").join("session.jsonl"), "").unwrap();
+
+        // 初次:空白(blank=true,无日志侧标题);二次命中缓存同值
+        let first = host.list_sessions();
+        let s = first.iter().find(|s| s.session_id == "c").unwrap();
+        assert!(s.blank);
+        assert!(s.projections.is_none());
+        let second = host.list_sessions();
+        let s2 = second.iter().find(|s| s.session_id == "c").unwrap();
+        assert!(s2.blank && s2.projections.is_none(), "缓存命中同值");
+
+        // append(turn/start + user/message):len/mtime 变化 → 缓存失效,
+        // blank 翻转、标题出现;再拉一次(命中新缓存)仍一致
+        let mut line = String::new();
+        line.push_str(
+            "{\"type\":\"turn/start\",\"seq\":1,\"time\":0,\"data\":{},\"ignorable\":false}\n",
+        );
+        line.push_str(
+            "{\"type\":\"user/message\",\"seq\":2,\"time\":0,\"data\":{\"content\":\"缓存后标题\"},\"ignorable\":false}\n",
+        );
+        std::fs::write(proj.join("c").join("session.jsonl"), &line).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let after = host.list_sessions();
+        let s3 = after.iter().find(|s| s.session_id == "c").unwrap();
+        assert!(!s3.blank, "append 后 blank 翻转");
+        let t = s3
+            .projections
+            .as_ref()
+            .and_then(|p| p.values["title"].as_str());
+        assert_eq!(t, Some("缓存后标题"), "append 后标题刷新");
+        let again = host.list_sessions();
+        let s4 = again.iter().find(|s| s.session_id == "c").unwrap();
+        assert_eq!(s3.blank, s4.blank);
+        assert_eq!(
+            s3.projections.as_ref().map(|p| p.values["title"].clone()),
+            s4.projections.as_ref().map(|p| p.values["title"].clone()),
+            "新缓存命中同值"
+        );
+    }
+
     /// setter 落盘工作区默认,重启(重建宿主)后冷会话沿用。
     /// 权限不再走工作区默认(已迁日志 fold),此处只验 model/preset/effort。
     #[tokio::test]
@@ -9972,6 +10126,29 @@ mod tests {
             "ask",
             "无 approval 事件默认 ask"
         );
+    }
+
+    /// 权限 fold 双源一致:驻留日志快路径与纯磁盘 fold 不得漂移。
+    /// session_permission/approval 驻留优先(get_slot 命中即锁内借用),
+    /// 回归锁比对同一时刻的磁盘 fold 值——两源读到的权限事件恒同
+    /// (append 先落盘后入内存;repair 不触碰权限 knob)。
+    #[tokio::test]
+    async fn permission_resident_and_disk_fold_agree() {
+        let host = temp_host("perm-dual");
+        let id = host.create_session(None, None, None);
+        host.set_permission(&id, "full-access").await.unwrap();
+        host.set_approval(&id, "never").await.unwrap();
+        assert_eq!(
+            wait_log_sandbox(&host, &id, "full-access").await,
+            "full-access"
+        );
+        // 驻留快路径(会话已 attach,get_slot 命中)
+        assert_eq!(host.session_permission(&id), "full-access");
+        assert_eq!(host.session_approval(&id), "never");
+        // 纯磁盘 fold(测试辅助,不经驻留态)对表
+        assert_eq!(session_sandbox_of(&host, &id), "full-access");
+        let disk = load_envelopes(&host.session_log_path(&id)).unwrap();
+        assert_eq!(crate::permission::approval_policy_of(&disk), "never");
     }
 
     /// 运行中切权限不再被拒:工具执行时动态 fold 日志,无重装配依赖,

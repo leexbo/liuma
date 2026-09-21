@@ -72,6 +72,35 @@ impl Translator {
         }
     }
 
+    /// 窗口预热:仅推进 turn/step/last_usage 三个状态字段,不构造任何
+    /// 输出 Value。[`translate_window`] 对 cut 之前的信封跑本方法——
+    /// 状态机判据与 [`Self::translate`] 同款,保证窗口翻译输出与
+    /// 「全量翻译」逐字节一致(last_usage 跨窗附着语义含在内:turn N
+    /// 尾的 request-done 在全量翻译里同样会附着到下一轮首条
+    /// assistant/message)。
+    fn prime(&mut self, ev: &EventEnvelope) {
+        match ev.r#type.as_str() {
+            "turn/start" => {
+                self.turn += 1;
+                self.step = 0;
+            }
+            "step/start" => self.step += 1,
+            "audit/call"
+                if ev.data["boundary"].as_str() == Some("llm")
+                    && ev.data["operation"].as_str() == Some("request-done") =>
+            {
+                let detail = &ev.data["detail"];
+                let usage = &detail["usage"];
+                self.last_usage = Some(json!({
+                    "durationMs": detail["durationMs"].as_i64().unwrap_or(0),
+                    "ttftMs": usage["ttftMs"].as_i64(),
+                    "outputTokens": usage["output_tokens"].as_u64(),
+                }));
+            }
+            _ => {}
+        }
+    }
+
     /// 单事件翻译;None = 按表丢弃(goal/audit/plan 落档等内部词汇)
     pub fn translate(&mut self, ev: &EventEnvelope) -> Option<SessionEvent> {
         let out = match ev.r#type.as_str() {
@@ -406,6 +435,62 @@ pub fn translate_events<'a>(
         .into_iter()
         .filter_map(|ev| tr.translate(ev))
         .collect()
+}
+
+/// 尾窗边界定位(信封层,零克隆零 Value 解析)。判据与 [`paginate`]
+/// 的客方 surface 语义对齐:user/message(排除注入行 source.kind !=
+/// "user")与 assistant/message 计入;translated 的 source_event_seqs
+/// 恒为合成值 `vec![ev.seq]`,故边界即消息信封自身的 seq(勿用信封
+/// 持久字段)。从 before_seq 窗口上界向尾数到第 max_messages 条消息。
+pub fn page_cut(events: &[EventEnvelope], before_seq: Option<u64>, max_messages: usize) -> u64 {
+    let mut count = 0usize;
+    for ev in events.iter().rev() {
+        if before_seq.is_some_and(|b| ev.seq >= b) {
+            continue;
+        }
+        let surface = match ev.r#type.as_str() {
+            "assistant/message" => true,
+            "user/message" => {
+                !(ev.data["source"].is_object() && ev.data["source"]["kind"] != "user")
+            }
+            _ => false,
+        };
+        if surface {
+            count += 1;
+            if count >= max_messages.max(1) {
+                return ev.seq;
+            }
+        }
+    }
+    0
+}
+
+/// 尾窗翻译:cut 之前仅 [`Translator::prime`] 预热(零输出构造),
+/// (cut, before_seq) 窗口内的事件与全量翻译同表逐条翻译。输出与
+/// 「[`translate_events`] 全量 + [`paginate`] 截窗」逐字节一致(差分
+/// 回归锁),翻译分配从 O(全量) 收敛到 O(窗口)。事件序保证 seq 升序,
+/// 越过 before_seq 上界即整段跳出。
+pub fn translate_window<'a>(
+    provider: &ProviderInfo,
+    events: impl IntoIterator<Item = &'a EventEnvelope>,
+    cut: u64,
+    before_seq: Option<u64>,
+) -> Vec<SessionEvent> {
+    let mut tr = Translator::new(provider.clone());
+    let mut out = Vec::new();
+    for ev in events {
+        if before_seq.is_some_and(|b| ev.seq >= b) {
+            break;
+        }
+        if ev.seq > cut {
+            if let Some(e) = tr.translate(ev) {
+                out.push(e);
+            }
+        } else {
+            tr.prime(ev);
+        }
+    }
+    out
 }
 
 // ── history 分页(api-proxy paginate 语义) ───────────────────────────
@@ -954,6 +1039,159 @@ mod tests {
         assert!(page.has_more);
         assert_eq!(page.events[2].ty, "user/message");
         assert_eq!(page.events[2].data["content"][0]["text"], "q2");
+    }
+
+    // ── 窗口翻译(page_cut + translate_window 差分回归锁) ────────────
+
+    /// 确定性伪随机生成多 turn 日志:含注入行、audit request-done、
+    /// tool 链、软取消。老路径(全量翻译 + paginate)与新路径
+    /// (page_cut + translate_window)输出必须逐字节一致,且 cut 同源。
+    /// 锁死窗口判据三陷阱:合成 source_event_seqs(= 信封 seq,非持久
+    /// 字段)、注入行不计数、last_usage 跨窗附着。
+    fn synthetic_log() -> Vec<EventEnvelope> {
+        // LCG 确定性伪随机(不依赖系统随机,Wasm 同规)
+        let mut seed = 0x5EED_u64;
+        let mut rand = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) % 100
+        };
+        let mut events = Vec::new();
+        let mut seq = 0u64;
+        for turn in 1..=12u64 {
+            seq += 1;
+            events.push(ev("turn/start", seq, json!({ "turn": turn })));
+            for step in 1..=3u64 {
+                seq += 1;
+                events.push(ev("step/start", seq, json!({ "turn": turn, "step": step })));
+                // 注入上下文行(不计 surface;约 1/3 步带)
+                if rand() < 33 {
+                    seq += 1;
+                    events.push(ev(
+                        "user/message",
+                        seq,
+                        json!({
+                            "content": [ { "type": "text", "text": "注入上下文" } ],
+                            "source": { "kind": "plugin", "plugin": "liuma/system-prompt" },
+                        }),
+                    ));
+                }
+                // 真实用户消息(块数组形态;约每步一条)
+                if step == 1 {
+                    seq += 1;
+                    events.push(ev(
+                        "user/message",
+                        seq,
+                        json!({ "id": format!("u{turn}"), "role": "user",
+                            "content": [ { "type": "text", "text": format!("问题{turn}") } ] }),
+                    ));
+                }
+                seq += 1;
+                events.push(ev(
+                    "assistant/chunk",
+                    seq,
+                    json!({ "turn": turn, "step": step, "delta": "回答片段" }),
+                ));
+                // audit request-done(usage 附着源)
+                seq += 1;
+                events.push(ev(
+                    "audit/call",
+                    seq,
+                    json!({ "boundary": "llm", "operation": "request-done",
+                        "detail": { "durationMs": 1200, "usage": {
+                            "output_tokens": 42, "ttftMs": 300 } } }),
+                ));
+                seq += 1;
+                events.push(ev(
+                    "assistant/message",
+                    seq,
+                    json!({ "turn": turn, "step": step, "content": format!("回答{turn}-{step}"),
+                        "tool_calls": [ { "id": format!("c{step}"), "name": "bash",
+                            "arguments": "{\"command\":\"ls\"}" } ] }),
+                ));
+                seq += 1;
+                events.push(ev(
+                    "tool/call",
+                    seq,
+                    json!({ "turn": turn, "step": step, "name": "bash",
+                        "arguments": "{\"command\":\"ls\"}" }),
+                ));
+                seq += 1;
+                events.push(ev(
+                    "tool/result",
+                    seq,
+                    json!({ "turn": turn, "step": step, "call": 1, "output": "ok", "success": true }),
+                ));
+            }
+            seq += 1;
+            // 交替正常/软取消收尾
+            if turn % 4 == 0 {
+                events.push(ev("turn/end", seq, json!({ "cancelled": "token" })));
+            } else {
+                events.push(ev("turn/end", seq, json!({})));
+            }
+        }
+        events
+    }
+
+    /// UUID 形状串归一化:translator 的 message_id() 合成 v7 UUID 每次运行
+    /// 都不同(时长有序),差分比较前先替换为占位符;其余字段逐字节锁死。
+    fn canonicalize(v: &mut Value) {
+        match v {
+            Value::String(s) => {
+                if uuid::Uuid::parse_str(s).is_ok() {
+                    *s = "<uuid>".into();
+                }
+            }
+            Value::Array(items) => items.iter_mut().for_each(canonicalize),
+            Value::Object(map) => map.values_mut().for_each(canonicalize),
+            _ => {}
+        }
+    }
+
+    fn canonical(events: &[SessionEvent]) -> String {
+        let mut v = serde_json::to_value(events).unwrap();
+        canonicalize(&mut v);
+        serde_json::to_string(&v).unwrap()
+    }
+
+    /// 差分锁:三组窗口(None / 边界落在消息中段 / 边界落在填充事件间)
+    /// × 全量翻译 + paginate 与 page_cut + translate_window 输出一致
+    /// (UUID 归一化后逐字节)。另单列构造:信封持久 source_event_seqs
+    /// 与合成值不一致时,cut 取信封自身 seq(与 paginate 的合成 min 语义对齐)。
+    #[test]
+    fn window_translate_matches_full_translate_paginate_byte_for_byte() {
+        let provider = info();
+        let events = synthetic_log();
+        for (before, max) in [
+            (None, 5),
+            (None, 30),
+            (Some(events[40].seq), 7),
+            (Some(events[57].seq), 3),
+        ] {
+            let expected = paginate(&translate_events(&provider, &events), before, max);
+            let cut = page_cut(&events, before, max);
+            let actual_events = translate_window(&provider, &events, cut, before);
+            assert_eq!(cut, expected.cut, "cut 同源(before={before:?}, max={max})");
+            assert_eq!(
+                canonical(&actual_events),
+                canonical(&expected.events),
+                "窗口翻译逐字节一致(before={before:?}, max={max})"
+            );
+            assert_eq!(cut > 0, expected.has_more, "has_more 同源(cut>0)");
+        }
+    }
+
+    /// 信封自带持久 source_event_seqs(归因链,供 event_trace 消费)与
+    /// 翻译层合成值 vec![ev.seq] 不是一回事:窗口 cut 必须取后者语义
+    /// (消息信封自身 seq),否则窗口边界错切。
+    #[test]
+    fn page_cut_uses_envelope_seq_not_persistent_source_seqs() {
+        let mut m = ev("assistant/message", 10, json!({ "content": "a" }));
+        m.source_event_seqs = Some(vec![3, 7]); // 持久归因链指向更早事件
+        let events = vec![m];
+        assert_eq!(page_cut(&events, None, 1), 10, "cut = 信封 seq");
     }
     /// llm request-done 用量附着:audit 事件本身丢弃,但下一个
     /// assistant/message 的 data 携带 usage(durationMs/ttftMs/outputTokens)
