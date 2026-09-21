@@ -16,6 +16,7 @@ use liuma_core::proto::SessionSummary;
 
 use crate::features::search;
 use crate::features::settings;
+use crate::features::sessions::store::{GroupMode, OrderMode, TIP_ADD_WS, TIP_SEARCH, TIP_VIEW_MENU};
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::reducer::{relative_time, workspace_of};
@@ -63,8 +64,14 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .pb(px(10.))
         .gap(px(8.))
         .child(drag_strip())
+        // 顶部序对齐参考:「新会话」全局钮最顶,其下为顶栏二态
+        // (搜索关 = 「工作区」标题 + 三图标钮;开 = 搜索框)
         .child(new_session_row(store))
-        .child(search::search_row(store, cx))
+        .child(if st.search.search_open {
+            search::search_field(store, cx).into_any_element()
+        } else {
+            header_row(store, cx).into_any_element()
+        })
         .when(store.read(cx).search.search_hits.is_some(), |el| {
             el.child(search::search_hits_panel(store, cx))
         })
@@ -154,33 +161,174 @@ pub(crate) fn drag_strip() -> impl IntoElement {
         })
 }
 
-/// 「新建会话」行
+/// 「新会话」行(全局唯一;⊕ 图标 + 文字居中,对齐参考实现)
 fn new_session_row(store: &Entity<AppStore>) -> impl IntoElement {
     let s = store.clone();
-    div().flex().h(px(30.)).items_center().child(
+    div().flex().h(px(36.)).items_center().child(
         div()
             .id("new-session")
+            .debug_selector(|| "new-session".to_string())
             .flex()
             .flex_1()
-            .h(px(30.))
+            .h(px(36.))
             .items_center()
             .justify_center()
-            .gap(px(4.))
-            .rounded(px(8.))
-            .bg(theme::DOCK())
+            .gap(px(6.))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(theme::BORDER())
+            .bg(theme::LAYER())
             .cursor_pointer()
             .text_size(px(13.))
-            .text_color(theme::LABEL_2())
-            .hover(|s| s.bg(theme::LAYER()))
-            .child(fixed(IconName::Plus, 14.))
-            .child("新建会话")
+            .font_weight(gpui_kit::FontWeight::MEDIUM)
+            .text_color(theme::LABEL())
+            .hover(|s| s.bg(theme::DOCK()))
+            .child(fixed(LiumaIcon::NewChat, 14.))
+            .child("新会话")
             .on_click(move |_, _, cx| {
                 s.update(cx, |st, cx| st.create_session(cx));
             }),
     )
 }
 
-/// 会话树:按工作区分组(首见序),搜索过滤
+/// 侧栏顶栏:「工作区」标题(单列表态显示「会话」)+ 右缘三个圆形
+/// hover 图标钮(搜索 / 视图选项 / 添加工作区)。头部空白处 mousedown
+/// 即拖(兼窗口拖拽条,同 panel_header 约定:交互子件自挂 mousedown
+/// stop_propagation,点击不触发窗口拖拽)
+fn header_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
+    let flat = store.read(cx).sessions.group_mode == GroupMode::Flat;
+    let (s_search, s_view, s_add) = (store.clone(), store.clone(), store.clone());
+    div()
+        .id("sidebar-header")
+        .debug_selector(|| "sidebar-header".to_string())
+        .flex()
+        .h(px(28.))
+        .flex_shrink_0()
+        .items_center()
+        .pl(px(4.))
+        .on_mouse_down(MouseButton::Left, |_, window, _| {
+            window.start_window_move();
+        })
+        .on_double_click(|_, window, _| {
+            window.titlebar_double_click();
+        })
+        .child(
+            div()
+                .text_size(px(13.))
+                .text_color(theme::LABEL_3())
+                .child(if flat { "会话" } else { "工作区" }),
+        )
+        .child(div().flex_1())
+        .child(
+            header_icon_button(store, TIP_SEARCH, "搜索会话", fixed(LiumaIcon::SearchOutline, 14.))
+                .on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    s_search.update(cx, |st, cx| st.toggle_search_open(window, cx));
+                }),
+        )
+        .child(
+            header_icon_button(
+                store,
+                TIP_VIEW_MENU,
+                "视图选项",
+                fixed(LiumaIcon::Personalization, 15.),
+            )
+            .on_click(move |ev: &gpui_kit::ClickEvent, _, cx| {
+                cx.stop_propagation();
+                let pos = match ev {
+                    gpui_kit::ClickEvent::Mouse(m) => m.down.position,
+                    _ => gpui_kit::Point::default(),
+                };
+                s_view.update(cx, |st, cx| st.open_view_menu_at(pos, cx));
+            }),
+        )
+        .child(
+            header_icon_button(store, TIP_ADD_WS, "添加工作区", fixed(LiumaIcon::ProjectAdd, 16.))
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    s_add.update(cx, |st, cx| st.add_workspace_via_picker(cx));
+                }),
+        )
+}
+
+/// 顶栏图标钮(圆形 hover 底;hover 500ms 出 tooltip)。含渲染期
+/// bounds 捕获层(canvas 写 tip_bounds[slot],tooltip 锚定用)与
+/// mousedown 豁免(头行为窗口拖拽区,钮点击不得触发拖窗)
+fn header_icon_button(
+    store: &Entity<AppStore>,
+    slot: usize,
+    tip: &'static str,
+    icon: Icon,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let s = store.clone();
+    let sel = format!("header-btn-{slot}");
+    div()
+        .id(("header-btn", slot))
+        .debug_selector(move || sel.clone())
+        .relative()
+        .flex()
+        .size(px(26.))
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .ml(px(2.))
+        .rounded_full()
+        .cursor_pointer()
+        .text_color(theme::LABEL_3())
+        .hover(|s| s.bg(theme::LAYER()).text_color(theme::LABEL_2()))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_hover(move |enter: &bool, _, cx| {
+            s.update(cx, |st, cx| st.header_tip_hover(slot, tip, *enter, cx));
+        })
+        .child(icon)
+        .child(tip_capture_layer(store, slot))
+}
+
+/// tooltip 锚定 bounds 捕获层:canvas 在 paint 相位把按钮 bounds 写入
+/// tip_bounds[slot](无 notify,不驱动新帧;perm_chip_bounds 同款)
+fn tip_capture_layer(store: &Entity<AppStore>, slot: usize) -> gpui_kit::AnyElement {
+    let cap = store.clone();
+    gpui_kit::canvas(
+        move |b: gpui_kit::Bounds<gpui_kit::Pixels>, _, cx| {
+            cap.update(cx, |st, _| st.sessions.tip_bounds[slot] = Some(b));
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0()
+    .into_any_element()
+}
+
+/// 顶栏钮 tooltip 卡(根级渲染;按钮下方居中,窗缘钳制;非交互不
+/// occlude,不挡下方命中)
+pub fn header_tip_card(
+    text: gpui_kit::SharedString,
+    b: gpui_kit::Bounds<gpui_kit::Pixels>,
+    viewport_w: f32,
+) -> impl IntoElement {
+    let w = text.chars().count() as f32 * 12. + 20.;
+    let center = f32::from(b.origin.x) + f32::from(b.size.width) / 2.;
+    let left = (center - w / 2.).clamp(8., (viewport_w - w - 8.).max(8.));
+    div()
+        .absolute()
+        .top(px(f32::from(b.origin.y) + f32::from(b.size.height) + 6.))
+        .left(px(left))
+        .flex()
+        .h(px(24.))
+        .items_center()
+        .px(px(10.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(theme::BORDER_2())
+        .bg(theme::DOCK())
+        .shadow_md()
+        .text_size(px(12.))
+        .text_color(theme::LABEL_2())
+        .child(text)
+}
+
+/// 会话树:按工作区分组(首见序),搜索过滤;单列表态(视图选项)
+/// 无组头全平铺
 fn session_list(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let st = store.read(cx);
     let default = st.default_workspace();
@@ -190,6 +338,35 @@ fn session_list(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .as_ref()
         .map(|e| e.read(cx).value().trim().to_lowercase())
         .unwrap_or_default();
+
+    // 单列表:全部会话平铺(subagent 仍隐藏;宿主清单序 = 最近更新,
+    // 手动排序未实现前 order_mode 无渲染差异)
+    if st.sessions.group_mode == GroupMode::Flat {
+        let rows: Vec<gpui_kit::AnyElement> = st
+            .state
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                s.origin.as_deref() != Some("subagent")
+                    && (query.is_empty()
+                        || st
+                            .title_for(&s.session_id)
+                            .to_lowercase()
+                            .contains(&query))
+            })
+            .map(|(ix, s)| session_row(store, cx, s, ix).into_any_element())
+            .collect();
+        return div()
+            .id("sidebar-sessions")
+            .v_flex()
+            .min_h(px(0.))
+            .flex_1()
+            .overflow_y_scroll()
+            .pb(px(8.))
+            .gap(px(2.))
+            .children(rows);
+    }
 
     // 分组(组 = 工作区清单全量,清单序;无会话的工作区仍渲染组头——
     // 删除会话后组不可消失)。清单外的工作区名防御性追加在尾部
@@ -270,9 +447,12 @@ fn group_header(
         theme::LABEL_3()
     };
     let sel = format!("ws-chevron-{}", if collapsed { "closed" } else { "open" });
+    // 行 hover 组:展开态 chevron 悬停才淡入(参考实现语言),折叠态常显
+    let grp = format!("ws-grp-{gi}");
     div()
         .id(("ws", gi))
         .debug_selector(move || format!("ws-head-{ws_head}"))
+        .group(grp.clone())
         .flex()
         .h(px(28.))
         .flex_shrink_0()
@@ -283,55 +463,72 @@ fn group_header(
         .gap(px(4.))
         .cursor_pointer()
         .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
-        .text_size(px(12.))
-        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+        .text_size(px(13.))
         .text_color(fg)
-        // 折叠钮(独立点击:只切折叠,不切工作区)
+        // 折叠/文件夹同槽互换(参考实现语言):默认显文件夹,行 hover
+        // 换成折叠箭头;折叠态箭头常显。点击前指针必已悬停于行,箭头
+        // 届时可见,无隐形命中问题
         .child(
             div()
-                .id(("ws-fold", gi))
-                .flex()
+                .relative()
                 .size(px(18.))
                 .flex_shrink_0()
-                .items_center()
-                .justify_center()
-                .rounded(px(4.))
-                .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
-                .text_color(theme::CAPTION())
-                .child(fixed(
-                    if collapsed {
-                        IconName::ChevronRight
-                    } else {
-                        IconName::ChevronDown
-                    },
-                    13.,
-                ))
-                // 测试钩子:开/合两态异键(消除断言只增 map 的歧义)
-                .debug_selector(move || sel.clone())
-                .on_click({
-                    let ws = ws_fold.clone();
-                    move |_, _, cx| {
-                        cx.stop_propagation();
-                        let ws = ws.clone();
-                        s_fold.update(cx, |st, cx| st.toggle_workspace_collapsed(&ws, cx));
-                    }
-                }),
-        )
-        .child(
-            // 选中工作区:开页文件夹 + 品牌色(对齐 web)
-            fixed(
-                if active {
-                    IconName::FolderOpen
-                } else {
-                    IconName::FolderClosed
-                },
-                16.,
-            )
-            .text_color(if active {
-                theme::BRAND()
-            } else {
-                theme::LABEL_3()
-            }),
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        // 选中工作区:打开文件夹 + 品牌色(duotone,对齐参考)
+                        .text_color(if active {
+                            theme::BRAND()
+                        } else {
+                            theme::LABEL_3()
+                        })
+                        .when(collapsed, |el| el.opacity(0.))
+                        .group_hover(grp.clone(), |s| s.opacity(0.))
+                        .child(fixed(
+                            if active {
+                                LiumaIcon::FolderOpen
+                            } else {
+                                LiumaIcon::FolderClose
+                            },
+                            16.,
+                        )),
+                )
+                .child(
+                    div()
+                        .id(("ws-fold", gi))
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(4.))
+                        .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
+                        .text_color(theme::CAPTION())
+                        .when(!collapsed, |el| el.opacity(0.))
+                        .group_hover(grp.clone(), |s| s.opacity(1.))
+                        .child(fixed(
+                            if collapsed {
+                                IconName::ChevronRight
+                            } else {
+                                IconName::ChevronDown
+                            },
+                            13.,
+                        ))
+                        // 测试钩子:开/合两态异键(消除断言只增 map 的歧义)
+                        .debug_selector(move || sel.clone())
+                        .on_click({
+                            let ws = ws_fold.clone();
+                            move |_, _, cx| {
+                                cx.stop_propagation();
+                                let ws = ws.clone();
+                                s_fold.update(cx, |st, cx| st.toggle_workspace_collapsed(&ws, cx));
+                            }
+                        }),
+                ),
         )
         .child(div().min_w(px(0.)).truncate().child(display))
         .child(div().flex_1())
@@ -432,18 +629,21 @@ fn session_row(
         .items_center()
         .rounded(px(8.))
         .bg(bg)
-        // 树形第二级:组头之下一层缩进(pl 30 ≈ 组头 chevron+图标宽)
-        .pl(px(30.))
+        // 树形第二级:组头之下一层轻缩进(行首状态槽承担对齐)
+        .pl(px(8.))
         .pr(px(8.))
         .gap(px(8.))
         .cursor_pointer()
         .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
-        // 会话图标(web 无此位,按需新增;选中态提亮)
-        .child(fixed(LiumaIcon::MessageSquare, 14.).text_color(if active {
-            theme::LABEL_2()
-        } else {
-            theme::LABEL_3()
-        }))
+        // 行首状态槽(参考实现:活动动画在行首,非运行时空占位对齐)
+        .child(
+            div()
+                .flex()
+                .w(px(14.))
+                .flex_shrink_0()
+                .justify_center()
+                .children(running.then(|| running_dot())),
+        )
         .child(
             div()
                 .flex()
@@ -454,9 +654,7 @@ fn session_row(
                 .text_color(fg)
                 .child(title),
         )
-        .child(if running {
-            running_dot()
-        } else if sub_running > 0 {
+        .child(if sub_running > 0 {
             sub_running_badge(sub_running)
         } else {
             plain_time(&time)
@@ -624,36 +822,17 @@ fn menu_item(
         })
 }
 
-/// 工作区分组头 ⋯ 菜单卡(整理面:重命名/上移/下移/移除;
-/// 根级渲染按点击坐标定位,向左展开。首项无上移、末项无下移、
-/// 默认工作区不提供移除)
+/// 工作区分组头 ⋯ 菜单卡(重命名/删除工作区;根级渲染按点击坐标
+/// 定位,向左展开。默认工作区不提供删除)
 pub fn ws_menu_card(
     store: &Entity<AppStore>,
     cx: &App,
     ws: &str,
     pos: gpui_kit::Point<gpui_kit::Pixels>,
 ) -> impl IntoElement {
-    let st = store.read(cx);
-    let names = st.workspace_order();
-    let ix = names.iter().position(|n| n == ws);
-    let (has_up, has_down, is_default) = match ix {
-        Some(i) => (i > 0, i + 1 < names.len(), i == 0),
-        None => (false, false, false),
-    };
-    let (rename, up, down, remove, clear) = (
-        store.clone(),
-        store.clone(),
-        store.clone(),
-        store.clone(),
-        store.clone(),
-    );
-    let (wid_r, wid_u, wid_d, wid_x, wid_c) = (
-        ws.to_string(),
-        ws.to_string(),
-        ws.to_string(),
-        ws.to_string(),
-        ws.to_string(),
-    );
+    let is_default = store.read(cx).default_workspace() == ws;
+    let (rename, remove) = (store.clone(), store.clone());
+    let (wid_r, wid_x) = (ws.to_string(), ws.to_string());
     div()
         .id("ws-menu-card")
         .absolute()
@@ -679,43 +858,117 @@ pub fn ws_menu_card(
                 rename.update(cx, |st, cx| st.open_rename_workspace(&id, window, cx));
             },
         ))
-        .when(has_up, |el| {
-            el.child(menu_item(
-                "上移",
-                fixed(IconName::ArrowUp, 13.),
-                move |_, _, cx| {
-                    let id = wid_u.clone();
-                    up.update(cx, |st, cx| st.move_workspace(&id, true, cx));
-                },
-            ))
-        })
-        .when(has_down, |el| {
-            el.child(menu_item(
-                "下移",
-                fixed(IconName::ArrowDown, 13.),
-                move |_, _, cx| {
-                    let id = wid_d.clone();
-                    down.update(cx, |st, cx| st.move_workspace(&id, false, cx));
-                },
-            ))
-        })
-        .child(menu_item(
-            "清空会话",
-            fixed(IconName::Delete, 13.),
-            move |_, _, cx| {
-                let id = wid_c.clone();
-                clear.update(cx, |st, cx| st.ask_clear_workspace_sessions(&id, cx));
-            },
-        ))
         .when(!is_default, |el| {
             el.child(menu_item(
-                "移除",
+                "删除工作区",
                 fixed(IconName::Delete, 13.),
                 move |_, _, cx| {
                     let id = wid_x.clone();
                     remove.update(cx, |st, cx| st.remove_workspace(&id, cx));
                 },
             ))
+        })
+}
+
+/// 顶栏视图选项菜单卡(分组方式/排序方式两组;根级渲染按点击坐标
+/// 定位,右对齐滑块钮展开)。整卡挂 mousedown 豁免(同 row/ws 菜单)。
+/// 「手动排序」本期占位:置灰不可点,拖拽重排后续实现
+pub fn view_options_menu_card(
+    store: &Entity<AppStore>,
+    cx: &App,
+    pos: gpui_kit::Point<gpui_kit::Pixels>,
+) -> impl IntoElement {
+    let st = store.read(cx);
+    let (group, order) = (st.sessions.group_mode, st.sessions.order_mode);
+    let (s_ws, s_flat, s_updated) = (store.clone(), store.clone(), store.clone());
+    div()
+        .id("view-menu-card")
+        .absolute()
+        .occlude()
+        .debug_selector(|| "view-menu-card".to_string())
+        // 锚在滑块钮下方,右对齐钮(钮 26px 宽)
+        .top(pos.y + px(14.))
+        .left(pos.x - px(200.) + px(26.))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .v_flex()
+        .w(px(200.))
+        .rounded(px(12.))
+        .border_1()
+        .border_color(theme::BORDER())
+        .bg(theme::LAYER())
+        .p(px(4.))
+        .shadow_md()
+        .child(menu_section_label("分组方式"))
+        .child(view_menu_item("view-group-ws", "按工作区", group == GroupMode::Workspace, move |_, _, cx| {
+            s_ws.update(cx, |st, cx| st.set_group_mode(GroupMode::Workspace, cx));
+        }))
+        .child(view_menu_item("view-group-flat", "单列表", group == GroupMode::Flat, move |_, _, cx| {
+            s_flat.update(cx, |st, cx| st.set_group_mode(GroupMode::Flat, cx));
+        }))
+        .child(
+            div()
+                .h(px(1.))
+                .mx(px(8.))
+                .my(px(4.))
+                .bg(theme::BORDER()),
+        )
+        .child(menu_section_label("排序方式"))
+        .child(view_menu_item("view-order-updated", "最近更新", order == OrderMode::Updated, move |_, _, cx| {
+            s_updated.update(cx, |st, cx| st.set_order_mode(OrderMode::Updated, cx));
+        }))
+        .child(
+            div()
+                .id("view-order-manual")
+                .debug_selector(|| "view-order-manual".to_string())
+                .flex()
+                .h(px(30.))
+                .items_center()
+                .gap(px(8.))
+                .px(px(8.))
+                .rounded(px(8.))
+                .text_size(px(13.))
+                .text_color(theme::CAPTION())
+                .child("手动排序"),
+        )
+}
+
+/// 菜单节标(分组方式/排序方式)
+fn menu_section_label(label: &'static str) -> gpui_kit::AnyElement {
+    div()
+        .px(px(8.))
+        .pt(px(6.))
+        .pb(px(2.))
+        .text_size(px(12.))
+        .text_color(theme::CAPTION())
+        .child(label)
+        .into_any_element()
+}
+
+/// 视图选项菜单项(文字 + 选中尾部 ✓;选择即收菜单)
+fn view_menu_item(
+    id: &'static str,
+    label: &'static str,
+    selected: bool,
+    on_click: impl Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    div()
+        .id(id)
+        .debug_selector(move || format!("view-item-{id}"))
+        .flex()
+        .h(px(30.))
+        .items_center()
+        .gap(px(8.))
+        .px(px(8.))
+        .rounded(px(8.))
+        .cursor_pointer()
+        .hover(|st| st.bg(theme::DOCK()))
+        .text_size(px(13.))
+        .text_color(theme::LABEL_2())
+        .child(div().flex_1().child(label))
+        .children(selected.then(|| fixed(IconName::Check, 14.).text_color(theme::LABEL())))
+        .on_click(move |ev, w, cx| {
+            cx.stop_propagation();
+            on_click(ev, w, cx)
         })
 }
 

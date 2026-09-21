@@ -13,6 +13,8 @@ use crate::shell::store::AppStore;
 pub(crate) struct SearchStore {
     /// 侧栏搜索输入态(挂窗后建;渲染时读值过滤;Enter = 全库检索)
     pub search_input: Option<Entity<InputState>>,
+    /// 搜索态开关(false = 顶栏显示标题行;true = 切换为搜索框)
+    pub search_open: bool,
     /// 全库检索命中(Some = 结果面板在场,空 = 无命中)
     pub search_hits: Option<Vec<serde_json::Value>>,
     /// 检索跳转待定位 seq(切轨迹后按 seq 选台账行)
@@ -32,6 +34,31 @@ impl AppStore {
             .detach();
             self.search.search_input = Some(input);
         }
+    }
+
+    /// 顶栏搜索钮:切换搜索态(开 = 顶栏标题行切换为搜索框并聚焦;
+    /// 关 = 清输入与命中回列表)
+    pub fn toggle_search_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search.search_open = !self.search.search_open;
+        if self.search.search_open {
+            self.ensure_search_input(window, cx);
+            if let Some(input) = &self.search.search_input {
+                input.update(cx, |i, cx| i.focus(window, cx));
+            }
+        } else {
+            self.clear_search(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// 收起搜索:清输入值与命中面板,回普通列表(× 钮 / 「返回列表」同路)
+    pub fn clear_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search.search_open = false;
+        self.search.search_hits = None;
+        if let Some(input) = &self.search.search_input {
+            input.update(cx, |i, cx| i.set_value("", window, cx));
+        }
+        cx.notify();
     }
 
     /// 全库检索:回车触发,异步 search_sessions → 命中面板

@@ -14,18 +14,54 @@ use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
 
-/// 搜索框(本地过滤;前导放大镜)
-pub(crate) fn search_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
+/// 顶栏搜索框(搜索态:替换标题行;本地过滤 + Enter 全库检索)。
+/// 前导放大镜 + 尾部 × 钮(清空并收起);输入区自挂 mousedown 豁免,
+/// 点击聚焦不得触发头行的窗口拖拽
+pub(crate) fn search_field(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let st = store.read(cx);
-    // 图标经 x_padding 让位嵌进输入框内部(左内嵌)
+    let s_clear = store.clone();
     let input = st.search.search_input.as_ref().map(|e| {
-        div().flex_1().min_w(px(0.)).h(px(28.)).child(
-            Input::new(e)
-                .small()
-                .prefix(fixed(IconName::Search, 13.).text_color(theme::CAPTION())),
-        )
+        div()
+            .flex()
+            .flex_1()
+            .min_w(px(0.))
+            .h(px(30.))
+            .items_center()
+            .rounded(px(10.))
+            .border_1()
+            .border_color(theme::BORDER_2())
+            .pl(px(6.))
+            .pr(px(4.))
+            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                Input::new(e)
+                    .small()
+                    // 无组件自带边框/底色/聚焦环:外框由包装层提供,
+                    // 避免双层描边错位重叠
+                    .appearance(false)
+                    .prefix(fixed(LiumaIcon::SearchOutline, 13.).text_color(theme::CAPTION()))
+                    .suffix(
+                        div()
+                            .id("search-clear")
+                            .debug_selector(|| "search-clear".to_string())
+                            .flex()
+                            .size(px(20.))
+                            .flex_shrink_0()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .cursor_pointer()
+                            .text_color(theme::CAPTION())
+                            .hover(|s| s.bg(theme::SIDEBAR_HOVER()).text_color(theme::LABEL_2()))
+                            .child(fixed(IconName::Close, 12.))
+                            .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
+                                s_clear.update(cx, |st, cx| st.clear_search(window, cx));
+                            }),
+                    ),
+            )
     });
-    div().flex().h(px(34.)).items_center().children(input)
+    div().flex().h(px(30.)).items_center().children(input)
 }
 
 /// 全库检索命中面板:回车检索后替换会话列表;行 = 会话标题
@@ -61,13 +97,7 @@ pub(crate) fn search_hits_panel(store: &Entity<AppStore>, cx: &App) -> impl Into
                     .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
                     .child("返回列表")
                     .on_click(move |_, window, cx| {
-                        back.update(cx, |st, cx| {
-                            st.search.search_hits = None;
-                            if let Some(input) = &st.search.search_input {
-                                input.update(cx, |i, cx| i.set_value("", window, cx));
-                            }
-                            cx.notify();
-                        });
+                        back.update(cx, |st, cx| st.clear_search(window, cx));
                     }),
             )
             .into_any_element(),

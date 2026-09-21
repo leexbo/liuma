@@ -5517,6 +5517,122 @@ fn statusbar_badges_render(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 顶栏行:三图标钮在场;搜索钮切换 header 为搜索框(× 在场),
+/// × 清空命中并收起回标题行
+#[gpui_kit::test]
+fn sidebar_header_search_toggle(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "header-search");
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    assert!(wcx.debug_bounds("sidebar-header").is_some(), "标题行应渲染");
+    assert!(wcx.debug_bounds("header-btn-0").is_some(), "搜索钮应渲染");
+    assert!(
+        wcx.debug_bounds("header-btn-1").is_some(),
+        "视图选项钮应渲染"
+    );
+    assert!(
+        wcx.debug_bounds("header-btn-2").is_some(),
+        "添加工作区钮应渲染"
+    );
+    assert!(wcx.debug_bounds("new-session").is_some(), "新会话行应渲染");
+
+    // 搜索开:header 切换为搜索框,× 钮在场
+    click_sel(&mut wcx, "header-btn-0");
+    cx.run_until_parked();
+    assert!(
+        cx.update(|app| store.read(app).search.search_open),
+        "搜索态未开"
+    );
+    wcx.refresh().expect("刷新失败");
+    assert!(wcx.debug_bounds("search-clear").is_some(), "× 钮应渲染");
+
+    // × 收起:回标题行,输入与命中双清
+    click_sel(&mut wcx, "search-clear");
+    cx.run_until_parked();
+    assert!(
+        !cx.update(|app| store.read(app).search.search_open),
+        "搜索态未关"
+    );
+    assert!(
+        cx.update(|app| store.read(app).search.search_hits.is_none()),
+        "命中未清"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 视图选项菜单:滑块钮开菜单(分组/排序两组);单列表切换落 store、
+/// 选择即收菜单;「手动排序」本期置灰占位(点击无效果)
+#[gpui_kit::test]
+fn sidebar_view_options_menu(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "view-menu");
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    let default = cx.update(|app| store.read(app).default_workspace());
+    let head_sel = Box::leak(format!("ws-head-{default}").into_boxed_str());
+    assert!(
+        wcx.debug_bounds(head_sel).is_some(),
+        "前置:按工作区分组态应有组头"
+    );
+
+    // 滑块钮开菜单
+    click_sel(&mut wcx, "header-btn-1");
+    cx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    assert!(wcx.debug_bounds("view-menu-card").is_some(), "视图菜单未渲染");
+    assert!(
+        wcx.debug_bounds("view-item-view-group-ws").is_some(),
+        "按工作区项应渲染"
+    );
+    assert!(
+        wcx.debug_bounds("view-item-view-group-flat").is_some(),
+        "单列表项应渲染"
+    );
+    assert!(
+        wcx.debug_bounds("view-order-manual").is_some(),
+        "手动排序占位应渲染"
+    );
+
+    // 手动排序:置灰无 on_click —— 点击后排序方式不变、菜单不收
+    click_sel(&mut wcx, "view-order-manual");
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|app| store.read(app).sessions.order_mode),
+        crate::features::sessions::store::OrderMode::Updated,
+        "手动排序本阶段不可选中"
+    );
+    assert!(
+        cx.update(|app| store.read(app).sessions.view_menu_pos.is_some()),
+        "点占位项不应收菜单"
+    );
+
+    // 单列表:选择即收菜单 + group_mode 落 store(组头消失的渲染断言
+    // 不可行:debug_bounds map 只增不清,Appearance 断言恒真)
+    click_sel(&mut wcx, "view-item-view-group-flat");
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|app| store.read(app).sessions.group_mode),
+        crate::features::sessions::store::GroupMode::Flat,
+        "单列表未落 store"
+    );
+    assert!(
+        cx.update(|app| store.read(app).sessions.view_menu_pos.is_none()),
+        "选择后应收菜单"
+    );
+
+    // 切回按工作区(菜单重开 → 选按工作区)
+    click_sel(&mut wcx, "header-btn-1");
+    cx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    click_sel(&mut wcx, "view-item-view-group-ws");
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|app| store.read(app).sessions.group_mode),
+        crate::features::sessions::store::GroupMode::Workspace,
+        "未切回按工作区"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 状态栏统计 pill:数据在场渲染两 pill,点击各弹
 /// 详情卡且互斥(开一关另一);turns==0 整组不渲染
 #[gpui_kit::test]

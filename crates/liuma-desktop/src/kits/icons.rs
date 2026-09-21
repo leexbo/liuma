@@ -104,6 +104,19 @@ pub enum LiumaIcon {
     FileType,
     /// 换行开关(预览头行)
     TextWrap,
+    // ── 侧栏族(deepseek-harness 16 viewBox fill 形,设计对齐参考)──
+    /// 顶栏搜索钮 / 搜索框前导(ic_ds_search_outline_16)
+    SearchOutline,
+    /// 顶栏视图选项钮:分组/排序菜单(ic_ds_personalization_outline_16)
+    Personalization,
+    /// 顶栏添加工作区钮(ic_ds_project_add_outline_16)
+    ProjectAdd,
+    /// 「新会话」按钮(ic_ds_new_chat_outline_16)
+    NewChat,
+    /// 工作区组头·打开(folder_open_16 duotone)
+    FolderOpen,
+    /// 工作区组头·关闭(folder_close_16)
+    FolderClose,
 }
 
 impl IconNamed for LiumaIcon {
@@ -152,6 +165,12 @@ impl IconNamed for LiumaIcon {
             Self::FileChartColumn => "file-chart-column",
             Self::FileType => "file-type",
             Self::TextWrap => "text-wrap",
+            Self::SearchOutline => "search-outline",
+            Self::Personalization => "personalization",
+            Self::ProjectAdd => "project-add",
+            Self::NewChat => "new-chat",
+            Self::FolderOpen => "folder-open",
+            Self::FolderClose => "folder-close",
         };
         format!("icons/_liuma/{name}.svg").into()
     }
@@ -335,6 +354,30 @@ const LIUMA_ICONS: &[(&str, &[u8])] = &[
         "icons/_liuma/text-wrap.svg",
         include_bytes!("../../assets/icons/text-wrap.svg"),
     ),
+    (
+        "icons/_liuma/search-outline.svg",
+        include_bytes!("../../assets/icons/search-outline.svg"),
+    ),
+    (
+        "icons/_liuma/personalization.svg",
+        include_bytes!("../../assets/icons/personalization.svg"),
+    ),
+    (
+        "icons/_liuma/project-add.svg",
+        include_bytes!("../../assets/icons/project-add.svg"),
+    ),
+    (
+        "icons/_liuma/new-chat.svg",
+        include_bytes!("../../assets/icons/new-chat.svg"),
+    ),
+    (
+        "icons/_liuma/folder-open.svg",
+        include_bytes!("../../assets/icons/folder-open.svg"),
+    ),
+    (
+        "icons/_liuma/folder-close.svg",
+        include_bytes!("../../assets/icons/folder-close.svg"),
+    ),
 ];
 
 impl AssetSource for MergedAssets {
@@ -433,7 +476,7 @@ mod tests {
     /// 枚举全变体的 path 必须命中 LIUMA_ICONS 静态表(防加枚举忘加 SVG)
     #[test]
     fn liuma_icon_paths_all_embedded() {
-        const ALL: [LiumaIcon; 43] = [
+        const ALL: [LiumaIcon; 49] = [
             LiumaIcon::Sparkles,
             LiumaIcon::Zap,
             LiumaIcon::Brain,
@@ -477,6 +520,12 @@ mod tests {
             LiumaIcon::FileChartColumn,
             LiumaIcon::FileType,
             LiumaIcon::TextWrap,
+            LiumaIcon::SearchOutline,
+            LiumaIcon::Personalization,
+            LiumaIcon::ProjectAdd,
+            LiumaIcon::NewChat,
+            LiumaIcon::FolderOpen,
+            LiumaIcon::FolderClose,
         ];
         for icon in ALL {
             let p = icon.path();

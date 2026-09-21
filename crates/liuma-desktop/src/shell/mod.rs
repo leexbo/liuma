@@ -375,6 +375,7 @@ impl Render for WorkspaceView {
             || st.sessions.menu_open_session.is_some()
             || st.sessions.menu_open_ws.is_some()
             || st.sessions.workspace_menu_open
+            || st.sessions.view_menu_pos.is_some()
             || st.panel_plus_menu_at.is_some()
             || st.preview.menu.is_some()
             || st.billing_card_open
@@ -614,6 +615,22 @@ impl Render for WorkspaceView {
                         .map(|(ws, pos)| sessions::ws_menu_card(&self.store, cx, ws, pos))
                 };
                 el.children(card)
+            })
+            // 顶栏视图选项菜单(分组/排序;root 级定位渲染,同 ⋯ 菜单模式)
+            .when(self.store.read(cx).sessions.view_menu_pos.is_some(), |el| {
+                let card = self
+                    .store
+                    .read(cx)
+                    .sessions
+                    .view_menu_pos
+                    .map(|pos| sessions::view_options_menu_card(&self.store, cx, pos));
+                el.children(card)
+            })
+            // 顶栏钮 tooltip(hover 500ms;root 级定位渲染,非交互不 occlude)
+            .when(self.store.read(cx).sessions.header_tip.is_some(), |el| {
+                let tip = self.store.read(cx).sessions.header_tip.clone();
+                let vw = f32::from(window.viewport_size().width);
+                el.children(tip.map(|(text, b)| sessions::header_tip_card(text, b, vw)))
             })
             // 面板「+」菜单(root 级定位渲染,同 row/ws 菜单;徽标文案
             // 与面板空态同源:键表生成)

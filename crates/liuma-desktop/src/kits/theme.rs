@@ -138,7 +138,9 @@ const fn dark_palette() -> Palette {
         sidebar: DARK_SIDEBAR,
         // hover 沿用旧版相对基色的提亮步长(+5,+5,+4),跟随新中性灰族
         sidebar_hover: color(0x292F30, 1.0),
-        sidebar_active: color(0x39454C, 1.0),
+        // 选中行:比 hover 高一档但收敛亮度(参考实现选中 = hover 同色,
+        // 本盘保持三态互异;0x39454C 过亮过蓝,向 hover 靠拢)
+        sidebar_active: color(0x333D44, 1.0),
         title_bar: DARK_TITLE_BAR,
         ink: color(0x000000, 1.0),
         layer: color(0x2A3140, 1.0),

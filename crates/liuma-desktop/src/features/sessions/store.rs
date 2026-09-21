@@ -14,14 +14,40 @@ use crate::shell::reducer;
 use crate::shell::store::AppStore;
 use liuma_core::proto::HistoryValue;
 
-/// 待确认删除目标(单会话 / 工作区全部会话;确认模态按形态呈现)
+/// 待确认删除目标(单会话;确认模态呈现)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DeleteTarget {
     /// 单会话 id
     One(String),
-    /// 工作区全部会话(名 + 侧栏清单 id 集;隐藏子代理由宿主级联)
-    Workspace { name: String, ids: Vec<String> },
 }
+
+/// 侧栏列表分组方式(视图选项菜单;内存视图态,不持久化)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum GroupMode {
+    /// 按工作区分组(默认;组头 + 组内缩进行)
+    #[default]
+    Workspace,
+    /// 单列表:全部会话平铺,无组头
+    Flat,
+}
+
+/// 侧栏列表排序方式(视图选项菜单;内存视图态,不持久化)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum OrderMode {
+    /// 最近更新(宿主清单序即 updated_at 降序,默认)
+    #[default]
+    Updated,
+    /// 手动排序(拖拽重排;本期仅菜单占位,不可选中)
+    Manual,
+}
+
+/// 顶栏图标钮 tooltip 锚位(渲染期 canvas 按钮序捕获的 bounds)
+type TipSlots = [Option<gpui_kit::Bounds<gpui_kit::Pixels>>; 3];
+
+/// 顶栏图标钮序号(与 [`SessionsStore::tip_bounds`] 槽位对应)
+pub(crate) const TIP_SEARCH: usize = 0;
+pub(crate) const TIP_VIEW_MENU: usize = 1;
+pub(crate) const TIP_ADD_WS: usize = 2;
 
 /// 会话与工作区树功能切片状态(侧栏行/组/工作区菜单开态与坐标锚、
 /// 重命名与删除目标、工作区路径/标题/分支表、折叠组)。
@@ -54,6 +80,18 @@ pub(crate) struct SessionsStore {
     pub ws_branches: HashMap<String, Option<String>>,
     /// 侧栏折叠的工作区组(搜索词非空时渲染层忽略)
     pub collapsed_workspaces: HashSet<String>,
+    /// 侧栏列表分组方式(顶栏视图选项菜单)
+    pub group_mode: GroupMode,
+    /// 侧栏列表排序方式(顶栏视图选项菜单)
+    pub order_mode: OrderMode,
+    /// 视图选项菜单开时的点击坐标(根级渲染定位锚)
+    pub view_menu_pos: Option<gpui_kit::Point<gpui_kit::Pixels>>,
+    /// 顶栏图标钮 tooltip(文本 + 锚 bounds;hover 500ms 后显示)
+    pub header_tip: Option<(gpui_kit::SharedString, gpui_kit::Bounds<gpui_kit::Pixels>)>,
+    /// tooltip hover 代次(退场即自增,迟到的展示任务按代次失效)
+    pub header_tip_gen: u64,
+    /// 三个顶栏钮渲染期 bounds(canvas 捕获,tooltip 锚定用)
+    pub tip_bounds: TipSlots,
 }
 
 impl AppStore {
@@ -210,11 +248,6 @@ impl AppStore {
             .or_else(|| self.sessions.ws_paths.values().next().cloned())
     }
 
-    /// 工作区名顺序(设置页概览/组头菜单边界判定;现拉宿主)
-    pub fn workspace_order(&self) -> Vec<String> {
-        self.bridge.host().workspace_names()
-    }
-
     /// 刷新工作区表:workspace_view 解析路径 + 读各工作区分支
     pub fn refresh_workspaces(&mut self) {
         let view = self.bridge.host().workspace_view();
@@ -336,6 +369,76 @@ impl AppStore {
         cx.notify();
     }
 
+    /// 顶栏视图选项菜单开(带坐标;根级渲染定位,右对齐滑块钮展开)。
+    /// 与其余菜单互斥:开时清兄弟菜单开态
+    pub fn open_view_menu_at(
+        &mut self,
+        pos: gpui_kit::Point<gpui_kit::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.sessions.menu_open_session = None;
+        self.sessions.menu_open_ws = None;
+        self.sessions.workspace_menu_open = false;
+        self.sessions.view_menu_pos = Some(pos);
+        cx.notify();
+    }
+
+    /// 切换列表分组方式(菜单项选择即收菜单)
+    pub fn set_group_mode(&mut self, mode: GroupMode, cx: &mut Context<Self>) {
+        self.sessions.group_mode = mode;
+        self.sessions.view_menu_pos = None;
+        cx.notify();
+    }
+
+    /// 切换列表排序方式(菜单项选择即收菜单)。手动排序本期仅占位:
+    /// 拖拽重排未实现,菜单项置灰不触发
+    pub fn set_order_mode(&mut self, mode: OrderMode, cx: &mut Context<Self>) {
+        if mode == OrderMode::Manual {
+            return;
+        }
+        self.sessions.order_mode = mode;
+        self.sessions.view_menu_pos = None;
+        cx.notify();
+    }
+
+    /// 顶栏图标钮 hover 变化:进入登记代次并起 500ms 延迟任务(仍在
+    /// 悬停才显示),退场立即清除并自增代次(迟到的展示任务失效)。
+    /// bounds 由渲染期 canvas 捕获(见 header_row 的 tip 捕获层)
+    pub fn header_tip_hover(
+        &mut self,
+        slot: usize,
+        text: &'static str,
+        enter: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.sessions.header_tip_gen += 1;
+        if !enter {
+            if self.sessions.header_tip.is_some() {
+                self.sessions.header_tip = None;
+                cx.notify();
+            }
+            return;
+        }
+        let Some(bounds) = self.sessions.tip_bounds[slot] else {
+            return;
+        };
+        let tip_gen = self.sessions.header_tip_gen;
+        let store = cx.entity().clone();
+        cx.spawn(async move |_this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(500))
+                .await;
+            let _ = store.update(cx, |st, cx| {
+                if st.sessions.header_tip_gen == tip_gen {
+                    st.sessions.header_tip = Some((text.into(), bounds));
+                    cx.notify();
+                }
+            });
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
     /// 打开工作区重命名(复用会话重命名输入态)
     pub fn open_rename_workspace(
         &mut self,
@@ -359,32 +462,6 @@ impl AppStore {
         }
         self.sessions.rename_ws_target = Some(name.to_string());
         self.sessions.menu_open_ws = None;
-        cx.notify();
-    }
-
-    /// 工作区上移/下移(基于当前顺序换算 insertBefore 锚点)
-    pub fn move_workspace(&mut self, name: &str, up: bool, cx: &mut Context<Self>) {
-        let names = self.bridge.host().workspace_names();
-        let Some(ix) = names.iter().position(|n| n == name) else {
-            return;
-        };
-        let before = if up {
-            ix.checked_sub(1).and_then(|i| names.get(i))
-        } else {
-            names.get(ix + 2)
-        };
-        let result = self
-            .bridge
-            .host()
-            .reorder_workspace(name, before.map(String::as_str));
-        match result {
-            Ok(()) => {
-                self.sessions.menu_open_ws = None;
-                self.refresh_workspaces();
-                self.refresh_list();
-            }
-            Err(e) => self.push_local_notice(&format!("排序失败:{}", e.message), cx),
-        }
         cx.notify();
     }
 
@@ -525,38 +602,12 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 工作区行菜单「清空会话」:收集该工作区全部会话进确认模态
-    /// (隐藏子代理不在侧栏清单,由宿主级联带走)
-    pub fn ask_clear_workspace_sessions(&mut self, ws: &str, cx: &mut Context<Self>) {
-        self.sessions.menu_open_ws = None;
-        let default = self.default_workspace();
-        let ids: Vec<String> = self
-            .state
-            .sessions
-            .iter()
-            .filter(|s| reducer::workspace_of(&s.session_id, &default) == ws)
-            .map(|s| s.session_id.clone())
-            .collect();
-        if ids.is_empty() {
-            cx.notify();
-            return;
-        }
-        self.sessions.delete_target = Some(DeleteTarget::Workspace {
-            name: ws.to_string(),
-            ids,
-        });
-        cx.notify();
-    }
-
     /// 确认删除(执行并收模态)
     pub fn confirm_delete_session(&mut self, cx: &mut Context<Self>) {
-        let Some(target) = self.sessions.delete_target.take() else {
+        let Some(DeleteTarget::One(id)) = self.sessions.delete_target.take() else {
             return;
         };
-        match target {
-            DeleteTarget::One(id) => self.delete_session(&id, cx),
-            DeleteTarget::Workspace { ids, .. } => self.delete_sessions(&ids, cx),
-        }
+        self.delete_session(&id, cx);
         cx.notify();
     }
 
@@ -574,20 +625,6 @@ impl AppStore {
         }
         let ids = [id.to_string()];
         self.after_local_delete(&ids, cx);
-    }
-
-    /// 批量删除(工作区清空):逐个走宿主(子代理级联在宿主侧);
-    /// 已被级联带走的子代理(id 不存在)容忍跳过
-    pub fn delete_sessions(&mut self, ids: &[String], cx: &mut Context<Self>) {
-        for id in ids {
-            if let Err(e) = self.bridge.host().delete_session(id)
-                && e.code != "session-not-found"
-            {
-                self.push_local_notice(&format!("删除失败:{}", e.message), cx);
-                return;
-            }
-        }
-        self.after_local_delete(ids, cx);
     }
 
     /// 删除后的本地收口:刷新清单(含宿主级联带走的子代理),当前

@@ -6,4 +6,4 @@ pub(crate) mod store;
 mod views;
 
 pub(crate) use store::SearchStore;
-pub(crate) use views::{search_hits_panel, search_row};
+pub(crate) use views::{search_field, search_hits_panel};

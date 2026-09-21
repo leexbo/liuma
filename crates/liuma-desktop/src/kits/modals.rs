@@ -282,8 +282,7 @@ pub(crate) fn rename_modal(store: &Entity<AppStore>, cx: &App) -> impl IntoEleme
         )
 }
 
-/// 删除会话确认模态(mask + 小卡;点遮罩/取消 = 关闭,「删除」执行。
-/// 单会话/工作区清空两形态,标题与主体行按目标呈现)
+/// 删除会话确认模态(mask + 小卡;点遮罩/取消 = 关闭,「删除」执行)
 pub(crate) fn delete_confirm_modal(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let st = store.read(cx);
     let target = st
@@ -291,15 +290,8 @@ pub(crate) fn delete_confirm_modal(store: &Entity<AppStore>, cx: &App) -> impl I
         .delete_target
         .clone()
         .expect("delete_target 在场");
-    let (head, subject) = match &target {
-        crate::features::sessions::store::DeleteTarget::One(id) => {
-            ("删除会话".to_string(), st.title_for(id))
-        }
-        crate::features::sessions::store::DeleteTarget::Workspace { name, ids } => (
-            "清空会话".to_string(),
-            format!("{name} · {} 个会话(隐藏子代理一并移除)", ids.len()),
-        ),
-    };
+    let crate::features::sessions::store::DeleteTarget::One(id) = &target;
+    let (head, subject) = ("删除会话".to_string(), st.title_for(id));
     let (ok, cancel, mask) = (store.clone(), store.clone(), store.clone());
     div()
         .id("delete-overlay")

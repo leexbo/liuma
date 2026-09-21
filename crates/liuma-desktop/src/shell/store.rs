@@ -724,14 +724,17 @@ impl AppStore {
     }
 
     /// 外点全关(composer 下拉 + hero chip 下拉 + 行内 ⋯ + 标题栏
-    /// 工作区下拉 + 面板「+」菜单 + 计费小卡片;开着的菜单区自带
-    /// mousedown stop_propagation 豁免,不会误伤自身交互)
+    /// 工作区下拉 + 顶栏视图选项菜单 + 面板「+」菜单 + 计费小卡片;
+    /// 开着的菜单区自带 mousedown stop_propagation 豁免,不会误伤
+    /// 自身交互)
     pub fn close_all_menus(&mut self, cx: &mut Context<Self>) {
         self.chat.composer_menu = ComposerMenu::None;
         self.hero_menu = HeroMenu::None;
         self.sessions.menu_open_session = None;
         self.sessions.menu_open_ws = None;
         self.sessions.workspace_menu_open = false;
+        self.sessions.view_menu_pos = None;
+        self.sessions.header_tip = None;
         self.settings.full_access_confirm = None;
         self.panel_plus_menu_at = None;
         self.preview.menu = None;
