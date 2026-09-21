@@ -14,10 +14,6 @@ use crate::shell::reducer;
 use crate::shell::store::AppStore;
 use liuma_core::proto::HistoryValue;
 
-/// 打开会话的首屏尾窗大小(surface 消息数)。更早内容经导航轨未加载
-/// 锚点 / 「加载更早」按需前插——首帧到达量与空白等待期随窗收敛
-pub(crate) const HISTORY_TAIL_MESSAGES: usize = 100;
-
 /// 侧栏列表分组方式(视图选项菜单;内存视图态,不持久化)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum GroupMode {
@@ -75,6 +71,31 @@ pub(crate) struct SessionsStore {
 }
 
 impl AppStore {
+    /// 新会话行同步插入清单(清单刷新已异步化,若等回填,侧栏行晚一拍
+    /// ——负载下可见;回填后以宿主清单为权威)。
+    pub(crate) fn push_local_session_row(
+        &mut self,
+        id: String,
+        blank: bool,
+        parent: Option<String>,
+        cwd: Option<String>,
+    ) {
+        self.state.sessions.push(liuma_core::proto::SessionSummary {
+            session_id: id,
+            updated_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+            running: false,
+            blank,
+            parent_session_id: parent,
+            origin: None,
+            cwd,
+            agent_preset: None,
+            projections: None,
+        });
+    }
+
     /// 打开会话:切换 + 历史尾窗加载(后台折叠)+ 统计 + 配置缓存
     pub fn open_session(&mut self, id: &str, cx: &mut Context<Self>) {
         self.state.current_id = Some(id.to_string());
@@ -91,8 +112,6 @@ impl AppStore {
         // hint,残留脏标记会在下一帧触发 0..n 全量重测 = 打开优化破功
         self.chat.tv_remeasure_dirty = false;
         self.chat.nav_anchors_cache = None;
-        self.chat.loading_earlier = false;
-        self.chat.pending_anchor_jump = None;
         self.chat.anchor_index.clear();
         self.chat.row_slots.clear();
         self.chat.row_slots_sig = None;
@@ -114,12 +133,10 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 历史尾窗加载(打开只投影最后 N 条消息;更早内容经导航轨未加载
-    /// 锚点或「加载更早」按需前插,见 chat::AppStore::load_earlier)。
-    /// 首帧内容到达量从全会话收敛到尾窗——翻译/回放/解析/测高与空白
-    /// 等待期都随之收敛;渲染层虚拟化,只画可见行。
-    /// 直播帧可能先行到达——以已投影状态为基线回放,节点 key 幂等
-    /// (翻译层经预热,turn/step 是会话全局编号,跨窗 key 不冲突)。
+    /// 历史全量加载(打开即投影整段会话;渲染层虚拟化,只画可见行)。
+    /// 分页方案(每页 fetch 全量翻译日志,比一次性翻译更贵)连同其
+    /// 游标/合并重建/挂起跳转机器整体不采用。
+    /// 直播帧可能先行到达——以已投影状态为基线回放,节点 key 幂等。
     /// **必须经 [`HostBridge::call`] 上 tokio**:history 内部 attach 会
     /// `tokio::spawn` 每-会话 worker,GPUI 后台线程无 reactor 会 panic。
     fn load_history(&mut self, id: String, cx: &mut Context<Self>) {
@@ -130,11 +147,10 @@ impl AppStore {
         let store = cx.entity().clone();
         let host = self.bridge.host().clone();
         let sid = id.clone();
-        // 首屏 = 尾窗 100 条 surface 消息(与 seeded_tail_history 回归
-        // 锁的「60 轮 = 120 surface > 尾窗」语义一致)
+        // max_messages 取大数 = 不分页,一次带回全部事件
         let rx = self
             .bridge
-            .call(async move { host.history(&sid, None, HISTORY_TAIL_MESSAGES).await });
+            .call(async move { host.history(&sid, None, u32::MAX as usize).await });
         cx.spawn(async move |_this, cx| {
             let page = rx.await;
             store.update(cx, |s, cx| {
@@ -152,8 +168,6 @@ impl AppStore {
                 };
                 let HistoryValue {
                     events,
-                    has_more,
-                    cut,
                     projections,
                     ..
                 } = page;
@@ -162,9 +176,6 @@ impl AppStore {
                 {
                     let chat = s.state.chats.entry(id.clone()).or_default();
                     chat.merge_history(page_events);
-                    // 尾窗游标:「加载更早」翻页与未加载锚点判定的权威源
-                    chat.history_cut = cut;
-                    chat.history_has_more = has_more;
                     // 历史消息含 image 块 → 收集 aid,异步拉取缓存
                     // (与实时帧同路径;避免 chat 可变借用与 s 再借用冲突)
                     let mut aids: Vec<String> = Vec::new();
@@ -201,20 +212,8 @@ impl AppStore {
     pub fn create_session(&mut self, cx: &mut Context<Self>) {
         let ws = self.non_default_workspace();
         let id = self.bridge.host().create_session(None, None, ws);
-        self.state.sessions.push(liuma_core::proto::SessionSummary {
-            session_id: id.clone(),
-            updated_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0),
-            running: false,
-            blank: true,
-            parent_session_id: None,
-            origin: None,
-            cwd: Some(self.bridge.host().workspace().display().to_string()),
-            agent_preset: None,
-            projections: None,
-        });
+        let cwd = self.bridge.host().workspace().display().to_string();
+        self.push_local_session_row(id.clone(), true, None, Some(cwd));
         self.refresh_list(cx);
         self.open_session(&id, cx);
     }
@@ -242,6 +241,7 @@ impl AppStore {
                     Some(ws.to_string())
                 };
                 let id = self.bridge.host().create_session(None, None, target);
+                self.push_local_session_row(id.clone(), true, None, None);
                 self.refresh_list(cx);
                 self.open_session(&id, cx);
             }
@@ -332,6 +332,7 @@ impl AppStore {
             Some(ws.to_string())
         };
         let id = self.bridge.host().create_session(None, None, target);
+        self.push_local_session_row(id.clone(), true, None, None);
         self.refresh_list(cx);
         self.open_session(&id, cx);
     }
@@ -542,25 +543,11 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 分叉会话(按最后一个完成轮截断复制为新会话并打开;失败走通告)。
-    /// 新行同步插入(同 create_session:不等异步回填)
+    /// 分叉会话(按最后一个完成轮截断复制为新会话并打开;失败走通告)
     pub fn fork(&mut self, id: &str, cx: &mut Context<Self>) {
         match self.bridge.host().fork_session(id, None) {
             Ok(new_id) => {
-                self.state.sessions.push(liuma_core::proto::SessionSummary {
-                    session_id: new_id.clone(),
-                    updated_at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0),
-                    running: false,
-                    blank: false,
-                    parent_session_id: Some(id.to_string()),
-                    origin: None,
-                    cwd: None,
-                    agent_preset: None,
-                    projections: None,
-                });
+                self.push_local_session_row(new_id.clone(), false, Some(id.to_string()), None);
                 self.refresh_list(cx);
                 self.open_session(&new_id, cx);
             }

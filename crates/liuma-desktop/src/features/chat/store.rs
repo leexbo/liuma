@@ -307,14 +307,9 @@ pub(crate) struct ChatStore {
     /// 渲染每帧全量重建——遍历全部行槽并为每条用户消息重造 title/preview
     /// 字符串,长会话每帧固定成本随历史线性涨
     pub(crate) nav_anchors_cache: Option<NavAnchorsCache>,
-    /// 历史尾窗加载中(骨架占位的显示条件之一;load_history 置位,
-    /// 落地/失败清位)
+    /// 历史加载中(冷会话整档读档期间聊天区骨架占位的显示条件之一;
+    /// load_history 置位,落地/失败清位)
     pub history_loading: bool,
-    /// 「加载更早」翻页中(防重复触发;落地/失败清位)
-    pub loading_earlier: bool,
-    /// 未加载锚点点击后的挂起跳转目标(节点 key;前插页落地后若目标
-    /// 已载则跳转,否则继续向前翻页直至载入或到头)
-    pub pending_anchor_jump: Option<String>,
     /// 轮尾统计卡开态(用量/用时 pill 点击;点击坐标锚定,根级渲染)
     pub tail_card: Option<TailCard>,
     /// 轮号用量桶,键 = (会话 id, 轮号)。挂应用级 ChatStore 而非会话
@@ -425,8 +420,6 @@ impl Default for ChatStore {
             tv_remeasure_dirty: false,
             nav_anchors_cache: None,
             history_loading: false,
-            loading_earlier: false,
-            pending_anchor_jump: None,
         }
     }
 }
@@ -1075,115 +1068,6 @@ impl AppStore {
             item_ix: slot_ix,
             offset_in_item: gpui_kit::px(0.),
         });
-        cx.notify();
-    }
-
-    /// 未加载锚点点击(尾窗化后导航轨含会话头方向的未载轮次):向前
-    /// 翻页直至目标锚点载入后跳转。已载锚点(或 key 能落到组行)直接跳。
-    pub fn load_earlier_for_anchor(&mut self, key: String, cx: &mut Context<Self>) {
-        if let Some(ix) = self.slot_index_of_anchor(&key) {
-            self.jump_to_nav(ix, cx);
-            return;
-        }
-        // 跳转意图:先解锁钉底(jump_to_nav 同语义;否则 Bottom 跟随
-        // 会把前插后的视口甩回底部)
-        self.chat.pinned = false;
-        self.chat.pending_anchor_jump = Some(key);
-        self.load_earlier(cx);
-    }
-
-    /// 「加载更早」:以尾窗游标([`ChatState::history_cut`])为界向前翻
-    /// 一页并**前插**合并。翻页中置 loading_earlier 防重复触发。
-    pub fn load_earlier(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.state.current_id.clone() else {
-            return;
-        };
-        let Some(chat) = self.state.chats.get(&id) else {
-            return;
-        };
-        if !chat.history_has_more || self.chat.loading_earlier {
-            return;
-        }
-        let before = chat.history_cut;
-        self.chat.loading_earlier = true;
-        let store = cx.entity().clone();
-        let host = self.bridge.host().clone();
-        let rx = self.bridge.call(async move {
-            host.history(
-                &id,
-                Some(before),
-                crate::features::sessions::HISTORY_TAIL_MESSAGES,
-            )
-            .await
-        });
-        cx.spawn(async move |_this, cx| {
-            let page = rx.await;
-            store.update(cx, |s, cx| {
-                s.finish_load_earlier(page, cx);
-            });
-            Ok::<(), anyhow::Error>(())
-        })
-        .detach();
-    }
-
-    /// 「加载更早」落地:前插合并 + 游标推进 + 视口锚定。头部插入不能
-    /// 走尾部 splice 记账(测高缓存按行号存放会整体错位),必须锚定
-    /// 重建;锚 key 在**变更前**捕获——前插后旧行号已错位,不能再读。
-    fn finish_load_earlier(
-        &mut self,
-        page: Result<
-            Result<liuma_core::proto::HistoryValue, liuma_core::proto::RpcError>,
-            futures::channel::oneshot::Canceled,
-        >,
-        cx: &mut Context<Self>,
-    ) {
-        self.chat.loading_earlier = false;
-        let Ok(Ok(page)) = page else {
-            let detail = match &page {
-                Ok(Err(rpc)) => rpc.message.clone(),
-                Err(e) => format!("{e}"),
-                _ => String::new(),
-            };
-            self.chat.pending_anchor_jump = None;
-            self.push_local_notice(&format!("加载更早失败:{detail}"), cx);
-            return;
-        };
-        let Some(id) = self.state.current_id.clone() else {
-            return;
-        };
-        let liuma_core::proto::HistoryValue {
-            events,
-            has_more,
-            cut,
-            ..
-        } = page;
-        // 视口锚(变更前):顶行稳定 key
-        let anchor = self.viewport_anchor();
-        {
-            let chat = self.state.chats.entry(id).or_default();
-            let page_events: Vec<liuma_core::proto::SessionEvent> =
-                events.into_iter().map(|e| e.event).collect();
-            chat.prepend_history(page_events);
-            chat.history_cut = cut;
-            chat.history_has_more = has_more;
-        }
-        self.ensure_row_slots();
-        match self.chat.pending_anchor_jump.take() {
-            Some(target) => match self.slot_index_of_anchor(&target) {
-                Some(ix) => self.jump_to_nav(ix, cx),
-                None if has_more => {
-                    // 目标仍在更早处:继续向前翻(链式,至载入或到头)
-                    self.chat.pending_anchor_jump = Some(target);
-                    self.load_earlier(cx);
-                }
-                None => {
-                    // 到头仍未中(锚点索引与投影键面异常):放弃跳转,
-                    // 回落到视口锚定
-                    self.reset_chat_list_anchored(anchor);
-                }
-            },
-            None => self.reset_chat_list_anchored(anchor),
-        }
         cx.notify();
     }
 
@@ -1880,21 +1764,12 @@ impl AppStore {
             .and_then(|s| s.parse::<u64>().ok());
         match self.bridge.host().fork_session(session_id, at_seq) {
             Ok(new_id) => {
-                // 新行同步插入(清单刷新已异步化;同 sessions::create_session)
-                self.state.sessions.push(liuma_core::proto::SessionSummary {
-                    session_id: new_id.clone(),
-                    updated_at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0),
-                    running: false,
-                    blank: false,
-                    parent_session_id: Some(session_id.to_string()),
-                    origin: None,
-                    cwd: None,
-                    agent_preset: None,
-                    projections: None,
-                });
+                self.push_local_session_row(
+                    new_id.clone(),
+                    false,
+                    Some(session_id.to_string()),
+                    None,
+                );
                 self.refresh_list(cx);
                 self.open_session(&new_id, cx);
             }

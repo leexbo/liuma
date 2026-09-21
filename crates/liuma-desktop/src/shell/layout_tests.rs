@@ -645,128 +645,6 @@ fn seeded_tail_history_live_send_shows_user_bubble(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 「加载更早」回归锁:60 轮种子尾窗打开(仅 ~50 轮投影,has_more),
-/// 对会话头方向的未加载锚点(user:3 = 第 1 轮)触发前插翻页 → 该锚点
-/// 变为已载入且视口跳转(钉底解锁)。
-#[gpui_kit::test]
-fn tail_window_load_earlier_loads_and_jumps_to_anchor(cx: &mut TestAppContext) {
-    cx.update(|app| {
-        gpui_kit::component::init(app);
-        crate::kits::theme::init(app);
-    });
-    allow_host_parking(cx);
-    let root = std::env::temp_dir().join(format!("liuma-load-earlier-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let (bridge, frames_rx) =
-        HostBridge::new_at(root.join("ws"), true, "", Some(root.join("sessions")))
-            .expect("桥构建失败");
-    // 种子:新建会话落位后覆写日志(此时尚未 attach,重载安全)
-    {
-        let id = bridge.host().create_session(None, None, None);
-        let proj_dir = std::fs::read_dir(root.join("sessions"))
-            .expect("会话根可读")
-            .flatten()
-            .find(|e| e.path().is_dir())
-            .map(|e| e.path())
-            .expect("project 目录存在");
-        let target = proj_dir.join(&id).join("session.jsonl");
-        std::fs::write(&target, seed_history_log(60)).expect("种子日志写入失败");
-    }
-    let store_cell = std::rc::Rc::new(std::cell::RefCell::new(None::<Entity<AppStore>>));
-    let store_capture = store_cell.clone();
-    // add_window_view 返回借用的 &mut VisualTestContext:按规范遮蔽 cx,
-    // 此后一律走 VisualTestContext 面(update/refresh/run_until_parked)
-    let (_view, cx) = cx.add_window_view(|window, cx| {
-        let store = cx.new(|cx| AppStore::new(bridge, cx));
-        store.update(cx, |s, cx| {
-            s.attach_window_state(window, cx);
-        });
-        let pump = store.clone();
-        store.update(cx, |_, cx| {
-            cx.spawn(async move |_this, cx| {
-                use futures::StreamExt as _;
-                let mut rx = frames_rx;
-                while let Some(frame) = rx.next().await {
-                    pump.update(cx, |s, cx| s.apply_frame(frame, cx));
-                }
-                Ok::<(), anyhow::Error>(())
-            })
-            .detach();
-        });
-        *store_capture.borrow_mut() = Some(store.clone());
-        let view = cx.new(|cx| WorkspaceView::new(store.clone(), cx));
-        gpui_kit::component::Root::new(view, window, cx)
-    });
-    let redraw = |cx: &mut gpui_kit::VisualTestContext| {
-        cx.refresh().expect("刷新失败");
-        cx.run_until_parked();
-    };
-    redraw(cx);
-
-    let store = store_cell.borrow().clone().expect("store 在场");
-    // 等历史 + 锚点索引异步落地
-    for _ in 0..100 {
-        redraw(cx);
-        let ready = cx.update(|_, app| st_anchor_ready(&store, app));
-        if ready {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    let (has_more, tail_loaded) = cx.update(|_, app| {
-        let st = store.read(app);
-        let id = st.state.current_id.clone().expect("当前会话在场");
-        let chat = st.state.chats.get(&id).expect("尾窗已投影");
-        (chat.history_has_more, chat.nodes.len())
-    });
-    assert!(has_more, "60 轮 > 尾窗必有更早: nodes={tail_loaded}");
-    // 未加载锚点:第 1 轮 user:3 不在尾窗投影内
-    let unloaded = cx.update(|_, app| {
-        let st = store.read(app);
-        let id = st.state.current_id.clone().unwrap();
-        let chat = st.state.chats.get(&id).unwrap();
-        !chat.nodes.iter().any(|n| n.key() == "user:3")
-    });
-    assert!(unloaded, "user:3 属会话头方向,尾窗不含");
-
-    // 触发「加载更早」(导航轨未加载锚点点击的 store 入口)
-    cx.update(|_, app| {
-        store.update(app, |st, cx| {
-            st.load_earlier_for_anchor("user:3".into(), cx)
-        });
-    });
-    let mut loaded = false;
-    for _ in 0..100 {
-        redraw(cx);
-        loaded = cx.update(|_, app| st_contains_node(&store, app, "user:3"));
-        if loaded {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    assert!(loaded, "前插翻页后 user:3 应已载入");
-    let pinned = cx.update(|_, app| store.read(app).chat.pinned);
-    assert!(!pinned, "跳转意图应解锁钉底");
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-/// 测试辅助:锚点索引是否已全量落地(60 轮种子)
-fn st_anchor_ready(store: &Entity<AppStore>, app: &mut gpui_kit::App) -> bool {
-    let st = store.read(app);
-    st.chat.anchor_index.len() == 60
-}
-
-/// 测试辅助:当前会话投影是否含指定节点 key
-fn st_contains_node(store: &Entity<AppStore>, app: &mut gpui_kit::App, key: &str) -> bool {
-    let st = store.read(app);
-    let id = st.state.current_id.clone().unwrap();
-    st.state
-        .chats
-        .get(&id)
-        .map(|c| c.nodes.iter().any(|n| n.key() == key))
-        .unwrap_or(false)
-}
-
 /// @ 补全回归锁:①长标题会话行必须单行截断——换行文本会溢出定高
 /// 行框叠绘到后续行(实测报障);②会话候选与文件候选同上限
 /// (MAX_RESULTS=20),否则会话多时补全卡一路顶到窗高。
@@ -9220,11 +9098,11 @@ fn row_slots_sig_skips_text_only_rebuild(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 真实大会话日志全链路回归(种子 = 线上 58k 事件会话原样拷贝;尾窗
-/// 分页 + 虚拟滚动架构):打开仅投影尾窗(has_more)→ 当前轮标记绘制
-/// (「不亮」回归)→ 点击会话头方向远端锚点 = 前插翻页链至载入后跳转
-/// → 滚动条比例域连续(thumb 位置 = 顶行序号/总条数,与测高解耦,
-/// 「到顶跳中间/忽长忽短」回归)
+/// 真实大会话日志全链路回归(种子 = 线上 58k 事件会话原样拷贝;全量
+/// 加载 + 虚拟滚动架构):打开即整段投影(无分页)→ 当前轮标记绘制
+/// (「不亮」回归)→ 点击任意远端锚点**直达**(无翻页)→ 滚动条比例
+/// 域连续(thumb 位置 = 顶行序号/总条数,与测高解耦,「到顶跳中间/
+/// 忽长忽短」回归)
 #[gpui_kit::test]
 fn real_log_full_load_direct_anchor_and_stable_scrollbar(cx: &mut TestAppContext) {
     use gpui_kit::component::scroll::ScrollbarHandle as _;
@@ -9262,8 +9140,7 @@ fn real_log_full_load_direct_anchor_and_stable_scrollbar(cx: &mut TestAppContext
     let mut wcx = wcx.clone();
     let store = store_cell.borrow().clone().expect("store 未捕获");
 
-    // 尾窗投影 + 锚点索引落位(58k 事件日志:首屏仅尾窗 100 条 surface,
-    // has_more 置位;轮询收敛)
+    // 全量投影 + 锚点索引落位(58k 事件翻译在后台,轮询收敛)
     let mut ok = false;
     for _ in 0..120 {
         wcx.refresh().expect("刷新失败");
@@ -9274,7 +9151,7 @@ fn real_log_full_load_direct_anchor_and_stable_scrollbar(cx: &mut TestAppContext
             st.state
                 .chats
                 .get(&sid)
-                .is_some_and(|c| c.history_has_more && !c.nodes.is_empty())
+                .is_some_and(|c| c.nodes.len() > 1000)
                 && !st.chat.anchor_index.is_empty()
         });
         if ready {
@@ -9282,12 +9159,9 @@ fn real_log_full_load_direct_anchor_and_stable_scrollbar(cx: &mut TestAppContext
             break;
         }
     }
-    assert!(ok, "尾窗投影未落位(超时)");
-    let (tail_nodes, has_more) = cx.update(|app| {
-        let c = store.read(app).state.chats.get(&sid).unwrap();
-        (c.nodes.len(), c.history_has_more)
-    });
-    assert!(has_more, "真实长日志应触发尾窗分页: nodes={tail_nodes}");
+    assert!(ok, "全量投影未落位(超时)");
+    let nodes = cx.update(|app| store.read(app).state.chats.get(&sid).unwrap().nodes.len());
+    assert!(nodes > 1000, "真实日志应整段投影: nodes={nodes}");
 
     // 诊断:导航轨显隐三条件
     let diag = cx.update(|app| {
@@ -9331,8 +9205,7 @@ fn real_log_full_load_direct_anchor_and_stable_scrollbar(cx: &mut TestAppContext
         (offset / content.max(1.), top as f32 / count.max(1) as f32)
     };
 
-    // 点击最远端(第一个)锚点:尾窗化后首锚未加载 → 前插翻页链
-    // (链式至载入)→ 跳转目标轮
+    // 点击最远端(第一个)锚点:直达目标轮,无翻页等待
     let target = cx.update(|app| {
         let idx = &store.read(app).chat.anchor_index;
         idx.first()
@@ -9340,25 +9213,22 @@ fn real_log_full_load_direct_anchor_and_stable_scrollbar(cx: &mut TestAppContext
             .expect("锚点索引非空")
     });
     cx.update(|app| {
-        store.update(app, |s, cx| s.load_earlier_for_anchor(target.clone(), cx));
-    });
-    let mut chain_done = false;
-    for _ in 0..200 {
-        wcx.refresh().expect("刷新失败");
-        cx.run_until_parked();
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        chain_done = cx.update(|app| {
-            let st = store.read(app);
-            st.state
-                .chats
-                .get(&sid)
-                .is_some_and(|c| c.nodes.iter().any(|nd| nd.key() == target.as_str()))
+        store.update(app, |s, cx| {
+            let ix = s
+                .chat
+                .row_slots
+                .iter()
+                .position(|slot| match slot {
+                    crate::features::chat::RowSlot::Node(n)
+                    | crate::features::chat::RowSlot::GroupMember(n) => {
+                        s.current_nodes().get(*n).map(|nd| nd.key()) == Some(target.as_str())
+                    }
+                    _ => false,
+                })
+                .expect("全量加载后首锚必在行槽内");
+            s.jump_to_nav(ix, cx);
         });
-        if chain_done {
-            break;
-        }
-    }
-    assert!(chain_done, "前插翻页链应载入首锚 {target}");
+    });
     wcx.refresh().expect("刷新失败");
     cx.run_until_parked();
 

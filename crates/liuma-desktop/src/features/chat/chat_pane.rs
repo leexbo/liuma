@@ -6,8 +6,10 @@
 //! 渲染意图卡路由)/Think 行(点击展开)/回合收尾。
 
 use gpui_kit::component::IconName;
+use gpui_kit::component::Sizable as _;
 use gpui_kit::component::StyledExt;
 use gpui_kit::component::native_menu::NativeMenu;
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, App, Div, Entity, InteractiveElement, IntoElement,
@@ -143,18 +145,16 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         }
     };
 
-    // 首载骨架 / 「加载更早」指示:尾窗化后打开长会话的空白等待期
-    // (attach 读档 + 尾窗翻译回放)不能裸白——有反馈才不像「没有内容」
-    let (history_loading_empty, loading_earlier) = {
+    // 历史加载骨架:冷会话整档读档期间(点击会话 → history 落地)聊天
+    // 区不能裸白——有反馈才不像「没有内容」。投影已就位(重开已缓存
+    // 会话)则不显示
+    let history_loading_empty = {
         let st = store.read(cx);
         let nodes_empty = st
             .current_chat()
             .map(|c| c.nodes.is_empty())
             .unwrap_or(true);
-        (
-            st.chat.history_loading && nodes_empty,
-            st.chat.loading_earlier,
-        )
+        st.chat.history_loading && nodes_empty
     };
 
     // 逐项闭包持 store 实体:虚拟化下只有可视(+overdraw)项被
@@ -312,6 +312,8 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 .min_w(px(0.))
                 .min_h(px(0.))
                 .flex_1()
+                // 骨架的定位锚(absolute inset_0)
+                .relative()
                 // 左锚点槽 + 右滚动条槽(与 metrics::chat_col_w 的扣减同
                 // 源):窄窗下列吃满可用宽时,刻度/滚动条 thumb 不得叠上
                 // 文字。所有列对齐
@@ -336,8 +338,6 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                             .show(ev.position, window, cx);
                     }
                 })
-                // 骨架/翻页指示的定位锚(absolute inset_0 / top)
-                .relative()
                 // 列表满宽:滚轮命中区 = 整个消息区(行级居中由 item
                 // 包裹层承担,见上方 justify_center)
                 .child(list.h_full().w_full().py(px(8.)))
@@ -357,46 +357,8 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                                     .gap(px(8.))
                                     .text_size(px(13.))
                                     .text_color(theme::CAPTION())
-                                    .child("正在加载会话内容…")
-                                    .with_animation(
-                                        "liuma-history-loading",
-                                        Animation::new(std::time::Duration::from_millis(1800))
-                                            .repeat()
-                                            .with_easing(gpui_kit::pulsating_between(0.45, 0.95)),
-                                        |el, delta| el.opacity(delta),
-                                    ),
-                            ),
-                    )
-                })
-                .when(loading_earlier, |el| {
-                    el.child(
-                        div()
-                            .debug_selector(|| "load-earlier-indicator".to_string())
-                            .absolute()
-                            .top(px(8.))
-                            .left_0()
-                            .w_full()
-                            .flex()
-                            .justify_center()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.))
-                                    .px(px(10.))
-                                    .py(px(4.))
-                                    .rounded(px(6.))
-                                    .bg(theme::CARD())
-                                    .text_size(px(12.))
-                                    .text_color(theme::CAPTION())
-                                    .child("正在加载更早的消息…")
-                                    .with_animation(
-                                        "liuma-load-earlier",
-                                        Animation::new(std::time::Duration::from_millis(1800))
-                                            .repeat()
-                                            .with_easing(gpui_kit::pulsating_between(0.45, 0.95)),
-                                        |el, delta| el.opacity(delta),
-                                    ),
+                                    .child(Spinner::new().small())
+                                    .child("正在加载会话内容…"),
                             ),
                     )
                 }),
@@ -690,12 +652,10 @@ fn nav_ticks(
             })
             .on_click(move |_, _, cx| {
                 sc.update(cx, |st, cx| {
-                    // 已载锚点 → 跳转;未载锚点(尾窗化后导航轨含会话头
-                    // 方向的未载轮次)→ 向前翻页直至载入后跳转
+                    // 全量加载后所有锚点都在列表内,slot 恒 Some(None
+                    // 分支是历史分页遗留,索引与投影瞬态不一致的兜底)
                     if let Some(ix) = slot {
                         st.jump_to_nav(ix, cx);
-                    } else {
-                        st.load_earlier_for_anchor(key.clone(), cx);
                     }
                 });
             })
