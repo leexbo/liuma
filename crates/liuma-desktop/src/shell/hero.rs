@@ -122,6 +122,8 @@ pub fn render(
                         )),
                 )
                 .child(composer::render(store, window, cx))
+                // composer 的权限/模型/上下文卡不在此挂:统一根级渲染于
+                // shell/mod.rs(与 chat 页同根,本页自动生效)
                 // 菜单卡挂列尾(后于 composer,绘制在其上——挂 chip 行内
                 // 会被 composer 盖住).以内容盒为锚,top 从内容盒顶到
                 // chips 行底 + 6:logo(64)+gap(10)+标题(~21)+gap(12)

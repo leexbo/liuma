@@ -275,8 +275,10 @@ fn bottom_row(
     let menu = st.chat.composer_menu;
     let occupancy = st.context_occupancy();
     let cmds = st.bridge.host().command_list();
-    // 卡顶锚的 bottom(须在可变借用前读;见 menu_slot 注释)
-    let anchor_bottom = st.chat.composer_h - 7.;
+    // 卡顶锚的 bottom(须在可变借用前读;见 menu_slot 注释)。留 2px
+    // 隙:canvas 量的是去边框内盒,-7 时卡底正好压在 1px 顶描边上被
+    // 后绘盖掉一线(与 @ 补全卡顶上方 2px 同标准)
+    let anchor_bottom = st.chat.composer_h - 5.;
 
     let cmd_trigger = round_button("composer-cmd", fixed(IconName::Plus, 14.)).on_click({
         let s = store.clone();
@@ -370,7 +372,8 @@ fn bottom_row(
                 .bg(theme::BORDER()),
         )
         // 权限 chip:卡片**根级渲染**(shell/mod.rs,同 +/行/工作区菜单;
-        // 内联浮层叠进输入卡子树会透视,根级无此问题)。
+        // 内联浮层叠进输入卡子树会被卡体描边后绘盖住,根级无此问题;
+        // 模型/上下文已同迁根级,见 root_popover_card)。
         // 这里只放 chip + 渲染期 bounds 捕获(根级锚定的定位分子)
         .child(div().relative().flex_shrink_0().child(perm_trigger).child(
             div().absolute().inset_0().child({
@@ -388,18 +391,21 @@ fn bottom_row(
         // 命令菜单「plan」行)
         .children(plan_mode.then(|| plan_chip(store, st.chat.plan_chip_hovered)))
         .child(div().flex_1())
-        .child(menu_slot(
+        // 模型/上下文触发:卡体**根级渲染**(shell/mod.rs,权限卡同模式;
+        // 内联浮层越出输入卡顶会被卡体描边后绘盖住)。这里只放触发钮 +
+        // 渲染期 bounds 捕获(根级锚定的定位分子)
+        .child(root_trigger_slot(
+            store,
+            menu == ComposerMenu::Model,
             model_trigger,
-            (menu == ComposerMenu::Model).then(|| model_card(store, cx)),
-            TRIGGER_ANCHOR_BOTTOM,
-            AlignRight(true),
+            AnchorChip::Model,
         ))
         .children(occupancy.map(|o| {
-            menu_slot(
+            root_trigger_slot(
+                store,
+                menu == ComposerMenu::Context,
                 context_button(store, o),
-                (menu == ComposerMenu::Context).then(|| context_card(store, cx)),
-                TRIGGER_ANCHOR_BOTTOM,
-                AlignRight(true),
+                AnchorChip::Context,
             )
         }))
         .child(send_or_stop(store, running))
@@ -407,7 +413,8 @@ fn bottom_row(
 
 /// 下拉槽:relative 锚 + 开态豁免 + 开态锚卡(向上弹,仅开时渲染;
 /// 底缘 = 输入卡顶上方 2px,卡高随命令行/输入行数变化自适应)。
-/// 权限下拉不走此槽(根级渲染,见 bottom_row 注释)。occlude 阻断
+/// 现仅剩「+」命令菜单走此槽;权限/模型/上下文均根级渲染(见
+/// bottom_row 注释与 root_popover_card)。occlude 阻断
 /// 命中向卡后方穿透。豁免 = wrapper 与锚卡都挂 mousedown
 /// stop_propagation:根级外点关闭按 hitbox 树派发,锚卡几何上超出
 /// wrapper 矩形,豁免必须各自持有——漏挂锚卡则点菜单行先触发关闭
@@ -416,11 +423,85 @@ fn bottom_row(
 #[derive(Clone, Copy)]
 pub(crate) struct AlignRight(pub(crate) bool);
 
-/// 右段锚卡(模型/上下文)的垂直锚:卡底贴 trigger(bottom_row,声明
-/// 高 42px)顶上方 4px——旧值 `composer_h - 7` 把卡锚到输入卡顶,与
-/// 小尺寸 trigger 之间隔着整条 bottom_row,视觉上不在按钮上方(真机
-/// 反馈「弹出位置应该在圆环上方」)。
-const TRIGGER_ANCHOR_BOTTOM: f32 = 36.;
+/// 根级锚卡底缘与 trigger 顶的缝隙 = 原内联 TRIGGER_ANCHOR_BOTTOM(36)
+/// 减 trigger 高(24)——保持既有视觉位不变(旧注释「4px」系笔误,
+/// 实际缝隙一直是 12px)
+const TRIGGER_GAP: f32 = 12.;
+
+/// 根级渲染触发槽(权限 chip 同款,见 bottom_row 注释):触发钮 +
+/// 渲染期 bounds 捕获(canvas 默认 0 高,经 absolute inset_0 铺满
+/// wrapper 取尺寸;无 hitbox 不挡交互)+ 开态 mousedown 豁免——
+/// 点触发钮自身 = toggle 关闭,豁免拦下根级外点先关再开的重开
+/// (与 menu_slot wrapper 豁免同语义)
+fn root_trigger_slot(
+    store: &Entity<AppStore>,
+    open: bool,
+    trigger: gpui_kit::Stateful<gpui_kit::Div>,
+    chip: AnchorChip,
+) -> gpui_kit::AnyElement {
+    div()
+        .relative()
+        .flex_shrink_0()
+        .when(open, |el| {
+            el.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        })
+        .child(trigger)
+        .child(div().absolute().inset_0().child({
+            let cap = store.clone();
+            gpui_kit::canvas(
+                move |b, _, cx| {
+                    cap.update(cx, |st, _| match chip {
+                        AnchorChip::Model => st.chat.model_chip_bounds = Some(b),
+                        AnchorChip::Context => st.chat.context_ring_bounds = Some(b),
+                    });
+                },
+                |_, _, _, _| {},
+            )
+            .size_full()
+        }))
+        .into_any_element()
+}
+
+/// root_trigger_slot 的捕获目标(写哪个 bounds 字段)
+#[derive(Clone, Copy)]
+enum AnchorChip {
+    /// 模型 chip(chip-model)
+    Model,
+    /// 上下文圆环钮(context-ring)
+    Context,
+}
+
+/// 根级挂载的模型/上下文下拉卡(由 shell/mod.rs 在根级渲染;hero 挂载
+/// 点与 chat 同根,无需另挂)。vh/vw 由调用方在闭包内取(视口闭包链
+/// 的临时闭包并存,不能可变捕获 window)。几何 = 原内联槽:卡底贴
+/// trigger 顶上方 TRIGGER_GAP、右缘贴 trigger 右向左展开(min 8px
+/// 视口内收,同 menu_slot 右段对齐防溢出)。occlude 阻命中穿透 +
+/// mousedown 豁免防外点关闭吞菜单行点击(同 menu_slot 锚卡豁免语义)
+pub(crate) fn root_popover_card(
+    store: &Entity<AppStore>,
+    menu: ComposerMenu,
+    anchor: gpui_kit::Bounds<gpui_kit::Pixels>,
+    vh: f32,
+    vw: f32,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    let (id, card) = match menu {
+        ComposerMenu::Model => ("composer-model-menu", model_card(store, cx)),
+        ComposerMenu::Context => ("composer-context-menu", context_card(store, cx)),
+        _ => return div().into_any_element(),
+    };
+    let right = (vw - f32::from(anchor.origin.x + anchor.size.width)).max(8.);
+    div()
+        .id(id)
+        .debug_selector(move || id.to_string())
+        .absolute()
+        .right(px(right))
+        .bottom(px(vh - f32::from(anchor.origin.y) + TRIGGER_GAP))
+        .occlude()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(card)
+        .into_any_element()
+}
 
 fn menu_slot(
     trigger: gpui_kit::Stateful<gpui_kit::Div>,
@@ -858,7 +939,8 @@ fn context_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
 
 /// 权限下拉卡(选项来自 describe permissions;当前值勾选)。
 /// **根级渲染**(shell/mod.rs):内联浮层叠进输入卡子树会透视,
-/// 照 +/行/工作区菜单的根级模式挂出
+/// 照 +/行/工作区菜单的根级模式挂出(模型/上下文卡已随本改动同迁
+/// 根级,见 root_popover_card)
 pub(crate) fn permission_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
     let st = store.read(cx);
     let current = st.current_cfg_or_default().permission;

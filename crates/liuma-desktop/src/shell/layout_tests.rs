@@ -1717,7 +1717,8 @@ fn provider_switch_refreshes_billing_badge(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 菜单外点关闭:开权限菜单 → 点输入区(冒泡到根级关闭)
+/// 菜单外点关闭:开权限菜单 → 点输入区(冒泡到根级关闭);根级渲染
+/// 的模型卡同路径复验
 #[gpui_kit::test]
 fn menu_closes_on_outside_click(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "outside");
@@ -1735,6 +1736,22 @@ fn menu_closes_on_outside_click(cx: &mut TestAppContext) {
         cx.update(|app| store.read(app).chat.composer_menu),
         crate::features::chat::ComposerMenu::None,
         "外点应关闭菜单"
+    );
+
+    // 模型卡(根级渲染)同样靠根级外点关闭
+    click_sel(&mut wcx, "chip-model");
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|app| store.read(app).chat.composer_menu),
+        crate::features::chat::ComposerMenu::Model,
+        "模型菜单应已打开"
+    );
+    click_sel(&mut wcx, "composer-hit");
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|app| store.read(app).chat.composer_menu),
+        crate::features::chat::ComposerMenu::None,
+        "外点应关闭模型菜单"
     );
     let _ = std::fs::remove_dir_all(root);
 }
@@ -6004,10 +6021,10 @@ fn context_meter_renders_and_opens(cx: &mut TestAppContext) {
         wcx.debug_bounds("context-ring-open").is_some(),
         "详情卡未打开"
     );
-    // 自适应对齐:锚在 composer 行右段 → 卡右缘不得超出锚(圆环)右缘
+    // 根级对齐(权限卡同模式):卡右缘贴齐锚(圆环)右缘向左展开
     // (left_0 旧形态向右展开,真机反馈卡体右缘被视口切掉)
     let card = wcx
-        .debug_bounds("composer-menu-anchor-right")
+        .debug_bounds("composer-context-menu")
         .expect("锚卡 bounds");
     let ring = wcx.debug_bounds("context-ring").expect("圆环 bounds");
     assert!(
@@ -6016,13 +6033,13 @@ fn context_meter_renders_and_opens(cx: &mut TestAppContext) {
         card.origin.x + card.size.width,
         ring.origin.x + ring.size.width
     );
-    // 垂直锚:卡底缘贴圆环顶上方(缝隙 4px 设计;旧值把卡锚到输入卡
-    // 顶,与圆环之间隔着整条 bottom_row)。双向断言防「飘高」:卡底与
-    // 圆环顶的缝隙应在容差带内
+    // 垂直锚:卡底缘贴圆环顶上方(缝隙 12px 设计 = TRIGGER_GAP,根级
+    // 渲染与原内联锚同位)。双向断言防「飘高」:卡底与圆环顶的缝隙应
+    // 在容差带内(带宽 ±2,避 12 整数浮点边界)
     let gap = ring.origin.y - (card.origin.y + card.size.height);
     assert!(
-        gap >= px(-2.) && gap <= px(12.),
-        "卡底应贴圆环顶上方(缝隙 4px 设计):实际缝隙 {:.1}px",
+        gap >= px(6.) && gap <= px(14.),
+        "卡底应贴圆环顶上方(缝隙 12px 设计):实际缝隙 {:.1}px",
         f32::from(gap)
     );
     let _ = std::fs::remove_dir_all(root);
@@ -8012,8 +8029,9 @@ fn task_bar_switches_between_main_and_subagent(cx: &mut gpui_kit::TestAppContext
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 权限下拉锚在触发行上方、盖过输入卡体
-/// (**仅权限**用此锚,其余下拉维持卡顶上方原形态)。
+/// 权限下拉锚在触发行上方、盖过输入卡体(模型/上下文已同迁根级,
+/// 分别见 model_menu_root_card_anchors_above_trigger /
+/// context_meter_renders_and_opens)。
 /// 锁:卡底缘贴触发 chip 顶上方 ≤12px、左缘对齐触发 chip、卡体越过
 /// 输入卡顶缘
 #[gpui_kit::test]
@@ -8053,6 +8071,72 @@ fn composer_menu_floats_above_trigger(cx: &mut TestAppContext) {
         "菜单体应盖过输入卡顶缘,menu.bottom={:?} input.top={:?}",
         card.bottom(),
         input.origin.y
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 模型下拉根级渲染(权限卡同模式):卡底贴 chip 顶上方(缝隙 12px
+/// 设计 = TRIGGER_GAP)、右缘对齐 chip、卡体越过输入卡顶缘。回归锚:
+/// 内联挂输入卡子树时,卡体描边后绘会盖住越卡顶的浮层(Style::paint
+/// 先子后边);级联子卡随主卡同迁,子卡展开后外点仍可关闭
+#[gpui_kit::test]
+fn model_menu_root_card_anchors_above_trigger(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "model-float");
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    click_sel(&mut wcx, "chip-model");
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|app| store.read(app).chat.composer_menu),
+        crate::features::chat::ComposerMenu::Model,
+        "模型菜单应已打开"
+    );
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    let card = wcx
+        .debug_bounds("composer-model-menu")
+        .expect("模型菜单应渲染");
+    let trigger = wcx.debug_bounds("chip-model").expect("模型 chip 应渲染");
+    // 右缘对齐(右段向左展开,防视口裁切)
+    assert!(
+        card.origin.x + card.size.width <= trigger.origin.x + trigger.size.width + px(1.),
+        "卡右缘应贴齐 chip 右缘:卡右 {:.1} vs chip 右 {:.1}",
+        card.origin.x + card.size.width,
+        trigger.origin.x + trigger.size.width
+    );
+    // 垂直锚:卡底贴 chip 顶上方(缝隙 12px 设计,带宽 ±2 避浮点边界)
+    let gap = trigger.origin.y - (card.origin.y + card.size.height);
+    assert!(
+        gap >= px(6.) && gap <= px(14.),
+        "卡底应贴 chip 顶上方(缝隙 12px 设计):实际缝隙 {:.1}px",
+        f32::from(gap)
+    );
+    // 修复点:卡体越过输入卡顶缘(内联形态下该区域会被卡体描边盖住)
+    let input = wcx.debug_bounds("composer-card").expect("输入卡应渲染");
+    assert!(
+        card.bottom() > input.origin.y,
+        "菜单体应盖过输入卡顶缘,menu.bottom={:?} input.top={:?}",
+        card.bottom(),
+        input.origin.y
+    );
+    // 级联子卡:一级「模型」行点开右侧子卡
+    click_sel(&mut wcx, "model-entry");
+    cx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("model-submenu").is_some(),
+        "级联子卡应展开"
+    );
+    // 子卡展开态下外点仍走根级关闭
+    click_sel(&mut wcx, "composer-hit");
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|app| store.read(app).chat.composer_menu),
+        crate::features::chat::ComposerMenu::None,
+        "外点应关闭模型菜单"
     );
     let _ = std::fs::remove_dir_all(root);
 }

@@ -238,6 +238,13 @@ pub(crate) struct ChatStore {
     /// 下拉卡**根级渲染**的锚——卡底缘贴 chip 顶上方 5px、左对齐
     /// (根级原因见 permission_card)
     pub perm_chip_bounds: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
+    /// 模型 chip 的窗口 bounds(渲染期 canvas 捕获,上一帧值):模型
+    /// 下拉卡**根级渲染**的锚——卡底缘贴 chip 顶上方 12px、右对齐
+    /// (根级原因见 composer::root_popover_card)
+    pub model_chip_bounds: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
+    /// 上下文圆环钮的窗口 bounds(同 model_chip_bounds):上下文详情
+    /// 卡根级渲染的锚
+    pub context_ring_bounds: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
     /// 模型菜单级联子菜单(一级行点开的右侧子卡;None = 全收)
     pub composer_submenu: Option<ComposerSubmenu>,
     /// 队列条带折叠态(多条时计数头收起;单条恒直显)
@@ -364,6 +371,8 @@ impl Default for ChatStore {
             rendered_version: 0,
             composer_menu: ComposerMenu::None,
             perm_chip_bounds: None,
+            model_chip_bounds: None,
+            context_ring_bounds: None,
             tail_card: None,
             turn_usage: HashMap::new(),
             composer_submenu: None,

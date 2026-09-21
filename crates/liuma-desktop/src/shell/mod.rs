@@ -632,8 +632,8 @@ impl Render for WorkspaceView {
                 el.children(card)
             })
             // composer 权限下拉(根级渲染,同 +/行/工作区菜单模式:
-            // 内联浮层叠进输入卡子树会透视;其余
-            // composer 下拉不叠卡体,维持内联)。锚 = 渲染期捕获的
+            // 内联浮层叠进输入卡子树会被卡体描边后绘盖住;模型/上下文
+            // 两卡已同迁根级,见下)。锚 = 渲染期捕获的
             // chip bounds(见 ChatState.perm_chip_bounds):卡底缘贴
             // chip 顶上方 5px、左缘对齐。settings 整列接管时
             // 不渲染(composer 已让位,bounds 为陈旧值)
@@ -657,6 +657,58 @@ impl Render for WorkspaceView {
                                     cx.stop_propagation()
                                 })
                                 .child(card)
+                        })
+                    };
+                    el.children(card)
+                },
+            )
+            // composer 模型下拉卡(根级渲染,权限卡同模式:内联浮层越出
+            // 输入卡顶会被卡体描边后绘盖住,见 composer::root_popover_card)。
+            // 锚 = 渲染期捕获的 chip bounds(ChatState.model_chip_bounds):
+            // 卡底缘贴 chip 顶上方 12px、右缘对齐。hero 挂载点与本根同源,
+            // 无需另挂;settings 整列接管时不渲染(composer 已让位,
+            // bounds 为陈旧值)
+            .when(
+                self.store.read(cx).chat.composer_menu == ComposerMenu::Model
+                    && !self.store.read(cx).settings.settings_open,
+                |el| {
+                    let card = {
+                        let st = self.store.read(cx);
+                        st.chat.model_chip_bounds.map(|b| {
+                            let vh = f32::from(window.viewport_size().height);
+                            let vw = f32::from(window.viewport_size().width);
+                            chat::composer::root_popover_card(
+                                &self.store,
+                                ComposerMenu::Model,
+                                b,
+                                vh,
+                                vw,
+                                cx,
+                            )
+                        })
+                    };
+                    el.children(card)
+                },
+            )
+            // composer 上下文详情卡(同模型卡模式;锚 =
+            // ChatState.context_ring_bounds)
+            .when(
+                self.store.read(cx).chat.composer_menu == ComposerMenu::Context
+                    && !self.store.read(cx).settings.settings_open,
+                |el| {
+                    let card = {
+                        let st = self.store.read(cx);
+                        st.chat.context_ring_bounds.map(|b| {
+                            let vh = f32::from(window.viewport_size().height);
+                            let vw = f32::from(window.viewport_size().width);
+                            chat::composer::root_popover_card(
+                                &self.store,
+                                ComposerMenu::Context,
+                                b,
+                                vh,
+                                vw,
+                                cx,
+                            )
                         })
                     };
                     el.children(card)
