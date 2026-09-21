@@ -291,6 +291,11 @@ pub struct ChatState {
     /// 的第二来源。节点只追加与就地改、无删除/重排(全文件变更面核查),
     /// 索引随 push 维护即可,无需失效路径。
     node_index: std::collections::HashMap<String, usize>,
+    /// 历史尾窗游标:已载入最旧一页的 cut(该页首事件之前沿;0 = 会话头)。
+    /// 「加载更早」以此为 before_seq 向前翻页
+    pub history_cut: u64,
+    /// 更早还有未载入历史(cut > 0)。导航轨未加载锚点的可点前提
+    pub history_has_more: bool,
     /// 历史合并中(born 不记录:载入的历史行不做入场动画;仅方法内瞬态)
     merging: bool,
 }
@@ -325,6 +330,35 @@ impl ChatState {
         self.node_born.retain(|k, _| live.contains(k.as_str()));
         self.retry_deadlines
             .retain(|k, _| live.contains(k.as_str()));
+    }
+
+    /// 头窗前插(「加载更早」:更早一页投影后整段前插)。
+    ///
+    /// 节点 key 全局唯一(翻译层经 prime 预热,turn/step 是会话全局
+    /// 编号;user/plan 等键含信封 seq),前插页与已载页只在轮边界相邻、
+    /// 不共享节点。前插使全部下标偏移,节点索引整表重建;transients
+    /// (running/compact)以已载的较新窗口为准,前插页重放态丢弃。
+    pub fn prepend_history(&mut self, events: impl IntoIterator<Item = SessionEvent>) {
+        let mut older = ChatState {
+            merging: true,
+            ..Default::default()
+        };
+        for ev in events {
+            older.apply(&ev);
+        }
+        // 保守按 key 去重(两窗节点理论上不相交,见上;防御未来键面变化)
+        let mut page = older.nodes;
+        page.retain(|n| !self.node_index.contains_key(n.key()));
+        if page.is_empty() {
+            return;
+        }
+        self.nodes.splice(0..0, page);
+        // 前插使全部下标偏移,索引整表重建(O(n),翻页低频)
+        self.node_index.clear();
+        for (ix, node) in self.nodes.iter().enumerate() {
+            self.node_index.insert(node.key().to_string(), ix);
+        }
+        // 前插页都是已收口的历史轮:born/retry 元数据无需登记
     }
     /// 应用单个客方事件
     pub fn apply(&mut self, ev: &SessionEvent) {
@@ -2695,5 +2729,71 @@ mod tests {
         let mut merged = ChatState::default();
         merged.merge_history(evs);
         assert_eq!(merged.nodes, state.nodes, "merge 与 apply 等价");
+    }
+
+    /// 头窗前插回归锁:先载尾窗(轮 3-4),再前插头窗(轮 1-2)——
+    /// 节点序 = 会话序、key 全局唯一无冲突、前插页 transients 丢弃、
+    /// 同 key 保守去重不重复插入。翻译层经 prime 的全局 turn/step
+    /// 编号是两窗 key 不相交的前提(见 translate_window 差分锁)。
+    #[test]
+    fn prepend_history_orders_and_dedupes() {
+        let turn = |t: u64, base: u64| -> Vec<SessionEvent> {
+            vec![
+                ev("turn/start", base, json!({})),
+                ev(
+                    "user/message",
+                    base + 1,
+                    json!({ "content": format!("问题{t}") }),
+                ),
+                ev("step/start", base + 2, json!({ "turn": t, "step": 1 })),
+                ev(
+                    "assistant/message",
+                    base + 3,
+                    json!({ "turn": t, "step": 1, "content": format!("回答{t}") }),
+                ),
+                ev("turn/end", base + 4, json!({})),
+            ]
+        };
+        // 尾窗:轮 3、4(user 键 = user:10 / user:15)
+        let mut tail = ChatState::default();
+        let mut newer = turn(3, 9);
+        newer.extend(turn(4, 14));
+        tail.merge_history(newer);
+        tail.history_cut = 8;
+        tail.history_has_more = true;
+        let tail_len = tail.nodes.len();
+        let tail_keys: Vec<String> = tail.nodes.iter().map(|n| n.key().to_string()).collect();
+
+        // 头窗:轮 1、2。末尾附一条与尾窗同 key(user:10)的重复事件:
+        // 保守去重路径不得把它插成第二个 user:10
+        let mut older = turn(1, 1);
+        older.extend(turn(2, 6));
+        older.push(ev(
+            "user/message",
+            10,
+            json!({ "content": "问题3", "id": "u3" }),
+        ));
+        tail.prepend_history(older);
+
+        // 轮序正确:头窗在前、尾窗在后,总量 = 两页去重后
+        let keys: Vec<String> = tail.nodes.iter().map(|n| n.key().to_string()).collect();
+        assert_eq!(
+            keys.len(),
+            keys.iter().collect::<std::collections::HashSet<_>>().len(),
+            "key 无重复"
+        );
+        assert!(
+            keys.starts_with(&["user:2".to_string(), "a:1:1".to_string()][..]),
+            "头窗在前: {keys:?}"
+        );
+        assert_eq!(&keys[tail_len..], &tail_keys[..], "尾窗节点原序保留");
+        // 前插页 transients 丢弃(尾窗无 running 态)
+        assert!(!tail.running);
+        // 索引与线性扫描同答案(前插后重建生效)
+        for (ix, node) in tail.nodes.iter().enumerate() {
+            assert_eq!(tail.node_index.get(node.key()), Some(&ix));
+        }
+        // 跨窗切点相邻:头窗末节点(turn-end:10)与尾窗首节点(user:10)
+        assert_eq!(&keys[5..7], &["turn-end:10", "user:10"][..], "切点无缝");
     }
 }
