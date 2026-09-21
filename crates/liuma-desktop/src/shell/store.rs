@@ -54,6 +54,18 @@ pub struct SessionCfg {
     pub preset: String,
 }
 
+/// tooltip 显示延迟(hover 后毫秒;过迟显得迟钝)
+const TIP_DELAY_MS: u64 = 100;
+
+/// tooltip 锚槽位常量(与 [`AppStore::tip_bounds`] 键对应)
+pub(crate) const TIP_SEARCH: usize = 0;
+pub(crate) const TIP_VIEW_MENU: usize = 1;
+pub(crate) const TIP_ADD_WS: usize = 2;
+pub(crate) const TIP_FOLD: usize = 3;
+pub(crate) const TIP_PANEL_TOGGLE: usize = 4;
+/// 会话行归档钮槽位基址(每行 = 基址 + 行序,行数动态)
+pub(crate) const TIP_ARCHIVE_BASE: usize = 100;
+
 /// 应用状态根。
 pub struct AppStore {
     /// 图片附件功能切片状态(草稿轨/解码缓存/lightbox/拒收 toast;
@@ -117,6 +129,14 @@ pub struct AppStore {
     pub panel_active_tab: Option<PanelTab>,
     /// 面板「+」菜单锚点坐标(root 级渲染;None = 关)
     pub panel_plus_menu_at: Option<gpui_kit::Point<gpui_kit::Pixels>>,
+    /// 顶栏/侧栏钮 tooltip(hover 500ms 后显示;文本 + 锚 bounds,
+    /// 根级渲染;见 [`AppStore::header_tip_hover`])
+    pub header_tip: Option<(gpui_kit::SharedString, gpui_kit::Bounds<gpui_kit::Pixels>)>,
+    /// tooltip hover 代次(退场即自增,迟到的展示任务按代次失效)
+    header_tip_gen: u64,
+    /// tooltip 锚定 bounds 槽(渲染期 canvas 按槽位写入,键 = 槽位常量;
+    /// 行内动态元素以 TIP_ARCHIVE_BASE + 序号为槽)
+    pub tip_bounds: HashMap<usize, gpui_kit::Bounds<gpui_kit::Pixels>>,
     /// 侧栏展开宽(用户可拖宽;clamp 到 [SIDEBAR_MIN, SIDEBAR_MAX],
     /// 独立于折叠——折叠不写 0,重开仍用此宽)
     pub sidebar_px: f32,
@@ -214,6 +234,9 @@ impl AppStore {
             panel_tabs: Vec::new(),
             panel_active_tab: None,
             panel_plus_menu_at: None,
+            header_tip: None,
+            header_tip_gen: 0,
+            tip_bounds: HashMap::new(),
             sidebar_resize_anchor: None,
             sidebar_auto_collapsed: false,
             panel_auto_closed: false,
@@ -723,6 +746,44 @@ impl AppStore {
             .to_string()
     }
 
+    /// 顶栏/侧栏钮 hover 变化:进入登记代次并起 500ms 延迟任务(仍在
+    /// 悬停才显示),退场立即清除并自增代次(迟到的展示任务失效)。
+    /// bounds 由渲染期 canvas 捕获(见 tip_capture_layer)
+    pub fn header_tip_hover(
+        &mut self,
+        slot: usize,
+        text: &'static str,
+        enter: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.header_tip_gen += 1;
+        if !enter {
+            if self.header_tip.is_some() {
+                self.header_tip = None;
+                cx.notify();
+            }
+            return;
+        }
+        let Some(bounds) = self.tip_bounds.get(&slot).copied() else {
+            return;
+        };
+        let tip_gen = self.header_tip_gen;
+        let store = cx.entity().clone();
+        cx.spawn(async move |_this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(TIP_DELAY_MS))
+                .await;
+            let _ = store.update(cx, |st, cx| {
+                if st.header_tip_gen == tip_gen {
+                    st.header_tip = Some((text.into(), bounds));
+                    cx.notify();
+                }
+            });
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
     /// 外点全关(composer 下拉 + hero chip 下拉 + 行内 ⋯ + 标题栏
     /// 工作区下拉 + 顶栏视图选项菜单 + 面板「+」菜单 + 计费小卡片;
     /// 开着的菜单区自带 mousedown stop_propagation 豁免,不会误伤
@@ -730,11 +791,11 @@ impl AppStore {
     pub fn close_all_menus(&mut self, cx: &mut Context<Self>) {
         self.chat.composer_menu = ComposerMenu::None;
         self.hero_menu = HeroMenu::None;
-        self.sessions.menu_open_session = None;
+        self.sessions.session_menu_pos = None;
         self.sessions.menu_open_ws = None;
         self.sessions.workspace_menu_open = false;
         self.sessions.view_menu_pos = None;
-        self.sessions.header_tip = None;
+        self.header_tip = None;
         self.settings.full_access_confirm = None;
         self.panel_plus_menu_at = None;
         self.preview.menu = None;

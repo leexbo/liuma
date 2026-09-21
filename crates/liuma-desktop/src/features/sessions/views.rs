@@ -16,11 +16,12 @@ use liuma_core::proto::SessionSummary;
 
 use crate::features::search;
 use crate::features::settings;
-use crate::features::sessions::store::{GroupMode, OrderMode, TIP_ADD_WS, TIP_SEARCH, TIP_VIEW_MENU};
+use crate::features::sessions::store::{GroupMode, OrderMode};
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::reducer::{relative_time, workspace_of};
-use crate::shell::store::AppStore;
+use crate::shell::store::{AppStore, TIP_ADD_WS, TIP_ARCHIVE_BASE, TIP_SEARCH, TIP_VIEW_MENU};
+use crate::shell::tip_capture_layer;
 
 /// 侧栏整体(展开 280px 胶囊卡;收起完全隐藏不渲染——
 /// 折叠不再保留 56px rail,展开入口仅标题栏缩进钮)。
@@ -282,21 +283,6 @@ fn header_icon_button(
         })
         .child(icon)
         .child(tip_capture_layer(store, slot))
-}
-
-/// tooltip 锚定 bounds 捕获层:canvas 在 paint 相位把按钮 bounds 写入
-/// tip_bounds[slot](无 notify,不驱动新帧;perm_chip_bounds 同款)
-fn tip_capture_layer(store: &Entity<AppStore>, slot: usize) -> gpui_kit::AnyElement {
-    let cap = store.clone();
-    gpui_kit::canvas(
-        move |b: gpui_kit::Bounds<gpui_kit::Pixels>, _, cx| {
-            cap.update(cx, |st, _| st.sessions.tip_bounds[slot] = Some(b));
-        },
-        |_, _, _, _| {},
-    )
-    .absolute()
-    .inset_0()
-    .into_any_element()
 }
 
 /// 顶栏钮 tooltip 卡(根级渲染;按钮下方居中,窗缘钳制;非交互不
@@ -593,7 +579,8 @@ fn group_header(
         })
 }
 
-/// 单个会话行(行高 34:标题 + 相对时间;当前选中高亮)
+/// 单个会话行(行高 34:行首活动状态槽 + 标题 + 尾部时间↔归档;
+/// 当前选中高亮)
 fn session_row(
     store: &Entity<AppStore>,
     cx: &App,
@@ -604,7 +591,6 @@ fn session_row(
     let active = st.state.current_id.as_deref() == Some(&s.session_id);
     let title = st.title_for(&s.session_id);
     let running = st.is_running(&s.session_id);
-    let menu_open = st.sessions.menu_open_session.as_deref() == Some(&s.session_id);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -618,11 +604,19 @@ fn session_row(
     // 后台子代理运行中(自身非 running 时)替代时间位
     let sub_running = st.running_subagent_count(&s.session_id);
     let target = store.clone();
+    let archived = store.clone();
+    let arch_tip = store.clone();
     let id = s.session_id.clone();
+    let arch_id = id.clone();
     let sel = format!("session-row-{id}");
+    let sel_arch = format!("session-archive-{ix}");
+    let arch_slot = TIP_ARCHIVE_BASE + ix;
+    // 行 hover 组:尾部时间 ↔ 归档钮互换(参考实现语言)
+    let grp = format!("sess-grp-{ix}");
     div()
         .id(("session", ix))
         .relative()
+        .group(grp.clone())
         .flex()
         .h(px(34.))
         .flex_shrink_0()
@@ -654,12 +648,60 @@ fn session_row(
                 .text_color(fg)
                 .child(title),
         )
-        .child(if sub_running > 0 {
-            sub_running_badge(sub_running)
-        } else {
-            plain_time(&time)
-        })
-        .child(row_menu_button(store, &s.session_id, ix, menu_open))
+        // 尾部槽:相对时间(或子代理徽标)↔ 归档钮 hover 互换。
+        // 绝对定位右对齐,槽宽按徽标上限
+        .child(
+            div()
+                .relative()
+                .h(px(20.))
+                .w(px(64.))
+                .flex_shrink_0()
+                .child(
+                    div()
+                        .absolute()
+                        .right_0()
+                        .top_0()
+                        .bottom_0()
+                        .flex()
+                        .items_center()
+                        .group_hover(grp.clone(), |s| s.opacity(0.))
+                        .child(if sub_running > 0 {
+                            sub_running_badge(sub_running)
+                        } else {
+                            plain_time(&time)
+                        }),
+                )
+                .child(
+                    div()
+                        .id(("session-archive", ix))
+                        .debug_selector(move || sel_arch.clone())
+                        .absolute()
+                        .right_0()
+                        .top_0()
+                        .bottom_0()
+                        .flex()
+                        .items_center()
+                        .px(px(4.))
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .opacity(0.)
+                        .group_hover(grp.clone(), |s| s.opacity(1.))
+                        .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
+                        .text_color(theme::CAPTION())
+                        .child(fixed(LiumaIcon::Archive, 14.))
+                        .child(crate::shell::tip_capture_layer(store, arch_slot))
+                        .on_hover(move |enter: &bool, _, cx| {
+                            arch_tip.update(cx, |st, cx| {
+                                st.header_tip_hover(arch_slot, "归档聊天", *enter, cx)
+                            });
+                        })
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            let id = arch_id.clone();
+                            archived.update(cx, |st, cx| st.archive(&id, cx));
+                        }),
+                ),
+        )
         // 测试钩子:按会话 id 稳定检索(release 空操作)
         .debug_selector(move || sel.clone())
         .on_click(move |_, _, cx| {
@@ -668,72 +710,30 @@ fn session_row(
         })
 }
 
-/// 行尾 ⋯ 钮(点击开菜单;不冒泡到行打开)。开态挂 mousedown
-/// 豁免:根级外点关闭先关再被 toggle 重开,豁免后由 toggle 自身关闭
-fn row_menu_button(store: &Entity<AppStore>, id: &str, ix: usize, open: bool) -> impl IntoElement {
-    let s = store.clone();
-    let id = id.to_string();
-    let sel = format!("row-menu-btn-{ix}");
-    div()
-        .id(("row-menu", ix))
-        .debug_selector(move || sel.clone())
-        .flex()
-        .size(px(20.))
-        .flex_shrink_0()
-        .items_center()
-        .justify_center()
-        .rounded(px(6.))
-        .cursor_pointer()
-        .hover(|st| st.bg(theme::SIDEBAR_HOVER()))
-        .text_color(theme::CAPTION())
-        .child(fixed(IconName::Ellipsis, 14.))
-        .when(open, |el| {
-            el.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        })
-        .on_click(move |ev: &gpui_kit::ClickEvent, _, cx| {
-            cx.stop_propagation();
-            let id = id.clone();
-            let pos = match ev {
-                gpui_kit::ClickEvent::Mouse(m) => m.down.position,
-                gpui_kit::ClickEvent::Keyboard(_) => gpui_kit::Point::default(),
-                gpui_kit::ClickEvent::Touch(_) => gpui_kit::Point::default(),
-            };
-            s.update(cx, |st, cx| {
-                if st.sessions.menu_open_session.as_deref() == Some(&id) {
-                    st.toggle_row_menu(&id, cx);
-                } else {
-                    st.open_row_menu_at(&id, pos, cx);
-                }
-            });
-        })
-}
-
-/// 会话行菜单卡(重命名/分叉/归档/导出日志;根级渲染按点击坐标
-/// 定位,向左展开避开窗口右缘)。整卡挂 mousedown 豁免(同 composer
-/// 菜单:防根级外点关闭吞掉菜单项点击)
-pub fn row_menu_card(
+/// 标题栏会话菜单卡(会话管理:重命名/归档/分叉 | 导出日志;作用于
+/// **当前会话**,根级渲染按 ⋯ 钮点击坐标定位,向左展开避开窗口右缘)。
+/// 整卡挂 mousedown 豁免(同 composer 菜单:防根级外点关闭吞掉菜单项
+/// 点击)
+pub fn session_menu_card(
     store: &Entity<AppStore>,
-    id: &str,
     pos: gpui_kit::Point<gpui_kit::Pixels>,
 ) -> impl IntoElement {
-    let (rename, fork, archive, delete, export_log) = (
-        store.clone(),
+    let (rename, archive, fork, export_log) = (
         store.clone(),
         store.clone(),
         store.clone(),
         store.clone(),
     );
-    let id = id.to_string();
-    let (rid, fid, aid, did, eid) = (id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
     div()
-        .id("row-menu-card")
+        .id("session-menu-card")
         .absolute()
-        // 阻断鼠标命中向卡后方穿透(否则点击会落到后面的会话行上)
+        // 阻断鼠标命中向卡后方穿透(否则点击会落到后面的内容区上)
         .occlude()
-        .debug_selector(|| "row-menu-card".to_string())
-        // 锚在 ⋯ 钮下方,向左展开(钮在侧栏右缘,右展会出窗)
+        .debug_selector(|| "session-menu-card".to_string())
+        // 锚在标题栏 ⋯ 钮下方,卡右缘对齐钮右缘(钮 26px,点击点近似
+        // 钮中心)、向左展开避开窗右缘
         .top(pos.y + px(14.))
-        .left(pos.x - px(112.) - px(8.))
+        .left(pos.x - px(112.) + px(13.))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .v_flex()
         .w(px(112.))
@@ -748,18 +748,11 @@ pub fn row_menu_card(
             "重命名",
             fixed(LiumaIcon::Pencil, 13.),
             move |_, window, cx| {
-                let id = rid.clone();
-                rename.update(cx, |st, cx| st.open_rename(&id, window, cx));
-            },
-        ))
-        .child(menu_item(
-            "分叉",
-            fixed(LiumaIcon::GitBranch, 13.),
-            move |_, _, cx| {
-                let id = fid.clone();
-                fork.update(cx, |st, cx| {
-                    st.fork(&id, cx);
-                    st.sessions.menu_open_session = None;
+                rename.update(cx, |st, cx| {
+                    let Some(id) = st.state.current_id.clone() else {
+                        return;
+                    };
+                    st.open_rename(&id, window, cx);
                 });
             },
         ))
@@ -767,32 +760,52 @@ pub fn row_menu_card(
             "归档",
             fixed(LiumaIcon::Archive, 13.),
             move |_, _, cx| {
-                let id = aid.clone();
                 archive.update(cx, |st, cx| {
+                    let Some(id) = st.state.current_id.clone() else {
+                        return;
+                    };
                     st.archive(&id, cx);
-                    st.sessions.menu_open_session = None;
+                    st.sessions.session_menu_pos = None;
                 });
             },
         ))
         .child(menu_item(
-            "删除",
-            fixed(IconName::Delete, 13.),
+            "分叉",
+            fixed(LiumaIcon::GitBranch, 13.),
             move |_, _, cx| {
-                let id = did.clone();
-                delete.update(cx, |st, cx| st.ask_delete_session(&id, cx));
+                fork.update(cx, |st, cx| {
+                    let Some(id) = st.state.current_id.clone() else {
+                        return;
+                    };
+                    st.fork(&id, cx);
+                    st.sessions.session_menu_pos = None;
+                });
             },
         ))
+        .child(menu_divider())
         .child(menu_item(
             "导出日志",
             fixed(LiumaIcon::Download, 13.),
             move |_, _, cx| {
-                let id = eid.clone();
                 export_log.update(cx, |st, cx| {
+                    let Some(id) = st.state.current_id.clone() else {
+                        return;
+                    };
                     st.export_session_log(&id, cx);
-                    st.sessions.menu_open_session = None;
+                    st.sessions.session_menu_pos = None;
                 });
             },
         ))
+}
+
+/// 菜单组分隔线
+fn menu_divider() -> gpui_kit::AnyElement {
+    div()
+        .h(px(1.))
+        .mx(px(8.))
+        .my(px(3.))
+        .bg(theme::BORDER())
+        .into_any_element()
 }
 
 /// 菜单项(图标 + 文字)

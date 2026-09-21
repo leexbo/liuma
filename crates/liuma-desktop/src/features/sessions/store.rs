@@ -14,13 +14,6 @@ use crate::shell::reducer;
 use crate::shell::store::AppStore;
 use liuma_core::proto::HistoryValue;
 
-/// 待确认删除目标(单会话;确认模态呈现)
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum DeleteTarget {
-    /// 单会话 id
-    One(String),
-}
-
 /// 侧栏列表分组方式(视图选项菜单;内存视图态,不持久化)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum GroupMode {
@@ -41,26 +34,15 @@ pub(crate) enum OrderMode {
     Manual,
 }
 
-/// 顶栏图标钮 tooltip 锚位(渲染期 canvas 按钮序捕获的 bounds)
-type TipSlots = [Option<gpui_kit::Bounds<gpui_kit::Pixels>>; 3];
-
-/// 顶栏图标钮序号(与 [`SessionsStore::tip_bounds`] 槽位对应)
-pub(crate) const TIP_SEARCH: usize = 0;
-pub(crate) const TIP_VIEW_MENU: usize = 1;
-pub(crate) const TIP_ADD_WS: usize = 2;
-
 /// 会话与工作区树功能切片状态(侧栏行/组/工作区菜单开态与坐标锚、
-/// 重命名与删除目标、工作区路径/标题/分支表、折叠组)。
+/// 重命名目标、工作区路径/标题/分支表、折叠组)。
 #[derive(Default)]
 pub(crate) struct SessionsStore {
-    /// 行内菜单打开的会话(⋯)
-    pub menu_open_session: Option<String>,
-    /// 行菜单开时的点击坐标(菜单卡根级渲染的定位锚)
-    pub row_menu_pos: Option<gpui_kit::Point<gpui_kit::Pixels>>,
+    /// 标题栏会话菜单(⋯)开时的点击坐标(菜单卡根级渲染定位锚;
+    /// 菜单作用于当前会话,None = 收起)
+    pub session_menu_pos: Option<gpui_kit::Point<gpui_kit::Pixels>>,
     /// 重命名目标会话
     pub rename_target: Option<String>,
-    /// 待确认删除目标(确认模态)
-    pub delete_target: Option<DeleteTarget>,
     /// 重命名输入态(挂窗后建)
     pub rename_input: Option<Entity<InputState>>,
     /// 标题栏工作区下拉开态
@@ -86,12 +68,6 @@ pub(crate) struct SessionsStore {
     pub order_mode: OrderMode,
     /// 视图选项菜单开时的点击坐标(根级渲染定位锚)
     pub view_menu_pos: Option<gpui_kit::Point<gpui_kit::Pixels>>,
-    /// 顶栏图标钮 tooltip(文本 + 锚 bounds;hover 500ms 后显示)
-    pub header_tip: Option<(gpui_kit::SharedString, gpui_kit::Bounds<gpui_kit::Pixels>)>,
-    /// tooltip hover 代次(退场即自增,迟到的展示任务按代次失效)
-    pub header_tip_gen: u64,
-    /// 三个顶栏钮渲染期 bounds(canvas 捕获,tooltip 锚定用)
-    pub tip_bounds: TipSlots,
 }
 
 impl AppStore {
@@ -363,9 +339,21 @@ impl AppStore {
         pos: gpui_kit::Point<gpui_kit::Pixels>,
         cx: &mut Context<Self>,
     ) {
-        self.sessions.menu_open_session = None;
+        self.sessions.session_menu_pos = None;
         self.sessions.menu_open_ws = Some(name.to_string());
         self.sessions.ws_menu_pos = Some(pos);
+        cx.notify();
+    }
+
+    /// 标题栏会话菜单(⋯)开/收(toggle;带坐标,根级渲染定位)。
+    /// 菜单作用于当前会话;与其余菜单互斥
+    pub fn toggle_session_menu(
+        &mut self,
+        pos: gpui_kit::Point<gpui_kit::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.sessions.session_menu_pos =
+            if self.sessions.session_menu_pos.is_some() { None } else { Some(pos) };
         cx.notify();
     }
 
@@ -376,7 +364,7 @@ impl AppStore {
         pos: gpui_kit::Point<gpui_kit::Pixels>,
         cx: &mut Context<Self>,
     ) {
-        self.sessions.menu_open_session = None;
+        self.sessions.session_menu_pos = None;
         self.sessions.menu_open_ws = None;
         self.sessions.workspace_menu_open = false;
         self.sessions.view_menu_pos = Some(pos);
@@ -399,44 +387,6 @@ impl AppStore {
         self.sessions.order_mode = mode;
         self.sessions.view_menu_pos = None;
         cx.notify();
-    }
-
-    /// 顶栏图标钮 hover 变化:进入登记代次并起 500ms 延迟任务(仍在
-    /// 悬停才显示),退场立即清除并自增代次(迟到的展示任务失效)。
-    /// bounds 由渲染期 canvas 捕获(见 header_row 的 tip 捕获层)
-    pub fn header_tip_hover(
-        &mut self,
-        slot: usize,
-        text: &'static str,
-        enter: bool,
-        cx: &mut Context<Self>,
-    ) {
-        self.sessions.header_tip_gen += 1;
-        if !enter {
-            if self.sessions.header_tip.is_some() {
-                self.sessions.header_tip = None;
-                cx.notify();
-            }
-            return;
-        }
-        let Some(bounds) = self.sessions.tip_bounds[slot] else {
-            return;
-        };
-        let tip_gen = self.sessions.header_tip_gen;
-        let store = cx.entity().clone();
-        cx.spawn(async move |_this, cx| {
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(500))
-                .await;
-            let _ = store.update(cx, |st, cx| {
-                if st.sessions.header_tip_gen == tip_gen {
-                    st.sessions.header_tip = Some((text.into(), bounds));
-                    cx.notify();
-                }
-            });
-            Ok::<(), anyhow::Error>(())
-        })
-        .detach();
     }
 
     /// 打开工作区重命名(复用会话重命名输入态)
@@ -487,31 +437,6 @@ impl AppStore {
         }
     }
 
-    /// 行内 ⋯ 菜单开关
-    pub fn toggle_row_menu(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.sessions.menu_open_session = if self.sessions.menu_open_session.as_deref() == Some(id)
-        {
-            None
-        } else {
-            Some(id.to_string())
-        };
-        cx.notify();
-    }
-
-    /// 行菜单开(带点击坐标):菜单卡根级渲染按此定位——行内
-    /// absolute 会被侧栏卡 overflow_hidden 裁剪 + 被内容卡(后绘
-    /// 兄弟)遮挡,与工作区下拉同病同解
-    pub fn open_row_menu_at(
-        &mut self,
-        id: &str,
-        pos: gpui_kit::Point<gpui_kit::Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        self.sessions.menu_open_session = Some(id.to_string());
-        self.sessions.row_menu_pos = Some(pos);
-        cx.notify();
-    }
-
     /// 打开重命名(输入态惰建 + Enter 确认订阅;点击回调自带 window)
     pub fn open_rename(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.sessions.rename_input.is_none() {
@@ -529,7 +454,7 @@ impl AppStore {
             input.update(cx, |s, cx| s.set_value(&current, window, cx));
         }
         self.sessions.rename_target = Some(id.to_string());
-        self.sessions.menu_open_session = None;
+        self.sessions.session_menu_pos = None;
         cx.notify();
     }
 
@@ -593,58 +518,6 @@ impl AppStore {
                 }
             }
         }
-    }
-
-    /// 打开删除确认(菜单「删除」入口;确认后才执行)
-    pub fn ask_delete_session(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.sessions.delete_target = Some(DeleteTarget::One(id.to_string()));
-        self.sessions.menu_open_session = None;
-        cx.notify();
-    }
-
-    /// 确认删除(执行并收模态)
-    pub fn confirm_delete_session(&mut self, cx: &mut Context<Self>) {
-        let Some(DeleteTarget::One(id)) = self.sessions.delete_target.take() else {
-            return;
-        };
-        self.delete_session(&id, cx);
-        cx.notify();
-    }
-
-    /// 取消删除确认
-    pub fn cancel_delete(&mut self, cx: &mut Context<Self>) {
-        self.sessions.delete_target = None;
-        cx.notify();
-    }
-
-    /// 删除会话(永久移除日志;当前会话被删 → 打开剩余首个,无则新建)
-    pub fn delete_session(&mut self, id: &str, cx: &mut Context<Self>) {
-        if let Err(e) = self.bridge.host().delete_session(id) {
-            self.push_local_notice(&format!("删除失败:{}", e.message), cx);
-            return;
-        }
-        let ids = [id.to_string()];
-        self.after_local_delete(&ids, cx);
-    }
-
-    /// 删除后的本地收口:刷新清单(含宿主级联带走的子代理),当前
-    /// 会话若已不在活清单(被直接删或作为子代理被级联删)→ 切「剩余
-    /// 首个,无则新建」。按活清单校验而非被删 ids——级联删除的会话
-    /// 不在 ids 里,漏检会留下幽灵视图
-    fn after_local_delete(&mut self, _ids: &[String], cx: &mut Context<Self>) {
-        self.refresh_list();
-        let current_gone = self
-            .state
-            .current_id
-            .as_deref()
-            .is_none_or(|c| !self.state.sessions.iter().any(|s| s.session_id == c));
-        if current_gone {
-            match self.state.sessions.first().map(|s| s.session_id.clone()) {
-                Some(next) => self.open_session(&next, cx),
-                None => self.create_session(cx),
-            }
-        }
-        cx.notify();
     }
 
     /// 导出会话日志(写入 ~/Downloads/liuma-session-<id>.jsonl;

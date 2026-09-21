@@ -3073,29 +3073,28 @@ fn trajectory_drag_state_renders_in_paint_phase(cx: &mut TestAppContext) {
 /// 会话行 ⋯ 菜单:根级渲染(行内 absolute 被侧栏卡裁剪 + 内容卡
 /// 遮挡);点击钮 → 菜单卡在场且锚在点击点左下
 #[gpui_kit::test]
-fn session_row_menu_renders_at_root(cx: &mut TestAppContext) {
+fn session_menu_renders_at_root(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "rowmenu");
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.update(|_: &mut gpui_kit::App| {});
         cx.run_until_parked();
     };
-    let btn = wcx
-        .debug_bounds("row-menu-btn-0")
-        .expect("⋯ 钮缺失(首个会话行)");
-    click_sel(&mut wcx, "row-menu-btn-0");
+    let btn = wcx.debug_bounds("session-menu-btn").expect("标题栏 ⋯ 钮缺失");
+    click_sel(&mut wcx, "session-menu-btn");
     redraw(cx, &mut wcx);
-    let card = wcx.debug_bounds("row-menu-card").expect("菜单卡未渲染");
-    // 锚定:卡顶在钮下方、卡整体在钮左侧(向左展开避开右缘)
+    let card = wcx.debug_bounds("session-menu-card").expect("菜单卡未渲染");
+    // 锚定:卡顶在钮下方、卡右缘对齐钮右缘(下拉向左展开)
     assert!(
         f32::from(card.origin.y) > f32::from(btn.origin.y),
         "菜单应在钮下方"
     );
+    let btn_right = btn.origin.x + btn.size.width;
     assert!(
-        f32::from(card.right()) <= f32::from(btn.origin.x) + 8.,
-        "菜单应向左展开: card.right={:?} btn.x={:?}",
+        (f32::from(card.right()) - f32::from(btn_right)).abs() <= 8.,
+        "菜单应右对齐钮: card.right={:?} btn.right={:?}",
         card.right(),
-        btn.origin.x
+        btn_right
     );
     // 导出入口已从顶栏药丸移入菜单(该窗口从未渲染过药丸,缺席可断言)
     assert!(
@@ -3106,8 +3105,14 @@ fn session_row_menu_renders_at_root(cx: &mut TestAppContext) {
         wcx.debug_bounds("export-log").is_none(),
         "顶栏不应再有导出药丸"
     );
-    // 删除项在场;「关闭菜单」已撤(外点即关,该项多余)
-    assert!(wcx.debug_bounds("删除").is_some(), "菜单应含「删除」项");
+    // 菜单含 归档/分叉/导出日志;删除/复制工作目录已从菜单移除
+    assert!(wcx.debug_bounds("归档").is_some(), "菜单应含「归档」项");
+    assert!(wcx.debug_bounds("分叉").is_some(), "菜单应含「分叉」项");
+    assert!(wcx.debug_bounds("删除").is_none(), "删除项应已移除");
+    assert!(
+        wcx.debug_bounds("复制工作目录").is_none(),
+        "复制工作目录项应已移除"
+    );
     assert!(
         wcx.debug_bounds("关闭菜单").is_none(),
         "「关闭菜单」项应已移除"
@@ -3116,17 +3121,17 @@ fn session_row_menu_renders_at_root(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 删除会话端到端:第二个会话行菜单「删除」→ 日志文件移除、清单
-/// 收缩、当前会话不受影响
+/// 归档会话端到端:标题栏会话菜单「归档」当前会话 → 移出清单、
+/// 自动切换到剩余会话、菜单收起
 #[gpui_kit::test]
-fn session_row_menu_deletes_session(cx: &mut TestAppContext) {
+fn session_menu_archives_current_session(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "del");
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.update(|_: &mut gpui_kit::App| {});
         cx.run_until_parked();
     };
-    // 再建两个会话;清单最新在前 → 行序 [s3(当前), s2, s1]
+    // 再建一个会话并置为当前;当前 = s3,旁观 = s2
     let (s2, s3) = cx.update(|app| {
         store.update(app, |st, cx| {
             let s2 = st.bridge.host().create_session(None, None, None);
@@ -3147,19 +3152,11 @@ fn session_row_menu_deletes_session(cx: &mut TestAppContext) {
             .expect("应存在首个会话")
     });
 
-    // 穿透探针(强断言):打开中间行 s2 的菜单(卡体盖住下方的
-    // 另一会话行区域),点卡内空白垫区——occlude 必须挡住命中,
-    // 否则点击会落到后面行把 current 切走。按行 id 几何定位 ⋯ 钮
-    // (清单排序在同毫秒创建时不稳定,不假设行序)
-    let s2_sel: &'static str = Box::leak(format!("session-row-{s2}").into_boxed_str());
-    let s2_row = wcx.debug_bounds(s2_sel).expect("s2 行缺失");
-    let s2_dots = gpui_kit::Point {
-        x: s2_row.right() - px(14.),
-        y: s2_row.origin.y + s2_row.size.height / 2.,
-    };
-    wcx.simulate_click(s2_dots, gpui_kit::Modifiers::default());
+    // 穿透探针:打开标题栏菜单(卡体悬于内容区上方),点卡内空白
+    // 垫区——occlude 必须挡住命中,内容区不应收到该点击
+    click_sel(&mut wcx, "session-menu-btn");
     redraw(cx, &mut wcx);
-    let card = wcx.debug_bounds("row-menu-card").expect("菜单卡缺失");
+    let card = wcx.debug_bounds("session-menu-card").expect("菜单卡缺失");
     let blank = gpui_kit::Point {
         x: card.origin.x + px(2.),
         y: card.origin.y + px(40.),
@@ -3169,45 +3166,15 @@ fn session_row_menu_deletes_session(cx: &mut TestAppContext) {
     assert_eq!(
         cx.update(|app| store.read(app).state.current_id.clone()),
         Some(s3.clone()),
-        "菜单区点击不得穿透选中后方会话行"
+        "菜单区点击不得穿透到内容区"
     );
 
-    // 菜单仍在(垫区点击只挡不关);点「删除」→ 确认模态 → 确认
+    // 菜单仍在(垫区点击只挡不关);点「归档」→ 当前会话移出清单
     assert!(
-        cx.update(|app| store.read(app).sessions.menu_open_session.is_some()),
+        cx.update(|app| store.read(app).sessions.session_menu_pos.is_some()),
         "卡内空白点击不应关菜单"
     );
-    click_sel(&mut wcx, "删除");
-    redraw(cx, &mut wcx);
-    assert!(
-        wcx.debug_bounds("delete-confirm").is_some(),
-        "删除应先弹确认模态"
-    );
-    assert_eq!(
-        cx.update(|app| store.read(app).sessions.delete_target.clone()),
-        Some(crate::features::sessions::store::DeleteTarget::One(
-            s2.clone()
-        )),
-        "确认目标应为 s2"
-    );
-    // 先验证取消路径:点「取消」不删除
-    click_sel(&mut wcx, "delete-cancel");
-    redraw(cx, &mut wcx);
-    assert!(
-        cx.update(|app| store
-            .read(app)
-            .state
-            .sessions
-            .iter()
-            .any(|s| s.session_id == s2)),
-        "取消不应删除"
-    );
-    // 再走确认路径(取消后菜单已收,重开 s2 菜单再确认)
-    wcx.simulate_click(s2_dots, gpui_kit::Modifiers::default());
-    redraw(cx, &mut wcx);
-    click_sel(&mut wcx, "删除");
-    redraw(cx, &mut wcx);
-    click_sel(&mut wcx, "delete-confirm");
+    click_sel(&mut wcx, "归档");
     redraw(cx, &mut wcx);
     let ids = cx.update(|app| {
         store
@@ -3218,16 +3185,61 @@ fn session_row_menu_deletes_session(cx: &mut TestAppContext) {
             .map(|s| s.session_id.clone())
             .collect::<Vec<_>>()
     });
-    assert!(!ids.contains(&s2), "s2 应被删除: {ids:?}");
-    assert!(ids.contains(&first) && ids.contains(&s3), "其余会话保留");
-    assert_eq!(
+    assert!(!ids.contains(&s3), "s3 应被归档移出清单: {ids:?}");
+    assert!(ids.contains(&first) && ids.contains(&s2), "其余会话保留");
+    assert_ne!(
         cx.update(|app| store.read(app).state.current_id.clone()),
         Some(s3),
-        "删除非当前会话不影响当前"
+        "归档当前会话后应切走"
     );
     assert!(
-        cx.update(|app| store.read(app).sessions.menu_open_session.is_none()),
+        cx.update(|app| store.read(app).sessions.session_menu_pos.is_none()),
         "动作后菜单应收起"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 会话行尾归档钮(hover 显隐,元素常在可命中):点击行右缘 →
+/// 该会话归档移出清单,当前会话不受影响
+#[gpui_kit::test]
+fn session_row_archive_button(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "arch");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+    };
+    let current = cx
+        .update(|app| store.read(app).state.current_id.clone())
+        .expect("前置:当前会话在场");
+    // 再建一个旁观会话(非当前),按 id 几何定位其行右缘归档钮
+    let s2 = cx.update(|app| {
+        store.update(app, |st, _| st.bridge.host().create_session(None, None, None))
+    });
+    redraw(cx, &mut wcx);
+    let s2_sel: &'static str = Box::leak(format!("session-row-{s2}").into_boxed_str());
+    let s2_row = wcx.debug_bounds(s2_sel).expect("s2 行缺失");
+    let arch = gpui_kit::Point {
+        x: s2_row.right() - px(14.),
+        y: s2_row.origin.y + s2_row.size.height / 2.,
+    };
+    wcx.simulate_click(arch, gpui_kit::Modifiers::default());
+    redraw(cx, &mut wcx);
+    let ids = cx.update(|app| {
+        store
+            .read(app)
+            .state
+            .sessions
+            .iter()
+            .map(|s| s.session_id.clone())
+            .collect::<Vec<_>>()
+    });
+    assert!(!ids.contains(&s2), "s2 应被归档移出清单: {ids:?}");
+    assert!(ids.contains(&current), "当前会话保留");
+    assert_eq!(
+        cx.update(|app| store.read(app).state.current_id.clone()),
+        Some(current),
+        "归档非当前会话不影响当前"
     );
     let _ = std::fs::remove_dir_all(root);
 }

@@ -18,9 +18,7 @@ pub(crate) mod vibrancy;
 #[cfg(target_os = "macos")]
 pub(crate) mod winprobe;
 
-use crate::kits::modals::{
-    attachment_toast_card, delete_confirm_modal, rename_modal, workspace_menu_card,
-};
+use crate::kits::modals::{attachment_toast_card, rename_modal, workspace_menu_card};
 
 use gpui_kit::component::StyledExt;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -43,6 +41,24 @@ use crate::shell::store::AppStore;
 
 /// 应用全局键表(main.rs 启动与 layout_tests 装配共用同源,防漂移;
 /// 处理器在 WorkspaceView 根 on_action 收口)
+/// tooltip 锚定 bounds 捕获层:canvas 在 paint 相位把元素 bounds 写入
+/// tip_bounds[slot](无 notify,不驱动新帧;perm_chip_bounds 同款)。
+/// 须挂在带定位的宿主元素内(`.absolute().inset_0()`)
+pub(crate) fn tip_capture_layer(store: &Entity<AppStore>, slot: usize) -> gpui_kit::AnyElement {
+    let cap = store.clone();
+    gpui_kit::canvas(
+        move |b: gpui_kit::Bounds<gpui_kit::Pixels>, _, cx| {
+            cap.update(cx, |st, _| {
+                st.tip_bounds.insert(slot, b);
+            });
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0()
+    .into_any_element()
+}
+
 pub fn bind_global_keys(cx: &mut gpui_kit::App) {
     cx.bind_keys([gpui_kit::KeyBinding::new(
         "shift-cmd-p",
@@ -372,7 +388,7 @@ impl Render for WorkspaceView {
         // toggle 重开
         let any_menu_open = st.chat.composer_menu != ComposerMenu::None
             || st.hero_menu != crate::shell::store::HeroMenu::None
-            || st.sessions.menu_open_session.is_some()
+            || st.sessions.session_menu_pos.is_some()
             || st.sessions.menu_open_ws.is_some()
             || st.sessions.workspace_menu_open
             || st.sessions.view_menu_pos.is_some()
@@ -588,19 +604,16 @@ impl Render for WorkspaceView {
             .when(self.store.read(cx).sessions.workspace_menu_open, |el| {
                 el.child(workspace_menu_card(&self.store, cx))
             })
-            // 会话行 ⋯ 菜单(root 级:行内 absolute 会被侧栏卡
-            // overflow_hidden 裁剪 + 被后绘的内容卡遮挡)
+            // 标题栏会话菜单(⋯;根级定位渲染,作用于当前会话)
             .when(
-                self.store.read(cx).sessions.menu_open_session.is_some(),
+                self.store.read(cx).sessions.session_menu_pos.is_some(),
                 |el| {
-                    let card = {
-                        let st = self.store.read(cx);
-                        st.sessions
-                            .menu_open_session
-                            .as_deref()
-                            .zip(st.sessions.row_menu_pos)
-                            .map(|(id, pos)| sessions::row_menu_card(&self.store, id, pos))
-                    };
+                    let card = self
+                        .store
+                        .read(cx)
+                        .sessions
+                        .session_menu_pos
+                        .map(|pos| sessions::session_menu_card(&self.store, pos));
                     el.children(card)
                 },
             )
@@ -627,8 +640,8 @@ impl Render for WorkspaceView {
                 el.children(card)
             })
             // 顶栏钮 tooltip(hover 500ms;root 级定位渲染,非交互不 occlude)
-            .when(self.store.read(cx).sessions.header_tip.is_some(), |el| {
-                let tip = self.store.read(cx).sessions.header_tip.clone();
+            .when(self.store.read(cx).header_tip.is_some(), |el| {
+                let tip = self.store.read(cx).header_tip.clone();
                 let vw = f32::from(window.viewport_size().width);
                 el.children(tip.map(|(text, b)| sessions::header_tip_card(text, b, vw)))
             })
@@ -875,9 +888,6 @@ impl Render for WorkspaceView {
                     || self.store.read(cx).sessions.rename_ws_target.is_some(),
                 |el| el.child(rename_modal(&self.store, cx)),
             )
-            .when(self.store.read(cx).sessions.delete_target.is_some(), |el| {
-                el.child(delete_confirm_modal(&self.store, cx))
-            })
             .when(
                 self.store
                     .read(cx)

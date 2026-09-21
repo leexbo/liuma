@@ -1,6 +1,7 @@
 //! 顶栏 = 窗口自绘标题栏内容行:侧栏缩进钮 + 工作区下拉 + git 分支
-//! (StatusBar 迁入)+ 居中会话标题。轨迹页已迁右栏面板标签;
-//! Session log 导出已移入侧栏会话行 ⋯ 菜单。
+//! (StatusBar 迁入)+ 居中会话标题 + 右缘会话管理 ⋯ 钮(面板开关
+//! 左侧)。轨迹页已迁右栏面板标签;会话管理(重命名/归档/分叉/导出)
+//! 自侧栏行 ⋯ 菜单迁入此处 ⋯ 菜单(行尾仅留 hover 归档)。
 
 use gpui_kit::component::IconName;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -12,13 +13,14 @@ use gpui_kit::{
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::metrics::RUN_CLOCK_AFTER_SECS;
-use crate::shell::store::AppStore;
+use crate::shell::store::{AppStore, TIP_FOLD, TIP_PANEL_TOGGLE};
+use crate::shell::tip_capture_layer;
 
 /// 标题栏内容行(置于 TitleBar 内):工作区下拉 + git 分支 …… 会话
-/// 标题**真居中**(对称内缩绝对区,避开两侧控件)。Session log 导出已
-/// 移入侧栏会话行 ⋯ 菜单;分支自 StatusBar 迁入(工作区名右侧)。
+/// 标题**真居中**(对称内缩绝对区,避开两侧控件)。分支自 StatusBar
+/// 迁入(工作区名右侧);右缘为面板开关 + 会话管理 ⋯ 钮。
 /// 标题居中区两侧内缩(须 ≥ 左组[缩进钮+工作区钮+分支徽标]的最宽形态,
-/// 对称取 400 → 居中不被遮挡;右侧已无控件,内缩仅服务真居中)
+/// 对称取 400 → 居中不被遮挡;右侧控件远窄于内缩,内缩仅服务真居中)
 const TITLE_INSET: f32 = 400.;
 
 pub fn title_bar_row(store: &Entity<AppStore>, window: &mut Window, cx: &App) -> impl IntoElement {
@@ -64,6 +66,10 @@ pub fn title_bar_row(store: &Entity<AppStore>, window: &mut Window, cx: &App) ->
         // 弹性占位:面板开关推到标题栏右缘(仅关态渲染;面板开着时
         // 同款钮挪入面板头右缘)
         .child(div().flex_1())
+        // 会话管理菜单钮(右侧面板开关左侧;作用于当前会话,无会话不渲染)
+        .when(st.state.current_id.is_some(), |el| {
+            el.child(session_menu_button(store))
+        })
         .when(!st.panel_open, |el| {
             el.child(panel_toggle_button(store, cx))
         })
@@ -132,7 +138,7 @@ fn branch_badge(branch: String) -> impl IntoElement {
 /// 折叠入口移此)。折叠态显「展开」图标、展开态显「收起」——是折叠
 /// 控制的唯一入口(rail 不再重复放 expand)。形态与工作区触发钮同高共形
 fn sidebar_fold_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
-    let s = store.clone();
+    let (s, s_tip) = (store.clone(), store.clone());
     let collapsed = store.read(cx).sidebar_collapsed;
     let icon = if collapsed {
         IconName::PanelLeftOpen
@@ -141,6 +147,7 @@ fn sidebar_fold_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     };
     div()
         .id("fold-sidebar")
+        .relative()
         .flex()
         .size(px(26.))
         .flex_shrink_0()
@@ -152,6 +159,10 @@ fn sidebar_fold_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .text_color(theme::LABEL_3())
         .debug_selector(|| "fold-sidebar".to_string())
         .child(fixed(icon, 14.))
+        .child(tip_capture_layer(store, TIP_FOLD))
+        .on_hover(move |enter: &bool, _, cx| {
+            s_tip.update(cx, |st, cx| st.header_tip_hover(TIP_FOLD, "切换侧边栏", *enter, cx));
+        })
         .on_click(move |_, _, cx| {
             s.update(cx, |st, cx| st.toggle_sidebar(cx));
         })
@@ -198,10 +209,11 @@ fn workspace_trigger(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
 /// 右侧面板开关钮(左组尾;开态前景提亮、无底色——开关
 /// 是普通 chrome 钮,不走品牌蓝高亮)
 fn panel_toggle_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
-    let (open, s) = (store.read(cx).panel_open, store.clone());
+    let (open, s, s_tip) = (store.read(cx).panel_open, store.clone(), store.clone());
     div()
         .id("panel-toggle")
         .debug_selector(|| "panel-toggle".to_string())
+        .relative()
         .flex()
         .size(px(26.))
         .flex_shrink_0()
@@ -216,7 +228,40 @@ fn panel_toggle_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         })
         .hover(|s| s.bg(theme::LAYER()).text_color(theme::LABEL()))
         .child(fixed(IconName::PanelRight, 14.))
+        .child(tip_capture_layer(store, TIP_PANEL_TOGGLE))
+        .on_hover(move |enter: &bool, _, cx| {
+            s_tip.update(cx, |st, cx| {
+                st.header_tip_hover(TIP_PANEL_TOGGLE, "显示/隐藏侧边面板", *enter, cx)
+            });
+        })
         .on_click(move |_, _, cx| {
             s.update(cx, |st, cx| st.toggle_panel(cx));
+        })
+}
+
+/// 会话管理菜单钮(右侧面板开关左侧;⋯ 形。菜单 = 重命名/归档/
+/// 分叉/导出日志,作用于当前会话;菜单卡根级渲染)
+fn session_menu_button(store: &Entity<AppStore>) -> impl IntoElement {
+    let s = store.clone();
+    div()
+        .id("session-menu-btn")
+        .debug_selector(|| "session-menu-btn".to_string())
+        .flex()
+        .size(px(26.))
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .rounded(px(8.))
+        .cursor_pointer()
+        .text_color(theme::LABEL_3())
+        .hover(|st| st.bg(theme::LAYER()).text_color(theme::LABEL()))
+        .child(fixed(IconName::Ellipsis, 14.))
+        .on_click(move |ev: &gpui_kit::ClickEvent, _, cx| {
+            cx.stop_propagation();
+            let pos = match ev {
+                gpui_kit::ClickEvent::Mouse(m) => m.down.position,
+                _ => gpui_kit::Point::default(),
+            };
+            s.update(cx, |st, cx| st.toggle_session_menu(pos, cx));
         })
 }
