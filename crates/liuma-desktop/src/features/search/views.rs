@@ -32,7 +32,9 @@ pub(crate) fn search_field(store: &Entity<AppStore>, cx: &App) -> impl IntoEleme
             .border_color(theme::BORDER_2())
             .pl(px(6.))
             .pr(px(4.))
-            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation()
+            })
             .child(
                 Input::new(e)
                     .small()

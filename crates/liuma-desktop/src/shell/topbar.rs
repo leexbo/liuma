@@ -161,7 +161,9 @@ fn sidebar_fold_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .child(fixed(icon, 14.))
         .child(tip_capture_layer(store, TIP_FOLD))
         .on_hover(move |enter: &bool, _, cx| {
-            s_tip.update(cx, |st, cx| st.header_tip_hover(TIP_FOLD, "切换侧边栏", *enter, cx));
+            s_tip.update(cx, |st, cx| {
+                st.header_tip_hover(TIP_FOLD, "切换侧边栏", *enter, cx)
+            });
         })
         .on_click(move |_, _, cx| {
             s.update(cx, |st, cx| st.toggle_sidebar(cx));

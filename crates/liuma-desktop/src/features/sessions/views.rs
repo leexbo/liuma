@@ -15,8 +15,8 @@ use gpui_kit::{
 use liuma_core::proto::SessionSummary;
 
 use crate::features::search;
-use crate::features::settings;
 use crate::features::sessions::store::{GroupMode, OrderMode};
+use crate::features::settings;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::reducer::{relative_time, workspace_of};
@@ -221,11 +221,16 @@ fn header_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         )
         .child(div().flex_1())
         .child(
-            header_icon_button(store, TIP_SEARCH, "搜索会话", fixed(LiumaIcon::SearchOutline, 14.))
-                .on_click(move |_, window, cx| {
-                    cx.stop_propagation();
-                    s_search.update(cx, |st, cx| st.toggle_search_open(window, cx));
-                }),
+            header_icon_button(
+                store,
+                TIP_SEARCH,
+                "搜索会话",
+                fixed(LiumaIcon::SearchOutline, 14.),
+            )
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                s_search.update(cx, |st, cx| st.toggle_search_open(window, cx));
+            }),
         )
         .child(
             header_icon_button(
@@ -244,11 +249,16 @@ fn header_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             }),
         )
         .child(
-            header_icon_button(store, TIP_ADD_WS, "添加工作区", fixed(LiumaIcon::ProjectAdd, 16.))
-                .on_click(move |_, _, cx| {
-                    cx.stop_propagation();
-                    s_add.update(cx, |st, cx| st.add_workspace_via_picker(cx));
-                }),
+            header_icon_button(
+                store,
+                TIP_ADD_WS,
+                "添加工作区",
+                fixed(LiumaIcon::ProjectAdd, 16.),
+            )
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                s_add.update(cx, |st, cx| st.add_workspace_via_picker(cx));
+            }),
         )
 }
 
@@ -336,10 +346,7 @@ fn session_list(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             .filter(|(_, s)| {
                 s.origin.as_deref() != Some("subagent")
                     && (query.is_empty()
-                        || st
-                            .title_for(&s.session_id)
-                            .to_lowercase()
-                            .contains(&query))
+                        || st.title_for(&s.session_id).to_lowercase().contains(&query))
             })
             .map(|(ix, s)| session_row(store, cx, s, ix).into_any_element())
             .collect();
@@ -636,7 +643,7 @@ fn session_row(
                 .w(px(14.))
                 .flex_shrink_0()
                 .justify_center()
-                .children(running.then(|| running_dot())),
+                .children(running.then(running_dot)),
         )
         .child(
             div()
@@ -718,12 +725,8 @@ pub fn session_menu_card(
     store: &Entity<AppStore>,
     pos: gpui_kit::Point<gpui_kit::Pixels>,
 ) -> impl IntoElement {
-    let (rename, archive, fork, export_log) = (
-        store.clone(),
-        store.clone(),
-        store.clone(),
-        store.clone(),
-    );
+    let (rename, archive, fork, export_log) =
+        (store.clone(), store.clone(), store.clone(), store.clone());
     div()
         .id("session-menu-card")
         .absolute()
@@ -912,23 +915,32 @@ pub fn view_options_menu_card(
         .p(px(4.))
         .shadow_md()
         .child(menu_section_label("分组方式"))
-        .child(view_menu_item("view-group-ws", "按工作区", group == GroupMode::Workspace, move |_, _, cx| {
-            s_ws.update(cx, |st, cx| st.set_group_mode(GroupMode::Workspace, cx));
-        }))
-        .child(view_menu_item("view-group-flat", "单列表", group == GroupMode::Flat, move |_, _, cx| {
-            s_flat.update(cx, |st, cx| st.set_group_mode(GroupMode::Flat, cx));
-        }))
-        .child(
-            div()
-                .h(px(1.))
-                .mx(px(8.))
-                .my(px(4.))
-                .bg(theme::BORDER()),
-        )
+        .child(view_menu_item(
+            "view-group-ws",
+            "按工作区",
+            group == GroupMode::Workspace,
+            move |_, _, cx| {
+                s_ws.update(cx, |st, cx| st.set_group_mode(GroupMode::Workspace, cx));
+            },
+        ))
+        .child(view_menu_item(
+            "view-group-flat",
+            "单列表",
+            group == GroupMode::Flat,
+            move |_, _, cx| {
+                s_flat.update(cx, |st, cx| st.set_group_mode(GroupMode::Flat, cx));
+            },
+        ))
+        .child(div().h(px(1.)).mx(px(8.)).my(px(4.)).bg(theme::BORDER()))
         .child(menu_section_label("排序方式"))
-        .child(view_menu_item("view-order-updated", "最近更新", order == OrderMode::Updated, move |_, _, cx| {
-            s_updated.update(cx, |st, cx| st.set_order_mode(OrderMode::Updated, cx));
-        }))
+        .child(view_menu_item(
+            "view-order-updated",
+            "最近更新",
+            order == OrderMode::Updated,
+            move |_, _, cx| {
+                s_updated.update(cx, |st, cx| st.set_order_mode(OrderMode::Updated, cx));
+            },
+        ))
         .child(
             div()
                 .id("view-order-manual")
