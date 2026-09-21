@@ -122,9 +122,11 @@ const fn color(hex: u32, a: f32) -> Rgba {
 /// 非 macOS 无模糊落地,保持实色
 const WINDOW_TINT_A: f32 = if cfg!(target_os = "macos") { 0.96 } else { 1.0 };
 
-/// 深盘侧栏与标题栏同源色(Finder 板岩蓝灰采样一族;用户拍板顶条
-/// 与侧栏同色,同源常量防漂移)
-const DARK_SIDEBAR: Rgba = color(0x2A363E, 0.5);
+/// 深盘侧栏(用户指定 RGB 36,42,44)。实色:半透 tint 的渲染色随
+/// 桌面壁纸漂移,无法对齐指定值。
+const DARK_SIDEBAR: Rgba = color(0x242A2C, 1.0);
+/// 深盘标题栏(用户指定 RGB 41,45,48;与侧栏分离为双色)
+const DARK_TITLE_BAR: Rgba = color(0x292D30, 1.0);
 
 /// 深色盘:蓝灰色相家族——base 深海军蓝(参考图采样 #212734),
 /// sidebar 板岩蓝灰(Finder 暗侧栏采样 #253035 一族);macOS 毛玻璃
@@ -134,9 +136,10 @@ const fn dark_palette() -> Palette {
     Palette {
         base: color(0x212734, WINDOW_TINT_A),
         sidebar: DARK_SIDEBAR,
-        sidebar_hover: color(0x2F3B42, 1.0),
+        // hover 沿用旧版相对基色的提亮步长(+5,+5,+4),跟随新中性灰族
+        sidebar_hover: color(0x292F30, 1.0),
         sidebar_active: color(0x39454C, 1.0),
-        title_bar: DARK_SIDEBAR,
+        title_bar: DARK_TITLE_BAR,
         ink: color(0x000000, 1.0),
         layer: color(0x2A3140, 1.0),
         card: color(0x2E3644, 1.0),
@@ -583,7 +586,7 @@ mod tests {
         let l = &PALETTES[M_LIGHT as usize];
         let d = &PALETTES[M_DARK as usize];
         assert_eq!(d.base, color(0x212734, WINDOW_TINT_A));
-        assert_eq!(d.sidebar, color(0x2A363E, 0.5));
+        assert_eq!(d.sidebar, color(0x242A2C, 1.0));
         assert_eq!(l.base, color(0xFFFFFF, 1.0));
         assert_ne!(d.label, l.label);
         assert_ne!(d.brand, l.brand);
@@ -593,8 +596,10 @@ mod tests {
         // 侧栏交互三态互异(hover/选中串色即侧栏语义失效)
         assert_ne!(d.sidebar, d.sidebar_hover);
         assert_ne!(d.sidebar_hover, d.sidebar_active);
-        // 标题栏与侧栏同色(用户拍板顶条延伸侧栏观感;分族即回退)
-        assert_eq!(d.title_bar, d.sidebar);
+        // 标题栏与侧栏分色(用户指定 41,45,48 / 36,42,44)
+        assert_ne!(d.title_bar, d.sidebar);
+        assert_eq!(d.sidebar, color(0x242A2C, 1.0));
+        assert_eq!(d.title_bar, color(0x292D30, 1.0));
         // 标题栏与画布分色
         assert_ne!(d.title_bar, d.base);
     }
