@@ -17,6 +17,8 @@ base64.workspace = true
 pdf-render.workspace = true
 liuma-attachment.workspace = true
 liuma-core.workspace = true
+# 平台 shell 名(`bash` / `pwsh`):工具摘要的键序表按模型面工具名索引
+liuma-sandbox.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

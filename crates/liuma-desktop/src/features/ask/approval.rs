@@ -26,7 +26,11 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
     let command = data["command"].as_str().unwrap_or_default().to_string();
     let current_mode = data["currentMode"].as_str().unwrap_or_default().to_string();
     let target_mode = data["targetMode"].as_str().unwrap_or_default().to_string();
-    let tool_name = data["toolName"].as_str().unwrap_or("bash").to_string();
+    // 载荷缺 toolName 时的兜底名(正常路径恒带载荷工具名)
+    let tool_name = data["toolName"]
+        .as_str()
+        .unwrap_or(liuma_sandbox::shell::tool_name())
+        .to_string();
     let justification = approval.question.question.clone();
     let (approve, reject, dismiss) = (store.clone(), store.clone(), store.clone());
     Some(

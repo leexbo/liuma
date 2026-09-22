@@ -1062,10 +1062,12 @@ fn summarize_call(name: &str, arguments: &str) -> String {
     let Ok(v) = serde_json::from_str::<Value>(arguments) else {
         return one_line(arguments, 80);
     };
+    // shell 工具的模型面名字随平台走(`bash` / `pwsh`),按实际取
+    let shell_tool = liuma_sandbox::shell::tool_name();
     let keys: &[&str] = match name {
-        // bash 优先 description(必填参数,给用户看的
+        // shell 工具优先 description(必填参数,给用户看的
         // 一句意图说明),回退 command
-        "bash" => &["description", "command"],
+        n if n == shell_tool => &["description", "command"],
         "file_read" => &["path"],
         "file_edit" => &["path"],
         "file_search" => &["content", "glob", "path"],
@@ -1748,7 +1750,10 @@ mod tests {
     fn summary_truncates_cjk() {
         let long = "很".repeat(100);
         assert_eq!(truncate_chars(&long, 80).chars().count(), 81); // 80 + 省略号
-        assert_eq!(summarize_call("bash", "{\"command\":\"ls\"}"), "ls");
+        assert_eq!(
+            summarize_call(liuma_sandbox::shell::tool_name(), "{\"command\":\"ls\"}"),
+            "ls"
+        );
     }
 
     /// 折叠行摘要键序:file_edit 显 path(修 new_text 错显)、
@@ -1759,13 +1764,16 @@ mod tests {
     fn summary_key_order_per_tool() {
         assert_eq!(
             summarize_call(
-                "bash",
+                liuma_sandbox::shell::tool_name(),
                 "{\"command\":\"git status\",\"description\":\"Show working tree status\"}"
             ),
             "Show working tree status"
         );
         assert_eq!(
-            summarize_call("bash", "{\"command\":\"git status\"}"),
+            summarize_call(
+                liuma_sandbox::shell::tool_name(),
+                "{\"command\":\"git status\"}"
+            ),
             "git status"
         );
         assert_eq!(

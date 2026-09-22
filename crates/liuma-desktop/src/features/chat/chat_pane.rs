@@ -2042,7 +2042,8 @@ fn tool_expanded_body(
     // 后台启动(输出是 job id 文本)走通用卡;信号终止经视图携带
     let signal = term.and_then(|t| t.signal.as_deref());
     let execution_error = state == ToolState::Error && signal.is_none();
-    let body: gpui_kit::AnyElement = if name == "bash"
+    // shell 工具的模型面名字随平台走(`bash` / `pwsh`),终端卡不跟着分两次写
+    let body: gpui_kit::AnyElement = if name == liuma_sandbox::shell::tool_name()
         && !execution_error
         && let Some(command) = bash_command(arguments)
     {

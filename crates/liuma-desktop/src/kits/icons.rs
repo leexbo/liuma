@@ -417,8 +417,11 @@ pub fn tool_icon(name: &str) -> Icon {
 }
 
 fn tool_path(name: &str) -> SharedString {
+    // shell 工具的模型面名字随平台走,图标不跟着分两次写
+    if name == liuma_sandbox::shell::tool_name() {
+        return IconName::SquareTerminal.path();
+    }
     match name {
-        "bash" => IconName::SquareTerminal.path(),
         "file_read" | "read" | "web_fetch" => IconName::BookOpen.path(),
         "file_edit" | "edit" | "write" => LiumaIcon::Pencil.path(),
         "file_search" | "grep" | "glob" => IconName::Search.path(),
@@ -549,8 +552,12 @@ mod tests {
     #[test]
     fn tool_icon_covers_all_spec_tools() {
         // (工具名, 期望资产路径);前 12 项 = liuma-tools spec 权威域
+        // (shell 工具的模型面名字随平台走)
         let expected: &[(&str, &str)] = &[
-            ("bash", "icons/square-terminal.svg"),
+            (
+                liuma_sandbox::shell::tool_name(),
+                "icons/square-terminal.svg",
+            ),
             ("file_read", "icons/book-open.svg"),
             ("file_edit", "icons/_liuma/pencil.svg"),
             ("file_search", "icons/search.svg"),
