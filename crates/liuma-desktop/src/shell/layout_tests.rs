@@ -444,11 +444,13 @@ fn send_roundtrip(
         }
     };
     let root = std::env::temp_dir().join(format!(
-        "liuma-desktop-send-{}-{}",
+        "liuma-desktop-send-{}-{}-{}",
         if fake { "fake" } else { "real" },
-        std::process::id()
+        std::process::id(),
+        SEND_ROUNDTRIP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
     ));
-    let _ = std::fs::remove_dir_all(&root);
+    // 并行用例各自持有唯一根,不开场互删目录
+    static SEND_ROUNDTRIP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let (bridge, frames_rx) =
         HostBridge::new_at(root.join("ws"), fake, &key, Some(root.join("sessions")))
             .expect("桥构建失败");
@@ -519,30 +521,15 @@ fn send_roundtrip(
     let store = store_cell.borrow().clone().expect("store 未捕获");
     let current = cx.update(|app| store.read(app).state.current_id.clone());
     assert!(current.is_some(), "新建会话应已成为当前会话");
-    {
-        // 全量投影取证(种子场景):60 轮种子应整段投影(≥120 surface),
-        // 回归锁不退化为空会话链路
-        let nodes = cx.update(|app| {
-            store
-                .read(app)
-                .state
-                .chats
-                .get(current.as_ref().unwrap())
-                .map(|c| c.nodes.len())
-        });
-        if seeded {
-            assert!(
-                nodes.unwrap_or(0) >= 100,
-                "全量投影应已就位,nodes={nodes:?}"
-            );
-        }
-    }
 
     // 用户气泡应到达(user/message 事件经帧泵);回复流式较慢,
-    // 轮询等待(真时序:fake ~16s / 真实 LLM ~90s)
+    // 轮询等待(真时序:fake ~16s / 真实 LLM ~90s)。
+    // 种子场景的全量投影取证(60 轮 ≥100 surface nodes)并入同一轮询窗
+    // ——历史分页载入是异步帧,负载下落定时刻不定,一次性前置断言会抢跑
     let rounds = if fake { 80 } else { 450 };
     let mut user_ok = false;
     let mut assistant_text = String::new();
+    let mut projected_ok = !seeded;
     for _ in 0..rounds {
         std::thread::sleep(std::time::Duration::from_millis(200));
         cx.run_until_parked();
@@ -558,10 +545,16 @@ fn send_roundtrip(
                 _ => {}
             }
         }
-        if user_ok && !assistant_text.is_empty() {
+        if seeded && snapshot.len() >= 100 {
+            // 全量投影取证:60 轮种子应整段投影(≥120 surface),
+            // 回归锁不退化为空会话链路
+            projected_ok = true;
+        }
+        if user_ok && !assistant_text.is_empty() && projected_ok {
             break;
         }
     }
+    assert!(projected_ok, "全量投影未就位(种子历史载入断裂)");
     assert!(user_ok, "用户气泡未出现(发送链断裂:before user/message)");
     assert!(
         !assistant_text.is_empty(),
