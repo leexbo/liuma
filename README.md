@@ -14,7 +14,7 @@
 - **事件溯源**:会话全部状态是追加式 JSONL 事件日志;模型历史、审计、遥测均为投影,同一日志任意时刻重放结果一致,崩溃后从日志恢复。
 - **结构性不变式**:「模型可见 ⟺ 已记录」由不变式闸门在唯一出网点强制,不依赖调用方自律;沙箱不可用即拒绝执行。
 - **WASM 组件工具**:接口以 WIT 契约定义(`wit/`),wasmtime 运行;组件权限由能力束显式界定,时钟与随机源显式注入保证重放确定性。
-- **沙箱执行**:macOS Seatbelt / Linux Landlock / bubblewrap 沙箱链(fail-closed);权限三态 + 审批门(ask / never)。
+- **沙箱执行**:macOS Seatbelt / Linux Landlock / bubblewrap / Windows 受限令牌 + 能力 SID 授权沙箱链(fail-closed);权限三态 + 审批门(ask / never)。
 - **原生桌面客户端**:GPUI 桌面端(聊天 / 计划审批 / 问答卡 / 轨迹检查器 / 全文检索 / 会话导出),另有 `liuma` CLI(REPL / JSON-RPC stdio 网关)。
 
 ## 快速开始

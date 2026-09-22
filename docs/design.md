@@ -340,7 +340,9 @@ around 续体:waterfall listener 收 `(payload, Next)`;`Next.invoke` 继续链,�
 | Linux | bwrap | argv 包装 | 功能式(read-only profile 真跑 `true`) |
 | Linux(无 bwrap) | landlock | pre_exec 自限制 | ABI 探测 |
 | macOS | seatbelt | argv 包装 | 功能式(read-only SBPL 真跑 `true`;subpath 需 canonicalize) |
-| Windows | 未实现 | fail-closed 拒绝 | — |
+| Windows | windows-acl | 受限令牌 + 能力 SID 授权 + Job,经 runner 包装 argv | 功能式(read-only 真跑一次,载荷用平台 shell) |
+
+**Windows 边界(如实声明,enforcement 恒为 `partial`)**:写入与删除受 ACL 约束;**读、网络与进程可见性不受限**。另有三处环境与形态约束:受限令牌下 PowerShell 进 `ConstrainedLanguage`(改输出编码的 .NET 属性因此失效,输出落在系统代码页,由宿主按平台代码页解码,见 `liuma-sandbox::text`);Microsoft Store 安装的 PowerShell 只提供应用执行别名,别名是 reparse point,`CreateProcessAsUser` 打不开、其目标又在 ACL 收紧的 WindowsApps 下,故 shell 候选链跳过该目录;可写根的安全描述符是**常驻改动**(能力 SID 的授权 ACE 按设计不撤销)。
 
 探测一次缓存为 rung(仅成功才缓存,`set_disabled_for_tests` 测试缝保留);探测失败且策略要求沙箱 → 拒绝执行(fail-closed,绝不静默降级为无沙箱)。
 
@@ -416,7 +418,7 @@ preset = k8s 形态 YAML manifest:`presets/<id>.yaml`(apiVersion: liuma/v1 / kin
 |---|---|---|
 | OTLP wire 序列化 | 无自建观测后端可推送 | 接入 Jaeger / Tempo 等 |
 | turso 崩溃恢复演练 | 数据风险已隔离(JSONL 为事实流) | 任意空档 |
-| Windows ACL rung | Windows 无工具执行能力 | 具备 Windows 环境 |
+| Windows rung 的 PTY 路径 | PTY 下的沙箱执行未在 Windows 上验证;实测该路径有约 70 秒的会话收尾开销,成因待查 | 需要在 Windows 上用 PTY 跑命令 |
 | 0.3 产物切换 + loop/prompt/续体组件化 | 无(契约已按 0.3 形状) | Rust→wasm 工具链成熟 |
 | 沙箱内 rustc 崩溃(macOS guard page 分配被拒) | 编译型工作负载(build/test 工具调用)在沙箱内不可用,模型重试浪费 step | 会话要求模型跑 rustc 时(实测) |
 | liuma-host 剩余簇单体(bus/engine/arena/persistence/rpc/telemetry/config) | 能力实现与核心同 crate,替换需改核心 | wasm 组件化边界成熟(0.3 工具链) |
