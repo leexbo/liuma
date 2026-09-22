@@ -1,0 +1,30 @@
+[package]
+name = "liuma-sandbox-winacl"
+description = "Windows 沙箱后端:受限令牌 + 能力 SID 授权 + Job Object 的契约与 runner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[[bin]]
+name = "liuma-sandbox-run"
+path = "src/bin/liuma-sandbox-run.rs"
+
+[dependencies]
+thiserror.workspace = true
+sha2.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Environment",
+    "Win32_System_JobObjects",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+] }

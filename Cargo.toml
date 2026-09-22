@@ -20,6 +20,7 @@ members = [
     "crates/liuma-prompt",
     "crates/liuma-tools",
     "crates/liuma-example-tool",
+    "crates/liuma-sandbox-winacl",
 ]
 
 [workspace.package]
@@ -102,6 +103,9 @@ rmcp = { version = "3.2", default-features = false, features = ["client", "trans
 base64 = "0.23"
 # PDF 预览:pdf-syntax 解析 + 纯 Rust 栅格化(pdf-render 重导出;无 C 交付物)
 pdf-render = "1.0"
+# Windows 沙箱后端(受限令牌 / 能力 SID 授权 / Job Object)。纯 Rust 绑定,
+# 无 C 交付物;feature 集由消费方按需声明
+windows-sys = { version = "0.61", default-features = false }
 
 [profile.dev]
 # 全量 debuginfo 下 wasmtime+turso 构建达数十 GB;行号表足够日常调试
