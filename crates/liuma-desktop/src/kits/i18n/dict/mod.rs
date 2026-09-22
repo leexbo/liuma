@@ -7,7 +7,6 @@
 
 pub(crate) mod chat;
 pub(crate) mod common;
-
 pub(crate) mod sessions;
 pub(crate) mod settings;
 pub(crate) mod shell;
@@ -17,3 +16,4 @@ pub(crate) mod shell;
 /// 不靠 dead-code 兜底;其余词典(直达 UI)保持逐键 dead 检查。
 #[allow(dead_code)]
 pub(crate) mod time;
+pub(crate) mod trajectory;

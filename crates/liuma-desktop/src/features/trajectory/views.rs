@@ -20,6 +20,7 @@ use gpui_kit::{
 use liuma_core::trajectory::{TrajectoryRecord, TrajectoryRequest, TrajectoryUsage};
 
 use crate::features::trajectory::{InspectTarget, TrajectoryView};
+use crate::kits::i18n::dict;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -201,9 +202,9 @@ fn fmt_clock(ms: i64) -> String {
 /// 否则 Not available)
 fn timing_source(available: bool) -> String {
     if available {
-        "Session timestamps".into()
+        dict::trajectory::timing_session().into()
     } else {
-        "Not available".into()
+        dict::trajectory::timing_na().into()
     }
 }
 
@@ -683,7 +684,7 @@ fn toolbar(store: &Entity<AppStore>, s: &Snap, cx: &App) -> impl IntoElement {
         .border_color(theme::BORDER())
         .child(toggle_button(
             "traj-toolbar-duration",
-            "Duration",
+            dict::trajectory::toolbar_duration(),
             s.duration,
             fixed(LiumaIcon::Clock, 12.),
             {
@@ -695,7 +696,7 @@ fn toolbar(store: &Entity<AppStore>, s: &Snap, cx: &App) -> impl IntoElement {
         ))
         .child(action_button(
             "traj-toolbar-turns",
-            "Turns",
+            dict::trajectory::toolbar_turns(),
             s.collapse.all_turns,
             {
                 let s = store.clone();
@@ -706,7 +707,7 @@ fn toolbar(store: &Entity<AppStore>, s: &Snap, cx: &App) -> impl IntoElement {
         ))
         .child(action_button(
             "traj-toolbar-calls",
-            "Calls",
+            dict::trajectory::toolbar_calls(),
             s.collapse.all_calls,
             {
                 let s = store.clone();
@@ -723,11 +724,10 @@ fn toolbar(store: &Entity<AppStore>, s: &Snap, cx: &App) -> impl IntoElement {
                 .text_size(px(11.))
                 .text_color(theme::CAPTION())
                 .pl(px(8.))
-                .child(format!(
-                    "{} / {} 条 · {} 次请求",
+                .child(dict::trajectory::counts(
                     s.view.records.len(),
                     s.view.total,
-                    s.view.requests.len()
+                    s.view.requests.len(),
                 )),
         )
         .children(input)
@@ -804,7 +804,11 @@ fn action_button(
 // ── Overview 时间线────────────────────
 
 fn timeline(store: &Entity<AppStore>, s: &Snap, spans: &[TlSpan]) -> impl IntoElement {
-    let labels = ["Input", "Model", "Tools"];
+    let labels = [
+        dict::trajectory::legend_input(),
+        dict::trajectory::legend_model(),
+        dict::trajectory::legend_tools(),
+    ];
     let labels_col = div().w(px(44.)).flex_shrink_0().relative().children(
         labels
             .iter()
@@ -1111,7 +1115,7 @@ fn timeline(store: &Entity<AppStore>, s: &Snap, spans: &[TlSpan]) -> impl IntoEl
                 .px(px(6.))
                 .text_size(px(9.))
                 .text_color(theme::CAPTION())
-                .child("拖选筛选 · 滚轮缩放 · 右键清除"),
+                .child(dict::trajectory::drag_hint()),
         )
 }
 
@@ -1146,12 +1150,11 @@ fn ledger(
                 .debug_selector(|| "load-earlier".to_string())
                 .when(s.view.loading_older, |el| {
                     el.child(Spinner::new().xsmall())
-                        .child("正在加载更早记录…".to_string())
+                        .child(dict::trajectory::loading_older().to_string())
                 })
                 .when(!s.view.loading_older, |el| {
-                    el.child(format!(
-                        "加载更早记录(还有 {} 条)",
-                        s.view.total.saturating_sub(s.view.records.len() as u64)
+                    el.child(dict::trajectory::load_older(
+                        s.view.total.saturating_sub(s.view.records.len() as u64),
                     ))
                 })
                 .on_click(move |_, _, cx| {
@@ -1188,7 +1191,7 @@ fn ledger(
                 .text_size(px(12.))
                 .text_color(theme::CAPTION())
                 .child(Spinner::new().xsmall())
-                .child("正在折叠轨迹…")
+                .child(dict::trajectory::folding())
                 .into_any_element(),
         );
     }
@@ -1208,7 +1211,7 @@ fn ledger(
                 .text_color(theme::CAPTION())
                 .debug_selector(|| "trajectory-empty".to_string())
                 .child(fixed(IconName::Inbox, 16.))
-                .child("会话尚无事件——发送首条消息后生成轨迹")
+                .child(dict::trajectory::empty())
                 .into_any_element(),
         );
     }
@@ -1258,7 +1261,7 @@ fn turn_summary_row(
         .text_color(theme::CAPTION())
         .hover(|st| st.text_color(theme::LABEL_3()))
         .debug_selector(move || format!("turn-summary-{turn}"))
-        .child(format!("… {steps} 步 · {tools} 个工具调用"))
+        .child(dict::trajectory::folded_steps(steps, tools))
         .on_click(move |_, _, cx| {
             s.update(cx, |st, cx| st.toggle_turn(turn, cx));
         })
@@ -1284,7 +1287,7 @@ fn call_summary_row(
         .text_color(theme::CAPTION())
         .hover(|st| st.text_color(theme::LABEL_3()))
         .debug_selector(move || format!("call-summary-{message_index}"))
-        .child(format!("… {count} 个工具调用 · {}", names.join(", ")))
+        .child(dict::trajectory::folded_tools(count, names.join(", ")))
         .on_click(move |_, _, cx| {
             s.update(cx, |st, cx| st.toggle_call(message_index, cx));
         })
@@ -1350,7 +1353,7 @@ fn record_row(
                 .font_family("Menlo")
                 .text_size(px(8.))
                 .text_color(theme::LABEL_3())
-                .child(format!("Turn {t}")),
+                .child(dict::trajectory::turn_n(t)),
         );
     }
     if let Some(n) = rec.request_number {
@@ -1647,15 +1650,15 @@ fn inspector(
                     .font_family("Menlo")
                     .text_size(px(11.))
                     .text_color(theme::CAPTION())
-                    .child(format!("Turn {}", q.turn)),
+                    .child(dict::trajectory::turn_n(q.turn)),
             )
             .into_any_element(),
         (_, Some(r), _) => {
             let (fg, bg) = kind_colors(&r.kind);
             let location = match (&r.turn, r.group.as_str()) {
-                (Some(t), g) if g.starts_with("Step") => format!("Turn {t} · {g}"),
-                (Some(t), _) => format!("Turn {t} · Message"),
-                _ => "Between turns".into(),
+                (Some(t), g) if g.starts_with("Step") => dict::trajectory::turn_at(t, g),
+                (Some(t), _) => dict::trajectory::turn_message(t),
+                _ => dict::trajectory::between_turns().into(),
             };
             div()
                 .flex()
@@ -1823,18 +1826,18 @@ fn inspector(
 
 fn tab_label(name: &str) -> &'static str {
     match name {
-        "payload" => "Payload",
-        "result" => "Result",
-        "timing" => "Timing",
-        "raw" => "Raw",
-        "usage" => "Usage",
-        "system" => "System Prompt",
-        "preview" => "Preview",
-        "source" => "Source",
-        "tools" => "Tools",
-        "diff" => "Diff",
-        "schema" => "Schema",
-        _ => "Summary",
+        "payload" => dict::trajectory::tab_payload(),
+        "result" => dict::trajectory::tab_result(),
+        "timing" => dict::trajectory::tab_timing(),
+        "raw" => dict::trajectory::tab_raw(),
+        "usage" => dict::trajectory::tab_usage(),
+        "system" => dict::trajectory::tab_system_prompt(),
+        "preview" => dict::trajectory::tab_preview(),
+        "source" => dict::trajectory::tab_source(),
+        "tools" => dict::trajectory::tab_tools(),
+        "diff" => dict::trajectory::tab_diff(),
+        "schema" => dict::trajectory::tab_schema(),
+        _ => dict::trajectory::tab_summary(),
     }
 }
 
@@ -2320,14 +2323,20 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
         if let Some(source) = &r.source {
             let s2 = store.clone();
             col = col.child(dl_row(
-                "Source",
+                dict::trajectory::row_source(),
                 nav_link("goto-source", message_source_label(source)).on_click(move |_, _, cx| {
                     s2.update(cx, |st, cx| st.set_inspector_tab("source", cx));
                 }),
             ));
         }
-        col = col.child(dl_row("Status", "Completed"));
-        col = col.child(dl_row("Duration", fmt_ms(rec_total_ms(r).unwrap_or(0))));
+        col = col.child(dl_row(
+            dict::trajectory::row_status(),
+            dict::trajectory::status_completed(),
+        ));
+        col = col.child(dl_row(
+            dict::trajectory::row_duration(),
+            fmt_ms(rec_total_ms(r).unwrap_or(0)),
+        ));
         let s2 = store.clone();
         col = col
             .child(section("sec-preview", "Preview").on_click(move |_, _, cx| {
@@ -2367,20 +2376,24 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
                 }),
             );
         }
-        // 列名:所属请求在场 = "Source",否则 "Hierarchy"
-        let dt = if req.is_some() { "Source" } else { "Hierarchy" };
+        // 列名:所属请求在场 = 来源,否则 层级
+        let dt = if req.is_some() {
+            dict::trajectory::row_source()
+        } else {
+            dict::trajectory::row_hierarchy()
+        };
         col = col.child(dl_row(dt, dd.into_any_element()));
     }
 
     // Status(message:Failed 红 / Completed)
     if r.kind == "message" {
         let (label, color) = if r.is_error {
-            ("Failed", Some(theme::DANGER()))
+            (dict::trajectory::status_failed(), Some(theme::DANGER()))
         } else {
-            ("Completed", None)
+            (dict::trajectory::status_completed(), None)
         };
         col = col.child(dl_row(
-            "Status",
+            dict::trajectory::row_status(),
             div()
                 .when_some(color, |el, c| el.text_color(c))
                 .child(label),
@@ -2401,14 +2414,14 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
     // Status(Failed 红 / Pending 无结果 / Completed)
     if r.kind == "tool" {
         let (label, color) = if r.is_error {
-            ("Failed", Some(theme::DANGER()))
+            (dict::trajectory::status_failed(), Some(theme::DANGER()))
         } else if r.result.is_none() {
-            ("Pending", Some(theme::WARN()))
+            (dict::trajectory::status_pending(), Some(theme::WARN()))
         } else {
-            ("Completed", None)
+            (dict::trajectory::status_completed(), None)
         };
         col = col.child(dl_row(
-            "Status",
+            dict::trajectory::row_status(),
             div()
                 .when_some(color, |el, c| el.text_color(c))
                 .child(label),
@@ -2420,15 +2433,24 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
         let out = r.output.unwrap_or(0);
         let think = r.think.unwrap_or(0);
         col = col
-            .child(dl_row("Tokens", format!("{} tok", fmt_tok(out))))
-            .child(dl_row("   Reasoning", fmt_tok(think)))
-            .child(dl_row("   Content", fmt_tok(out.saturating_sub(think))));
+            .child(dl_row(
+                dict::trajectory::row_tokens(),
+                format!("{} tok", fmt_tok(out)),
+            ))
+            .child(dl_row(dict::trajectory::row_reasoning(), fmt_tok(think)))
+            .child(dl_row(
+                dict::trajectory::row_content(),
+                fmt_tok(out.saturating_sub(think)),
+            ));
     }
     // Duration(user)
     if r.kind == "user"
         && let Some(sec) = r.time_seconds
     {
-        col = col.child(dl_row("Duration", fmt_ms((sec * 1000.) as i64)));
+        col = col.child(dl_row(
+            dict::trajectory::row_duration(),
+            fmt_ms((sec * 1000.) as i64),
+        ));
     }
 
     // Payload / Result / Schema 小节(非 markdown 记录专属——
@@ -2437,18 +2459,24 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
     if r.kind != "message" && (r.kind == "tool" || r.payload.is_some()) {
         let s2 = store.clone();
         col = col
-            .child(section("sec-payload", "Payload").on_click(move |_, _, cx| {
-                s2.update(cx, |st, cx| st.set_inspector_tab("payload", cx));
-            }))
+            .child(
+                section("sec-payload", dict::trajectory::tab_payload()).on_click(
+                    move |_, _, cx| {
+                        s2.update(cx, |st, cx| st.set_inspector_tab("payload", cx));
+                    },
+                ),
+            )
             .child(preview_block(store, s, r, "payload"));
     }
     if r.kind != "message" && (r.kind == "tool" || r.result.is_some() || r.output_detail.is_some())
     {
         let s2 = store.clone();
         col = col
-            .child(section("sec-result", "Result").on_click(move |_, _, cx| {
-                s2.update(cx, |st, cx| st.set_inspector_tab("result", cx));
-            }))
+            .child(
+                section("sec-result", dict::trajectory::tab_result()).on_click(move |_, _, cx| {
+                    s2.update(cx, |st, cx| st.set_inspector_tab("result", cx));
+                }),
+            )
             .child(preview_block(store, s, r, "result"));
     }
     if r.kind == "tool" {
@@ -2483,11 +2511,14 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
                     "Started",
                     r.started_at.map(fmt_clock).unwrap_or_else(|| "—".into()),
                 ),
-                dl_row("Total", fmt_ms(q.duration_ms)),
+                dl_row(dict::trajectory::row_total(), fmt_ms(q.duration_ms)),
                 dl_row("TTFT", r.ttft_ms.map(fmt_ms).unwrap_or_else(|| "—".into())),
-                dl_row("Generation", generation),
-                dl_row("Throughput", throughput),
-                dl_row("Timing source", timing_source(total.is_some())),
+                dl_row(dict::trajectory::row_generation(), generation),
+                dl_row(dict::trajectory::row_throughput(), throughput),
+                dl_row(
+                    dict::trajectory::tab_timing(),
+                    timing_source(total.is_some()),
+                ),
             ]
         } else {
             vec![
@@ -2495,18 +2526,26 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
                     "Started",
                     r.started_at.map(fmt_clock).unwrap_or_else(|| "—".into()),
                 ),
-                dl_row("Duration", total.map(fmt_ms).unwrap_or_else(|| "—".into())),
-                dl_row("Timing source", timing_source(total.is_some())),
+                dl_row(
+                    dict::trajectory::row_duration(),
+                    total.map(fmt_ms).unwrap_or_else(|| "—".into()),
+                ),
+                dl_row(
+                    dict::trajectory::tab_timing(),
+                    timing_source(total.is_some()),
+                ),
             ]
         };
         col = col
             .child(
-                section("sec-req-timing", "Request Timing").on_click(move |_, _, cx| {
-                    s2.update(cx, |st, cx| {
-                        st.select_trajectory_request(n, cx);
-                        st.set_inspector_tab("timing", cx);
-                    });
-                }),
+                section("sec-req-timing", dict::trajectory::sec_request_timing()).on_click(
+                    move |_, _, cx| {
+                        s2.update(cx, |st, cx| {
+                            st.select_trajectory_request(n, cx);
+                            st.set_inspector_tab("timing", cx);
+                        });
+                    },
+                ),
             )
             .children(timing_rows);
     }
@@ -2520,11 +2559,11 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
         col = col
             .child(timing_sec)
             .child(dl_row(
-                "Started",
+                dict::trajectory::row_started(),
                 r.started_at.map(fmt_clock).unwrap_or_else(|| "—".into()),
             ))
             .child(dl_row(
-                "Duration",
+                dict::trajectory::row_duration(),
                 total.map(fmt_ms).unwrap_or_else(|| "—".into()),
             ))
             .child(dl_row("Timing source", timing_source(total.is_some())));
@@ -2542,9 +2581,9 @@ fn preview_block(
     tab: &'static str,
 ) -> impl IntoElement {
     let missing = match tab {
-        "payload" => "No payload captured",
-        "result" => "No result captured",
-        _ => "Schema unavailable",
+        "payload" => dict::trajectory::no_payload(),
+        "result" => dict::trajectory::no_result(),
+        _ => dict::trajectory::schema_na(),
     };
     let text = match tab {
         // SYSTEM:快照在场时预览真实 prompt 头部(字符数行只是信封摘要)
@@ -2634,7 +2673,7 @@ fn preview_block(
 /// Payload tab(JSON 容器 → JsonTree;否则原文等宽)
 fn payload_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
     match &r.payload {
-        None => div().child(empty_text("No payload captured")),
+        None => div().child(empty_text(dict::trajectory::no_payload())),
         Some(p) => match serde_json::from_str::<serde_json::Value>(p) {
             Ok(v) if v.is_object() || v.is_array() => {
                 div().child(json_tree_block(store, s, r.index, &v))
@@ -2657,7 +2696,7 @@ fn result_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div 
     };
     let text = match (&r.output_detail, &r.result) {
         (None, None) => {
-            return div().child(empty_text("No result captured"));
+            return div().child(empty_text(dict::trajectory::no_result()));
         }
         (Some(d), _) => d,
         (None, Some(s)) => s,
@@ -2739,11 +2778,11 @@ fn timing_body(r: &TrajectoryRecord) -> Div {
     let total = rec_total_ms(r);
     let mut col = div().v_flex().gap(px(2.));
     col = col.child(dl_row(
-        "Started",
+        dict::trajectory::row_started(),
         r.started_at.map(fmt_clock).unwrap_or_else(|| "—".into()),
     ));
     col = col.child(dl_row(
-        "Duration",
+        dict::trajectory::row_duration(),
         total.map(fmt_ms).unwrap_or_else(|| "—".into()),
     ));
     if r.kind == "message" {
@@ -2752,14 +2791,17 @@ fn timing_body(r: &TrajectoryRecord) -> Div {
             r.ttft_ms.map(fmt_ms).unwrap_or_else(|| "—".into()),
         ));
         col = col.child(dl_row(
-            "Generation",
+            dict::trajectory::row_generation(),
             match (r.ttft_ms, total) {
                 (Some(t), Some(ms)) if ms > t => fmt_ms(ms - t),
                 _ => "—".into(),
             },
         ));
     }
-    col.child(dl_row("Timing source", timing_source(total.is_some())))
+    col.child(dl_row(
+        dict::trajectory::tab_timing(),
+        timing_source(total.is_some()),
+    ))
 }
 
 /// Summary tab(请求):Status/Provider/Model/Tool calls/
@@ -2767,15 +2809,17 @@ fn timing_body(r: &TrajectoryRecord) -> Div {
 fn request_summary_body(store: &Entity<AppStore>, s: &Snap, q: &TrajectoryRequest) -> Div {
     let mut col = div().v_flex().gap(px(2.));
     col = col.child(dl_row(
-        "Status",
+        dict::trajectory::row_status(),
         if q.status == "error" {
-            div().text_color(theme::DANGER()).child("Failed")
+            div()
+                .text_color(theme::DANGER())
+                .child(dict::trajectory::status_failed())
         } else {
             div().child("Complete")
         },
     ));
-    col = col.child(dl_row("Provider", q.provider.clone()));
-    col = col.child(dl_row("Model", q.model.clone()));
+    col = col.child(dl_row(dict::trajectory::row_provider(), q.provider.clone()));
+    col = col.child(dl_row(dict::trajectory::row_model(), q.model.clone()));
     col = col.child(dl_row("Tool calls", fmt_tok(q.tool_calls)));
     if let Some(e) = &q.reasoning_effort {
         col = col.child(dl_row("Reasoning", e.clone()));
@@ -2793,7 +2837,7 @@ fn request_summary_body(store: &Entity<AppStore>, s: &Snap, q: &TrajectoryReques
         let s2 = store.clone();
         let ix = res.index;
         col = col.child(dl_row(
-            "Result",
+            dict::trajectory::row_result(),
             nav_link("goto-req-result", label.into()).on_click(move |_, _, cx| {
                 s2.update(cx, |st, cx| st.select_trajectory_record(ix, cx));
             }),
@@ -2806,11 +2850,14 @@ fn request_summary_body(store: &Entity<AppStore>, s: &Snap, q: &TrajectoryReques
 fn usage_body(q: &TrajectoryRequest) -> Div {
     let mut col = div().v_flex().gap(px(2.));
     match &q.usage {
-        None => col = col.child(empty_text("Usage not reported")),
-        Some(u) => col = col.child(usage_group("This request", u)),
+        None => col = col.child(empty_text(dict::trajectory::usage_na())),
+        Some(u) => col = col.child(usage_group(dict::trajectory::usage_this(), u)),
     }
-    col.child(section("sec-cumulative", "Session cumulative"))
-        .child(usage_group("", &q.cumulative))
+    col.child(section(
+        "sec-cumulative",
+        dict::trajectory::usage_cumulative(),
+    ))
+    .child(usage_group("", &q.cumulative))
 }
 
 /// 用量组(Input/Cached/Other/Output/Reasoning/Content)
@@ -2827,12 +2874,24 @@ fn usage_group(title: &str, u: &TrajectoryUsage) -> Div {
                     .child(title.to_string()),
             )
         })
-        .child(dl_row("Input", format!("{} tok", fmt_tok(u.input))))
-        .child(dl_row("   Cached", fmt_tok(u.cached)))
-        .child(dl_row("   Other", fmt_tok(u.other)))
-        .child(dl_row("Output", format!("{} tok", fmt_tok(u.output))))
-        .child(dl_row("   Reasoning", fmt_tok(u.reasoning)))
-        .child(dl_row("   Content", fmt_tok(u.content())))
+        .child(dl_row(
+            dict::trajectory::legend_input(),
+            format!("{} tok", fmt_tok(u.input)),
+        ))
+        .child(dl_row(dict::trajectory::row_cached(), fmt_tok(u.cached)))
+        .child(dl_row(dict::trajectory::row_other(), fmt_tok(u.other)))
+        .child(dl_row(
+            dict::trajectory::row_output(),
+            format!("{} tok", fmt_tok(u.output)),
+        ))
+        .child(dl_row(
+            dict::trajectory::row_reasoning(),
+            fmt_tok(u.reasoning),
+        ))
+        .child(dl_row(
+            dict::trajectory::row_content(),
+            fmt_tok(u.content()),
+        ))
 }
 
 /// Timing tab(请求)
@@ -3439,7 +3498,9 @@ fn diff_block(id: &'static str, a: &str, b: &str) -> impl IntoElement {
 /// Schema 页(TOOL):name + description + Parameters(高亮)
 fn schema_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
     let Some(raw) = &r.schema_detail else {
-        return div().v_flex().child(empty_text("Schema unavailable"));
+        return div()
+            .v_flex()
+            .child(empty_text(dict::trajectory::schema_na()));
     };
     let Ok(spec) = serde_json::from_str::<serde_json::Value>(raw) else {
         return div()
@@ -3490,7 +3551,7 @@ fn schema_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div 
                 .child(section("sec-schema-params", "Parameters"))
                 .child(code_block("mono-schema-params", &pretty, theme::LABEL_3()))
         }
-        None => col = col.child(empty_text("Schema unavailable")),
+        None => col = col.child(empty_text(dict::trajectory::schema_na())),
     }
     col
 }

@@ -352,6 +352,7 @@ mod tests {
             ("settings", dict::settings::TEMPLATES),
             ("sessions", dict::sessions::TEMPLATES),
             ("shell", dict::shell::TEMPLATES),
+            ("trajectory", dict::trajectory::TEMPLATES),
             ("chat", dict::chat::TEMPLATES),
             ("time", dict::time::TEMPLATES),
         ];
