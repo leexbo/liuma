@@ -17,6 +17,7 @@ use liuma_core::proto::SessionSummary;
 use crate::features::search;
 use crate::features::sessions::store::{GroupMode, OrderMode};
 use crate::features::settings;
+use crate::kits::i18n::dict;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::reducer::{relative_time, workspace_of};
@@ -185,7 +186,7 @@ fn new_session_row(store: &Entity<AppStore>) -> impl IntoElement {
             .text_color(theme::LABEL())
             .hover(|s| s.bg(theme::DOCK()))
             .child(fixed(LiumaIcon::NewChat, 14.))
-            .child("新会话")
+            .child(dict::sessions::new_session())
             .on_click(move |_, _, cx| {
                 s.update(cx, |st, cx| st.create_session(cx));
             }),
@@ -217,14 +218,18 @@ fn header_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             div()
                 .text_size(px(13.))
                 .text_color(theme::LABEL_3())
-                .child(if flat { "会话" } else { "工作区" }),
+                .child(if flat {
+                    dict::sessions::group_flat()
+                } else {
+                    dict::sessions::group_by_ws()
+                }),
         )
         .child(div().flex_1())
         .child(
             header_icon_button(
                 store,
                 TIP_SEARCH,
-                "搜索会话",
+                dict::sessions::search_ph(),
                 fixed(LiumaIcon::SearchOutline, 14.),
             )
             .on_click(move |_, window, cx| {
@@ -236,7 +241,7 @@ fn header_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             header_icon_button(
                 store,
                 TIP_VIEW_MENU,
-                "视图选项",
+                dict::sessions::view_options(),
                 fixed(LiumaIcon::Personalization, 15.),
             )
             .on_click(move |ev: &gpui_kit::ClickEvent, _, cx| {
@@ -252,7 +257,7 @@ fn header_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             header_icon_button(
                 store,
                 TIP_ADD_WS,
-                "添加工作区",
+                dict::sessions::add_workspace(),
                 fixed(LiumaIcon::ProjectAdd, 16.),
             )
             .on_click(move |_, _, cx| {
@@ -699,7 +704,12 @@ fn session_row(
                         .child(crate::shell::tip_capture_layer(store, arch_slot))
                         .on_hover(move |enter: &bool, _, cx| {
                             arch_tip.update(cx, |st, cx| {
-                                st.header_tip_hover(arch_slot, "归档聊天", *enter, cx)
+                                st.header_tip_hover(
+                                    arch_slot,
+                                    dict::sessions::tip_archive(),
+                                    *enter,
+                                    cx,
+                                )
                             });
                         })
                         .on_click(move |_, _, cx| {
@@ -748,7 +758,7 @@ pub fn session_menu_card(
         .p(px(4.))
         .shadow_md()
         .child(menu_item(
-            "重命名",
+            dict::sessions::rename(),
             fixed(LiumaIcon::Pencil, 13.),
             move |_, window, cx| {
                 rename.update(cx, |st, cx| {
@@ -760,7 +770,7 @@ pub fn session_menu_card(
             },
         ))
         .child(menu_item(
-            "归档",
+            dict::sessions::archive(),
             fixed(LiumaIcon::Archive, 13.),
             move |_, _, cx| {
                 archive.update(cx, |st, cx| {
@@ -773,7 +783,7 @@ pub fn session_menu_card(
             },
         ))
         .child(menu_item(
-            "分叉",
+            dict::sessions::fork(),
             fixed(LiumaIcon::GitBranch, 13.),
             move |_, _, cx| {
                 fork.update(cx, |st, cx| {
@@ -787,7 +797,7 @@ pub fn session_menu_card(
         ))
         .child(menu_divider())
         .child(menu_item(
-            "导出日志",
+            dict::sessions::export_log(),
             fixed(LiumaIcon::Download, 13.),
             move |_, window, cx| {
                 export_log.update(cx, |st, cx| {
@@ -867,7 +877,7 @@ pub fn ws_menu_card(
         .p(px(4.))
         .shadow_md()
         .child(menu_item(
-            "重命名",
+            dict::sessions::rename(),
             fixed(LiumaIcon::Pencil, 13.),
             move |_, window, cx| {
                 let id = wid_r.clone();
@@ -876,7 +886,7 @@ pub fn ws_menu_card(
         ))
         .when(!is_default, |el| {
             el.child(menu_item(
-                "删除工作区",
+                dict::sessions::delete_workspace(),
                 fixed(IconName::Delete, 13.),
                 move |_, _, cx| {
                     let id = wid_x.clone();
@@ -914,10 +924,10 @@ pub fn view_options_menu_card(
         .bg(theme::LAYER())
         .p(px(4.))
         .shadow_md()
-        .child(menu_section_label("分组方式"))
+        .child(menu_section_label(dict::sessions::group_label()))
         .child(view_menu_item(
             "view-group-ws",
-            "按工作区",
+            dict::sessions::by_workspace(),
             group == GroupMode::Workspace,
             move |_, _, cx| {
                 s_ws.update(cx, |st, cx| st.set_group_mode(GroupMode::Workspace, cx));
@@ -925,17 +935,17 @@ pub fn view_options_menu_card(
         ))
         .child(view_menu_item(
             "view-group-flat",
-            "单列表",
+            dict::sessions::single_list(),
             group == GroupMode::Flat,
             move |_, _, cx| {
                 s_flat.update(cx, |st, cx| st.set_group_mode(GroupMode::Flat, cx));
             },
         ))
         .child(div().h(px(1.)).mx(px(8.)).my(px(4.)).bg(theme::BORDER()))
-        .child(menu_section_label("排序方式"))
+        .child(menu_section_label(dict::sessions::sort_label()))
         .child(view_menu_item(
             "view-order-updated",
-            "最近更新",
+            dict::sessions::recent_updates(),
             order == OrderMode::Updated,
             move |_, _, cx| {
                 s_updated.update(cx, |st, cx| st.set_order_mode(OrderMode::Updated, cx));
@@ -953,7 +963,7 @@ pub fn view_options_menu_card(
                 .rounded(px(8.))
                 .text_size(px(13.))
                 .text_color(theme::CAPTION())
-                .child("手动排序"),
+                .child(dict::sessions::manual_sort()),
         )
 }
 
@@ -1013,9 +1023,9 @@ fn sub_running_badge(n: usize) -> gpui_kit::AnyElement {
                 .text_size(px(11.))
                 .text_color(theme::CAPTION())
                 .child(if n == 1 {
-                    "1 个子代理".to_string()
+                    dict::sessions::subagents_one(n)
                 } else {
-                    format!("{n} 个子代理")
+                    dict::sessions::subagents_other(n)
                 }),
         )
         .into_any_element()

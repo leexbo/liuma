@@ -7,6 +7,7 @@
 
 pub(crate) mod chat;
 pub(crate) mod common;
+pub(crate) mod sessions;
 pub(crate) mod settings;
 pub(crate) mod shell;
 /// 时间格式词典整体豁免 dead_code:其消费面是 `kits::fmt` /

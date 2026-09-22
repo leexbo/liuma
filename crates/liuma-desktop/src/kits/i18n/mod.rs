@@ -350,6 +350,7 @@ mod tests {
         let dicts: &[(&str, &[Tpl])] = &[
             ("common", dict::common::TEMPLATES),
             ("settings", dict::settings::TEMPLATES),
+            ("sessions", dict::sessions::TEMPLATES),
             ("shell", dict::shell::TEMPLATES),
             ("chat", dict::chat::TEMPLATES),
             ("time", dict::time::TEMPLATES),

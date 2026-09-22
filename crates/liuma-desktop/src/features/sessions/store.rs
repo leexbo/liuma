@@ -10,6 +10,7 @@ use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{AppContext, Context, Entity, Window};
 
 use crate::features::chat::ChatNode;
+use crate::kits::i18n::dict;
 use crate::shell::reducer;
 use crate::shell::store::AppStore;
 use liuma_core::proto::HistoryValue;
@@ -173,7 +174,7 @@ impl AppStore {
                         Err(e) => format!("{e}"),
                         _ => String::new(),
                     };
-                    s.push_local_notice(&format!("历史加载失败:{detail}"), cx);
+                    s.push_local_notice(&dict::sessions::history_load_failed(&detail), cx);
                     return;
                 };
                 let HistoryValue {
@@ -359,9 +360,9 @@ impl AppStore {
             // 通道里只剩「选择结果」一层
             match tokio::task::spawn_blocking(move || host.pick_workspace_directory()).await {
                 Ok(picked) => picked,
-                Err(e) => Err(liuma_core::proto::RpcError::internal(format!(
-                    "选择器任务失败:{e}"
-                ))),
+                Err(e) => Err(liuma_core::proto::RpcError::internal(
+                    dict::sessions::picker_task_failed(&e),
+                )),
             }
         });
         let store = cx.entity().clone();
@@ -369,7 +370,9 @@ impl AppStore {
             // 内层 Err = 选择失败/取消;外层 = 通道
             let picked = match rx.await {
                 Ok(picked) => picked,
-                Err(_) => Err(liuma_core::proto::RpcError::internal("选择器通道失败")),
+                Err(_) => Err(liuma_core::proto::RpcError::internal(
+                    dict::sessions::picker_channel_failed().to_string(),
+                )),
             };
             match picked {
                 Ok(path) => {
@@ -381,7 +384,10 @@ impl AppStore {
                                 s.select_workspace(&ws, cx);
                             }
                             Err(e) => {
-                                s.push_local_notice(&format!("添加工作区失败:{}", e.message), cx);
+                                s.push_local_notice(
+                                    &dict::sessions::add_workspace_failed(&e.message),
+                                    cx,
+                                );
                             }
                         }
                         cx.notify();
@@ -391,7 +397,7 @@ impl AppStore {
                 Err(e) if e.code == "bad-request" => {}
                 Err(e) => {
                     store.update(cx, |s, cx| {
-                        s.push_local_notice(&format!("无法打开目录选择:{}", e.message), cx);
+                        s.push_local_notice(&dict::sessions::open_dir_failed(&e.message), cx);
                         cx.notify();
                     });
                 }
@@ -470,7 +476,8 @@ impl AppStore {
         cx: &mut Context<Self>,
     ) {
         if self.sessions.rename_input.is_none() {
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder("工作区标题"));
+            let input =
+                cx.new(|cx| InputState::new(window, cx).placeholder(dict::sessions::ws_title_ph()));
             cx.subscribe(&input, |this, _i, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::PressEnter { shift: false, .. }) {
                     this.confirm_rename(cx);
@@ -511,14 +518,16 @@ impl AppStore {
                     cx.notify();
                 }
             }
-            Err(e) => self.push_local_notice(&format!("移除失败:{}", e.message), cx),
+            Err(e) => self.push_local_notice(&dict::sessions::remove_failed(&e.message), cx),
         }
     }
 
     /// 打开重命名(输入态惰建 + Enter 确认订阅;点击回调自带 window)
     pub fn open_rename(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.sessions.rename_input.is_none() {
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder("会话标题"));
+            let input = cx.new(|cx| {
+                InputState::new(window, cx).placeholder(dict::sessions::session_title_ph())
+            });
             cx.subscribe(&input, |this, _i, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::PressEnter { shift: false, .. }) {
                     this.confirm_rename(cx);
@@ -551,7 +560,9 @@ impl AppStore {
                         self.refresh_workspaces();
                         self.refresh_list(cx);
                     }
-                    Err(e) => self.push_local_notice(&format!("重命名失败:{}", e.message), cx),
+                    Err(e) => {
+                        self.push_local_notice(&dict::sessions::rename_failed(&e.message), cx)
+                    }
                 }
             }
             cx.notify();
@@ -582,7 +593,7 @@ impl AppStore {
                 self.refresh_list(cx);
                 self.open_session(&new_id, cx);
             }
-            Err(e) => self.push_local_notice(&format!("分叉失败:{}", e.message), cx),
+            Err(e) => self.push_local_notice(&dict::sessions::fork_failed(&e.message), cx),
         }
     }
 
@@ -619,30 +630,33 @@ impl AppStore {
             .spawn(cx, async move |cx| {
                 let notify_err = |cx: &mut gpui_kit::AsyncWindowContext, msg: String| {
                     let _ = cx.update(|window, cx| {
-                        window.push_notification(Notification::error(msg).title("导出失败"), cx);
+                        window.push_notification(
+                            Notification::error(msg).title(dict::sessions::export_failed()),
+                            cx,
+                        );
                     });
                 };
                 let chosen = match rx.await {
                     Ok(Ok(Some(path))) => path,
                     Ok(Ok(None)) => return, // 用户取消:静默
-                    Ok(Err(e)) => return notify_err(cx, format!("保存对话框打开失败:{e}")),
+                    Ok(Err(e)) => return notify_err(cx, dict::sessions::save_dialog_failed(&e)),
                     Err(_) => return, // 通道断开(窗口销毁)
                 };
                 let (path, bytes, title) = match host.export_session_zip(&id, true) {
-                    Ok(bytes) => (chosen, bytes, "已导出(含分叉后代)"),
+                    Ok(bytes) => (chosen, bytes, dict::sessions::exported_zip().to_string()),
                     Err(_) => {
                         let Ok(log) = host.export_session_log(&id) else {
-                            return notify_err(cx, "导出失败:会话日志不可读".into());
+                            return notify_err(cx, dict::sessions::export_unreadable().to_string());
                         };
                         (
                             chosen.with_extension("jsonl"),
                             log.into_bytes(),
-                            "已导出(单文件)",
+                            dict::sessions::exported_single().to_string(),
                         )
                     }
                 };
                 if let Err(e) = std::fs::write(&path, bytes) {
-                    return notify_err(cx, format!("写入失败:{e}"));
+                    return notify_err(cx, dict::sessions::write_failed(&e));
                 }
                 let _ = cx.update(|window, cx| {
                     window.push_notification(
@@ -679,7 +693,7 @@ impl AppStore {
                 return t.to_string();
             }
             if s.blank {
-                return "新会话".into();
+                return dict::sessions::new_session().into();
             }
         }
         id.to_string()
