@@ -1963,10 +1963,61 @@ impl AppHost {
             }
             Ok(path)
         }
-        #[cfg(not(target_os = "macos"))]
+        // Windows:PowerShell + WinForms FolderBrowserDialog(与 osascript
+        // 同形——起外部进程、stdout 拿路径、模态阻塞)。TopMost 透明窗体作
+        // owner:对话框不从属于本进程窗口,无 owner 时可能被压在后面,用户
+        // 看到的正是「点了没反应」。-STA:COM 对话框的线程模型要求。
+        // FolderBrowserDialog 是老式树形选择;现代 IFileDialog 需进程内
+        // COM,留作后续(缝不变,只换实现)。
+        #[cfg(target_os = "windows")]
+        {
+            use std::process::{Command, Stdio};
+            let program = liuma_sandbox::shell::shell_program()
+                .ok_or_else(|| RpcError::internal("未找到可用的 PowerShell"))?
+                .display()
+                .to_string();
+            let (_, mut args) = liuma_sandbox::shell::command_argv(
+                liuma_sandbox::shell::dialect(),
+                std::path::Path::new(&program),
+                r#"
+Add-Type -AssemblyName System.Windows.Forms | Out-Null
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = '选择工作区目录'
+$dialog.ShowNewFolderButton = $true
+if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::Out.Write($dialog.SelectedPath)
+} else {
+    exit 1
+}
+"#,
+            );
+            // COM 目录对话框要求 STA(v5.1 控制台虽默认 STA,显式声明不依赖默认)
+            args.insert(0, "-STA".into());
+            let out = Command::new(&program)
+                .args(&args)
+                .stdin(Stdio::null())
+                .output()
+                .map_err(|e| RpcError::internal(format!("无法启动系统对话框:{e}")))?;
+            if !out.status.success() {
+                return Err(RpcError::bad_request("用户取消或系统对话框不可用"));
+            }
+            // 输出编码由 command_argv 的前导固定为 UTF-8(本进程不在受限
+            // 令牌下,前导不会被语言模式挡掉)
+            let path = liuma_sandbox::text::decode_output(&out.stdout)
+                .trim()
+                .trim_matches('"')
+                .to_string();
+            if path.is_empty() {
+                return Err(RpcError::bad_request("用户取消"));
+            }
+            Ok(path)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
             let _ = self;
-            Err(RpcError::internal("系统目录选择暂仅支持 macOS"))
+            Err(RpcError::internal("系统目录选择暂仅支持 macOS 与 Windows"))
         }
     }
 

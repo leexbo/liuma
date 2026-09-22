@@ -347,33 +347,54 @@ impl AppStore {
         self.open_session(&id, cx);
     }
 
-    /// 系统目录选择器添加工作区(osascript 阻塞模态 → 宿主 runtime
-    /// spawn_blocking;占普通 worker 会饿死共享 runtime 的会话 worker)。
-    /// 成功 → 刷新 describe/工作区表并切换;取消(None)静默
+    /// 系统目录选择器添加工作区(osascript / PowerShell 阻塞模态 → 宿主
+    /// runtime spawn_blocking;占普通 worker 会饿死共享 runtime 的会话
+    /// worker)。成功 → 刷新 describe/工作区表并切换;取消(bad-request)
+    /// 静默;真失败出通知——此前 Err 一律被 `.ok()` 吞掉,「平台不支持」
+    /// 与用户取消不可分,点了等于没点。
     pub fn add_workspace_via_picker(&mut self, cx: &mut Context<Self>) {
         let host = self.bridge.host().clone();
         let rx = self.bridge.call(async move {
-            tokio::task::spawn_blocking(move || host.pick_workspace_directory().ok())
-                .await
-                .ok()
-                .flatten()
+            // JoinError(spawn_blocking 任务崩溃)在块内折成 internal,
+            // 通道里只剩「选择结果」一层
+            match tokio::task::spawn_blocking(move || host.pick_workspace_directory()).await {
+                Ok(picked) => picked,
+                Err(e) => Err(liuma_core::proto::RpcError::internal(format!(
+                    "选择器任务失败:{e}"
+                ))),
+            }
         });
         let store = cx.entity().clone();
         cx.spawn(async move |_this, cx| {
-            if let Ok(Some(path)) = rx.await {
-                store.update(cx, |s, cx| {
-                    match s.bridge.host().add_workspace(&path) {
-                        Ok(ws) => {
-                            s.state.host_info = s.bridge.describe();
-                            s.refresh_workspaces();
-                            s.select_workspace(&ws, cx);
+            // 内层 Err = 选择失败/取消;外层 = 通道
+            let picked = match rx.await {
+                Ok(picked) => picked,
+                Err(_) => Err(liuma_core::proto::RpcError::internal("选择器通道失败")),
+            };
+            match picked {
+                Ok(path) => {
+                    store.update(cx, |s, cx| {
+                        match s.bridge.host().add_workspace(&path) {
+                            Ok(ws) => {
+                                s.state.host_info = s.bridge.describe();
+                                s.refresh_workspaces();
+                                s.select_workspace(&ws, cx);
+                            }
+                            Err(e) => {
+                                s.push_local_notice(&format!("添加工作区失败:{}", e.message), cx);
+                            }
                         }
-                        Err(e) => {
-                            s.push_local_notice(&format!("添加工作区失败:{}", e.message), cx);
-                        }
-                    }
-                    cx.notify();
-                });
+                        cx.notify();
+                    });
+                }
+                // 用户取消:预期分支,静默
+                Err(e) if e.code == "bad-request" => {}
+                Err(e) => {
+                    store.update(cx, |s, cx| {
+                        s.push_local_notice(&format!("无法打开目录选择:{}", e.message), cx);
+                        cx.notify();
+                    });
+                }
             }
             Ok::<(), anyhow::Error>(())
         })
