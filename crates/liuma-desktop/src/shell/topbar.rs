@@ -158,6 +158,12 @@ fn sidebar_fold_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .hover(|st| st.bg(theme::LAYER()))
         .text_color(theme::LABEL_3())
         .debug_selector(|| "fold-sidebar".to_string())
+        // TitleBar 在 Windows 上把整条栏标成系统拖拽区(WM_NCHITTEST →
+        // HTCAPTION):光标处的命中盒集合只要含拖拽盒,点击就被系统当作
+        // 标题栏拖拽,永不派发给元素。遮挡后,钮上方的命中盒先行截断
+        // 命中收集,拖拽盒不进集合,点击才回到钮上(macOS 无此机制,
+        // 遮挡无副作用)。标题栏内**每个可点元素**都必须带这一行
+        .occlude()
         .child(fixed(icon, 14.))
         .child(tip_capture_layer(store, TIP_FOLD))
         .on_hover(move |enter: &bool, _, cx| {
@@ -195,6 +201,8 @@ fn workspace_trigger(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .hover(|st| st.bg(theme::LAYER()))
         .text_size(px(14.))
         .text_color(theme::LABEL_2())
+        // 拖拽区豁免,见 sidebar_fold_button 的说明
+        .occlude()
         .child(fixed(IconName::FolderClosed, 16.))
         .child(div().max_w(px(140.)).truncate().child(label))
         .child(fixed(IconName::ChevronDown, 14.).text_color(theme::CAPTION()))
@@ -229,6 +237,8 @@ fn panel_toggle_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             theme::LABEL_3()
         })
         .hover(|s| s.bg(theme::LAYER()).text_color(theme::LABEL()))
+        // 拖拽区豁免,见 sidebar_fold_button 的说明
+        .occlude()
         .child(fixed(IconName::PanelRight, 14.))
         .child(tip_capture_layer(store, TIP_PANEL_TOGGLE))
         .on_hover(move |enter: &bool, _, cx| {
@@ -257,6 +267,8 @@ fn session_menu_button(store: &Entity<AppStore>) -> impl IntoElement {
         .cursor_pointer()
         .text_color(theme::LABEL_3())
         .hover(|st| st.bg(theme::LAYER()).text_color(theme::LABEL()))
+        // 拖拽区豁免,见 sidebar_fold_button 的说明
+        .occlude()
         .child(fixed(IconName::Ellipsis, 14.))
         .on_click(move |ev: &gpui_kit::ClickEvent, _, cx| {
             cx.stop_propagation();
