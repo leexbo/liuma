@@ -13,12 +13,12 @@ thiserror.workspace = true
 tokio.workspace = true
 libc.workspace = true
 portable-pty.workspace = true
+# 契约侧(SID 派生 / argv 形态 / 归一化)全平台编译,winacl.rs 与 sandbox.rs
+# 的方言表无条件引用它——按 cfg 门控依赖会让非 Windows 直接编译失败
+liuma-sandbox-winacl = { path = "../liuma-sandbox-winacl" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4.7"
-
-[target.'cfg(windows)'.dependencies]
-liuma-sandbox-winacl = { path = "../liuma-sandbox-winacl" }
 
 [target.'cfg(windows)'.dependencies.windows-sys]
 workspace = true
