@@ -9,6 +9,8 @@ use gpui_kit::component::input::{EditorState, InputEvent, InputState};
 use gpui_kit::component::select::{SelectEvent, SelectState};
 use gpui_kit::{AppContext, Context, Entity, Window};
 
+use crate::kits::i18n::dict;
+use crate::kits::i18n::{self, Lang};
 use crate::shell::store::AppStore;
 
 /// 上下文窗口输入的占位(空 = 用内置默认;单位由解析层展开)
@@ -200,6 +202,9 @@ pub(crate) struct SettingsStore {
     pub language_select: Option<Entity<SelectState<Vec<gpui_kit::SharedString>>>>,
     /// 繁忙时 Enter 键行为下拉
     pub busy_enter_select: Option<Entity<SelectState<Vec<gpui_kit::SharedString>>>>,
+    /// 偏好下拉构建时刻的语言档(sync_locale_ui 换档重建判据;
+    /// ensure_pref_selects 写入)
+    pub selects_lang: Lang,
     /// 权限选 full-access 的风险确认。
     /// Some 记录确认来源:设置页默认预设 / composer 会话权限——确认后
     /// 各自落不同的目标(默认预设落盘 / 会话 set_permission)
@@ -270,6 +275,7 @@ impl Default for SettingsStore {
             permission_select: None,
             language_select: None,
             busy_enter_select: None,
+            selects_lang: Lang::default(),
             full_access_confirm: None,
         }
     }
@@ -372,8 +378,11 @@ impl AppStore {
     }
 
     /// 通用区偏好下拉构建(gpui-component Select;Confirm → 按 label 映射
-    /// id 落盘。full-access 经风险确认,取消时回滚显示)
+    /// id 落盘。full-access 经风险确认,取消时回滚显示)。构建时刻的
+    /// 语言档记入 `selects_lang`,换档后由 [`AppStore::sync_locale_ui`]
+    /// 据此整组重建(标签词典化,Confirm 按标签映射 id)
     pub(crate) fn ensure_pref_selects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings.selects_lang = i18n::lang();
         let snapshot = self.settings.settings_snapshot.clone();
         let preset_options: Vec<(String, String)> = snapshot["presetOptions"]
             .as_array()
@@ -405,7 +414,18 @@ impl AppStore {
                     .collect()
             })
             .unwrap_or_default();
-        let language_options = vec![("zh".to_string(), "中文".to_string())];
+        // 语言下拉:显示名 = 原文名恒定(两语言同值,dsh 约定);
+        // id = settings.yaml `language` 词汇
+        let language_options: Vec<(String, String)> = vec![
+            (
+                Lang::Zh.id().to_string(),
+                dict::settings::lang_zh().to_string(),
+            ),
+            (
+                Lang::En.id().to_string(),
+                dict::settings::lang_en().to_string(),
+            ),
+        ];
         let busy_options = vec![
             ("queue".to_string(), "排队发送".to_string()),
             ("steer".to_string(), "插话发送".to_string()),
@@ -695,16 +715,35 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 切换界面语言偏好(落盘;RS 现仅 zh)
+    /// 切换界面语言偏好(落盘 + 语言盘即时生效:refresh_windows 让
+    /// 词典取值整体换档,挂窗态由渲染期 sync_locale_ui 回写)
     pub fn set_language(&mut self, id: &str, cx: &mut Context<Self>) {
         match self.bridge.host().set_language(id) {
             Ok(()) => {
+                i18n::apply(Lang::parse(id), cx);
                 self.settings_refresh(cx);
             }
             Err(e) => {
                 self.set_settings_notice(false, format!("保存失败:{}", e.message), cx);
             }
         }
+    }
+
+    /// 语言档切换后的挂窗态回写:偏好下拉标签按新语言重建。Confirm 按
+    /// 标签映射 id 且订阅闭包捕获构建期选项表,故须整组重置重建(当前
+    /// 项由快照保位;语言选项名两语言恒原名,重建无害)。渲染期同步块
+    /// 调用(sync_composer_placeholder 同通道;档位未变即零开销早退)
+    pub(crate) fn sync_locale_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let lang = i18n::lang();
+        if self.settings.selects_lang == lang {
+            return;
+        }
+        self.settings.selects_lang = lang;
+        self.settings.preset_select = None;
+        self.settings.permission_select = None;
+        self.settings.language_select = None;
+        self.settings.busy_enter_select = None;
+        self.ensure_pref_selects(window, cx);
     }
 
     /// 切换外观偏好(light / dark / system;落盘)。返回是否成功——

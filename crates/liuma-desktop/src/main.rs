@@ -90,6 +90,9 @@ fn main() {
             // 必须先于任何 gpui-component 组件使用(gpui_kit::init 按
             // feature 转发 component::init,官方入口形态)
             gpui_kit::init(cx);
+            // 界面语言:开窗前读持久化档位(缺省 zh;切换 = 设置页,
+            // 经 i18n::apply 全窗即时生效)——先于任何窗口文案渲染
+            crate::kits::i18n::init(&bridge.host().language());
             // 外观三档:开窗前读持久化档位(HostBridge 在 run
             // 前已装配,启动无闪色);theme::apply 同步双盘 + 组件 token
             crate::kits::theme::apply(

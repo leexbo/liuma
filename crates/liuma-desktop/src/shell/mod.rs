@@ -371,6 +371,8 @@ impl Render for WorkspaceView {
             s.sync_yield_negotiation(f32::from(window.viewport_size().width), cx);
             s.flush_composer_clear(window, cx);
             s.sync_composer_placeholder(window, cx);
+            // 语言档切换回写(偏好下拉标签重建;档位未变零开销早退)
+            s.sync_locale_ui(window, cx);
             s.flush_trajectory_scroll();
             s.sync_chat_list(cx);
             s.sync_retry_tick(cx);

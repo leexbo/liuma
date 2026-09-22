@@ -320,7 +320,8 @@ pub struct SettingsFile {
     /// 运行中 Enter 行为(queue = 排队下一轮 / steer = 转向当前轮)
     #[serde(default = "default_busy_enter")]
     pub busy_enter: String,
-    /// 界面语言偏好(RS 现仅 zh)
+    /// 界面语言偏好(zh / en;写入侧 registry 白名单校验,未知值读取
+    /// 回落 zh)
     #[serde(default = "default_language")]
     pub language: String,
     /// 外观偏好(light / dark / system)

@@ -2551,10 +2551,10 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         self.settings.read().language.clone()
     }
 
-    /// 设置界面语言偏好(落盘;RS 现仅 zh 实装)
+    /// 设置界面语言偏好(落盘;白名单 = 桌面词典支持的档位)
     pub fn set_language(&self, id: &str) -> Result<(), RpcError> {
-        if id != "zh" {
-            return Err(RpcError::bad_request("界面语言暂仅支持中文"));
+        if !["zh", "en"].contains(&id) {
+            return Err(RpcError::bad_request("不支持的语言"));
         }
         self.settings
             .update(|s| s.language = id.to_string())
@@ -10912,6 +10912,26 @@ mod tests {
         .unwrap();
         assert_eq!(host2.busy_enter(), "steer", "重启保留");
         assert_eq!(host2.settings_view()["busyEnter"], "steer");
+    }
+
+    /// 通用区偏好:界面语言白名单(zh/en)落盘 + 未知值拒绝 + 重启保留
+    /// + view 携带(回归锁:en 放行前曾有「非 zh 即拒」硬门)
+    #[test]
+    fn language_preference_roundtrip() {
+        let host = temp_host("language");
+        assert_eq!(host.language(), "zh", "缺省中文");
+        host.set_language("en").unwrap();
+        assert_eq!(host.language(), "en");
+        assert!(host.set_language("fr").is_err(), "非法值拒绝");
+        let host2 = AppHost::new_at(
+            host.workspace.clone(),
+            true,
+            "test-key",
+            host.sessions_root.clone(),
+        )
+        .unwrap();
+        assert_eq!(host2.language(), "en", "重启保留");
+        assert_eq!(host2.settings_view()["language"], "en");
     }
 
     /// 明文录入持久化:api_key 落设置文件,重启后链上可解析

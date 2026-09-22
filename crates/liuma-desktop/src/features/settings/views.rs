@@ -24,6 +24,7 @@ use gpui_kit::{
 
 use crate::features::settings::SettingsNav;
 use crate::features::settings::store::{McpDetailMode, grouped_tokens};
+use crate::kits::i18n::{Lang, dict};
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -2354,7 +2355,18 @@ fn general_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         ("queue".to_string(), "排队发送".to_string()),
         ("steer".to_string(), "插话发送".to_string()),
     ];
-    let language_options = vec![("zh".to_string(), "中文".to_string())];
+    // 语言下拉:显示名 = 原文名恒定(两语言同值,dsh 约定);与 store
+    // 侧构建同源(id = settings.yaml `language` 词汇)
+    let language_options: Vec<(String, String)> = vec![
+        (
+            Lang::Zh.id().to_string(),
+            dict::settings::lang_zh().to_string(),
+        ),
+        (
+            Lang::En.id().to_string(),
+            dict::settings::lang_en().to_string(),
+        ),
+    ];
     div()
         .v_flex()
         .child(section_title("常规"))
@@ -2378,7 +2390,7 @@ fn general_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         ))
         .child(selector_row(
             "language",
-            "语言",
+            dict::settings::language(),
             "",
             &language_options,
             language,

@@ -16,8 +16,8 @@ default:
 preflight:
     bash scripts/verify-preflight
 
-# verify 脚本全集:格式 / lint / 测试 / 契约 / e2e / 链接
-verify: fmt-check clippy test wit component-contracts e2e links
+# verify 脚本全集:格式 / lint / 测试 / 契约 / e2e / 链接 / 桌面文案门禁
+verify: fmt-check clippy test wit component-contracts e2e links desktop-i18n
     @echo "verify: ALL GREEN"
 
 # 桌面客户端(GPUI 原生 UI):构建 liuma-desktop;运行用 just desktop-run
@@ -39,6 +39,11 @@ e2e:
 
 links:
     {{python}} scripts/verify-links
+
+# 桌面硬编码文案门禁(棘轮基线 scripts/desktop-i18n-baseline;
+# 迁移批次清零一个文件即从基线删行。批次计划见 docs/plans/i18n.md)
+desktop-i18n:
+    {{python}} scripts/verify-desktop-i18n
 
 fmt-check:
     cargo fmt --all --check

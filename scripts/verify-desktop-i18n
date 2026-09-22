@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+"""verify-desktop-i18n:桌面 crate 硬编码文案门禁(棘轮)。
+
+规则:
+- 扫描 crates/liuma-desktop/src/**/*.rs **字符串字面量**中的 CJK 字符;
+  注释/文档不扫(中文注释是仓库惯例)。
+- 豁免:kits/i18n/ 词典文件;`*_tests.rs` 整文件(本仓测试模块命名
+  约定,`#[cfg(test)]` 外挂在声明处)与文件内 `#[cfg(test)]` 区段
+  (测试断言/夹具文案);开发者向宏(eprintln!/println!/assert*/
+  panic! 等)的参数。
+- 基线 scripts/desktop-i18n-baseline 登记 i18n 迁移完成前的存量
+  (每文件允许的违规上限次数);超基线或未登记文件出现违规 = FAIL。
+  迁移批次清零一个文件就从基线删一行;基线只减不增。
+- 字符面量不扫(separator 单字符如 '·' 属渲染逻辑而非文案)。
+
+CJK 判定:CJK 标点(U+3000-303F)/汉字(U+4E00-9FFF、兼容区)/全角
+形式(U+FF00-FFEF),及 UI 文案惯用的 ·—…''""(U+00B7/U+2014/
+U+2018-201D/U+2026)。
+
+已知边界(启发式门禁,漏判可容忍,误判以「把文案搬进词典」消解):
+- 字符串拼接(隐式相邻字面量)按多个字面量分别判定;
+- `b"..."` 字节串不扫(非 ASCII 本就无法编译);
+- 宏栈按括号深度近似,跨宏边界的嵌套误判以豁免清单消解。
+"""
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+SRC = REPO / "crates" / "liuma-desktop" / "src"
+BASELINE = REPO / "scripts" / "desktop-i18n-baseline"
+DICT_DIR = SRC / "kits" / "i18n"
+
+# CJK 码点区间与单字(见模块 docstring)
+CJK_RANGES = [
+    (0x3000, 0x303F),
+    (0x4E00, 0x9FFF),
+    (0xF900, 0xFAFF),
+    (0xFF00, 0xFFEF),
+]
+CJK_CHARS = set("·—…‘’“”")
+
+# 开发者向宏(诊断/断言文案不进 UI;用户可见文案必须走词典)
+DEV_MACROS = {
+    "eprintln", "println", "eprint", "print",
+    "assert", "assert_eq", "assert_ne",
+    "debug_assert", "debug_assert_eq", "debug_assert_ne",
+    "panic", "unreachable", "todo", "unimplemented",
+}
+
+
+def is_cjk(ch: str) -> bool:
+    cp = ord(ch)
+    if any(lo <= cp <= hi for lo, hi in CJK_RANGES):
+        return True
+    return ch in CJK_CHARS
+
+
+def scan_file(path: Path) -> list[int]:
+    """返回含 CJK 的字符串字面量行号列表(词法级:串/字符/注释/宏分轨)。"""
+    if path.name.endswith("_tests.rs"):
+        return []  # 测试模块整文件(*_tests.rs 命名约定,见模块 docstring)
+    text = path.read_text(encoding="utf-8")
+    i, n = 0, len(text)
+    line = 1
+    hits: list[int] = []
+    depth = 0  # 代码态括号深度
+    macro_stack: list[tuple[str, int]] = []  # [(宏名, 开括号时深度)]
+    test_scopes: list[int] = []  # #[cfg(test)] 进入时深度栈
+    last_ident = ""
+    while i < n:
+        ch = text[i]
+        if ch == "\n":
+            line += 1
+            i += 1
+            continue
+        # ── 注释 ──
+        if ch == "/" and i + 1 < n and text[i + 1] in "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            nest = 0
+            i += 2
+            while i < n and (nest > 0 or text[i : i + 2] != "*/"):
+                if text[i] == "\n":
+                    line += 1
+                if text[i : i + 2] == "/*":
+                    nest += 1
+                    i += 2
+                elif text[i : i + 2] == "*/":
+                    nest -= 1
+                    i += 2
+                else:
+                    i += 1
+            i += 2
+            continue
+        # ── 字符串字面量(普通 " 与 raw r#"…"#;字节串同形一并读入,
+        # 非 ASCII 字节串本就无法编译,误检不存在)──
+        if ch == '"' or (ch == "r" and _raw_start(text, i)):
+            start_line = line
+            content, i, line = _read_string(text, i, line)
+            allowed = (
+                bool(test_scopes)
+                or any(m in DEV_MACROS for m, _ in macro_stack)
+            )
+            if not allowed and any(is_cjk(c) for c in content):
+                hits.append(start_line)
+            continue
+        # ── 字符面量 / 生命周期(不扫内容)──
+        if ch == "'":
+            i, added_lines = _skip_char_or_lifetime(text, i)
+            line += added_lines
+            continue
+        # ── 代码态 ──
+        if ch in "([{":
+            depth += 1
+            # 宏调用识别:ident ! ws 开括号('!' 分支保持 last_ident)
+            if last_ident in DEV_MACROS:
+                j = i - 1
+                while j >= 0 and text[j] in " \t":
+                    j -= 1
+                if j >= 0 and text[j] == "!":
+                    macro_stack.append((last_ident, depth))
+            last_ident = ""
+            i += 1
+            continue
+        if ch in ")]}":
+            depth -= 1
+            while macro_stack and depth < macro_stack[-1][1]:
+                macro_stack.pop()
+            while test_scopes and depth <= test_scopes[-1]:
+                test_scopes.pop()
+            last_ident = ""
+            i += 1
+            continue
+        if ch.isalnum() or ch == "_":
+            j = i
+            while j < n and (text[j].isalnum() or text[j] == "_"):
+                j += 1
+            last_ident = text[i:j]
+            i = j
+            continue
+        if ch == "#":
+            if text.startswith("#[cfg(test)]", i):
+                test_scopes.append(depth)
+                i += len("#[cfg(test)]")
+                last_ident = ""
+                continue
+            last_ident = ""
+            i += 1
+            continue
+        if ch == "!":
+            pass  # 宏bang:保持 last_ident 供开括号分支回看
+        else:
+            last_ident = ""
+        i += 1
+    return hits
+
+
+def _raw_start(text: str, i: int) -> bool:
+    """`r` 起点的 raw string(r#"…"# / r##"…"##;裸标识符 r 开头不误判)。"""
+    j = i + 1
+    hashes = 0
+    while j < len(text) and text[j] == "#":
+        hashes += 1
+        j += 1
+    return hashes > 0 and j < len(text) and text[j] == '"'
+
+
+def _read_string(text: str, i: int, line: int) -> tuple[str, int, int]:
+    """读一个字符串字面量(i 指向 `r` 或开引号),返回(内容, 终点后下标, 终行)。"""
+    hashes = 0
+    if text[i] == "r":
+        j = i + 1
+        while j < len(text) and text[j] == "#":
+            hashes += 1
+            j += 1
+        i = j
+    i += 1  # 开引号
+    out: list[str] = []
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            if hashes == 0:
+                return "".join(out), i + 1, line
+            if text.startswith('"' + "#" * hashes, i):
+                return "".join(out), i + 1 + hashes, line
+        if hashes == 0 and ch == "\\":
+            if text[i + 1 : i + 2] == "\n":
+                line += 1  # 行尾续行
+            out.append(text[i : i + 2])
+            i += 2
+            continue
+        if ch == "\n":
+            line += 1
+        out.append(ch)
+        i += 1
+    return "".join(out), i, line  # 未闭合(畸形容忍)
+
+
+def _skip_char_or_lifetime(text: str, i: int) -> tuple[int, int]:
+    """越过字符面量或生命周期标注,返回(新下标, 跨行数)。
+
+    消歧:`'ident` 无闭引号 = 生命周期(&'static / <'a>);其余按字符
+    面量跳过(`'x'` / `'\\n'` / `'\\''`)。
+    """
+    j = i + 1
+    n = len(text)
+    if j < n and (text[j].isalpha() or text[j] == "_"):
+        k = j
+        while k < n and (text[k].isalnum() or text[k] == "_"):
+            k += 1
+        return k, 0
+    lines = 0
+    if j < n and text[j] == "\\":
+        if text[j + 1 : j + 2] == "\n":
+            lines = 1
+        j += 2
+    elif j < n:
+        j += 1
+    if j < n and text[j] == "'":
+        j += 1
+    return j, lines
+
+
+def load_baseline() -> dict[str, int]:
+    baseline: dict[str, int] = {}
+    if BASELINE.exists():
+        for raw in BASELINE.read_text(encoding="utf-8").splitlines():
+            raw = raw.strip()
+            if not raw or raw.startswith("#"):
+                continue
+            path, _, count = raw.rpartition(" ")
+            baseline[path] = int(count)
+    return baseline
+
+
+def main() -> int:
+    baseline = load_baseline()
+    problems: list[str] = []
+    counts: dict[str, int] = {}
+    for path in sorted(SRC.rglob("*.rs")):
+        if path.is_relative_to(DICT_DIR):
+            continue
+        rel = str(path.relative_to(REPO))
+        hits = scan_file(path)
+        if not hits:
+            continue
+        counts[rel] = len(hits)
+        allowed = baseline.get(rel)
+        if allowed is None:
+            problems.append(
+                f"{rel}: {len(hits)} 处硬编码文案(未登记基线),首处行 {hits[0]}"
+            )
+        elif len(hits) > allowed:
+            problems.append(
+                f"{rel}: {len(hits)} 处超基线 {allowed},首处行 {hits[0]}"
+            )
+    # 棘轮只减不增:基线行对应的文件已零违规 → 提示删行
+    for rel in baseline:
+        if rel not in counts:
+            problems.append(f"scripts/desktop-i18n-baseline: {rel} 已零违规,删除该行")
+
+    for p in problems:
+        print(f"hardcoded copy: {p}")
+    print(f"verify-desktop-i18n: {'FAILED' if problems else 'OK'}")
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
