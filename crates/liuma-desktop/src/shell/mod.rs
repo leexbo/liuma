@@ -935,6 +935,12 @@ impl Render for WorkspaceView {
                 self.store.read(cx).attachments.attachment_toast.is_some(),
                 |el| el.child(attachment_toast_card(&self.store, cx)),
             )
+            // 通知层(gpui-component NotificationList;Root 持有实体但
+            // 自身不渲染,应用根视图须显式挂层——不挂则 push 的通知
+            // 全数不可见)。置于树序最末:浮于含查看器在内的全部 overlay
+            .children(gpui_kit::component::Root::render_notification_layer(
+                window, cx,
+            ))
     }
 }
 

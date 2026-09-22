@@ -14,6 +14,16 @@ use crate::shell::reducer;
 use crate::shell::store::AppStore;
 use liuma_core::proto::HistoryValue;
 
+/// 导出保存对话框初始目录:`LIUMA_DOWNLOAD_DIR` 或 ~/Downloads(仅作
+/// 对话框起点;最终路径由用户选定,应用不代选)
+pub(crate) fn downloads_dir() -> std::path::PathBuf {
+    if let Some(d) = std::env::var_os("LIUMA_DOWNLOAD_DIR") {
+        return std::path::PathBuf::from(d);
+    }
+    let home = std::env::var_os("HOME").unwrap_or_default();
+    std::path::PathBuf::from(home).join("Downloads")
+}
+
 /// 侧栏列表分组方式(视图选项菜单;内存视图态,不持久化)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum GroupMode {
@@ -571,34 +581,56 @@ impl AppStore {
         }
     }
 
-    /// 导出会话日志(写入 ~/Downloads/liuma-session-<id>.jsonl;
-    /// 会话行菜单入口,按行 id 导出而非仅当前会话)
-    pub fn export_session_log(&mut self, id: &str, cx: &mut Context<Self>) {
-        // ZIP 导出(根 + fork 后代血缘),
-        // 落 ~/Downloads;失败回落单文件文本
+    /// 导出会话日志(会话行菜单入口,按行 id 导出而非仅当前会话):
+    /// 先弹系统保存对话框由用户选定路径(不再默认落 ~/Downloads),
+    /// 选定后写 ZIP(根 + fork 后代血缘);ZIP 失败回落单文件文本
+    /// (扩展名换 .jsonl)。结果以右上角通知呈现(不占消息流),
+    /// 取消 = 静默。
+    pub fn export_session_log(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::WindowExt as _;
+        use gpui_kit::component::notification::Notification;
+        let host = self.bridge.host().clone();
+        let id = id.to_string();
         let safe = id.replace('/', "-");
-        let home = std::env::var_os("HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_default();
-        let zip_path = home
-            .join("Downloads")
-            .join(format!("liuma-session-{safe}.zip"));
-        let mut exported = false;
-        if let Ok(bytes) = self.bridge.host().export_session_zip(id, true)
-            && std::fs::write(&zip_path, bytes).is_ok()
-        {
-            exported = true;
-            self.push_local_notice(&format!("已导出(含分叉后代):{}", zip_path.display()), cx);
-        }
-        if !exported && let Ok(log) = self.bridge.host().export_session_log(id) {
-            let path = home
-                .join("Downloads")
-                .join(format!("liuma-session-{safe}.jsonl"));
-            if std::fs::write(&path, log).is_ok() {
-                self.push_local_notice(&format!("已导出:{}", path.display()), cx);
-            }
-        }
-        cx.notify();
+        let rx =
+            cx.prompt_for_new_path(&downloads_dir(), Some(&format!("liuma-session-{safe}.zip")));
+        window
+            .spawn(cx, async move |cx| {
+                let notify_err = |cx: &mut gpui_kit::AsyncWindowContext, msg: String| {
+                    let _ = cx.update(|window, cx| {
+                        window.push_notification(Notification::error(msg).title("导出失败"), cx);
+                    });
+                };
+                let chosen = match rx.await {
+                    Ok(Ok(Some(path))) => path,
+                    Ok(Ok(None)) => return, // 用户取消:静默
+                    Ok(Err(e)) => return notify_err(cx, format!("保存对话框打开失败:{e}")),
+                    Err(_) => return, // 通道断开(窗口销毁)
+                };
+                let (path, bytes, title) = match host.export_session_zip(&id, true) {
+                    Ok(bytes) => (chosen, bytes, "已导出(含分叉后代)"),
+                    Err(_) => {
+                        let Ok(log) = host.export_session_log(&id) else {
+                            return notify_err(cx, "导出失败:会话日志不可读".into());
+                        };
+                        (
+                            chosen.with_extension("jsonl"),
+                            log.into_bytes(),
+                            "已导出(单文件)",
+                        )
+                    }
+                };
+                if let Err(e) = std::fs::write(&path, bytes) {
+                    return notify_err(cx, format!("写入失败:{e}"));
+                }
+                let _ = cx.update(|window, cx| {
+                    window.push_notification(
+                        Notification::success(path.display().to_string()).title(title),
+                        cx,
+                    );
+                });
+            })
+            .detach();
     }
 
     /// 会话标题:重命名 > 投影 > 空白「新会话」 > id。

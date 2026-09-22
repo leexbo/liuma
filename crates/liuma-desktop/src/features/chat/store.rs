@@ -1987,25 +1987,63 @@ impl AppStore {
             match rpc {
                 Ok(Ok(v)) => {
                     if v["kind"].as_str() == Some("export") {
-                        // ZIP base64 → Downloads
+                        // ZIP base64 → 保存对话框选路径(不代选)→ 通知
                         use base64::Engine as _;
-                        if let Some(data) = v["data"].as_str()
-                            && let Ok(bytes) =
-                                base64::engine::general_purpose::STANDARD.decode(data)
-                        {
-                            let safe = sid.replace('/', "-");
-                            let home = std::env::var_os("HOME")
-                                .map(std::path::PathBuf::from)
-                                .unwrap_or_default();
-                            let path = home
-                                .join("Downloads")
-                                .join(format!("liuma-session-{safe}.zip"));
-                            if std::fs::write(&path, bytes).is_ok() {
-                                store.update(cx, |s, cx| {
-                                    s.push_local_notice(&format!("已导出:{}", path.display()), cx);
+                        use gpui_kit::component::WindowExt as _;
+                        use gpui_kit::component::notification::Notification;
+                        let Some(wh) = cx.update(|app| app.active_window()) else {
+                            return Ok(()); // 窗口已关:静默
+                        };
+                        let Some(bytes) = v["data"]
+                            .as_str()
+                            .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
+                        else {
+                            let _ = wh.update(cx, |_, window, cx| {
+                                window.push_notification(
+                                    Notification::error("导出数据解码失败").title("导出失败"),
+                                    cx,
+                                );
+                            });
+                            return Ok(());
+                        };
+                        let safe = sid.replace('/', "-");
+                        let name = format!("liuma-session-{safe}.zip");
+                        let rx = cx.update(|app| {
+                            app.prompt_for_new_path(
+                                &crate::features::sessions::store::downloads_dir(),
+                                Some(name.as_str()),
+                            )
+                        });
+                        let chosen = match rx.await {
+                            Ok(Ok(Some(path))) => path,
+                            Ok(Ok(None)) => return Ok(()), // 用户取消:静默
+                            Ok(Err(e)) => {
+                                let _ = wh.update(cx, |_, window, cx| {
+                                    window.push_notification(
+                                        Notification::error(format!("保存对话框打开失败:{e}"))
+                                            .title("导出失败"),
+                                        cx,
+                                    );
                                 });
+                                return Ok(());
                             }
+                            Err(_) => return Ok(()),
+                        };
+                        if let Err(e) = std::fs::write(&chosen, bytes) {
+                            let _ = wh.update(cx, |_, window, cx| {
+                                window.push_notification(
+                                    Notification::error(format!("写入失败:{e}")).title("导出失败"),
+                                    cx,
+                                );
+                            });
+                            return Ok(());
                         }
+                        let _ = wh.update(cx, |_, window, cx| {
+                            window.push_notification(
+                                Notification::success(chosen.display().to_string()).title("已导出"),
+                                cx,
+                            );
+                        });
                     } else if v["kind"].as_str() == Some("compact") {
                         // 受理即点亮状态行;回合进行中 = 排队态(驱动仅在
                         // turn 间隙取压缩任务),turn/end 事件晋升为进行态,

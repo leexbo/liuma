@@ -974,6 +974,15 @@ fn mermaid_viewer_full_interaction(cx: &mut TestAppContext) {
     // SAFETY: 与上方 set_var 配对;测试内同步清理
     unsafe { std::env::remove_var("LIUMA_DOWNLOAD_DIR") };
 
+    // 下载完成通知浮于右上角(正确层级:恰是它遮住查看器角落关闭钮
+    // mv-close 的位置)——推进动画时钟让通知自动退场,再做后续点击
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(6));
+    redraw(cx, &mut wcx);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(600));
+    redraw(cx, &mut wcx);
+
     // 卡片「放大」按钮 → 查看器打开;角落关闭钮 → 关闭
     click_sel(&mut wcx, enlarge);
     wcx.run_until_parked();
@@ -3203,6 +3212,75 @@ fn session_menu_archives_current_session(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 导出:先弹系统保存对话框由用户选路径(不再代选 ~/Downloads),
+/// 结果经右上角通知呈现(不再插入消息流)。选定 → 落盘 ZIP + 恰一条
+/// 通知、消息流无 Notice;取消 → 静默零副作用
+#[gpui_kit::test]
+fn session_export_prompts_for_path_then_notifies(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    let (store, mut wcx, root) = menu_harness(cx, "export");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+    };
+    let out = root.join("导出目标.zip");
+
+    // ① 取消:静默(无文件,无通知)。置于选定相之前——通知悬浮在
+    // 右上角(会正确遮住标题栏 ⋯ 钮),先出通知会让后续点击落空
+    click_sel(&mut wcx, "session-menu-btn");
+    redraw(cx, &mut wcx);
+    click_sel(&mut wcx, "导出日志");
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.did_prompt_for_new_path(),
+        "导出应弹保存对话框(不代选路径)"
+    );
+    wcx.simulate_new_path_selection(|_dir| None);
+    redraw(cx, &mut wcx);
+    redraw(cx, &mut wcx);
+    assert!(!out.exists(), "取消不应落盘");
+    assert_eq!(
+        wcx.update(|window, cx| window.notifications(cx).len()),
+        0,
+        "取消不产生通知"
+    );
+
+    // ② 选定路径:落盘 + 恰一条通知
+    click_sel(&mut wcx, "session-menu-btn");
+    redraw(cx, &mut wcx);
+    click_sel(&mut wcx, "导出日志");
+    redraw(cx, &mut wcx);
+    assert!(wcx.did_prompt_for_new_path(), "再次导出应再次弹对话框");
+    let picked = out.clone();
+    wcx.simulate_new_path_selection(move |_dir| Some(picked.clone()));
+    // 应答经 oneshot 异步回传,轮询收敛(与真实日志轮询同款)
+    let mut landed = false;
+    for _ in 0..50 {
+        redraw(cx, &mut wcx);
+        if out.exists() {
+            landed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(landed, "选定路径后应落盘:{}", out.display());
+    let bytes = std::fs::read(&out).expect("导出文件可读");
+    assert!(bytes.starts_with(b"PK"), "会话导出应为 ZIP(含 PK 魔数)");
+    redraw(cx, &mut wcx);
+    let notes = wcx.update(|window, cx| window.notifications(cx).len());
+    assert_eq!(notes, 1, "导出结果应经右上角通知呈现");
+    let notice_in_chat = cx.update(|app| {
+        store
+            .read(app)
+            .state
+            .chats
+            .values()
+            .any(|c| c.nodes.iter().any(|n| matches!(n, ChatNode::Notice { .. })))
+    });
+    assert!(!notice_in_chat, "导出提示不应再插入消息流");
+}
+
 /// 会话行尾归档钮(hover 显隐,元素常在可命中):点击行右缘 →
 /// 该会话归档移出清单,当前会话不受影响
 #[gpui_kit::test]
@@ -3224,7 +3302,17 @@ fn session_row_archive_button(cx: &mut TestAppContext) {
     });
     redraw(cx, &mut wcx);
     let s2_sel: &'static str = Box::leak(format!("session-row-{s2}").into_boxed_str());
-    let s2_row = wcx.debug_bounds(s2_sel).expect("s2 行缺失");
+    // 清单异步回填:轮询等 s2 行落地(单帧断言在并行负载下偶发落空)
+    let mut s2_row = None;
+    for _ in 0..50 {
+        if let Some(b) = wcx.debug_bounds(s2_sel) {
+            s2_row = Some(b);
+            break;
+        }
+        redraw(cx, &mut wcx);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let s2_row = s2_row.expect("s2 行缺失");
     let arch = gpui_kit::Point {
         x: s2_row.right() - px(14.),
         y: s2_row.origin.y + s2_row.size.height / 2.,

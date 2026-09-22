@@ -789,13 +789,13 @@ pub fn session_menu_card(
         .child(menu_item(
             "导出日志",
             fixed(LiumaIcon::Download, 13.),
-            move |_, _, cx| {
+            move |_, window, cx| {
                 export_log.update(cx, |st, cx| {
                     let Some(id) = st.state.current_id.clone() else {
                         return;
                     };
-                    st.export_session_log(&id, cx);
                     st.sessions.session_menu_pos = None;
+                    st.export_session_log(&id, window, cx);
                 });
             },
         ))
