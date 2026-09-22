@@ -59,9 +59,36 @@ pub(crate) fn tip_capture_layer(store: &Entity<AppStore>, slot: usize) -> gpui_k
     .into_any_element()
 }
 
+/// 平台主修饰键名(macOS = `cmd`;Windows/Linux = `ctrl`)。
+///
+/// gpui **不做**归一:`Keystroke::parse("cmd-…")` 恒设 `modifiers.platform`
+/// (非 macOS 上那是 Win 键),而输入框自身绑定在非 macOS 上是 `ctrl-*`
+/// (gpui-base `input/base/state.rs`),`Modifiers::secondary_key()` 也把非
+/// macOS 映射到 `control` —— 字面写 `cmd-` 的绑定在 Windows 上永不命中。
+#[cfg(target_os = "macos")]
+pub(crate) const SECONDARY_MOD: &str = "cmd";
+/// 非 macOS:主修饰键是 Ctrl(见上)
+#[cfg(not(target_os = "macos"))]
+pub(crate) const SECONDARY_MOD: &str = "ctrl";
+
+/// 平台主修饰键是否按下(与 gpui `Modifiers::secondary_key()` 同义:
+/// macOS = Cmd,Windows/Linux = Ctrl)
+pub(crate) fn secondary_modifier_pressed(modifiers: gpui_kit::Modifiers) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        modifiers.platform
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        modifiers.control
+    }
+}
+
 pub fn bind_global_keys(cx: &mut gpui_kit::App) {
+    // 面板计划快捷键 = ⇧⌘P / ⇧Ctrl+P(修饰键按平台取,见 [`SECONDARY_MOD`])
+    let shortcut = format!("shift-{SECONDARY_MOD}-p");
     cx.bind_keys([gpui_kit::KeyBinding::new(
-        "shift-cmd-p",
+        &shortcut,
         panel::OpenPanelPlan,
         None,
     )]);

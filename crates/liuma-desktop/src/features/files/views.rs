@@ -187,7 +187,9 @@ fn files_row(store: &Entity<AppStore>, entry: &TreeEntry, cx: &mut App) -> ListI
     item
 }
 
-/// 行测试选择器名(basename;测试 fixture 保证唯一名)
+/// 行测试选择器名(basename;测试 fixture 保证唯一名)。
+/// id 是 [`path_id`](crate::features::files::store) 的原生绝对路径,
+/// Windows 上分隔符是 `\`,只切 `/` 会把整条路径当成名字
 fn file_selector_name(id: &str) -> String {
-    id.rsplit('/').next().unwrap_or(id).to_string()
+    id.rsplit(['/', '\\']).next().unwrap_or(id).to_string()
 }

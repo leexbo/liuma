@@ -1791,7 +1791,7 @@ fn paste_clipboard_image_lands_in_draft(cx: &mut TestAppContext) {
     // 聚焦输入框后按 cmd-v
     click_sel(&mut wcx, "composer-hit");
     cx.run_until_parked();
-    wcx.simulate_keystrokes("cmd-v");
+    wcx.simulate_keystrokes(&format!("{SECONDARY_MOD}-v"));
     cx.run_until_parked();
 
     let n = cx.update(|app| {
@@ -1803,7 +1803,7 @@ fn paste_clipboard_image_lands_in_draft(cx: &mut TestAppContext) {
             .filter(|d| matches!(d, DraftAttachment::Image(_)))
             .count()
     });
-    assert_eq!(n, 1, "cmd-v 粘贴图片应入草稿轨,实际 {n} 张");
+    assert_eq!(n, 1, "主修饰键+V 粘贴图片应入草稿轨,实际 {n} 张");
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1834,7 +1834,7 @@ fn paste_image_file_path_attaches_image(cx: &mut TestAppContext) {
     // 聚焦输入框后按 cmd-v
     click_sel(&mut wcx, "composer-hit");
     cx.run_until_parked();
-    wcx.simulate_keystrokes("cmd-v");
+    wcx.simulate_keystrokes(&format!("{SECONDARY_MOD}-v"));
     cx.run_until_parked();
 
     let (images, files, text) = cx.update(|app| {
@@ -1877,7 +1877,7 @@ fn paste_missing_image_path_stays_text(cx: &mut TestAppContext) {
 
     click_sel(&mut wcx, "composer-hit");
     cx.run_until_parked();
-    wcx.simulate_keystrokes("cmd-v");
+    wcx.simulate_keystrokes(&format!("{SECONDARY_MOD}-v"));
     cx.run_until_parked();
 
     let (drafts, text) = cx.update(|app| {
@@ -1892,8 +1892,8 @@ fn paste_missing_image_path_stays_text(cx: &mut TestAppContext) {
     });
     assert_eq!(drafts, 0, "不存在的路径不得入轨");
     assert!(
-        text.is_some_and(|t: String| t.contains("不存在-2e3856")),
-        "非图片路径文本应照常粘贴进输入框"
+        text.as_deref().is_some_and(|t| t.contains("不存在-2e3856")),
+        "非图片路径文本应照常粘贴进输入框,实际 {text:?}"
     );
     let _ = std::fs::remove_dir_all(root);
 }
@@ -2365,12 +2365,12 @@ fn chat_body_text_is_drag_selectable(cx: &mut TestAppContext) {
         "聊天正文拖选后应可取到选中文本,实际 {selected:?}"
     );
     // 复制半场:cmd-c 后剪贴板应含选中文本(Root on_action_copy)
-    wcx.simulate_keystrokes("cmd-c");
+    wcx.simulate_keystrokes(&format!("{SECONDARY_MOD}-c"));
     cx.run_until_parked();
     let clip = cx.read_from_clipboard().and_then(|i| i.text());
     assert!(
         clip.as_deref().is_some_and(|t| t.contains("可被选择复制")),
-        "cmd-c 后剪贴板应含选中文本,实际 {clip:?}"
+        "主修饰键+C 后剪贴板应含选中文本,实际 {clip:?}"
     );
     // 右键菜单动作:右键时抓选中 → App 级 on_action 写剪贴板
     // (AppKit 原生菜单本机不可在测试内弹出,故复刻右键抓取 + 派发动作验接线)
@@ -4298,7 +4298,12 @@ fn files_tree_listing_expansion_and_preview_open(cx: &mut TestAppContext) {
     .map(|sel| {
         (
             *sel,
-            f32::from(wcx.debug_bounds(sel).expect("行应在场").origin.y),
+            f32::from(
+                wcx.debug_bounds(sel)
+                    .unwrap_or_else(|| panic!("行应在场: {sel}"))
+                    .origin
+                    .y,
+            ),
         )
     })
     .collect();
@@ -4435,7 +4440,7 @@ fn panel_plan_shortcut_binding(cx: &mut TestAppContext) {
         cx.run_until_parked();
     };
     assert!(!cx.update(|app| store.read(app).panel_open), "初始面板应关");
-    wcx.simulate_keystrokes("shift-cmd-p");
+    wcx.simulate_keystrokes(&format!("shift-{SECONDARY_MOD}-p"));
     redraw(cx, &mut wcx);
     let (open, active) = cx.update(|app| {
         let s = store.read(app);
@@ -8914,7 +8919,7 @@ fn cross_domain_drag_selection_stays_in_chat(cx: &mut TestAppContext) {
     });
     redraw(cx, &mut wcx);
     // 右栏开计划标签:面板正文与聊天正文同帧注册为选择参与者
-    wcx.simulate_keystrokes("shift-cmd-p");
+    wcx.simulate_keystrokes(&format!("shift-{SECONDARY_MOD}-p"));
     redraw(cx, &mut wcx);
     assert!(
         wcx.debug_bounds("panel-plan-view").is_some(),

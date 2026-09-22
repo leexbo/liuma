@@ -232,6 +232,9 @@ mod tests {
         );
     }
 
+    // 两例依赖符号链接的真实类型语义(链接即 Other)与「链出工作区」逃逸:Windows
+    // 建链接需开发者模式/管理员权限(环境性),故仅在 Unix 真跑
+    #[cfg(unix)]
     #[test]
     fn list_dir_orders_and_types() {
         let root = temp_root("order");
@@ -272,6 +275,7 @@ mod tests {
         fs::remove_dir_all(&root).ok();
     }
 
+    #[cfg(unix)] // 同 list_dir_orders_and_types:逃逸用例需真建符号链接
     #[test]
     fn list_dir_error_kinds() {
         let root = temp_root("errors");

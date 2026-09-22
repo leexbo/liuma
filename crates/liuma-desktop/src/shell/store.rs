@@ -339,7 +339,10 @@ impl AppStore {
         if self.clipboard_intercept.is_none() {
             let store = cx.entity().clone();
             self.clipboard_intercept = Some(cx.intercept_keystrokes(move |ev, window, cx| {
-                if !ev.keystroke.modifiers.platform {
+                // 平台主修饰键:macOS = Cmd,Windows/Linux = Ctrl(写死
+                // `platform` 在 Windows 上等价于 Win 键,真实 Ctrl+V 永不进
+                // 这里 = 截图粘贴链路整条失效)
+                if !crate::shell::secondary_modifier_pressed(ev.keystroke.modifiers) {
                     return;
                 }
                 match ev.keystroke.key.as_str() {

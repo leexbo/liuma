@@ -173,6 +173,8 @@ fn main() {
             };
             let view_store = store.clone();
             cx.spawn(async move |cx| {
+                // 句柄的唯一消费者是 macOS 探针(winprobe 延迟取证)
+                #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
                 let handle = cx.open_window(options, move |window, cx| {
                     view_store.update(cx, |s, cx| s.attach_window_state(window, cx));
                     let view =
