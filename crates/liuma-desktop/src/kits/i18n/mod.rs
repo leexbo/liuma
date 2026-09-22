@@ -183,6 +183,9 @@ fn template_placeholders(template: &str) -> Vec<&str> {
 /// - 纯文案:`title => ["语言", "Language"]` → `fn title() -> &'static str`
 /// - 模板:`save_failed(msg) => ["保存失败:{msg}", "Save failed: {msg}"]`
 ///   → `fn save_failed(msg: impl Display) -> String`(占位名 = 参数名)
+/// - 每词典同时生成 `l` 子模块(同名 fn,首参 `Lang`):显式语言纯分派,
+///   格式函数的显式语言核与双语言测试用,不触进程级语言盘(并发测试
+///   无竞争)。
 ///
 /// 约束:zh/en 只接受字面量(同入 `TEMPLATES` 元数据表,供占位对齐
 /// 测试);键名须为合法 fn 标识符;zh 值与迁移前字面量逐字节一致;键名
@@ -198,6 +201,19 @@ macro_rules! entries {
                 $name $(($($ph),+))? => [$zh, $en]
             }
         )+
+        /// 显式语言变体(同名 fn,首参 [`Lang`];测试与格式函数 `_l` 核用)。
+        /// 生成面整体豁免 dead_code:变体随调用点按需取用(双语言测试、
+        /// 格式函数核),未接线的词典**主键**仍照常报 dead——漏迁移压力
+        /// 不减免。
+        #[allow(dead_code)]
+        pub(crate) mod l {
+            $(
+                $crate::kits::i18n::entry_l! {
+                    $(#[$doc])*
+                    $name $(($($ph),+))? => [$zh, $en]
+                }
+            )+
+        }
         /// 词典元数据:(键名, zh 模板, en 模板)。占位对齐测试与
         /// 完整性门禁的数据源;勿手写。
         #[allow(dead_code)]
@@ -207,7 +223,7 @@ macro_rules! entries {
     };
 }
 
-/// 单条目展开(纯文案 / 模板两形态;仅由 [`entries!`] 内部按形态分派)
+/// 单条目展开·读盘形态(纯文案 / 模板两形态;仅由 [`entries!`] 内部分派)
 macro_rules! entry {
     ($(#[$doc:meta])* $name:ident => [$zh:expr, $en:expr]) => {
         $(#[$doc])*
@@ -228,8 +244,32 @@ macro_rules! entry {
     };
 }
 
+/// 单条目展开·显式语言形态(生成进各词典 `l` 子模块)
+macro_rules! entry_l {
+    ($(#[$doc:meta])* $name:ident => [$zh:expr, $en:expr]) => {
+        $(#[$doc])*
+        #[inline]
+        pub fn $name(l: $crate::kits::i18n::Lang) -> &'static str {
+            $crate::kits::i18n::pick_lang(l, $zh, $en)
+        }
+    };
+    ($(#[$doc:meta])* $name:ident ($($ph:ident),+) => [$zh:expr, $en:expr]) => {
+        $(#[$doc])*
+        pub fn $name(
+            l: $crate::kits::i18n::Lang,
+            $($ph: impl core::fmt::Display),+
+        ) -> String {
+            $crate::kits::i18n::fmt(
+                $crate::kits::i18n::pick_lang(l, $zh, $en),
+                &[$((stringify!($ph), &$ph)),+],
+            )
+        }
+    };
+}
+
 pub(crate) use entries;
 pub(crate) use entry;
+pub(crate) use entry_l;
 
 #[cfg(test)]
 mod tests {
@@ -307,7 +347,13 @@ mod tests {
     #[test]
     fn dict_templates_placeholder_parity() {
         type Tpl = (&'static str, &'static str, &'static str);
-        let dicts: &[(&str, &[Tpl])] = &[("settings", dict::settings::TEMPLATES)];
+        let dicts: &[(&str, &[Tpl])] = &[
+            ("common", dict::common::TEMPLATES),
+            ("settings", dict::settings::TEMPLATES),
+            ("shell", dict::shell::TEMPLATES),
+            ("chat", dict::chat::TEMPLATES),
+            ("time", dict::time::TEMPLATES),
+        ];
         for &(module, entries) in dicts {
             for (key, zh, en) in entries {
                 assert!(!zh.is_empty() && !en.is_empty(), "{module}.{key} 空文案");

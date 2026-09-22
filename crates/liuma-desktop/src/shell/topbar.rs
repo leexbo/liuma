@@ -112,7 +112,7 @@ pub fn title_bar_row(store: &Entity<AppStore>, window: &mut Window, cx: &App) ->
                             .flex_shrink_0()
                             .text_size(px(13.))
                             .text_color(theme::CAPTION())
-                            .child(format!("｜{label}"))
+                            .child(crate::kits::i18n::dict::shell::run_label_suffix(label))
                             .into_any_element()
                     })),
                 )
@@ -168,7 +168,12 @@ fn sidebar_fold_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .child(tip_capture_layer(store, TIP_FOLD))
         .on_hover(move |enter: &bool, _, cx| {
             s_tip.update(cx, |st, cx| {
-                st.header_tip_hover(TIP_FOLD, "切换侧边栏", *enter, cx)
+                st.header_tip_hover(
+                    TIP_FOLD,
+                    crate::kits::i18n::dict::shell::tip_toggle_sidebar(),
+                    *enter,
+                    cx,
+                )
             });
         })
         .on_click(move |_, _, cx| {
@@ -243,7 +248,12 @@ fn panel_toggle_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .child(tip_capture_layer(store, TIP_PANEL_TOGGLE))
         .on_hover(move |enter: &bool, _, cx| {
             s_tip.update(cx, |st, cx| {
-                st.header_tip_hover(TIP_PANEL_TOGGLE, "显示/隐藏侧边面板", *enter, cx)
+                st.header_tip_hover(
+                    TIP_PANEL_TOGGLE,
+                    crate::kits::i18n::dict::shell::tip_toggle_panel(),
+                    *enter,
+                    cx,
+                )
             });
         })
         .on_click(move |_, _, cx| {

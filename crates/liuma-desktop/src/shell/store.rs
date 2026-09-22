@@ -297,12 +297,15 @@ impl AppStore {
         self.ensure_search_input(window, cx);
         // onboarding 模态输入框(启动判定先于挂窗;模态可见时惰建)
         if self.settings.needs_onboarding && self.settings.onboarding_key_input.is_none() {
-            self.settings.onboarding_key_input =
-                Some(cx.new(|cx| InputState::new(window, cx).placeholder("输入 API 密钥")));
+            self.settings.onboarding_key_input = Some(cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(crate::kits::i18n::dict::shell::api_key_input())
+            }));
         }
         if self.trajectory.trajectory_search.is_none() {
-            self.trajectory.trajectory_search =
-                Some(cx.new(|cx| InputState::new(window, cx).placeholder("搜索")));
+            self.trajectory.trajectory_search = Some(cx.new(|cx| {
+                InputState::new(window, cx).placeholder(crate::kits::i18n::dict::shell::search_ph())
+            }));
         }
         self.ensure_provider_form_inputs(window, cx);
         self.ensure_pref_selects(window, cx);
@@ -389,7 +392,7 @@ impl AppStore {
             let composer = cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .auto_grow(1, 8)
-                    .placeholder("输入消息,Enter 发送 / Shift+Enter 换行")
+                    .placeholder(crate::kits::i18n::dict::chat::composer_standard())
             });
             // Enter 发送(shift=true = Shift+Enter 换行,交给默认行为);
             // 多行模式 Enter 已默认插入换行 → 取值后剥尾随换行,置位延迟清空。
@@ -443,7 +446,7 @@ impl AppStore {
                 if status == "failed" {
                     self.set_settings_notice(
                         false,
-                        format!("MCP server「{server}」连接失败:{error}"),
+                        crate::kits::i18n::dict::settings::mcp_connect_failed(server, error),
                         cx,
                     );
                 }
@@ -887,13 +890,16 @@ impl AppStore {
                     if let Some(chat) = s.state.chats.get_mut(&rollback_id) {
                         chat.plan_mode = prior;
                     }
-                    s.push_local_notice(&format!("模式切换失败:{}", e.message), cx);
+                    s.push_local_notice(
+                        &crate::kits::i18n::dict::shell::mode_switch_failed(&e.message),
+                        cx,
+                    );
                 }),
                 Err(_) => store.update(cx, |s, cx| {
                     if let Some(chat) = s.state.chats.get_mut(&rollback_id) {
                         chat.plan_mode = prior;
                     }
-                    s.push_local_notice("模式切换:通道失败", cx);
+                    s.push_local_notice(crate::kits::i18n::dict::shell::mode_channel_failed(), cx);
                 }),
                 _ => {}
             }
@@ -939,11 +945,17 @@ impl AppStore {
                 Ok(Ok(())) => {} // 落档回声为准(apply_permission_echo 校准)
                 Ok(Err(e)) => store.update(cx, |s, cx| {
                     s.set_cfg_permission(&id, &prior);
-                    s.push_local_notice(&format!("切换失败:{}", e.message), cx);
+                    s.push_local_notice(
+                        &crate::kits::i18n::dict::shell::switch_failed(&e.message),
+                        cx,
+                    );
                 }),
                 Err(_) => store.update(cx, |s, cx| {
                     s.set_cfg_permission(&id, &prior);
-                    s.push_local_notice("权限切换:通道失败", cx);
+                    s.push_local_notice(
+                        crate::kits::i18n::dict::shell::permission_channel_failed(),
+                        cx,
+                    );
                 }),
             }
             Ok::<(), anyhow::Error>(())
@@ -1085,7 +1097,10 @@ impl AppStore {
             return;
         };
         if let Err(e) = f(self.bridge.host(), &id) {
-            self.push_local_notice(&format!("切换失败:{}", e.message), cx);
+            self.push_local_notice(
+                &crate::kits::i18n::dict::shell::switch_failed(&e.message),
+                cx,
+            );
         } else {
             self.refresh_session_cfg(&id, cx);
         }

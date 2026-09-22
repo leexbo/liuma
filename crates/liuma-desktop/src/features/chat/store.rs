@@ -360,7 +360,7 @@ impl Default for ChatStore {
             composer_h: 0.,
             composer_w: 0.,
             plan_chip_hovered: false,
-            composer_placeholder: "输入消息,Enter 发送 / Shift+Enter 换行",
+            composer_placeholder: crate::kits::i18n::dict::chat::composer_standard(),
             composer_input: None,
             pending_composer_clear: false,
             expanded_tools: HashSet::new(),
@@ -443,9 +443,9 @@ impl AppStore {
     /// composer_placeholder,不同才 set(无通知环)
     pub fn sync_composer_placeholder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let want: &'static str = if self.current_chat().is_some_and(|c| c.plan_mode) {
-            "描述你的任务以生成计划"
+            crate::kits::i18n::dict::chat::composer_plan()
         } else {
-            "输入消息,Enter 发送 / Shift+Enter 换行"
+            crate::kits::i18n::dict::chat::composer_standard()
         };
         if self.chat.composer_placeholder == want {
             return;

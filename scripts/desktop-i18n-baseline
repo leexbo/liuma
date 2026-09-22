@@ -13,7 +13,6 @@ crates/liuma-desktop/src/features/chat/context_meter.rs 3
 crates/liuma-desktop/src/features/chat/mermaid_plugin.rs 3
 crates/liuma-desktop/src/features/chat/projection.rs 6
 crates/liuma-desktop/src/features/chat/queue_dock.rs 2
-crates/liuma-desktop/src/features/chat/reference.rs 2
 crates/liuma-desktop/src/features/chat/store.rs 19
 crates/liuma-desktop/src/features/chat/terminal.rs 5
 crates/liuma-desktop/src/features/chat/todo_dock.rs 2
@@ -34,13 +33,6 @@ crates/liuma-desktop/src/features/sessions/views.rs 21
 crates/liuma-desktop/src/features/subagents/views.rs 7
 crates/liuma-desktop/src/features/trajectory/views.rs 34
 crates/liuma-desktop/src/kits/filetype.rs 3
-crates/liuma-desktop/src/kits/fmt.rs 7
 crates/liuma-desktop/src/kits/highlight.rs 4
 crates/liuma-desktop/src/kits/mermaid.rs 14
 crates/liuma-desktop/src/kits/modals.rs 4
-crates/liuma-desktop/src/shell/hero.rs 2
-crates/liuma-desktop/src/shell/panel.rs 10
-crates/liuma-desktop/src/shell/reducer.rs 7
-crates/liuma-desktop/src/shell/statusbar.rs 20
-crates/liuma-desktop/src/shell/store.rs 9
-crates/liuma-desktop/src/shell/topbar.rs 4

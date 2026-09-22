@@ -75,7 +75,7 @@ pub fn render(
                                 .text_size(px(15.))
                                 .font_weight(gpui_kit::FontWeight::MEDIUM)
                                 .text_color(theme::LABEL())
-                                .child("木牛流马,替你驮活"),
+                                .child(crate::kits::i18n::dict::shell::hero_tagline()),
                         ),
                 )
                 // 首运行引导:凭据未配置时给出去设置的入口
@@ -96,7 +96,7 @@ pub fn render(
                             .text_size(px(12.))
                             .text_color(theme::WARN())
                             .hover(|s| s.bg(theme::LAYER()))
-                            .child("尚未配置 API key——前往设置")
+                            .child(crate::kits::i18n::dict::shell::hero_no_key())
                             .on_click(move |_, _, cx| {
                                 s.update(cx, |st, cx| st.toggle_settings(cx));
                             }),

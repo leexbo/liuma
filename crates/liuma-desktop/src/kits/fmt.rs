@@ -1,4 +1,9 @@
 //! 数值/时长/时钟格式化,状态栏统计 pill 与轮尾统计卡共用;纯函数零状态。
+//!
+//! 文案性输出(时长单位/日期词)经 `kits::i18n` 词典;公开名为读语言盘
+//! 的薄包装,`_l(.., Lang)` 显式语言核供双语言测试断言。
+
+use crate::kits::i18n::{Lang, dict};
 
 /// token 缩写:`517 / 12.2K / 517K / 75M`(K/M 进位;百位以下一位小数,
 /// 整数位去尾零)
@@ -48,29 +53,34 @@ pub fn fmt_cache_hit(read: u64, billed: u64) -> Option<String> {
 /// 紧凑时长(会话统计卡):亚分钟 0.1s 粒度(`1.3秒/30秒`),分钟封顶
 /// (`18分1秒`;超 1 小时累计分钟数)
 pub fn fmt_duration_compact(ms: i64) -> String {
+    fmt_duration_compact_l(ms, crate::kits::i18n::lang())
+}
+
+/// [`fmt_duration_compact`] 显式语言核(测试双语言断言用)
+pub fn fmt_duration_compact_l(ms: i64, lang: Lang) -> String {
     let s = ms.max(0) as f64 / 1000.0;
     if s < 60.0 {
-        format!("{}秒", dec_string((s * 10.0).round() as u64, 1))
+        dict::time::l::duration_s(lang, dec_string((s * 10.0).round() as u64, 1))
     } else {
         let whole = s.round() as u64;
-        format!("{}分{}秒", whole / 60, whole % 60)
+        dict::time::l::duration_ms(lang, whole / 60, whole % 60)
     }
 }
 
 /// 轮尾时长(整秒三档):`30秒 / 18分1秒 / 1时2分3秒`
 pub fn fmt_duration_run(ms: i64) -> String {
+    fmt_duration_run_l(ms, crate::kits::i18n::lang())
+}
+
+/// [`fmt_duration_run`] 显式语言核(测试双语言断言用)
+pub fn fmt_duration_run_l(ms: i64, lang: Lang) -> String {
     let whole = (ms.max(0) as f64 / 1000.0).round() as u64;
     if whole < 60 {
-        format!("{whole}秒")
+        dict::time::l::duration_s(lang, whole)
     } else if whole < 3_600 {
-        format!("{}分{}秒", whole / 60, whole % 60)
+        dict::time::l::duration_ms(lang, whole / 60, whole % 60)
     } else {
-        format!(
-            "{}时{}分{}秒",
-            whole / 3_600,
-            whole % 3_600 / 60,
-            whole % 60
-        )
+        dict::time::l::duration_hms(lang, whole / 3_600, whole % 3_600 / 60, whole % 60)
     }
 }
 
@@ -86,10 +96,15 @@ pub fn fmt_tps(tps: f64) -> String {
 
 /// 消息时钟(本地时区):同日 `HH:mm`;同年 `M月D日 HH:mm`;跨年全日期
 pub fn fmt_clock_md(ms: i64) -> String {
-    fmt_clock_md_at(ms, chrono::Local::now())
+    fmt_clock_md_l(ms, crate::kits::i18n::lang())
 }
 
-fn fmt_clock_md_at(ms: i64, now: chrono::DateTime<chrono::Local>) -> String {
+/// [`fmt_clock_md`] 显式语言核(测试双语言断言用)
+pub fn fmt_clock_md_l(ms: i64, lang: Lang) -> String {
+    fmt_clock_md_at_l(ms, chrono::Local::now(), lang)
+}
+
+fn fmt_clock_md_at_l(ms: i64, now: chrono::DateTime<chrono::Local>, lang: Lang) -> String {
     use chrono::{Datelike, TimeZone};
     let Some(dt) = chrono::Local.timestamp_millis_opt(ms).single() else {
         return String::new();
@@ -98,9 +113,9 @@ fn fmt_clock_md_at(ms: i64, now: chrono::DateTime<chrono::Local>) -> String {
     if dt.date_naive() == now.date_naive() {
         time
     } else if dt.year() == now.year() {
-        format!("{}月{}日 {time}", dt.month(), dt.day())
+        dict::time::l::clock_md(lang, dt.month(), dt.day(), time)
     } else {
-        format!("{}年{}月{}日 {time}", dt.year(), dt.month(), dt.day())
+        dict::time::l::clock_ymd(lang, dt.year(), dt.month(), dt.day(), time)
     }
 }
 
@@ -175,19 +190,25 @@ mod tests {
 
     #[test]
     fn duration_compact_tiers() {
-        assert_eq!(fmt_duration_compact(0), "0秒");
-        assert_eq!(fmt_duration_compact(1_300), "1.3秒");
-        assert_eq!(fmt_duration_compact(30_000), "30秒");
-        assert_eq!(fmt_duration_compact(1_081_000), "18分1秒");
-        assert_eq!(fmt_duration_compact(1_281_000), "21分21秒");
+        assert_eq!(fmt_duration_compact_l(0, Lang::Zh), "0秒");
+        assert_eq!(fmt_duration_compact_l(1_300, Lang::Zh), "1.3秒");
+        assert_eq!(fmt_duration_compact_l(30_000, Lang::Zh), "30秒");
+        assert_eq!(fmt_duration_compact_l(1_081_000, Lang::Zh), "18分1秒");
+        assert_eq!(fmt_duration_compact_l(1_281_000, Lang::Zh), "21分21秒");
+        assert_eq!(fmt_duration_compact_l(0, Lang::En), "0s");
+        assert_eq!(fmt_duration_compact_l(1_300, Lang::En), "1.3s");
+        assert_eq!(fmt_duration_compact_l(1_081_000, Lang::En), "18m 1s");
     }
 
     #[test]
     fn duration_run_tiers() {
-        assert_eq!(fmt_duration_run(29_400), "29秒");
-        assert_eq!(fmt_duration_run(30_400), "30秒");
-        assert_eq!(fmt_duration_run(1_081_000), "18分1秒");
-        assert_eq!(fmt_duration_run(3_723_000), "1时2分3秒");
+        assert_eq!(fmt_duration_run_l(29_400, Lang::Zh), "29秒");
+        assert_eq!(fmt_duration_run_l(30_400, Lang::Zh), "30秒");
+        assert_eq!(fmt_duration_run_l(1_081_000, Lang::Zh), "18分1秒");
+        assert_eq!(fmt_duration_run_l(3_723_000, Lang::Zh), "1时2分3秒");
+        assert_eq!(fmt_duration_run_l(29_400, Lang::En), "29s");
+        assert_eq!(fmt_duration_run_l(1_081_000, Lang::En), "18m 1s");
+        assert_eq!(fmt_duration_run_l(3_723_000, Lang::En), "1h 2m 3s");
     }
 
     #[test]
@@ -220,8 +241,16 @@ mod tests {
             .single()
             .unwrap()
             .timestamp_millis();
-        assert_eq!(fmt_clock_md_at(same_day, now), "08:05");
-        assert_eq!(fmt_clock_md_at(same_year, now), "3月2日 09:30");
-        assert_eq!(fmt_clock_md_at(cross_year, now), "2025年12月31日 23:00");
+        assert_eq!(fmt_clock_md_at_l(same_day, now, Lang::Zh), "08:05");
+        assert_eq!(fmt_clock_md_at_l(same_year, now, Lang::Zh), "3月2日 09:30");
+        assert_eq!(
+            fmt_clock_md_at_l(cross_year, now, Lang::Zh),
+            "2025年12月31日 23:00"
+        );
+        assert_eq!(fmt_clock_md_at_l(same_year, now, Lang::En), "3/2 09:30");
+        assert_eq!(
+            fmt_clock_md_at_l(cross_year, now, Lang::En),
+            "2025/12/31 23:00"
+        );
     }
 }

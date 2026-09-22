@@ -189,12 +189,6 @@ entries! {
     quota_expiry_hm(hours, mins) => ["{hours}时{mins}分", "{hours}h {mins}m"],
     /// 额度有效期(分)
     quota_expiry_m(mins) => ["{mins}分", "{mins}m"],
-    /// 相对时间:N 分钟前
-    rel_mins_ago(mins) => ["{mins} 分钟前", "{mins} minutes ago"],
-    /// 相对时间:N 小时前
-    rel_hours_ago(hours) => ["{hours} 小时前", "{hours} hours ago"],
-    /// 相对时间:N 天前
-    rel_days_ago(days) => ["{days} 天前", "{days} days ago"],
     /// 计费路径占位:余额金额
     balance_path_placeholder => ["余额金额路径,如 balance_infos.0.total_balance", "Balance amount path, e.g. balance_infos.0.total_balance"],
     /// 计费路径占位:货币
@@ -271,6 +265,8 @@ entries! {
     disabled => ["未启用", "Disabled"],
     /// MCP 导入成功通告
     mcp_imported(n) => ["已导入 {n} 个 MCP server", "Imported {n} MCP servers"],
+    /// MCP 连接失败通知(shell 通知层)
+    mcp_connect_failed(server, error) => ["MCP server「{server}」连接失败:{error}", "MCP server \"{server}\" failed to connect: {error}"],
     /// MCP 表单通知:id 空
     mcp_id_empty => ["id 不能为空", "ID can't be empty"],
     /// MCP 表单通知:超时非法
