@@ -19,3 +19,7 @@ landlock = "0.4.7"
 
 [target.'cfg(windows)'.dependencies]
 liuma-sandbox-winacl = { path = "../liuma-sandbox-winacl" }
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+workspace = true
+features = ["Win32_Globalization"]

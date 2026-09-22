@@ -47,6 +47,24 @@ async fn sandboxed_command_runs_and_returns_output() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
+/// 非 ASCII 输出往返:受限令牌下 shell 进 ConstrainedLanguage,把输出编码
+/// 改成 UTF-8 的那句 .NET 属性设置被语言模式挡掉,字节落在系统代码页里
+/// (实测 zh-CN 为 936)——宿主这一侧必须按平台代码页兜底解码,不能糊成乱码
+#[tokio::test]
+async fn non_ascii_output_round_trips() {
+    let ws = workspace("cjk");
+    let (class, out) = run(&ws, "Write-Output '中文测试-OK'").await;
+    assert!(
+        matches!(class, ExitClass::Ran(status) if status.success()),
+        "命令应正常执行;got: {class:?}"
+    );
+    assert!(
+        out.contains("中文测试-OK"),
+        "中文输出应原样回传(宿主按系统代码页解码);got: {out:?}"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
 /// 工作区内写成功(证明包 shell + 授权链路是通的,不是「什么都没跑」)
 #[tokio::test]
 async fn write_inside_workspace_succeeds() {

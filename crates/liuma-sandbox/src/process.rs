@@ -209,7 +209,7 @@ fn drain_stderr(
     let task = tokio::spawn(async move {
         let mut bytes = Vec::new();
         if stderr.read_to_end(&mut bytes).await.is_ok() {
-            *target.lock().await = String::from_utf8_lossy(&bytes).into_owned();
+            *target.lock().await = crate::text::decode_output(&bytes);
         }
     });
     (buf, Some(task))

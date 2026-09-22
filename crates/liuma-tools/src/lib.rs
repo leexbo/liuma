@@ -530,7 +530,7 @@ impl ToolPort for BashTool {
         };
         let mut child = child;
         let output = tokio::select! {
-            out = child.stdout() => String::from_utf8_lossy(&out.unwrap_or_default()).trim().to_string(),
+            out = child.stdout() => liuma_sandbox::text::decode_output(&out.unwrap_or_default()).trim().to_string(),
             // 软取消:杀子进程(SIGTERM→grace→SIGKILL)后温和返回
             _ = self.cancel.cancelled() => {
                 // 已取消,杀失败无补救手段(进程可能已退出)

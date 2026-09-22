@@ -51,7 +51,9 @@ impl JobTool {
     }
 
     fn read_log(&self, path: &PathBuf) -> String {
-        match std::fs::read_to_string(path) {
+        // 按字节读再解码:日志原样落的是子进程输出,平台 shell 未必写 UTF-8
+        // (见 liuma_sandbox::text),read_to_string 会因非 UTF-8 整条读失败
+        match std::fs::read(path).map(|bytes| liuma_sandbox::text::decode_output(&bytes)) {
             Ok(text) => {
                 // 尾部 4KB(读取面截断;文件保留全文)
                 let chars: Vec<char> = text.chars().collect();

@@ -105,7 +105,7 @@ impl PtySession {
         tokio::task::spawn_blocking(move || {
             let mut buf = Vec::new();
             std::io::Read::read_to_end(&mut reader, &mut buf).ok();
-            String::from_utf8_lossy(&buf).into_owned()
+            crate::text::decode_output(&buf)
         })
         .await
         .map_err(|e| PtyError::Io(e.to_string()))
