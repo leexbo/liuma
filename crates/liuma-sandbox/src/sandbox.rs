@@ -21,6 +21,7 @@
 //! landlock 经 [`landlock_pre_exec`] 在 exec 前自限制。
 
 use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "linux", target_os = "macos"))] // 仅探测 `true` 真跑使用
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -92,7 +93,7 @@ pub enum SandboxMode {
 /// 执行世界能力束(最小版):mode + 工作区根 + 可选读窄化
 ///
 /// 可写根由 [`SandboxPolicy::writable_roots`] 单源推导
-/// (workspace-write = workspace 根 + `/tmp` + `os.tmpdir()`),
+/// (workspace-write = workspace 根 + 平台暂存区;Unix 另含 `/tmp`),
 /// 防止「write 工具能写 /tmp 但 bash 不能」一类方言漂移。
 #[derive(Debug, Clone, PartialEq)]
 pub struct SandboxPolicy {
@@ -135,18 +136,23 @@ impl SandboxPolicy {
     /// 本策略的可写根(单源推导,各 rung 方言共用)
     ///
     /// - ReadOnly → 空(仅允许 `/dev/null` 一类强制 sink);
-    /// - WorkspaceWrite → `{workspace_root, "/tmp", env::temp_dir()}`
-    ///   (canonicalize + 去重;macOS `/tmp` 即 `/private/tmp` 语义);
-    /// - FullAccess → `["/"]`。
+    /// - WorkspaceWrite → `{workspace_root, 平台暂存区}`(canonicalize + 去重;
+    ///   Unix 额外含 `/tmp`,即 macOS 的 `/private/tmp` 语义;Windows 只有
+    ///   `%TEMP%` —— POSIX 的 `/tmp` 在那里是「当前盘根下的 tmp」,不是暂存区,
+    ///   当可写根传给 rung 只会得到一个不存在的目录);
+    /// - FullAccess → Unix 为 `["/"]`(各 rung 据此走全放行分支);Windows 无
+    ///   「单一根」概念,返回空集 —— 全盘放行由 mode 本身表达,不由根集表达。
+    ///
+    /// 可写根一律以「调用方保证存在」为前提:不存在的根是调用方的缺陷,
+    /// 静默剔除会把「边界失效」伪装成「写入被拒」。
     pub fn writable_roots(&self) -> Vec<PathBuf> {
         match self.mode {
             SandboxMode::ReadOnly => vec![],
             SandboxMode::WorkspaceWrite => {
-                let mut roots: Vec<PathBuf> = vec![
-                    self.workspace_root.clone(),
-                    PathBuf::from("/tmp"),
-                    std::env::temp_dir(),
-                ];
+                let mut roots: Vec<PathBuf> = vec![self.workspace_root.clone()];
+                #[cfg(unix)]
+                roots.push(PathBuf::from("/tmp"));
+                roots.push(std::env::temp_dir());
                 // 与 wrap 路径共用 canonicalize(见 [`canonicalize`])
                 for root in roots.iter_mut() {
                     *root = canonicalize(root);
@@ -155,7 +161,10 @@ impl SandboxPolicy {
                 roots.dedup();
                 roots
             }
+            #[cfg(unix)]
             SandboxMode::FullAccess => vec![PathBuf::from("/")],
+            #[cfg(not(unix))]
+            SandboxMode::FullAccess => vec![],
         }
     }
 }
@@ -256,6 +265,8 @@ fn functional_probe_seatbelt(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// PATH 查找(仅探测 rung 的 Linux/macOS 分支使用;`which` 是 Unix 工具)
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn which(name: &str) -> Option<PathBuf> {
     let output = Command::new("which").arg(name).output().ok()?;
     if !output.status.success() {
@@ -521,6 +532,12 @@ fn apply_landlock(policy: &SandboxPolicy) -> Result<(), String> {
     ruleset.restrict_self().map_err(|e| e.to_string())
 }
 
+/// 非 Unix 平台的策略校验(fail-closed 入口;Windows ACL 后置)
+#[cfg(not(unix))]
+pub fn prepare_fallback(_policy: &SandboxPolicy) -> Result<(), SandboxError> {
+    Err(SandboxError::NoRunner)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,13 +567,30 @@ mod tests {
         assert!(SandboxPolicy::read_only().writable_roots().is_empty());
         let roots = SandboxPolicy::workspace_write(&ws).writable_roots();
         assert!(roots.contains(&ws), "workspace 根可写;got: {roots:?}");
-        // /tmp 与 env temp_dir 均纳入(canonicalize 后可能同值,去重)
-        let tmp = canonicalize(Path::new("/tmp"));
-        assert!(roots.contains(&tmp), "/tmp 纳入可写根;got: {roots:?}");
+        // 平台暂存区恒在(canonicalize 后可能与 /tmp 同值,已去重)
+        let temp = canonicalize(&std::env::temp_dir());
+        assert!(roots.contains(&temp), "平台暂存区可写;got: {roots:?}");
+        // `/tmp` 是 POSIX 约定,只在 Unix 上作为可写根
+        #[cfg(unix)]
+        assert!(
+            roots.contains(&canonicalize(Path::new("/tmp"))),
+            "/tmp 纳入可写根;got: {roots:?}"
+        );
+        #[cfg(not(unix))]
+        assert!(
+            !roots
+                .iter()
+                .any(|r| r.ends_with("tmp") && !r.starts_with(&temp)),
+            "Windows 不得把 `/tmp`(当前盘根下的 tmp)当暂存区;got: {roots:?}"
+        );
+        // 全盘放行:Unix 由 `/` 表达;Windows 无单一根,由 mode 表达(空集)
+        #[cfg(unix)]
         assert_eq!(
             SandboxPolicy::full_access().writable_roots(),
             vec![PathBuf::from("/")]
         );
+        #[cfg(not(unix))]
+        assert!(SandboxPolicy::full_access().writable_roots().is_empty());
         // 单调去重
         let mut deduped = roots.clone();
         deduped.sort();
@@ -684,10 +718,4 @@ mod tests {
         }
         assert!(runner_failure_of(&Rung::Landlock).is_empty());
     }
-}
-
-/// 非 Unix 平台的策略校验(fail-closed 入口;Windows ACL 后置)
-#[cfg(not(unix))]
-pub fn prepare_fallback(_policy: &SandboxPolicy) -> Result<(), SandboxError> {
-    Err(SandboxError::NoRunner)
 }

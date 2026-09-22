@@ -6,21 +6,26 @@
 //! - epoch 硬停(死循环 wasm 组件被 trap)属引擎测试,在 liuma-host/tests/engine.rs。
 
 use std::sync::Mutex;
-use std::time::Duration;
 
-use liuma_sandbox::sandbox::{
-    Confined, RunnerFailureRule, SandboxEnforcement, SandboxError, SandboxPolicy, probe,
-};
-use liuma_sandbox::{ExitClass, ExitStatus, SpawnOptions, classify_exit, spawn};
+use liuma_sandbox::sandbox::{Confined, RunnerFailureRule, SandboxEnforcement, SandboxError};
+use liuma_sandbox::{ExitClass, ExitStatus, SandboxPolicy, SpawnOptions, classify_exit, spawn};
+
+// 仅 Unix 用例使用(见文件头):Windows 上沙箱链尚未落地,这些符号无消费者
+#[cfg(unix)]
+use liuma_sandbox::sandbox::probe;
+#[cfg(unix)]
+use std::time::Duration;
 
 /// 涉及全局测试缝(set_disabled_for_tests)的沙箱测试串行化,
 /// 防止 seam=true 时并行的其它沙箱测试 probe 到 None 而误判
 static SANDBOX_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
+#[cfg(unix)] // 仅 Unix 用例使用(见文件头)
 fn policy(workspace: &str) -> SandboxPolicy {
     SandboxPolicy::workspace_write(workspace)
 }
 
+#[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // 测试串行化意图明确
 async fn bash_tool_runs_under_sandbox() {
@@ -55,6 +60,7 @@ async fn bash_tool_runs_under_sandbox() {
 /// workspace-write 根推导:workspace + `/tmp` +
 /// 平台 temp_dir——沙箱下编译类工具在临时区落中间产物不被拦
 /// (bwrap 临时区是隔离 tmpfs,macOS 是 canonicalize 后 subpath 写真目录)
+#[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // 测试串行化意图明确
 async fn workspace_write_allows_temp_artifacts() {
@@ -251,6 +257,7 @@ fn classify_exit_table_driven() {
     ));
 }
 
+#[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
 #[tokio::test]
 async fn term_then_kill_with_grace() {
     // SIGTERM→grace→SIGKILL:单进程忙等且忽略 TERM → grace 过期 → SIGKILL 兜底
@@ -304,6 +311,7 @@ async fn fail_closed_when_no_rung() {
 
 /// stdin 载荷:Some(bytes) = piped,写完即关;子进程读到 EOF 后消费。
 /// hooks 桥依赖此原语喂序列化载荷。
+#[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // 测试串行化意图明确
 async fn stdin_payload_reaches_child_and_closes() {

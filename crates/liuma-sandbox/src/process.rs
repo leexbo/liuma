@@ -14,7 +14,24 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use crate::sandbox::{self, Confined, Rung, SandboxPolicy};
+#[cfg(unix)] // 仅 Unix 分支按 rung 分派(bwrap/seatbelt vs landlock)
+use crate::sandbox::Rung;
+use crate::sandbox::{self, Confined, SandboxPolicy};
+
+/// 终止请求信号:Unix 取 libc 真值;非 Unix 无信号语义,值被
+/// [`Child::signal_group`] 忽略(那里直接终止子进程)
+#[cfg(unix)]
+const SIGTERM: i32 = libc::SIGTERM;
+/// 强杀信号(同上)
+#[cfg(unix)]
+const SIGKILL: i32 = libc::SIGKILL;
+
+/// 非 Unix 占位:调用点无需按平台分叉(见 [`Child::signal_group`])
+#[cfg(not(unix))]
+const SIGTERM: i32 = 0;
+/// 非 Unix 占位(同上)
+#[cfg(not(unix))]
+const SIGKILL: i32 = 0;
 
 /// 进程错误
 #[derive(Debug, Error)]
@@ -273,11 +290,11 @@ impl Child {
     ///
     /// 顺序语义:SIGTERM(组)先、grace 内退出即温和成功。
     pub async fn kill_with_grace(&mut self, grace: Duration) -> Result<ExitStatus, ProcessError> {
-        self.signal_group(libc::SIGTERM)?;
+        self.signal_group(SIGTERM)?;
         if let Some(status) = self.wait_timeout(grace).await {
             return Ok(status);
         }
-        self.signal_group(libc::SIGKILL)?;
+        self.signal_group(SIGKILL)?;
         self.wait().await
     }
 
@@ -302,9 +319,11 @@ impl Child {
     }
 
     #[cfg(not(unix))]
-    fn signal_group(&self, _sig: i32) -> Result<(), ProcessError> {
-        // 非 Unix:仅杀直接子进程(Windows Job Objects 后置)
-        let _ = self.inner.kill();
+    fn signal_group(&mut self, _sig: i32) -> Result<(), ProcessError> {
+        // 非 Unix:无信号语义与进程组,仅终止直接子进程(Windows Job
+        // Objects 后置)。用 start_kill 同步发出——`kill()` 是 async,
+        // 不 await 只构造 future,子进程实际不死
+        let _ = self.inner.start_kill();
         Ok(())
     }
 
@@ -319,6 +338,7 @@ impl Child {
 #[derive(Clone, Debug)]
 pub struct GroupKiller {
     /// 进程组 id(Unix;None = 无法组信号)
+    #[cfg_attr(not(unix), allow(dead_code))] // 非 Unix 无组信号可发,快照仅随句柄保留
     pgid: Option<i32>,
 }
 
@@ -338,6 +358,7 @@ impl GroupKiller {
         Ok(())
     }
 
+    /// 非 Unix:无进程组语义,调用方收到错误后按「无法分离终止」处理
     #[cfg(not(unix))]
     pub fn signal(&self, _sig: i32) -> Result<(), ProcessError> {
         Err(ProcessError::Wait(
@@ -348,11 +369,11 @@ impl GroupKiller {
     /// SIGTERM → grace → SIGKILL;**不等待回收**——回收与状态收尾
     /// 由持有 Child 的一方(watcher)负责
     pub async fn kill_detached(&self, grace: Duration) -> bool {
-        if self.signal(libc::SIGTERM).is_err() {
+        if self.signal(SIGTERM).is_err() {
             return false;
         }
         tokio::time::sleep(grace).await;
-        let _ = self.signal(libc::SIGKILL);
+        let _ = self.signal(SIGKILL);
         true
     }
 }

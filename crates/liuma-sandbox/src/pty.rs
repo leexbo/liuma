@@ -151,6 +151,10 @@ impl PtySession {
 mod tests {
     use super::*;
 
+    // 用例载荷是 POSIX 语义(`/bin/bash -c`、`test -t 1`、`sandbox-exec`
+    // 探测);Windows 侧对应用例随阶段 4 的 ConPTY 工作落
+    // (`[Console]::IsOutputRedirected` 断言 tty)。
+    #[cfg(unix)]
     #[tokio::test]
     async fn pty_runs_command_with_tty_semantics() {
         // 嵌套沙箱内 openpty 被拒(EPERM):环境性跳过,宿主终端真跑
@@ -209,7 +213,15 @@ mod tests {
                 assert!(!outside.exists());
             }
             Err(PtyError::Sandbox(_)) => {
-                // landlock-only 环境:fail-closed 拒绝,正确
+                // fail-closed 是正确结局,但必须说清是哪种环境:
+                // 要么本机无 rung(Windows/探测禁用),要么 rung 不可用于
+                // PTY(landlock 无 pre_exec 通道)。**有** argv 包装型 rung
+                // 却对 PTY 拒绝执行 = 语义矛盾,不许被这一臂吞掉
+                let argv_wrapping = matches!(
+                    crate::sandbox::probe().as_ref().map(|p| &p.rung),
+                    Some(Rung::Bwrap(_)) | Some(Rung::Seatbelt(_))
+                );
+                assert!(!argv_wrapping, "本机有 argv 包装 rung,PTY 不该 fail-closed");
             }
             Err(e) => panic!("unexpected: {e}"),
         }
