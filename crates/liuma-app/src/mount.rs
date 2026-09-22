@@ -167,15 +167,25 @@ pub fn in_tree_registry() -> &'static HashMap<&'static str, InTreeComponent> {
     })
 }
 
+/// shell 组件的使用指南节:节内要点名模型面的工具名,而注册表存的是
+/// `&'static str`(插不进运行期常量),故按平台给两个整句。
+/// 组件的注册键恒为 `bash`(preset 的 `source` 引用它),与模型面的工具名
+/// 脱钩——Windows 上挂的是 pwsh 工具。
+#[cfg(windows)]
+const SHELL_EXIT_MARKER_SECTION: &str =
+    "Check the [exit code: N] marker on every pwsh result; investigate failures before moving on.";
+/// 非 Windows:见上
+#[cfg(not(windows))]
+const SHELL_EXIT_MARKER_SECTION: &str =
+    "Check the [exit code: N] marker on every bash result; investigate failures before moving on.";
+
 /// 组件的模型面使用指南(逐组件一节)。
 /// todo_write/plan/ask_user_question 无使用指南节;subagent 后台节承诺
 /// 后台运行(run_in_background/完成通知),仅结算通知 port 在场时挂
 /// (见 [`tool_prompt_sections_with`])。
 fn component_prompt(name: &str) -> &'static str {
     match name {
-        "bash" => {
-            "Check the [exit code: N] marker on every bash result; investigate failures before moving on."
-        }
+        "bash" => SHELL_EXIT_MARKER_SECTION,
         // 工具名/参数名按 RS 接口适配(read→file_read、edit→file_edit、
         // glob+grep→file_search;file_edit 无 replace_all 参数故无对应句;
         // file_search 无 hidden/mtime 行为细节)
@@ -585,8 +595,9 @@ mod tests {
         // (subagent/list_agents/send_message/interrupt_agent)+ jobs + workflow 对
         // (workflow/ralph);session_query/ask_user_question 无宿主 port 跳过。
         // 控制工具三件:list_agents + send_message + interrupt_agent
+        // shell 工具名随平台方言走(`bash` / `pwsh`),其余工具名恒定
         for expect in [
-            "bash",
+            liuma_sandbox::shell::tool_name(),
             "file_read",
             "file_edit",
             "file_search",
@@ -626,12 +637,12 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "bash".to_string(),
+                liuma_sandbox::shell::tool_name().to_string(),
                 "file_read".to_string(),
                 "file_edit".to_string(),
                 "file_search".to_string(),
             ],
-            "minimal = bash + files 三件"
+            "minimal = shell + files 三件"
         );
     }
 
@@ -641,7 +652,10 @@ mod tests {
         // 可用,写被内核拦带拒绝标记);files 声明不变(执行面只读)
         let resolved = resolved_with("    - source: bash\n    - source: files\n");
         let names = sources(&resolved, "read-only");
-        assert!(names.contains(&"bash".to_string()), "read-only 仍装配 bash");
+        assert!(
+            names.contains(&liuma_sandbox::shell::tool_name().to_string()),
+            "read-only 仍装配 shell 工具"
+        );
         assert!(names.contains(&"file_read".to_string()));
         assert!(names.contains(&"file_edit".to_string()));
     }

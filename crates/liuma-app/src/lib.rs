@@ -192,10 +192,11 @@ pub fn prompt_parts(resolved: &Resolved, subagent_background: bool) -> PromptPar
         env_info: format!(
             "cwd={}\nsandbox: writable = the workspace plus the platform temp area; \
              everything else is read-only\n\
-             git: 本目录是 git 仓库时,用 bash 工具执行 git 命令查看历史/分支/状态 \
+             git: 本目录是 git 仓库时,用 {} 工具执行 git 命令查看历史/分支/状态 \
              (git log --oneline -n 20 / git branch -a / git status --short),\
              不要直接读取 .git 目录下的文件",
-            resolved.workspace.display()
+            resolved.workspace.display(),
+            liuma_sandbox::shell::tool_name()
         ),
         append: persona
             .as_ref()
