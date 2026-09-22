@@ -70,6 +70,109 @@ fn hex_sha256_12(input: &str) -> String {
     hex::encode(&digest[..HASH_SUFFIX_LEN / 2])
 }
 
+// ── stdio 启动器解析 ─────────────────────────────────────────────────────
+
+/// PATHEXT 缺省值(Windows 约定;Node 生态的 `npm` / `npx` 是 `.CMD` shim)
+const DEFAULT_PATHEXT: &[&str] = &[".COM", ".EXE", ".BAT", ".CMD"];
+
+/// stdio server 的启动 argv。
+///
+/// Windows 上裸命令名只经 `CreateProcess` 的搜索(补 `.exe`),**不认
+/// PATHEXT** —— 而 Node 生态的包管理器 shim(`npm` / `npx`)是 `.cmd`,
+/// 不解析就报 `program not found`(实测:全路径与带扩展名的裸名都能跑,
+/// 唯独裸名不行)。这里按 PATH × PATHEXT 解析成绝对路径;`.cmd`/`.bat`
+/// 的批处理启动由 std 代为经 `cmd.exe` 完成,不必自行包装。
+/// Unix 侧原样透传(由 execvp 按 PATH 找)。
+pub(crate) fn stdio_launcher(command: &str, args: &[String]) -> (String, Vec<String>) {
+    let path_dirs = std::env::var("PATH")
+        .map(|v| split_path(&v))
+        .unwrap_or_default();
+    let pathext = pathext_entries(std::env::var("PATHEXT").ok());
+    launch_argv(
+        cfg!(windows),
+        command,
+        args,
+        &path_dirs,
+        &pathext,
+        &|p: &std::path::Path| p.symlink_metadata().is_ok(),
+    )
+}
+
+/// 启动 argv 的判定核心(纯函数:Windows 语义在任何宿主上都可测)
+pub(crate) fn launch_argv(
+    windows: bool,
+    command: &str,
+    args: &[String],
+    path_dirs: &[PathBuf],
+    pathext: &[String],
+    exists: &dyn Fn(&std::path::Path) -> bool,
+) -> (String, Vec<String>) {
+    if !windows {
+        return (command.to_string(), args.to_vec());
+    }
+    // 解析不到就原样交给系统(错误信息由 spawn 给出,别在这里吞成别的形状)
+    let program = resolve_executable(command, path_dirs, pathext, exists)
+        .map_or_else(|| command.to_string(), |p| p.display().to_string());
+    (program, args.to_vec())
+}
+
+/// 按 PATH + PATHEXT 解析可执行文件。
+///
+/// 带路径分隔符或已带扩展名的命令不查 PATH(与 CreateProcess 的查找规则
+/// 一致:显式路径就是显式路径);裸名按目录 × 扩展名展开,首个存在者胜出。
+pub(crate) fn resolve_executable(
+    command: &str,
+    path_dirs: &[PathBuf],
+    pathext: &[String],
+    exists: &dyn Fn(&std::path::Path) -> bool,
+) -> Option<PathBuf> {
+    let has_separator = command.contains('/') || command.contains('\\');
+    if has_separator || std::path::Path::new(command).extension().is_some() {
+        let path = std::path::PathBuf::from(command);
+        return exists(&path).then_some(path);
+    }
+    for dir in path_dirs {
+        for ext in pathext {
+            let candidate = dir.join(format!("{command}{ext}"));
+            if exists(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// PATHEXT 字符串 → 扩展名表(缺省用 [`DEFAULT_PATHEXT`];空条目丢弃)
+pub(crate) fn pathext_entries(var: Option<String>) -> Vec<String> {
+    let Some(var) = var else {
+        return DEFAULT_PATHEXT.iter().map(|s| (*s).to_string()).collect();
+    };
+    let entries: Vec<String> = var
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_uppercase)
+        .collect();
+    if entries.is_empty() {
+        return DEFAULT_PATHEXT.iter().map(|s| (*s).to_string()).collect();
+    }
+    entries
+}
+
+/// PATH 字符串 → 目录列表
+pub(crate) fn split_path(var: &str) -> Vec<PathBuf> {
+    #[cfg(windows)]
+    let sep = ';';
+    #[cfg(not(windows))]
+    let sep = ':';
+    var.split(sep)
+        .map(str::trim)
+        .map(|s| s.trim_matches('"'))
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
 // ── env 清洗 ──────────────────────────────────────────────────────────────
 
 /// 敏感键剔除(键名含 KEY/PASSWORD/SECRET/TOKEN 任意子串,大小写不敏感)
@@ -715,8 +818,9 @@ async fn run_generation(
             cwd,
         } => {
             let parent: BTreeMap<String, String> = std::env::vars().collect();
-            let mut cmd = tokio::process::Command::new(command);
-            cmd.args(args).env_clear();
+            let (program, argv) = stdio_launcher(command, args);
+            let mut cmd = tokio::process::Command::new(program);
+            cmd.args(argv).env_clear();
             for (k, v) in scrub_env(&parent, env) {
                 cmd.env(k, v);
             }
@@ -1324,5 +1428,160 @@ mod tests {
         assert!(pool.remove("a").is_some());
         assert_eq!(pool.server_ids(), vec!["b".to_string()]);
         assert_eq!(pool.specs().len(), 1);
+    }
+
+    // ── stdio 启动器解析 ─────────────────────────────────────
+
+    fn none_exists(_: &std::path::Path) -> bool {
+        false
+    }
+
+    /// 夹具的存在性谓词:按 Windows 文件系统的语义比较(大小写不敏感)
+    /// —— PATHEXT 候选是大写扩展名,字节比较会误判缺席
+    fn exists_as(want: &str) -> impl Fn(&std::path::Path) -> bool + '_ {
+        move |p: &std::path::Path| p.to_string_lossy().eq_ignore_ascii_case(want)
+    }
+
+    /// 路径等价判定(同上,供断言用)
+    fn same_path(a: &str, b: &str) -> bool {
+        std::path::Path::new(a)
+            .to_string_lossy()
+            .eq_ignore_ascii_case(b)
+    }
+
+    /// Unix 侧不解析、不包装(原样透传,由 execvp 自己按 PATH 找)
+    #[test]
+    fn launch_argv_passthrough_off_windows() {
+        let args = vec!["--stdio".to_string()];
+        assert_eq!(
+            launch_argv(false, "npx", &args, &[], &[], &none_exists),
+            ("npx".to_string(), args.clone())
+        );
+    }
+
+    /// Windows 侧:裸名按 PATH × PATHEXT 解析成绝对路径(包管理器 shim
+    /// 是 `.cmd`,不解析就报 program not found);参数原样透传
+    #[test]
+    fn launch_argv_resolves_bare_name_via_pathext() {
+        let dir = PathBuf::from(r"C:\nodejs");
+        let args = vec!["-y".to_string(), "pkg".to_string()];
+        let (program, argv) = launch_argv(
+            true,
+            "npx",
+            &args,
+            std::slice::from_ref(&dir),
+            &pathext_entries(None),
+            &exists_as(r"C:\nodejs\npx.cmd"),
+        );
+        assert!(same_path(&program, r"C:\nodejs\npx.cmd"), "{program}");
+        assert_eq!(argv, ["-y", "pkg"]);
+    }
+
+    /// 解析到普通可执行文件时不包装(直接给出绝对路径)
+    #[test]
+    fn launch_argv_keeps_plain_executable() {
+        let dir = PathBuf::from(r"C:\tools");
+        let (program, argv) = launch_argv(
+            true,
+            "uvx",
+            &[],
+            std::slice::from_ref(&dir),
+            &pathext_entries(None),
+            &exists_as(r"C:\tools\uvx.exe"),
+        );
+        assert!(same_path(&program, r"C:\tools\uvx.exe"), "{program}");
+        assert!(argv.is_empty());
+    }
+
+    /// 显式路径与带扩展名的命令不查 PATH(CreateProcess 同款规则)
+    #[test]
+    fn resolve_executable_skips_path_search_for_explicit_targets() {
+        let dir = PathBuf::from("/tools");
+        let exists = |_: &std::path::Path| true;
+        // 带分隔符:原样(存在性交给调用方,这里 exists 恒真)
+        assert_eq!(
+            resolve_executable(
+                r"C:\opt\thing.exe",
+                std::slice::from_ref(&dir),
+                &[],
+                &exists
+            ),
+            Some(PathBuf::from(r"C:\opt\thing.exe"))
+        );
+        // 带扩展名的裸名同样不按 PATH 展开
+        assert_eq!(
+            resolve_executable("thing.exe", std::slice::from_ref(&dir), &[], &none_exists),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_executable_order_is_dir_major() {
+        let dirs = vec![PathBuf::from("/a"), PathBuf::from("/b")];
+        let exts = vec![".EXE".to_string(), ".CMD".to_string()];
+        // 分隔符按宿主渲染,断言与谓词都先归一(夹具不该依赖宿主分隔符)
+        let exists = |p: &std::path::Path| {
+            let s = p.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+            s == "/b/thing.exe" || s == "/a/thing.cmd"
+        };
+        // /a 先于 /b(目录主序),故 /a/thing.cmd 胜出
+        let found = resolve_executable("thing", &dirs, &exts, &exists).expect("应解析到候选");
+        assert_eq!(
+            found
+                .to_string_lossy()
+                .replace('\\', "/")
+                .to_ascii_lowercase(),
+            "/a/thing.cmd"
+        );
+    }
+
+    #[test]
+    fn pathext_entries_default_and_override() {
+        assert_eq!(pathext_entries(None), vec![".COM", ".EXE", ".BAT", ".CMD"]);
+        assert_eq!(
+            pathext_entries(Some(".EXE;.CMD;".to_string())),
+            vec![".EXE", ".CMD"]
+        );
+        // 全空回落缺省(不产出"什么都不试"的空表)
+        assert_eq!(
+            pathext_entries(Some(";".to_string())),
+            vec![".COM", ".EXE", ".BAT", ".CMD"]
+        );
+    }
+
+    /// 端到端(Windows 真跑):解析出的绝对路径能被 spawn;而裸名不行
+    /// —— 后者正是这一步解析存在的理由
+    #[cfg(windows)]
+    #[test]
+    fn resolved_batch_script_runs_and_bare_name_does_not() {
+        let dir = std::env::temp_dir().join(format!("liuma-mcp-cmd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("fixture.cmd");
+        std::fs::write(&script, "@echo off\r\necho from-cmd-fixture\r\n").unwrap();
+
+        let (program, argv) = launch_argv(
+            true,
+            "fixture",
+            &[],
+            std::slice::from_ref(&dir),
+            &pathext_entries(Some(".CMD".to_string())),
+            &exists_as(&script.display().to_string()),
+        );
+        let out = std::process::Command::new(&program)
+            .args(&argv)
+            .output()
+            .expect("解析出的程序应可启动");
+        assert!(out.status.success(), "批处理应执行成功: {out:?}");
+        assert!(String::from_utf8_lossy(&out.stdout).contains("from-cmd-fixture"));
+
+        // 反证:同一目录、同一裸名交给系统,Windows 不认 PATHEXT → 找不到
+        let bare = std::process::Command::new("fixture")
+            .env("PATH", &dir)
+            .output();
+        assert!(
+            bare.is_err(),
+            "裸名不应被系统解析(该前提是本解析存在的理由): {bare:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
