@@ -29,7 +29,7 @@ fn policy(workspace: &str) -> SandboxPolicy {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // 测试串行化意图明确
 async fn bash_tool_runs_under_sandbox() {
-    let _serial = SANDBOX_TEST_MUTEX.lock().unwrap();
+    let _serial = SANDBOX_TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
     // 出口门:bash 工具在沙箱下执行成功(本机 macOS = seatbelt;Linux = bwrap/landlock)
     let Some(_) = probe() else {
         eprintln!("本机无沙箱 rung,跳过(此环境本应 fail-closed,见下一个用例)");
@@ -64,7 +64,7 @@ async fn bash_tool_runs_under_sandbox() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // 测试串行化意图明确
 async fn workspace_write_allows_temp_artifacts() {
-    let _serial = SANDBOX_TEST_MUTEX.lock().unwrap();
+    let _serial = SANDBOX_TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
     let Some(_) = probe() else {
         eprintln!("本机无沙箱 rung,跳过(此环境本应 fail-closed,见 fail_closed 用例)");
         return;
@@ -105,7 +105,14 @@ async fn workspace_write_allows_temp_artifacts() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // 测试串行化意图明确
 async fn sandbox_denies_write_outside_writable_roots() {
-    let _serial = SANDBOX_TEST_MUTEX.lock().unwrap();
+    let _serial = SANDBOX_TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+    // 嵌套沙箱内(本会话 agent 环境)sandbox_apply 被禁 → probe 必 None:
+    // 「根外写被拒」需要真沙箱,环境探测不到 rung 就如实声明并退出
+    // (宿主终端真跑 = 真断言),不制造无守卫的必红
+    let Some(_) = probe() else {
+        eprintln!("嵌套沙箱内 probe 不到 rung,跳过(宿主终端真跑断言)");
+        return;
+    };
     let workdir = std::env::temp_dir().join(format!("liuma-p3-deny-{}", std::process::id()));
     std::fs::create_dir_all(&workdir).unwrap();
     // 根外 = 白名单(/tmp、tmpdir、workdir)之外:macOS 只读系统卷
@@ -286,7 +293,7 @@ async fn term_then_kill_with_grace() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // 测试串行化意图明确
 async fn fail_closed_when_no_rung() {
-    let _serial = SANDBOX_TEST_MUTEX.lock().unwrap();
+    let _serial = SANDBOX_TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
     // fail-closed:策略要求沙箱但探测不到 rung → 拒绝执行,绝不静默降级
     // (set_disabled_for_tests 是 probe 的测试缝,模拟无 rung 环境)
     liuma_sandbox::sandbox::set_disabled_for_tests(true);
@@ -313,9 +320,9 @@ async fn fail_closed_when_no_rung() {
 /// hooks 桥依赖此原语喂序列化载荷。
 #[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
 #[tokio::test]
-#[allow(clippy::await_holding_lock)] // 测试串行化意图明确
 async fn stdin_payload_reaches_child_and_closes() {
-    let _serial = SANDBOX_TEST_MUTEX.lock().unwrap();
+    // 不参与 SANDBOX_TEST_MUTEX 串行化:本用例无沙箱、不触碰 probe 测试缝,
+    // 与沙箱链正交——卷进互斥锁只会被其它用例的 panic 毒化连坐
     // 无沙箱:原语本身与沙箱链正交
     let opts = SpawnOptions {
         stdin: Some(b"hook-payload-1".to_vec()),
