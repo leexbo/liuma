@@ -21,7 +21,7 @@ use std::path::PathBuf;
 
 use crate::contract::{
     EXIT_RUNNER_FAILURE, GRANT_MASK, Mode, RunnerSpec, normalize_canonical, parse_runner_args,
-    resolve_program, temp_sid, workspace_sid,
+    resolve_program, workspace_sid,
 };
 use job::Job;
 use sid::LocalSid;
@@ -64,10 +64,9 @@ fn prepare(spec: &RunnerSpec) -> Result<Prepared, String> {
     let mut roots: Vec<(PathBuf, LocalSid)> = Vec::new();
     for root in &spec.writable {
         let canonical = canonicalize(&root.dir)?;
-        let expected = match spec.mode {
-            Mode::WorkspaceWrite => workspace_sid(&canonical),
-            _ => temp_sid(&canonical),
-        };
+        // 一个工作区一个身份:所有可写根同域派生(工作区根与暂存区根同为
+        // 本会话的可写集,不构成两种身份)
+        let expected = workspace_sid(&canonical);
         if root.sid != expected {
             return Err(format!(
                 "capability SID mismatch for {}: caller sent {}, runner derived {} \

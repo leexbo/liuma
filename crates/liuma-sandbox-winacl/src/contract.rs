@@ -100,16 +100,6 @@ pub fn workspace_sid(canonical: &str) -> String {
     format!("S-1-4-{a}-{b}")
 }
 
-/// 暂存区能力 SID:`S-1-4-<a>-<b>-1`。
-///
-/// 与工作区 SID 同族但**域分离**:同一台机器上工作区身份与暂存区身份永不
-/// 相同,故「工作区可写」不会顺带把某个暂存区树打开。末位 `-1` 让它在
-/// 审计时一眼可辨。
-pub fn temp_sid(canonical: &str) -> String {
-    let (a, b) = derive(canonical, "liuma-temp");
-    format!("S-1-4-{a}-{b}-1")
-}
-
 /// 域分离的确定性派生:两个 30 位子授权域。
 ///
 /// 30 位(而非 32)是留白:S-1-4-… 是自铸身份区,值域收窄可避免与将来
@@ -299,17 +289,15 @@ mod tests {
 
     /// SID 派生:确定性、域分离、输入字节敏感
     #[test]
-    fn sid_derivation_is_deterministic_and_domain_separated() {
+    fn sid_derivation_is_deterministic_and_byte_sensitive() {
         let ws = workspace_sid(r"D:\proj\liuma");
         assert_eq!(ws, workspace_sid(r"D:\proj\liuma"), "同一输入必须同值");
         assert!(ws.starts_with("S-1-4-"), "{ws}");
 
-        let temp = temp_sid(r"D:\proj\liuma");
-        assert_ne!(ws, temp, "工作区与暂存区身份必须不同");
-        assert!(temp.ends_with("-1"), "{temp}");
-
         // 大小写与分隔符是**不同的字符串**(归一在调用方,见 normalize_canonical)
         assert_ne!(ws, workspace_sid(r"d:\proj\liuma"));
+        // 不同目录必得不同身份(否则一个工作区的 ACE 会放行另一个)
+        assert_ne!(ws, workspace_sid(r"D:\proj\other"));
     }
 
     #[test]

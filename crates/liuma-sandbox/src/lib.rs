@@ -17,6 +17,7 @@ pub mod process;
 pub mod pty;
 pub mod sandbox;
 pub mod shell;
+pub mod winacl;
 
 pub use process::{
     Child, ExitClass, ExitStatus, GroupKiller, ProcessError, SpawnOptions, classify_exit, spawn,

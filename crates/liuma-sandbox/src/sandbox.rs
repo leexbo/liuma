@@ -47,6 +47,10 @@ pub enum Rung {
     Landlock,
     /// macOS Seatbelt(sandbox-exec 路径)
     Seatbelt(PathBuf),
+    /// Windows:受限令牌 + 能力 SID 授权 + Job(runner 路径)。
+    /// 变体在**所有平台**都定义:方言表与包装逻辑因此可跨平台测,
+    /// 不必把整张表按 cfg 抄两份
+    WindowsAcl(PathBuf),
 }
 
 /// 探测结果:rung + enforcement 完整性声明
@@ -234,9 +238,14 @@ fn probe_uncached() -> Option<ProbeResult> {
         }
         None
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
     {
-        None // Windows ACL rung 后置;当前 fail-closed
+        // 功能式:真跑一次只读沙箱(载荷是平台 shell,不是 cmd——见 winacl::probe)
+        crate::winacl::probe()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        None // 其余平台无 rung,保持 fail-closed
     }
 }
 
@@ -390,6 +399,21 @@ const DENIAL_DIALECT: &[(&str, &[&str])] = &[
     ("bwrap", &["read-only file system"]),
     ("landlock", &["permission denied"]),
     ("seatbelt", &["operation not permitted"]),
+    (
+        "windows-acl",
+        &[
+            // 英文形态:pwsh/.NET「Access to the path '…' is denied.」、
+            // cmd「Access is denied.」、Win32「Access is denied」
+            "access is denied",
+            "access to the path",
+            "permission denied",
+            // 本地化形态:Windows 的中文界面按系统区域给出本地化文案
+            // (实测 zh-CN 为「对路径“…”的访问被拒绝。」)。拒绝方言是大写
+            // 不敏感的**子串**匹配,故中英并列;其他语言界面需按需补
+            "访问被拒绝",
+            "拒绝访问",
+        ],
+    ),
 ];
 
 /// runner 失败规则表(`RUNNER_FAILURE_RULES`;liuma 无独立 launcher 形态
@@ -412,9 +436,19 @@ const RUNNER_FAILURE_RULES: &[(&str, &[RunnerFailureRule])] = &[
         }],
     ),
     ("landlock", &[]),
+    (
+        "windows-acl",
+        &[RunnerFailureRule {
+            // **必须带退出码门**:payload 完全可能自己打印这个前缀,只认
+            // 前缀会把「跑过并打印了」误判成「没跑」
+            allowed_exit_codes: Some(&[liuma_sandbox_winacl::EXIT_RUNNER_FAILURE]),
+            fatal_signatures: &[liuma_sandbox_winacl::FAIL_PREFIX],
+            informational_lines: &[],
+        }],
+    ),
 ];
 
-fn dialect_of(rung: &Rung) -> &'static [&'static str] {
+pub(crate) fn dialect_of(rung: &Rung) -> &'static [&'static str] {
     DENIAL_DIALECT
         .iter()
         .find(|(name, _)| rung_name(rung) == *name)
@@ -422,7 +456,7 @@ fn dialect_of(rung: &Rung) -> &'static [&'static str] {
         .unwrap_or(&[])
 }
 
-fn runner_failure_of(rung: &Rung) -> &'static [RunnerFailureRule] {
+pub(crate) fn runner_failure_of(rung: &Rung) -> &'static [RunnerFailureRule] {
     RUNNER_FAILURE_RULES
         .iter()
         .find(|(name, _)| rung_name(rung) == *name)
@@ -435,6 +469,7 @@ fn rung_name(rung: &Rung) -> &'static str {
         Rung::Bwrap(_) => "bwrap",
         Rung::Landlock => "landlock",
         Rung::Seatbelt(_) => "seatbelt",
+        Rung::WindowsAcl(_) => "windows-acl",
     }
 }
 
@@ -478,6 +513,7 @@ pub fn wrap_argv(
         Rung::Landlock => Err(SandboxError::Other(
             "landlock rung 走 pre_exec 路径,不包装 argv".into(),
         )),
+        Rung::WindowsAcl(_) => crate::winacl::wrap(policy, cmd, args),
     }
 }
 
@@ -532,12 +568,6 @@ fn apply_landlock(policy: &SandboxPolicy) -> Result<(), String> {
     ruleset.restrict_self().map_err(|e| e.to_string())
 }
 
-/// 非 Unix 平台的策略校验(fail-closed 入口;Windows ACL 后置)
-#[cfg(not(unix))]
-pub fn prepare_fallback(_policy: &SandboxPolicy) -> Result<(), SandboxError> {
-    Err(SandboxError::NoRunner)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,8 +587,33 @@ mod tests {
                 assert_eq!(probed.enforcement, SandboxEnforcement::Full);
             }
         }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        assert_eq!(probe(), None);
+        // Windows:功能式探测真跑一次只读沙箱,命中的 rung 必须是 windows-acl
+        #[cfg(windows)]
+        match probe() {
+            Some(probed) => {
+                assert!(
+                    matches!(probed.rung, Rung::WindowsAcl(_)),
+                    "Windows 应探测到 windows-acl;got: {probed:?}"
+                );
+                // 写与删除受 ACL 约束,读/网络/进程可见性不受限 —— 如实声明
+                assert_eq!(probed.enforcement, SandboxEnforcement::Partial);
+            }
+            None => {
+                // 探测失败的成因只有两种,分别断言:runner 缺席(未构建),
+                // 或 runner 在场却跑不通(真缺陷)。不许含糊过去
+                let runner = crate::winacl::resolve_runner();
+                assert!(
+                    runner.is_none(),
+                    "沙箱 runner 在场({})却探测失败:这是缺陷,不是环境",
+                    runner.map_or_else(String::new, |p| p.display().to_string())
+                );
+                eprintln!(
+                    "沙箱 runner 未构建(环境性):请先 `cargo build -p liuma-sandbox-winacl --bin liuma-sandbox-run`"
+                );
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        assert_eq!(probe(), None, "其余平台无 rung,保持 fail-closed");
     }
 
     #[test]

@@ -31,5 +31,5 @@ pub fn run(argv: impl Iterator<Item = std::ffi::OsString>) -> i32 {
 
 pub use contract::{
     EXIT_RUNNER_FAILURE, FAIL_PREFIX, GRANT_MASK, Mode, RunnerSpec, WritableRoot,
-    normalize_canonical, parse_runner_args, runner_argv, temp_sid, workspace_sid,
+    normalize_canonical, parse_runner_args, runner_argv, workspace_sid,
 };

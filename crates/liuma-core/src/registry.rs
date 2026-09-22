@@ -12313,6 +12313,11 @@ for line in sys.stdin:
 
     /// Stop deny ⇒ 续跑:第二次模型请求发生(fake 脚本第二条被消费),
     /// turn 以正常 completed 收尾。
+    /// 钩子命令是 **POSIX shell 脚本**(`if [ -f … ]; then … fi`):Windows
+    /// 方言下跑不了,故仅在 Unix 真跑。另注:该夹具用 `format!` 把带反斜杠
+    /// 的路径直接拼进 JSON 字面量,Windows 上会解析失败 —— 若要跨平台,
+    /// 须改成经 serde 序列化(同 `workspace_legacy_import` 的修法)。
+    #[cfg(unix)]
     #[tokio::test]
     async fn hook_bridge_stop_deny_forces_continuation() {
         if !has_sandbox_rung() {

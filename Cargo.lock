@@ -5388,6 +5388,7 @@ version = "0.1.0"
 dependencies = [
  "landlock",
  "libc",
+ "liuma-sandbox-winacl",
  "portable-pty",
  "thiserror 2.0.20",
  "tokio",

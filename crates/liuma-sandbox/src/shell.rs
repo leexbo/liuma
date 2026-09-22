@@ -115,13 +115,32 @@ pub fn resolve_shell(exists: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
     #[cfg(windows)]
     {
         let lookup = |k: &str| std::env::var(k).ok();
-        let dirs = path_dirs_from(&std::env::var("PATH").unwrap_or_default());
+        let dirs: Vec<PathBuf> = path_dirs_from(&std::env::var("PATH").unwrap_or_default())
+            .into_iter()
+            .filter(|d| !is_store_alias_dir(d))
+            .collect();
         first_existing(&windows_candidates(&lookup, &dirs), exists)
     }
     #[cfg(not(windows))]
     {
         first_existing(&posix_candidates(), exists)
     }
+}
+
+/// 是否 Microsoft Store 的应用执行别名目录。
+///
+/// 那里的 `pwsh.exe` 是 reparse point:`CreateProcessAsUser` 打不开它
+/// (ERROR_CANT_ACCESS_FILE),它的真实目标又落在 ACL 收紧的 WindowsApps 下
+/// (ERROR_ACCESS_DENIED)——**沙箱载荷用不了**。shell 在这里恒是沙箱载荷,
+/// 故解析时跳过整条目录,让候选链落到系统自带的 Windows PowerShell 5.1
+/// (或 MSI 安装的 PowerShell 7)。
+#[cfg(windows)]
+fn is_store_alias_dir(dir: &Path) -> bool {
+    dir.to_string_lossy()
+        .replace('/', "\\")
+        .trim_end_matches('\\') // 尾分隔符无关(setx 写进 PATH 的条目常带)
+        .to_ascii_lowercase()
+        .ends_with(r"\microsoft\windowsapps")
 }
 
 /// POSIX 解释器:固定绝对路径,不查 PATH
@@ -276,6 +295,25 @@ mod tests {
             split_path_dirs("/usr/bin:/bin:", ':'),
             vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")]
         );
+    }
+
+    /// Store 别名目录被整条跳过(那里的 pwsh.exe 是 reparse point,
+    /// CreateProcessAsUser 打不开,真实目标又在 ACL 收紧的 WindowsApps 下)
+    #[cfg(windows)]
+    #[test]
+    fn store_alias_dirs_are_skipped() {
+        assert!(is_store_alias_dir(Path::new(
+            r"C:\Users\x\AppData\Local\Microsoft\WindowsApps"
+        )));
+        assert!(is_store_alias_dir(Path::new(
+            r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\"
+        )));
+        assert!(!is_store_alias_dir(Path::new(
+            r"C:\Program Files\PowerShell\7"
+        )));
+        assert!(!is_store_alias_dir(Path::new(
+            r"C:\Windows\System32\WindowsPowerShell\v1.0"
+        )));
     }
 
     #[test]

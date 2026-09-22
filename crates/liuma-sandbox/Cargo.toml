@@ -16,3 +16,6 @@ portable-pty.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4.7"
+
+[target.'cfg(windows)'.dependencies]
+liuma-sandbox-winacl = { path = "../liuma-sandbox-winacl" }

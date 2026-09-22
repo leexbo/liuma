@@ -14,9 +14,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-#[cfg(unix)] // 仅 Unix 分支按 rung 分派(bwrap/seatbelt vs landlock)
-use crate::sandbox::Rung;
-use crate::sandbox::{self, Confined, SandboxPolicy};
+use crate::sandbox::{self, Confined, Rung, SandboxPolicy};
 
 /// 终止请求信号:Unix 取 libc 真值;非 Unix 无信号语义,值被
 /// [`Child::signal_group`] 忽略(那里直接终止子进程)
@@ -104,31 +102,27 @@ pub async fn spawn(cmd: &str, args: &[String], opts: &SpawnOptions) -> Result<Ch
         Option<Confined>,
     ) = match &opts.sandbox {
         Some(policy) => {
-            #[cfg(unix)]
-            {
-                let probed = sandbox::probe().ok_or(sandbox::SandboxError::NoRunner)?;
-                match &probed.rung {
-                    Rung::Landlock => (
-                        cmd.to_string(),
-                        args.to_vec(),
-                        Some(policy.clone()),
-                        Some(Confined::landlock(cmd, args, probed.enforcement)),
-                    ),
-                    _ => {
-                        let confined = sandbox::wrap_argv(policy, cmd, args, &probed)?;
-                        (
-                            confined.program.clone(),
-                            confined.argv.clone(),
-                            None,
-                            Some(confined),
-                        )
-                    }
+            // 单一派发:探测一次拿到本机 rung,再按 rung 的形态分两条路——
+            // landlock 在 exec 前自限制(pre_exec,不走 argv 包装),其余
+            // (bwrap / seatbelt / windows-acl)一律 argv 包装。平台差异只在
+            // 探到哪个 rung,不在派发逻辑里
+            let probed = sandbox::probe().ok_or(sandbox::SandboxError::NoRunner)?;
+            match &probed.rung {
+                Rung::Landlock => (
+                    cmd.to_string(),
+                    args.to_vec(),
+                    Some(policy.clone()),
+                    Some(Confined::landlock(cmd, args, probed.enforcement)),
+                ),
+                _ => {
+                    let confined = sandbox::wrap_argv(policy, cmd, args, &probed)?;
+                    (
+                        confined.program.clone(),
+                        confined.argv.clone(),
+                        None,
+                        Some(confined),
+                    )
                 }
-            }
-            #[cfg(not(unix))]
-            {
-                sandbox::prepare_fallback(policy)?;
-                (cmd.to_string(), args.to_vec(), None, None)
             }
         }
         None => (cmd.to_string(), args.to_vec(), None, None),

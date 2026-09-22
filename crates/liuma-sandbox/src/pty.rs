@@ -147,7 +147,9 @@ impl PtySession {
     }
 }
 
-#[cfg(test)]
+// 两个用例都是 POSIX 语义(`/bin/bash`、`test -t 1`、`touch`),Windows 侧的
+// 对应用例随阶段 4 的 ConPTY 工作落 —— 那时改按平台参数化,而不是各留一份
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
@@ -185,6 +187,11 @@ mod tests {
         );
     }
 
+    // 载荷是 POSIX 语义(`/bin/bash` + `touch`),Windows 侧对应用例随阶段 4
+    // 的 ConPTY 工作落。注:该用例在 Windows 上曾有约 70 秒的额外开销
+    // (沙箱 rung 可用后 PTY 路径真跑起来,而 portable-pty 的会话收尾慢),
+    // 阶段 4 处理 PTY 时一并查明
+    #[cfg(unix)]
     #[tokio::test]
     async fn pty_sandbox_denies_out_of_root_write_on_argv_rungs() {
         use crate::sandbox::SandboxPolicy;
