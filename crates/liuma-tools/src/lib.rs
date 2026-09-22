@@ -13,6 +13,7 @@ use std::time::Duration;
 use liuma_agent_loop::{CancelToken, ToolCallRequest, ToolOutput, ToolPort, ToolView};
 use liuma_sandbox::process::ExitStatus;
 use liuma_sandbox::pty::spawn_pty;
+use liuma_sandbox::shell;
 use liuma_sandbox::{ExitClass, SandboxMode, SandboxPolicy};
 use liuma_sandbox::{SpawnOptions, spawn as spawn_child};
 use serde_json::{Value, json};
@@ -212,17 +213,20 @@ impl BashTool {
         self
     }
 
-    /// 工具 schema(注册面;OpenAI wire 形状 `tools[]` 元素)
+    /// 工具 schema(注册面;OpenAI wire 形状 `tools[]` 元素)。
+    /// 工具名与描述随平台 shell 走(`bash` / `pwsh`)——模型看到的工具名
+    /// 要与它实际要写的语法一致,否则会按 bash 语义写出 Windows 上跑不通
+    /// 的命令
     pub fn spec() -> Value {
         json!({
             "type": "function",
             "function": {
-                "name": "bash",
-                "description": "Run a shell command in the sandboxed working directory.",
+                "name": shell::tool_name(),
+                "description": shell::tool_description(),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "command": { "type": "string", "description": "The bash command to execute." },
+                        "command": { "type": "string", "description": shell::command_param_description() },
                         "description": {
                             "type": "string",
                             "description": "Clear, concise description of what this command does in active voice, 5-10 words (shown in the UI). Examples: \"ls\" → \"List files in current directory\"; \"git status\" → \"Show working tree status\"; \"npm install\" → \"Install package dependencies\"."
@@ -247,12 +251,11 @@ impl BashTool {
     /// PTY 路径:沙箱经 argv 包装;取消即 killer 组信号杀进程
     async fn execute_pty(&mut self, command: &str) -> ToolOutput {
         let policy = self.resolve_policy();
-        let mut session = match spawn_pty(
-            "/bin/bash",
-            &["-c".into(), command.to_string()],
-            Some(&self.cwd),
-            Some(&policy),
-        ) {
+        let (program, args) = match shell::shell_argv(command) {
+            Ok(v) => v,
+            Err(e) => return fail_output(format!("shell unavailable: {e}")),
+        };
+        let mut session = match spawn_pty(&program, &args, Some(&self.cwd), Some(&policy)) {
             Ok(s) => s,
             Err(e) => {
                 return ToolOutput {
@@ -299,16 +302,13 @@ impl BashTool {
             sandbox: Some(self.resolve_policy()),
             stdin: None,
         };
-        let child = match spawn_child("/bin/bash", &["-c".into(), command.to_string()], &opts).await
-        {
+        let (program, args) = match shell::shell_argv(command) {
+            Ok(v) => v,
+            Err(e) => return fail_output(format!("shell unavailable: {e}")),
+        };
+        let child = match spawn_child(&program, &args, &opts).await {
             Ok(child) => child,
-            Err(e) => {
-                return ToolOutput {
-                    output: format!("spawn failed: {e}"),
-                    success: false,
-                    ..Default::default()
-                };
-            }
+            Err(e) => return fail_output(format!("spawn failed: {e}")),
         };
         let id = next_job_id(&registry);
         let jobs_dir = self.cwd.join(".liuma/jobs");
@@ -519,17 +519,14 @@ impl ToolPort for BashTool {
             sandbox: Some(policy.clone()),
             stdin: None,
         };
+        let (program, args) = match shell::shell_argv(command) {
+            Ok(v) => v,
+            Err(e) => return fail_output(format!("shell unavailable: {e}")),
+        };
         // spawn 失败(含 fail-closed 沙箱拒绝)即工具失败,不中断 loop
-        let child = match spawn_child("/bin/bash", &["-c".into(), command.to_string()], &opts).await
-        {
+        let child = match spawn_child(&program, &args, &opts).await {
             Ok(child) => child,
-            Err(e) => {
-                return ToolOutput {
-                    output: format!("spawn failed: {e}"),
-                    success: false,
-                    ..Default::default()
-                };
-            }
+            Err(e) => return fail_output(format!("spawn failed: {e}")),
         };
         let mut child = child;
         let output = tokio::select! {
@@ -587,6 +584,15 @@ fn terminal_view(
         exit_code,
         signal,
         cwd: cwd.map(|c| c.display().to_string()),
+    }
+}
+
+/// 工具失败输出(前台/后台/PTY 共用的失败形状:文本 + success=false)
+fn fail_output(msg: String) -> ToolOutput {
+    ToolOutput {
+        output: msg,
+        success: false,
+        ..Default::default()
     }
 }
 

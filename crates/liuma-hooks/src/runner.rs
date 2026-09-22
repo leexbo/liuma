@@ -94,8 +94,13 @@ pub async fn run_hook(
         sandbox,
         stdin: Some(stdin),
     };
-    let spawned =
-        liuma_sandbox::spawn("/bin/bash", &["-c".into(), hook.command.clone()], &opts).await;
+    // 命令串经平台 shell 解析(见 liuma_sandbox::shell);解释器缺席即不执行
+    let spawned = match liuma_sandbox::shell::shell_argv(&hook.command) {
+        Ok((program, args)) => liuma_sandbox::spawn(&program, &args, &opts).await,
+        Err(e) => Err(liuma_sandbox::ProcessError::Spawn(format!(
+            "shell unavailable: {e}"
+        ))),
+    };
 
     // 超时 + 取消都是非阻塞收尾:杀进程组后按信号死(无退出码)解码
     let output = match spawned {

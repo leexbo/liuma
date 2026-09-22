@@ -198,5 +198,8 @@ async fn fake_provider_still_works_with_tools_specs() {
     // header.tools 被ToolPort::specs 覆盖(header 里的 stale 声明不残留)
     let (h, _) = &gate.inner().received[0];
     assert_eq!(h.tools.len(), 1);
-    assert_eq!(h.tools[0]["function"]["name"], "bash");
+    assert_eq!(
+        h.tools[0]["function"]["name"],
+        liuma_sandbox::shell::tool_name()
+    );
 }

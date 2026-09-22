@@ -16,6 +16,7 @@
 pub mod process;
 pub mod pty;
 pub mod sandbox;
+pub mod shell;
 
 pub use process::{
     Child, ExitClass, ExitStatus, GroupKiller, ProcessError, SpawnOptions, classify_exit, spawn,
@@ -25,3 +26,4 @@ pub use sandbox::{
     Confined, ProbeResult, Rung, RunnerFailureRule, SandboxEnforcement, SandboxError, SandboxMode,
     SandboxPolicy, probe, wrap_argv,
 };
+pub use shell::{Dialect, ShellError, shell_argv, tool_name};
