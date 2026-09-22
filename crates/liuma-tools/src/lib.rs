@@ -380,7 +380,9 @@ impl ToolPort for BashTool {
     }
 
     async fn execute(&mut self, call: &ToolCallRequest) -> ToolOutput {
-        if call.name != "bash" {
+        // 名字守卫同样随平台方言走:模型面工具名是 `bash` / `pwsh`,
+        // 写死任一个都会在另一平台上把合法调用判成「未知工具」
+        if call.name != shell::tool_name() {
             return ToolOutput {
                 output: format!("unknown tool: {}", call.name),
                 success: false,
@@ -470,7 +472,7 @@ impl ToolPort for BashTool {
                 };
             };
             let req = EscalationRequest {
-                tool_name: "bash".into(),
+                tool_name: shell::tool_name().into(),
                 call_id: None,
                 command: command.to_string(),
                 target_mode: target,
@@ -713,7 +715,7 @@ mod tests {
             let out = ToolPort::execute(
                 &mut tool,
                 &ToolCallRequest {
-                    name: "bash".into(),
+                    name: liuma_sandbox::shell::tool_name().into(),
                     arguments: args,
                 },
             )
@@ -727,7 +729,7 @@ mod tests {
         let ok = ToolPort::execute(
             &mut tool,
             &ToolCallRequest {
-                name: "bash".into(),
+                name: liuma_sandbox::shell::tool_name().into(),
                 arguments: json!({ "command": "echo hi", "description": "Echo greeting" }),
             },
         )
@@ -748,7 +750,7 @@ mod tests {
         let mut tool = BashTool::new(&dir)
             .with_mode_source(std::sync::Arc::new(move || *mode_for_tool.lock().unwrap()));
         let call = |cmd: String| ToolCallRequest {
-            name: "bash".into(),
+            name: liuma_sandbox::shell::tool_name().into(),
             arguments: json!({ "command": cmd, "description": "Probe write" }),
         };
         let denied =
@@ -823,7 +825,7 @@ mod tests {
                 consulted: std::sync::Arc::clone(&consulted),
             }));
         let esc_call = |cmd: String| ToolCallRequest {
-            name: "bash".into(),
+            name: liuma_sandbox::shell::tool_name().into(),
             arguments: json!({
                 "command": cmd,
                 "description": "Escalate probe",
@@ -869,7 +871,7 @@ mod tests {
         // ③ 下一次无参执行回到会话模式:home 写被拦(只盖本次的语义)
         consulted.store(false, Ordering::Relaxed);
         let plain_call = ToolCallRequest {
-            name: "bash".into(),
+            name: liuma_sandbox::shell::tool_name().into(),
             arguments: json!({ "command": probe("plain"), "description": "Plain probe" }),
         };
         let back = ToolPort::execute(&mut tool, &plain_call).await;
@@ -884,7 +886,7 @@ mod tests {
         // ④ 非加宽请求(同级):从不问人,逐字拒绝
         *mode.lock().unwrap() = SandboxMode::ReadOnly;
         let narrow = ToolCallRequest {
-            name: "bash".into(),
+            name: liuma_sandbox::shell::tool_name().into(),
             arguments: json!({
                 "command": probe("narrow"),
                 "description": "Narrow probe",
@@ -936,7 +938,7 @@ mod tests {
             let out = ToolPort::execute(
                 &mut tool,
                 &ToolCallRequest {
-                    name: "bash".into(),
+                    name: liuma_sandbox::shell::tool_name().into(),
                     arguments: args,
                 },
             )
@@ -948,7 +950,7 @@ mod tests {
         let out = ToolPort::execute(
             &mut tool,
             &ToolCallRequest {
-                name: "bash".into(),
+                name: liuma_sandbox::shell::tool_name().into(),
                 arguments: json!({
                     "command": "echo hi",
                     "description": "D",

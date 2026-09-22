@@ -6,11 +6,11 @@
 //! - 第二轮出网请求包含 assistant(tool_calls) 与 tool 消息——全部来自日志派生;
 //! - 「记录 ⟺ 可见」:出网消息恰为日志前缀派生(不变式闸门强制)。
 //!
-//! 平台:用例经 `bash` 工具真实执行命令,需要「可用沙箱 rung + POSIX 壳」
-//! 两件东西。Windows 上沙箱 rung(受限令牌 + Job)与 pwsh 壳落地前,这些
-//! 用例以 `#[cfg(unix)]` 排除;落地后改为按平台参数化(见
-//! `crates/liuma-sandbox/tests/windows_acl.rs` 的对应用例)。文件工具
-//! 与纯投影用例(不触达进程)不设门,两端都跑。
+//! 平台:经 shell 工具真实执行命令的用例,载荷一律取**两套方言都合法**的
+//! 形式(如 `echo`),工具名按 `shell::tool_name()` 取,故两端都跑。仍以
+//! `#[cfg(unix)]` 排除的是内嵌 POSIX 语法本身的用例(管道重定向、
+//! `trap`/`kill`、`test -t 1` 一类)——它们的对应用例在 Windows 侧另写,
+//! 而不是把一份用例改成两副面孔。
 
 use std::sync::{Arc, Mutex};
 
@@ -18,11 +18,9 @@ use liuma_agent_loop::{LlmEvent, LoopEngine, RequestHeader};
 use liuma_host::JsonlBackend;
 use liuma_llm::{FakeProvider, InvariantGate};
 use liuma_session::{EventEnvelope, EventLog};
-#[cfg(unix)] // 仅被门控用例使用(见文件头)
 use liuma_tools::BashTool;
 use serde_json::json;
 
-#[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
 #[tokio::test]
 async fn tool_round_trip_through_sandbox() {
     let dir = std::env::temp_dir().join(format!("liuma-tool-e2e-{}", std::process::id()));
@@ -46,7 +44,7 @@ async fn tool_round_trip_through_sandbox() {
     provider.then(vec![LlmEvent::AssistantMessage(json!({
         "content": "",
         "tool_calls": [
-            { "name": "bash", "arguments": { "command": "echo tool-ran-ok", "description": "Echo confirmation marker" } }
+            json!({ "name": liuma_sandbox::shell::tool_name(), "arguments": { "command": "echo tool-ran-ok", "description": "Echo confirmation marker" } })
         ],
     }))]);
     provider.then(vec![
@@ -135,7 +133,7 @@ async fn tool_round_trip_through_sandbox() {
         &json!([
             { "role": "user", "content": "run the tool" },
             { "role": "assistant", "content": "", "tool_calls": [
-                { "name": "bash", "arguments": { "command": "echo tool-ran-ok", "description": "Echo confirmation marker" } }
+                json!({ "name": liuma_sandbox::shell::tool_name(), "arguments": { "command": "echo tool-ran-ok", "description": "Echo confirmation marker" } })
             ]},
             { "role": "tool", "output": "tool-ran-ok", "call": tool_call.seq, "id": "" },
         ]),
