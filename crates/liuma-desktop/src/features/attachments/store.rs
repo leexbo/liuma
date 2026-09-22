@@ -13,6 +13,7 @@ use std::sync::Arc;
 use gpui_kit::Context;
 use liuma_attachment::{ImageAttachmentLimits, ImageMediaType};
 
+use crate::kits::i18n::dict;
 use crate::shell::store::AppStore;
 
 /// 一条待发送草稿图片(发送前 host 准入;bytes 供 base64 入 content)
@@ -66,28 +67,21 @@ pub struct AttachmentToast {
 /// 映射不全回退通用失败文案)
 pub(crate) fn image_reject_text(reason: &str, limits: &ImageAttachmentLimits) -> String {
     match reason {
-        "TOO_MANY_IMAGES" => format!("一条消息最多添加 {} 张图片", limits.max_images_per_message),
-        "IMAGES_TOO_LARGE" => format!(
-            "图片总大小超过 {},请移除部分图片",
-            image_size_text(limits.max_message_image_bytes)
-        ),
-        "UNSUPPORTED_IMAGE_TYPE" => "仅支持 PNG、JPG、WebP、GIF 格式的图片".to_string(),
-        "IMAGE_TOO_LARGE" => format!(
-            "单张图片不能超过 {}",
-            image_size_text(limits.max_image_bytes)
-        ),
-        "IMAGE_TOO_MANY_PIXELS" => "图片分辨率过大,请压缩后重试".to_string(),
-        "IMAGE_DIMENSION_TOO_LARGE" => format!(
-            "图片宽高不能超过 {}px,请缩小后重试",
-            limits.max_image_dimension
-        ),
-        "INVALID_IMAGE_BASE64" | "INVALID_IMAGE" | "IMAGE_TYPE_MISMATCH" => {
-            "图片编码无效".to_string()
+        "TOO_MANY_IMAGES" => dict::files::too_many_images(limits.max_images_per_message),
+        "IMAGES_TOO_LARGE" => {
+            dict::files::images_total_over(image_size_text(limits.max_message_image_bytes))
         }
-        "MODEL_DOES_NOT_SUPPORT_IMAGES" => "当前模型不支持图片,请切换支持图片的模型".to_string(),
-        "COMMAND_FILES_UNSUPPORTED" => "命令不接受文件附件,请先移除文件".to_string(),
-        "INVALID_FILE_NAME" | "INVALID_FILE_SOURCE" => "文件附件无效,请重新添加后再试".to_string(),
-        _ => "图片发送失败,请重新添加图片后再试".to_string(),
+        "UNSUPPORTED_IMAGE_TYPE" => dict::files::unsupported_image_type().to_string(),
+        "IMAGE_TOO_LARGE" => dict::files::image_over(image_size_text(limits.max_image_bytes)),
+        "IMAGE_TOO_MANY_PIXELS" => dict::files::pixels_over().to_string(),
+        "IMAGE_DIMENSION_TOO_LARGE" => dict::files::dims_over(limits.max_image_dimension),
+        "INVALID_IMAGE_BASE64" | "INVALID_IMAGE" | "IMAGE_TYPE_MISMATCH" => {
+            dict::files::encode_invalid().to_string()
+        }
+        "MODEL_DOES_NOT_SUPPORT_IMAGES" => dict::files::model_no_images().to_string(),
+        "COMMAND_FILES_UNSUPPORTED" => dict::files::cmd_no_files().to_string(),
+        "INVALID_FILE_NAME" | "INVALID_FILE_SOURCE" => dict::files::invalid_file().to_string(),
+        _ => dict::files::send_failed().to_string(),
     }
 }
 

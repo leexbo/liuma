@@ -107,10 +107,6 @@ pub(crate) fn pick(zh: &'static str, en: &'static str) -> &'static str {
 /// `{name}` 命名占位插值(词典模板键生成 fn 的底层;`{{` 转义字面
 /// `{`)。debug 构建断言「模板占位名集合 == 实参名集合」——调用点占位
 /// 拼错在测试期暴露;release 只按命中替换,未命中占位原样保留。
-///
-/// dead_code 临时豁免:首个模板键随批次 1 落地前,bin 目标无调用点;
-/// 届时移除本 allow(与 template_placeholders 同期)。
-#[allow(dead_code)]
 pub(crate) fn fmt(
     template: &'static str,
     args: &[(&'static str, &dyn std::fmt::Display)],
@@ -154,10 +150,7 @@ pub(crate) fn fmt(
 }
 
 /// 模板占位名提取(`{name}`;`{{` 转义不计;debug 断言与词典对齐测试用)
-///
-/// dead_code 临时豁免同 [`fmt`]:首个模板键(批次 1)前无调用点。
 #[cfg(debug_assertions)]
-#[allow(dead_code)]
 fn template_placeholders(template: &str) -> Vec<&str> {
     let mut names = Vec::new();
     let mut rest = template;
@@ -348,13 +341,16 @@ mod tests {
     fn dict_templates_placeholder_parity() {
         type Tpl = (&'static str, &'static str, &'static str);
         let dicts: &[(&str, &[Tpl])] = &[
-            ("common", dict::common::TEMPLATES),
-            ("settings", dict::settings::TEMPLATES),
-            ("sessions", dict::sessions::TEMPLATES),
-            ("shell", dict::shell::TEMPLATES),
-            ("trajectory", dict::trajectory::TEMPLATES),
+            ("ask", dict::ask::TEMPLATES),
             ("chat", dict::chat::TEMPLATES),
+            ("common", dict::common::TEMPLATES),
+            ("files", dict::files::TEMPLATES),
+            ("misc", dict::misc::TEMPLATES),
+            ("sessions", dict::sessions::TEMPLATES),
+            ("settings", dict::settings::TEMPLATES),
+            ("shell", dict::shell::TEMPLATES),
             ("time", dict::time::TEMPLATES),
+            ("trajectory", dict::trajectory::TEMPLATES),
         ];
         for &(module, entries) in dicts {
             for (key, zh, en) in entries {

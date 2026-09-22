@@ -12,6 +12,7 @@ use gpui_kit::{
     Styled, Window, div, px,
 };
 
+use crate::kits::i18n::dict;
 use crate::kits::icons::fixed;
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -271,7 +272,7 @@ pub fn render(
                                 .flex_shrink_0()
                                 .text_size(px(12.))
                                 .text_color(theme::CAPTION())
-                                .child("其他"),
+                                .child(dict::ask::other_option()),
                         )
                     })
                     .child(
@@ -307,7 +308,7 @@ pub fn render(
                                 .gap(px(8.))
                                 .child(nav_button(
                                     "ask-prev",
-                                    "上一题",
+                                    dict::ask::prev_q(),
                                     index > 0,
                                     move |_, _, cx| {
                                         let idx = idx.saturating_sub(1);
@@ -322,7 +323,7 @@ pub fn render(
                                 )
                                 .child(nav_button(
                                     "ask-next",
-                                    "下一题",
+                                    dict::ask::next_q(),
                                     index + 1 < total,
                                     move |_, _, cx| {
                                         let idx = idx + 1;
@@ -338,9 +339,14 @@ pub fn render(
                             .flex()
                             .items_center()
                             .gap(px(8.))
-                            .child(nav_button("ask-skip", "跳过", true, move |_, _, cx| {
-                                skip.update(cx, |st, cx| st.skip_ask(cx));
-                            }))
+                            .child(nav_button(
+                                "ask-skip",
+                                dict::ask::skip_q(),
+                                true,
+                                move |_, _, cx| {
+                                    skip.update(cx, |st, cx| st.skip_ask(cx));
+                                },
+                            ))
                             .child(
                                 div()
                                     .id("ask-primary")
@@ -369,7 +375,11 @@ pub fn render(
                                             .border_color(theme::BORDER())
                                             .text_color(theme::CAPTION())
                                     })
-                                    .child(if is_last { "提交" } else { "下一题" }),
+                                    .child(if is_last {
+                                        dict::ask::submit_q()
+                                    } else {
+                                        dict::ask::next_q()
+                                    }),
                             ),
                     ),
             ),

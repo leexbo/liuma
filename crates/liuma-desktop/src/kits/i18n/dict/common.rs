@@ -24,4 +24,8 @@ entries! {
     copied => ["复制成功", "Copied"],
     /// 收起(展开态回落)
     collapse => ["收起", "Collapse"],
+    /// 重试
+    retry => ["重试", "Retry"],
+    /// 确定(纯知会收尾)
+    ok => ["确定", "OK"],
 }

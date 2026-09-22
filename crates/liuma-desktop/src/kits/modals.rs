@@ -9,6 +9,7 @@ use gpui_kit::{
     Styled, div, px,
 };
 
+use crate::kits::i18n::dict;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -137,7 +138,7 @@ pub(crate) fn workspace_menu_rows(store: &Entity<AppStore>, cx: &App) -> Vec<gpu
             .text_size(px(13.))
             .text_color(theme::LABEL_2())
             .child(fixed(IconName::Plus, 14.))
-            .child("添加工作区…")
+            .child(dict::misc::add_workspace_ellipsis())
             .on_click(move |_, _, cx| {
                 s_add.update(cx, |st, cx| {
                     st.close_all_menus(cx);
@@ -229,7 +230,7 @@ pub(crate) fn rename_modal(store: &Entity<AppStore>, cx: &App) -> impl IntoEleme
                             div()
                                 .text_size(px(14.))
                                 .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                                .child("重命名会话"),
+                                .child(dict::misc::rename_session()),
                         )
                         .child(div().flex_1())
                         .child(modal_close("rename-close", move |_, _, cx| {
@@ -255,7 +256,7 @@ pub(crate) fn rename_modal(store: &Entity<AppStore>, cx: &App) -> impl IntoEleme
                                 .cursor_pointer()
                                 .text_size(px(13.))
                                 .text_color(theme::LABEL())
-                                .child("确定")
+                                .child(dict::common::ok())
                                 .on_click(move |_, _, cx| {
                                     ok.update(cx, |st, cx| st.confirm_rename(cx));
                                 }),
@@ -273,7 +274,7 @@ pub(crate) fn rename_modal(store: &Entity<AppStore>, cx: &App) -> impl IntoEleme
                                 .cursor_pointer()
                                 .text_size(px(13.))
                                 .text_color(theme::LABEL_2())
-                                .child("取消")
+                                .child(dict::common::cancel())
                                 .on_click(move |_, _, cx| {
                                     cancel.update(cx, |st, cx| st.cancel_rename(cx));
                                 }),

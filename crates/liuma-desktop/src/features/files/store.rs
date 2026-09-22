@@ -14,6 +14,7 @@ use gpui_kit::component::tree::{TreeEvent, TreeItem, TreeState};
 use gpui_kit::{AppContext as _, Context, Entity, Subscription};
 
 use super::face::{self, DirEntryRow, EntryKind, ListError, Listing, MAX_ENTRIES};
+use crate::kits::i18n::dict;
 use crate::shell::store::AppStore;
 
 /// 占位行 id 后缀(NUL 不可能出现在路径段,保证与真实行 id 不撞)
@@ -226,11 +227,21 @@ impl AppStore {
         meta: &mut HashMap<String, RowMeta>,
     ) -> Vec<TreeItem> {
         let Some(level) = self.files.levels.get(dir) else {
-            return vec![self.files_placeholder_row(dir, "正在读取…", RowSpecial::Loading, meta)];
+            return vec![self.files_placeholder_row(
+                dir,
+                dict::files::loading(),
+                RowSpecial::Loading,
+                meta,
+            )];
         };
         match level {
             LevelState::Loading => {
-                vec![self.files_placeholder_row(dir, "正在读取…", RowSpecial::Loading, meta)]
+                vec![self.files_placeholder_row(
+                    dir,
+                    dict::files::loading(),
+                    RowSpecial::Loading,
+                    meta,
+                )]
             }
             LevelState::Failed(line) => {
                 vec![self.files_placeholder_row(dir, line, RowSpecial::Failed, meta)]
@@ -239,7 +250,7 @@ impl AppStore {
                 if listing.entries.is_empty() {
                     return vec![self.files_placeholder_row(
                         dir,
-                        "空目录",
+                        dict::files::empty_dir(),
                         RowSpecial::EmptyDir,
                         meta,
                     )];
@@ -252,7 +263,7 @@ impl AppStore {
                 if listing.truncated {
                     items.push(self.files_placeholder_row(
                         dir,
-                        "条目太多，只显示了一部分。",
+                        dict::files::truncated(),
                         RowSpecial::Truncated,
                         meta,
                     ));

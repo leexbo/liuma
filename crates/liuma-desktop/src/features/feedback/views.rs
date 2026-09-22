@@ -11,6 +11,7 @@ use gpui_kit::{
     Styled, div, px,
 };
 
+use crate::kits::i18n::dict;
 use crate::kits::icons::fixed;
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -102,7 +103,7 @@ pub fn actions(store: &Entity<AppStore>, message_id: &str, cx: &App) -> Vec<gpui
             .child(if note.is_some() {
                 note.clone().unwrap_or_default()
             } else {
-                "补充说明".to_string()
+                dict::misc::supplement().to_string()
             })
             .into_any_element(),
     );
@@ -232,7 +233,7 @@ pub fn render_note_editor(store: &Entity<AppStore>, cx: &mut App) -> Option<impl
                                     .on_click(move |_, _, cx| {
                                         save.update(cx, |st, cx| st.commit_feedback_note(cx));
                                     })
-                                    .child("保存"),
+                                    .child(dict::common::save()),
                             )
                             .child(
                                 div()
@@ -249,7 +250,7 @@ pub fn render_note_editor(store: &Entity<AppStore>, cx: &mut App) -> Option<impl
                                     .on_click(move |_, _, cx| {
                                         close2.update(cx, |st, cx| st.close_feedback_note(cx));
                                     })
-                                    .child("取消"),
+                                    .child(dict::common::cancel()),
                             ),
                     ),
             ),

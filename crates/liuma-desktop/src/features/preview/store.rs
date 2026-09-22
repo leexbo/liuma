@@ -15,6 +15,7 @@ use gpui_kit::{Context, ListAlignment, ListState, px};
 
 use super::face::{self, ReadError, TextPage};
 use crate::kits::filetype::{self, DocRenderer, LoadMode};
+use crate::kits::i18n::dict;
 use crate::shell::panel::{PanelTab, PreviewTab};
 use crate::shell::store::AppStore;
 
@@ -480,7 +481,7 @@ impl AppStore {
         bucket.image =
             format.map(|f| Arc::new(gpui_kit::Image::from_bytes(f, bytes.as_ref().clone())));
         if bucket.image.is_none() {
-            bucket.failure = Some("无法显示这张图片".to_string());
+            bucket.failure = Some(dict::files::image_failed().to_string());
         }
     }
 
@@ -522,10 +523,10 @@ impl AppStore {
                         s.preview_render_pdf_pages(&rel, cx);
                     }
                     Err(super::pdf::PdfError::Password) => {
-                        bucket.pdf_failed = Some("此 PDF 需要密码，暂不支持预览".to_string());
+                        bucket.pdf_failed = Some(dict::files::pdf_password().to_string());
                     }
                     Err(super::pdf::PdfError::Invalid(msg)) => {
-                        bucket.pdf_failed = Some(format!("无法显示 PDF：{msg}"));
+                        bucket.pdf_failed = Some(dict::files::pdf_failed(msg));
                     }
                 }
                 cx.notify();
@@ -594,14 +595,16 @@ impl AppStore {
                                     )])),
                                 );
                             } else {
-                                bucket.pdf_failed = Some("无法显示 PDF：位图尺寸不符".to_string());
+                                bucket.pdf_failed = Some(dict::files::pdf_failed(
+                                    dict::files::pdf_bitmap_mismatch(),
+                                ));
                             }
                         }
                         Err(super::pdf::PdfError::Password) => {
-                            bucket.pdf_failed = Some("此 PDF 需要密码，暂不支持预览".to_string());
+                            bucket.pdf_failed = Some(dict::files::pdf_password().to_string());
                         }
                         Err(super::pdf::PdfError::Invalid(msg)) => {
-                            bucket.pdf_failed = Some(format!("无法显示 PDF：{msg}"));
+                            bucket.pdf_failed = Some(dict::files::pdf_failed(msg));
                         }
                     }
                     cx.notify();

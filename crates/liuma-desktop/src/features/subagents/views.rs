@@ -16,6 +16,7 @@ use crate::kits::theme;
 use crate::shell::store::AppStore;
 
 use super::store::LineageRow;
+use crate::kits::i18n::dict;
 
 /// 状态点:running=活动蓝,completed=done 绿,
 /// failed=红,killed=黄
@@ -54,9 +55,9 @@ fn duration_text(row: &LineageRow) -> String {
     };
     let secs = (end - started).max(0) / 1000;
     if secs < 60 {
-        format!("{secs}秒")
+        dict::time::duration_s(secs)
     } else {
-        format!("{}分{:02}秒", secs / 60, secs % 60)
+        dict::time::duration_ms(secs / 60, format!("{:02}", secs % 60))
     }
 }
 
@@ -100,7 +101,7 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
             div()
                 .text_size(px(12.))
                 .text_color(theme::LABEL_2())
-                .child("子代理"),
+                .child(dict::misc::subagents_title()),
         )
         .child(
             div()
@@ -108,9 +109,9 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                 .text_size(px(11.))
                 .text_color(theme::CAPTION())
                 .child(if running_n > 0 {
-                    format!("{running_n} 个运行中")
+                    dict::misc::running_n(running_n)
                 } else {
-                    "已结束".to_string()
+                    dict::misc::ended().to_string()
                 }),
         )
         .child(
@@ -152,7 +153,7 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                     s_main.update(cx, |st, cx| st.open_session(&id, cx));
                 })
                 .child(fixed(gpui_kit::component::IconName::ArrowLeft, 11.))
-                .child("主线"),
+                .child(dict::misc::mainline()),
         );
     }
     // 行元素先建(闭包 move 所有权,避免借用 chips 越过函数尾)
@@ -240,7 +241,7 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                             .hover(|st| st.bg(theme::DANGER()).border_color(theme::DANGER()))
                             .text_size(px(11.))
                             .text_color(theme::LABEL_2())
-                            .child("打断")
+                            .child(dict::misc::interrupt())
                             .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
                                 cx.stop_propagation()
                             })

@@ -5,6 +5,7 @@
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{AppContext, Context, Entity, Window};
 
+use crate::kits::i18n::dict;
 use crate::shell::panel::PanelTab;
 use crate::shell::store::AppStore;
 
@@ -25,7 +26,8 @@ impl AppStore {
     /// 懒建侧栏搜索输入(Enter = 全库检索;挂窗态由 store::attach_window_state 调用)
     pub(crate) fn ensure_search_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.search.search_input.is_none() {
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder("搜索会话"));
+            let input =
+                cx.new(|cx| InputState::new(window, cx).placeholder(dict::sessions::search_ph()));
             cx.subscribe(&input, |this, _i, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::PressEnter { shift: false, .. }) {
                     this.run_global_search(cx);

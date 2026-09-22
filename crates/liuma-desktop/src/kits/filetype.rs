@@ -11,6 +11,7 @@
 
 use gpui_kit::component::{Icon, IconName};
 
+use crate::kits::i18n::dict;
 use crate::kits::icons::{LiumaIcon, fixed};
 
 // ── 类型分类 ─────────────────────────────────────────────────
@@ -218,11 +219,11 @@ impl DocRenderer {
     /// 菜单名
     pub fn title(self) -> &'static str {
         match self {
-            DocRenderer::Text => "纯文本",
+            DocRenderer::Text => dict::misc::renderer_text(),
             DocRenderer::Markdown => "Markdown",
-            DocRenderer::Image => "图片",
+            DocRenderer::Image => dict::misc::renderer_image(),
             DocRenderer::Pdf => "PDF",
-            DocRenderer::Code => "代码",
+            DocRenderer::Code => dict::misc::renderer_code(),
         }
     }
 

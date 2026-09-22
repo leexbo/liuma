@@ -3,6 +3,7 @@
 //! 超 `max_entries` 截断置标志;symlink/非常规条目归 Other
 //! (不可导航/不可打开)。
 
+use crate::kits::i18n::dict;
 use std::cmp::Ordering;
 use std::path::Path;
 
@@ -158,10 +159,10 @@ pub fn list_dir(root: &Path, dir: &Path, max_entries: usize) -> Result<Listing, 
 /// 树行错误文案
 pub fn failure_line(err: &ListError) -> String {
     match err {
-        ListError::NotFound => "这个目录不在了。可能已被移动或删除。".to_string(),
-        ListError::OutsideWorkspace => "这个目录在工作区之外，侧栏不会读取它。".to_string(),
-        ListError::NotDirectory => "这不是一个目录。".to_string(),
-        ListError::Unavailable(msg) => format!("读取失败：{msg}"),
+        ListError::NotFound => dict::files::dir_gone().to_string(),
+        ListError::OutsideWorkspace => dict::files::dir_outside().to_string(),
+        ListError::NotDirectory => dict::files::dir_not_dir().to_string(),
+        ListError::Unavailable(msg) => dict::files::read_failed(msg),
     }
 }
 

@@ -11,6 +11,7 @@ use gpui_kit::component::input::{InputEvent, TextareaState};
 use gpui_kit::{AppContext, Context, Entity, Window};
 use liuma_core::registry::MessageFeedbackItem;
 
+use crate::kits::i18n::dict;
 use crate::shell::store::AppStore;
 
 /// 消息反馈功能切片状态(赞/踩/备注;host sidecar 缓存)。
@@ -147,9 +148,8 @@ impl AppStore {
         if self.feedback.feedback_input.is_some() {
             return;
         }
-        let input = cx.new(|cx| {
-            TextareaState::new(window, cx).placeholder("这条回答哪里好，或哪里有问题？（可选）")
-        });
+        let input =
+            cx.new(|cx| TextareaState::new(window, cx).placeholder(dict::misc::feedback_ph()));
         cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
             if let InputEvent::Change = event {
                 let value = input.read(cx).value().to_string();

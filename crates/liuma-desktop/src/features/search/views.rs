@@ -10,6 +10,7 @@ use gpui_kit::{
     Styled, div, px,
 };
 
+use crate::kits::i18n::dict;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -82,7 +83,7 @@ pub(crate) fn search_hits_panel(store: &Entity<AppStore>, cx: &App) -> impl Into
                     .text_size(px(11.))
                     .text_color(theme::CAPTION())
                     .flex_1()
-                    .child(format!("全库检索 · {} 条命中", hits.len())),
+                    .child(dict::misc::hits_full(hits.len())),
             )
             .child(
                 div()
@@ -97,7 +98,7 @@ pub(crate) fn search_hits_panel(store: &Entity<AppStore>, cx: &App) -> impl Into
                     .text_size(px(11.))
                     .text_color(theme::LABEL_3())
                     .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
-                    .child("返回列表")
+                    .child(dict::misc::back_to_list())
                     .on_click(move |_, window, cx| {
                         back.update(cx, |st, cx| st.clear_search(window, cx));
                     }),
@@ -109,7 +110,7 @@ pub(crate) fn search_hits_panel(store: &Entity<AppStore>, cx: &App) -> impl Into
             div()
                 .text_size(px(12.))
                 .text_color(theme::LABEL_3())
-                .child("无命中")
+                .child(dict::misc::no_hits())
                 .into_any_element(),
         );
     }

@@ -7,6 +7,7 @@
 //! 的输入形态)。渲染目标宽取固定逻辑宽(面板 540–800,2x 采样
 //! 兼顾高分屏),超出由显示端等比收窄。
 
+use crate::kits::i18n::dict;
 use pdf_render::pdf_interpret::InterpreterSettings;
 use pdf_render::pdf_syntax::{LoadPdfError, Pdf};
 use pdf_render::vello_cpu::color::palette::css::WHITE;
@@ -36,9 +37,9 @@ pub enum PdfError {
 fn map_load_err(err: LoadPdfError) -> PdfError {
     match err {
         LoadPdfError::Decryption(_) => PdfError::Password,
-        LoadPdfError::Invalid => PdfError::Invalid("无法解析这份 PDF".to_string()),
+        LoadPdfError::Invalid => PdfError::Invalid(dict::files::pdf_invalid().to_string()),
         LoadPdfError::TooLarge(objects, pages) => {
-            PdfError::Invalid(format!("PDF 过大(对象 {objects} / 页 {pages})"))
+            PdfError::Invalid(dict::files::pdf_too_large(objects, pages))
         }
     }
 }
@@ -55,7 +56,7 @@ pub fn render_page(bytes: &[u8], page_ix: usize) -> Result<PdfPageImage, PdfErro
     let page = doc
         .pages()
         .get(page_ix)
-        .ok_or_else(|| PdfError::Invalid(format!("没有第 {} 页", page_ix + 1)))?;
+        .ok_or_else(|| PdfError::Invalid(dict::files::no_such_page(page_ix + 1)))?;
     let (w_pt, _h_pt) = page.render_dimensions();
     let scale = RENDER_WIDTH / w_pt.max(1.);
     let settings = pdf_render::RenderSettings {

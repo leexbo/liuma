@@ -5,6 +5,7 @@
 //! 行数 + eof 标志(offset 越过文件尾 = 0 行 + eof)。NUL / 非 UTF-8
 //! = `NotText`。版本 token = (mtime 纳秒, 长度),供变更提示条比对。
 
+use crate::kits::i18n::dict;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
@@ -174,13 +175,11 @@ pub fn human_bytes(n: u64) -> String {
 /// 错误文案(zh 文案逐字)
 pub fn failure_line(err: &ReadError) -> String {
     match err {
-        ReadError::NotFound => "文件不存在，可能已被移动或删除".to_string(),
-        ReadError::TooLarge { limit } => {
-            format!("单页内容超过 {} 上限，无法读取", human_bytes(*limit))
-        }
-        ReadError::NotText => "该格式文件暂时无法预览".to_string(),
-        ReadError::NotRegularFile => "该路径不是普通文件，没有可显示的内容".to_string(),
-        ReadError::Unavailable(msg) => format!("读取失败：{msg}"),
+        ReadError::NotFound => dict::files::file_gone().to_string(),
+        ReadError::TooLarge { limit } => dict::files::page_over(human_bytes(*limit)),
+        ReadError::NotText => dict::files::unsupported_format().to_string(),
+        ReadError::NotRegularFile => dict::files::not_regular().to_string(),
+        ReadError::Unavailable(msg) => dict::files::read_failed(msg),
     }
 }
 

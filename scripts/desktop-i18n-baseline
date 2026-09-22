@@ -1,24 +1,6 @@
 # 桌面硬编码文案存量基线(棘轮,只减不增;scripts/verify-desktop-i18n 消费)。
 # 格式:<crate 相对路径> <次数>;迁移批次清零一个文件即删除该行。
 # 批次计划见 docs/plans/i18n.md。
-crates/liuma-desktop/src/features/ask/approval.rs 4
-crates/liuma-desktop/src/features/ask/ask_question.rs 6
-crates/liuma-desktop/src/features/ask/plan_review.rs 7
-crates/liuma-desktop/src/features/ask/store.rs 9
-crates/liuma-desktop/src/features/attachments/store.rs 11
-crates/liuma-desktop/src/features/attachments/views.rs 1
-crates/liuma-desktop/src/features/feedback/store.rs 1
-crates/liuma-desktop/src/features/feedback/views.rs 3
-crates/liuma-desktop/src/features/files/face.rs 4
-crates/liuma-desktop/src/features/files/store.rs 4
-crates/liuma-desktop/src/features/files/views.rs 1
-crates/liuma-desktop/src/features/preview/face.rs 5
-crates/liuma-desktop/src/features/preview/pdf.rs 3
-crates/liuma-desktop/src/features/preview/store.rs 6
-crates/liuma-desktop/src/features/preview/views.rs 12
-crates/liuma-desktop/src/features/search/store.rs 1
-crates/liuma-desktop/src/features/search/views.rs 3
-crates/liuma-desktop/src/features/subagents/views.rs 7
-crates/liuma-desktop/src/kits/filetype.rs 3
+# 例外:kits/highlight.rs 的 syntect 主题元数据 author(开发者署名,
+# 非 UI 文案,不迁移,计数恒 1)。
 crates/liuma-desktop/src/kits/highlight.rs 1
-crates/liuma-desktop/src/kits/modals.rs 4

@@ -23,6 +23,7 @@ use gpui_kit::{
 
 use super::store::PreviewBucket;
 use crate::kits::filetype::{self, DocRenderer};
+use crate::kits::i18n::dict;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::panel::PreviewTab;
@@ -125,7 +126,7 @@ fn preview_loading() -> impl IntoElement {
         .text_size(px(12.))
         .text_color(theme::CAPTION())
         .child(Spinner::new().small())
-        .child("正在读取…")
+        .child(dict::files::loading())
 }
 
 /// 头行:完整路径(目录段灰 + basename 主色)+ 渲染器菜单(候选 > 1)
@@ -168,7 +169,10 @@ fn preview_header(
     if snap.candidates.len() > 1 {
         let s_menu = store.clone();
         let menu_rel = rel.clone();
-        let title = snap.renderer.map(DocRenderer::title).unwrap_or("预览");
+        let title = snap
+            .renderer
+            .map(DocRenderer::title)
+            .unwrap_or_else(|| dict::shell::preview_tab());
         header = header.child(
             div()
                 .id("preview-renderer-menu")
@@ -253,9 +257,9 @@ fn preview_changed_bar(
     let rel = rel.to_path_buf();
     let s_reload = store.clone();
     let text = if meta_failed {
-        "文件不存在，可能已被移动或删除"
+        dict::files::file_gone()
     } else {
-        "文件已更新，当前显示为旧内容"
+        dict::files::file_stale()
     };
     div()
         .id("preview-changed-bar")
@@ -284,7 +288,7 @@ fn preview_changed_bar(
                 .cursor_pointer()
                 .text_color(theme::BRAND())
                 .hover(|s| s.bg(theme::DOCK()))
-                .child("重新载入")
+                .child(dict::files::reload())
                 .on_click(move |_, _, cx| {
                     s_reload.update(cx, |st, cx| st.preview_reload(&rel, cx));
                 }),
@@ -301,7 +305,11 @@ fn preview_body(
 ) -> gpui_kit::AnyElement {
     // 不可预览空态(不读取、无菜单)
     if snap.unsupported {
-        return preview_empty_state("preview-unsupported", "该格式文件暂时无法预览", None);
+        return preview_empty_state(
+            "preview-unsupported",
+            dict::files::unsupported_format(),
+            None,
+        );
     }
     // 无内容时的整面状态(loading / 失败)
     if !snap.has_content {
@@ -322,7 +330,7 @@ fn preview_body(
                 "preview-failure",
                 &failure,
                 Some((
-                    "重试",
+                    dict::common::retry(),
                     Box::new(move |cx: &mut App| {
                         s_retry.update(cx, |st, cx| st.preview_reload(&retry_rel, cx));
                     }),
@@ -387,7 +395,9 @@ fn preview_body(
             } else {
                 preview_empty_state(
                     "preview-failure",
-                    snap.failure.as_deref().unwrap_or("无法显示这张图片"),
+                    snap.failure
+                        .as_deref()
+                        .unwrap_or(dict::files::image_failed()),
                     None,
                 )
             }
@@ -422,7 +432,7 @@ fn preview_body(
                     .map(|(ix, (dim, image))| {
                         let (w, h) = *dim;
                         let sel = format!("preview-pdf-page-{ix}");
-                        let label = format!("PDF 第 {} 页：正在绘制页面…", ix + 1);
+                        let label = dict::files::pdf_drawing(ix + 1);
                         let body = match image {
                             Some(render) => img(gpui_kit::ImageSource::Render(render))
                                 .size_full()
@@ -476,7 +486,9 @@ fn preview_body(
             } else {
                 preview_empty_state(
                     "preview-failure",
-                    snap.failure.as_deref().unwrap_or("无法显示这份 PDF"),
+                    snap.failure
+                        .as_deref()
+                        .unwrap_or(dict::files::pdf_display_failed()),
                     None,
                 )
             }
@@ -512,7 +524,7 @@ fn preview_body(
                     .text_color(theme::LABEL_2())
                     .hover(|s| s.bg(theme::DOCK()))
                     .when(loading, |this| this.child(Spinner::new().small()))
-                    .child("加载更多")
+                    .child(dict::files::load_more())
                     .on_click(move |_, _, cx| {
                         s_more.update(cx, |st, cx| st.preview_load_more(&more_rel, cx));
                     }),
@@ -548,7 +560,7 @@ fn preview_body(
                             .hover(|s| s.bg(theme::DOCK()))
                             .rounded(px(6.))
                             .px(px(8.))
-                            .child("重试")
+                            .child(dict::common::retry())
                             .on_click(move |_, _, cx| {
                                 s_retry.update(cx, |st, cx| st.preview_reload(&retry_rel, cx));
                             }),

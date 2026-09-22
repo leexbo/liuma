@@ -7,6 +7,7 @@ use gpui_kit::{AppContext, Context, Entity, Window};
 
 use liuma_core::proto::RpcResult;
 
+use crate::kits::i18n::dict;
 use crate::shell::store::AppStore;
 
 /// 问答卡 UI 交互态(每题选中 labels;index 当前题)
@@ -64,11 +65,11 @@ impl AppStore {
         let label = if approve {
             opts.first()
                 .map(|o| o.label.clone())
-                .unwrap_or_else(|| "批准".into())
+                .unwrap_or_else(|| dict::ask::approve().into())
         } else {
             opts.get(1)
                 .map(|o| o.label.clone())
-                .unwrap_or_else(|| "拒绝".into())
+                .unwrap_or_else(|| dict::ask::reject().into())
         };
         let result = RpcResult::Ok(serde_json::json!({
             "sessionId": plan.session_id,
@@ -90,7 +91,7 @@ impl AppStore {
             &plan.rpc_id,
             &RpcResult::Err(liuma_core::proto::RpcError {
                 code: "cancelled".into(),
-                message: "用户取消,回到对话".into(),
+                message: dict::ask::user_cancelled().into(),
                 details: serde_json::Value::Null,
             }),
         );
@@ -109,7 +110,7 @@ impl AppStore {
         let label = opts
             .get(1)
             .map(|o| o.label.clone())
-            .unwrap_or_else(|| "拒绝".into());
+            .unwrap_or_else(|| dict::ask::reject().into());
         let result = RpcResult::Ok(serde_json::json!({
             "sessionId": plan.session_id,
             "answer": { "answers": [ {
@@ -158,7 +159,7 @@ impl AppStore {
             return;
         }
         let input =
-            cx.new(|cx| TextareaState::new(window, cx).placeholder("否,并告诉它应该如何做不同"));
+            cx.new(|cx| TextareaState::new(window, cx).placeholder(dict::ask::decline_ph()));
         cx.subscribe(&input, |this, _input, event: &InputEvent, cx| match event {
             InputEvent::PressEnter { shift: false, .. } => {
                 this.submit_plan_selection(cx);
@@ -207,7 +208,7 @@ impl AppStore {
             &p.rpc_id,
             &RpcResult::Err(liuma_core::proto::RpcError {
                 code: "cancelled".into(),
-                message: "用户取消,回到对话".into(),
+                message: dict::ask::user_cancelled().into(),
                 details: serde_json::Value::Null,
             }),
         );
@@ -325,7 +326,7 @@ impl AppStore {
         if self.ask.ask_input.is_some() {
             return;
         }
-        let input = cx.new(|cx| TextareaState::new(window, cx).placeholder("输入你的答案"));
+        let input = cx.new(|cx| TextareaState::new(window, cx).placeholder(dict::ask::answer_ph()));
         cx.subscribe(&input, |this, _input, event: &InputEvent, cx| {
             if let InputEvent::Change = event {
                 let value = _input.read(cx).value().to_string();
@@ -419,7 +420,7 @@ impl AppStore {
             return;
         };
         if !state.answered(state.index) {
-            state.error = Some("请选择一个选项或填写自定义答案。");
+            state.error = Some(dict::ask::err_pick());
             cx.notify();
             return;
         }
@@ -444,7 +445,7 @@ impl AppStore {
                 (0..ask.questions.len()).find(|&i| !state.answered(i) && !state.skipped[i])
             {
                 state.index = missing;
-                state.error = Some("请先完成这道问题。");
+                state.error = Some(dict::ask::err_required());
                 cx.notify();
                 return;
             }

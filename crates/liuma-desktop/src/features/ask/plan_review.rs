@@ -15,6 +15,7 @@ use gpui_kit::{
     Styled, Window, div, px,
 };
 
+use crate::kits::i18n::dict;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -55,8 +56,8 @@ pub fn render(
             .and_then(|o| o.description.clone())
             .unwrap_or_else(|| fallback.to_string())
     };
-    let approve_desc = option_desc(0, "离开计划模式;计划从下一步开始执行");
-    let decline_desc = option_desc(1, "留在计划模式;反馈会回传给模型");
+    let approve_desc = option_desc(0, dict::ask::approve_desc());
+    let decline_desc = option_desc(1, dict::ask::decline_desc());
     Some(
         div()
             .id("plan-review")
@@ -99,7 +100,7 @@ pub fn render(
                             .text_color(theme::CAPTION())
                             .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL_2()))
                             .child(fixed(IconName::Eye, 12.))
-                            .child("查看")
+                            .child(dict::chat::view())
                             .on_click(move |_, _, cx| {
                                 view.update(cx, |st, cx| {
                                     st.open_panel_tab(crate::shell::panel::PanelTab::Plan, cx)
@@ -174,7 +175,7 @@ pub fn render(
                                 div()
                                     .text_size(px(13.))
                                     .text_color(theme::LABEL())
-                                    .child("是,实施此计划"),
+                                    .child(dict::ask::approve_plan()),
                             )
                             .child(
                                 div()
@@ -225,7 +226,7 @@ pub fn render(
                                 div()
                                     .text_size(px(13.))
                                     .text_color(theme::LABEL())
-                                    .child("否,并告诉它应该如何做不同"),
+                                    .child(dict::ask::decline_plan()),
                             )
                             .child(
                                 div()
@@ -296,9 +297,9 @@ pub fn render(
                                 .text_color(theme::CAPTION())
                         })
                         .child(if selection == Some(false) {
-                            "提交"
+                            dict::ask::submit_q()
                         } else {
-                            "批准"
+                            dict::ask::approve()
                         }),
                 ),
             ),

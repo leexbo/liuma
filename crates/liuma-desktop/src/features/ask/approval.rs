@@ -11,6 +11,7 @@ use gpui_kit::{
     Styled, div, px,
 };
 
+use crate::kits::i18n::dict;
 use crate::kits::icons::fixed;
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -56,16 +57,11 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
                             .text_size(px(13.))
                             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                             .text_color(theme::LABEL())
-                            .child("沙箱升级审批"),
+                            .child(dict::ask::sandbox_title()),
                     )
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(theme::CAPTION())
-                            .child(format!(
-                                "{tool_name} · {current_mode} → {target_mode}(仅本次)"
-                            )),
-                    )
+                    .child(div().text_size(px(11.)).text_color(theme::CAPTION()).child(
+                        dict::ask::sandbox_desc(tool_name, current_mode, target_mode),
+                    ))
                     .child(div().flex_1())
                     .child(
                         div()
@@ -127,7 +123,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
                             .on_click(move |_, _, cx| {
                                 reject.update(cx, |st, cx| st.answer_approval(false, cx));
                             })
-                            .child("拒绝"),
+                            .child(dict::ask::reject()),
                     )
                     .child(
                         div()
@@ -146,7 +142,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
                             .on_click(move |_, _, cx| {
                                 approve.update(cx, |st, cx| st.answer_approval(true, cx));
                             })
-                            .child("批准一次"),
+                            .child(dict::ask::approve_once()),
                     ),
             ),
     )
