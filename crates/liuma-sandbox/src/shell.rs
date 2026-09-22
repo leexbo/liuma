@@ -194,6 +194,11 @@ pub fn split_path_dirs(path_var: &str, sep: char) -> Vec<PathBuf> {
         .map(str::trim)
         // 条目可能带引号(`setx` 风格写入的 PATH 常见)
         .map(|s| s.trim_matches('"'))
+        // 剥引号可能暴露尾随路径分隔符:`"C:\bin\"` 里尾部 `\"` 是转义
+        // 引号,剥完留下 `\`。只剥「一个」且只认 Windows 路径分隔符——
+        // 本函数服务的就是 Windows PATH 方言;归一化交给 `Path`,在这里
+        // 按宿主方言改写会让同一条 PATH 在不同宿主上铸出不同的目录
+        .map(|s| s.strip_suffix('\\').unwrap_or(s))
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .collect()
@@ -244,7 +249,8 @@ mod tests {
         assert_eq!(command.lines().count(), 1, "前导必须与命令同行");
     }
 
-    /// Windows 候选链的优先级:PowerShell 7 安装位 → PATH → 5.1 兜底
+    /// Windows 候选链的优先级:PowerShell 7 安装位 → PATH → 5.1 兜底。
+    /// 期望形状镜像生产的 `join` 构造:分隔符是宿主方言,不得写进断言
     #[test]
     fn windows_candidates_order() {
         let lookup = |k: &str| match k {
@@ -257,10 +263,17 @@ mod tests {
         assert_eq!(
             candidates,
             vec![
-                PathBuf::from(r"C:\Program Files\PowerShell\7\pwsh.exe"),
-                PathBuf::from(r"C:\tools\pwsh.exe"),
-                PathBuf::from(r"C:\tools\pwsh"),
-                PathBuf::from(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"),
+                Path::new(r"C:\Program Files")
+                    .join("PowerShell")
+                    .join("7")
+                    .join("pwsh.exe"),
+                Path::new(r"C:\tools").join("pwsh.exe"),
+                Path::new(r"C:\tools").join("pwsh"),
+                Path::new(r"C:\Windows")
+                    .join("System32")
+                    .join("WindowsPowerShell")
+                    .join("v1.0")
+                    .join("powershell.exe"),
             ]
         );
     }
@@ -280,7 +293,8 @@ mod tests {
         assert_eq!(first_existing(&candidates, &|_: &Path| false), None);
     }
 
-    /// PATH 拆分的两个现实细节:条目带引号(`setx` 写入风格)、空条目
+    /// PATH 拆分的现实细节:条目带引号(`setx` 风格写入)、引号剥出尾随
+    /// 分隔符(`"C:\bin\"` → `C:\bin`)、空条目;两种分隔符在任何宿主同测
     #[test]
     fn split_path_dirs_handles_quotes_and_empties() {
         assert_eq!(
