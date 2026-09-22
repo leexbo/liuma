@@ -31,8 +31,6 @@ crates/liuma-desktop/src/features/search/store.rs 1
 crates/liuma-desktop/src/features/search/views.rs 3
 crates/liuma-desktop/src/features/sessions/store.rs 17
 crates/liuma-desktop/src/features/sessions/views.rs 21
-crates/liuma-desktop/src/features/settings/store.rs 50
-crates/liuma-desktop/src/features/settings/views.rs 156
 crates/liuma-desktop/src/features/subagents/views.rs 7
 crates/liuma-desktop/src/features/trajectory/views.rs 34
 crates/liuma-desktop/src/kits/filetype.rs 3

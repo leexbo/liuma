@@ -13,9 +13,6 @@ use crate::kits::i18n::dict;
 use crate::kits::i18n::{self, Lang};
 use crate::shell::store::AppStore;
 
-/// 上下文窗口输入的占位(空 = 用内置默认;单位由解析层展开)
-pub(crate) const CONTEXT_WINDOW_PLACEHOLDER: &str = "默认 1,000,000";
-
 /// 解析上下文窗口草稿:空串 = 不覆盖(None);接受 1 以上的整数,可带
 /// 单位后缀——`K`/`M` 十进制(1K = 1,000、1M = 1,000,000,与默认值
 /// 和展示同一进制),`Ki`/`Mi` 二进制(1Ki = 1,024、1Mi = 1,048,576,
@@ -291,8 +288,9 @@ impl AppStore {
     ) {
         // 设置页 provider 表单三输入(Enter 提交;同 id = 更新)
         if self.settings.set_form_id.is_none() {
-            self.settings.set_form_id =
-                Some(cx.new(|cx| InputState::new(window, cx).placeholder("小写英文/连字符")));
+            self.settings.set_form_id = Some(cx.new(|cx| {
+                InputState::new(window, cx).placeholder(dict::settings::id_placeholder())
+            }));
         }
         if self.settings.set_form_url.is_none() {
             self.settings.set_form_url =
@@ -301,47 +299,50 @@ impl AppStore {
                 }));
         }
         if self.settings.set_form_model.is_none() {
-            self.settings.set_form_model =
-                Some(cx.new(|cx| InputState::new(window, cx).placeholder("可选")));
+            self.settings.set_form_model = Some(cx.new(|cx| {
+                InputState::new(window, cx).placeholder(dict::settings::optional_placeholder())
+            }));
         }
         if self.settings.set_form_name.is_none() {
-            self.settings.set_form_name = Some(
-                cx.new(|cx| InputState::new(window, cx).placeholder("给这个 Provider 起个名字")),
-            );
+            self.settings.set_form_name = Some(cx.new(|cx| {
+                InputState::new(window, cx).placeholder(dict::settings::name_placeholder())
+            }));
         }
         if self.settings.set_form_model_input.is_none() {
-            self.settings.set_form_model_input =
-                Some(cx.new(|cx| InputState::new(window, cx).placeholder("模型 id")));
+            self.settings.set_form_model_input = Some(cx.new(|cx| {
+                InputState::new(window, cx).placeholder(dict::settings::model_id_placeholder())
+            }));
         }
         if self.settings.context_window_input.is_none() {
-            self.settings.context_window_input = Some(
-                cx.new(|cx| InputState::new(window, cx).placeholder(CONTEXT_WINDOW_PLACEHOLDER)),
-            );
+            self.settings.context_window_input = Some(cx.new(|cx| {
+                InputState::new(window, cx).placeholder(dict::settings::ctx_placeholder())
+            }));
         }
         if self.settings.set_form_billing_url.is_none() {
-            self.settings.set_form_billing_url =
-                Some(cx.new(|cx| InputState::new(window, cx).placeholder("https://…")));
+            self.settings.set_form_billing_url = Some(cx.new(|cx| {
+                InputState::new(window, cx).placeholder(dict::settings::url_placeholder())
+            }));
         }
         for (slot, ph) in [
             (
                 &mut self.settings.set_form_path_balance,
-                "余额金额路径,如 balance_infos.0.total_balance",
+                dict::settings::balance_path_placeholder(),
             ),
             (
                 &mut self.settings.set_form_path_currency,
-                "货币路径,如 balance_infos.0.currency",
+                dict::settings::currency_path_placeholder(),
             ),
             (
                 &mut self.settings.set_form_path_5h,
-                "5小时用量路径,如 five_hour.utilization",
+                dict::settings::usage5h_path_placeholder(),
             ),
             (
                 &mut self.settings.set_form_path_7d,
-                "7天用量路径,如 seven_day.utilization",
+                dict::settings::usage7d_path_placeholder(),
             ),
             (
                 &mut self.settings.set_form_path_resets,
-                "重置时间路径,如 resets_in",
+                dict::settings::reset_path_placeholder(),
             ),
         ] {
             if slot.is_none() {
@@ -404,9 +405,9 @@ impl AppStore {
                     .filter_map(|p| {
                         let id = p.as_str()?;
                         let label = match id {
-                            "read-only" => "仅可查看",
-                            "workspace-write" => "工作区内修改",
-                            "full-access" => "完全权限",
+                            "read-only" => dict::settings::perm_read_only(),
+                            "workspace-write" => dict::settings::perm_workspace_write(),
+                            "full-access" => dict::settings::perm_full_access(),
                             other => other,
                         };
                         Some((id.to_string(), label.to_string()))
@@ -427,8 +428,14 @@ impl AppStore {
             ),
         ];
         let busy_options = vec![
-            ("queue".to_string(), "排队发送".to_string()),
-            ("steer".to_string(), "插话发送".to_string()),
+            (
+                "queue".to_string(),
+                dict::settings::busy_queue().to_string(),
+            ),
+            (
+                "steer".to_string(),
+                dict::settings::busy_steer().to_string(),
+            ),
         ];
         self.settings.preset_select = Some(Self::build_pref_select(
             preset_options,
@@ -616,7 +623,8 @@ impl AppStore {
             .map(|i| i.read(cx).value().trim().to_string())
             .unwrap_or_default();
         if key.is_empty() {
-            self.settings.onboarding_key_error = Some("请输入 API 密钥后继续。".into());
+            self.settings.onboarding_key_error =
+                Some(dict::settings::onboarding_key_empty().into());
             cx.notify();
             return;
         }
@@ -653,7 +661,7 @@ impl AppStore {
                 self.settings_refresh(cx);
             }
             Err(e) => {
-                self.set_settings_notice(false, format!("保存失败:{}", e.message), cx);
+                self.set_settings_notice(false, dict::settings::save_failed(&e.message), cx);
             }
         }
     }
@@ -671,7 +679,7 @@ impl AppStore {
                 self.settings_refresh(cx);
             }
             Err(e) => {
-                self.set_settings_notice(false, format!("保存失败:{}", e.message), cx);
+                self.set_settings_notice(false, dict::settings::save_failed(&e.message), cx);
             }
         }
     }
@@ -689,7 +697,7 @@ impl AppStore {
             .host()
             .set_default_permission_preset("full-access")
         {
-            self.push_local_notice(&format!("保存失败:{}", e.message), cx);
+            self.push_local_notice(&dict::settings::save_failed(&e.message), cx);
             return;
         }
         self.settings_refresh(cx);
@@ -703,9 +711,9 @@ impl AppStore {
             .as_str()
             .unwrap_or("workspace-write");
         let label = match actual {
-            "read-only" => "仅可查看",
-            "workspace-write" => "工作区内修改",
-            "full-access" => "完全权限",
+            "read-only" => dict::settings::perm_read_only(),
+            "workspace-write" => dict::settings::perm_workspace_write(),
+            "full-access" => dict::settings::perm_full_access(),
             other => other,
         };
         if let Some(select) = &self.settings.permission_select {
@@ -724,15 +732,18 @@ impl AppStore {
                 self.settings_refresh(cx);
             }
             Err(e) => {
-                self.set_settings_notice(false, format!("保存失败:{}", e.message), cx);
+                self.set_settings_notice(false, dict::settings::save_failed(&e.message), cx);
             }
         }
     }
 
     /// 语言档切换后的挂窗态回写:偏好下拉标签按新语言重建。Confirm 按
     /// 标签映射 id 且订阅闭包捕获构建期选项表,故须整组重置重建(当前
-    /// 项由快照保位;语言选项名两语言恒原名,重建无害)。渲染期同步块
-    /// 调用(sync_composer_placeholder 同通道;档位未变即零开销早退)
+    /// 项由快照保位;语言选项名两语言恒原名,重建无害)。Provider 表单
+    /// 输入的占位同词典化——无编辑器在开(添加/编辑流缺席)时才清空
+    /// 惰建槽再重建,防误清未保存草稿(MCP/hooks 表单每次打开即重建,
+    /// 无需处理)。渲染期同步块调用(sync_composer_placeholder 同通道;
+    /// 档位未变即零开销早退)
     pub(crate) fn sync_locale_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let lang = i18n::lang();
         if self.settings.selects_lang == lang {
@@ -744,6 +755,21 @@ impl AppStore {
         self.settings.language_select = None;
         self.settings.busy_enter_select = None;
         self.ensure_pref_selects(window, cx);
+        if self.settings.editing_provider.is_none() && !self.settings.adding_provider {
+            self.settings.set_form_id = None;
+            self.settings.set_form_url = None;
+            self.settings.set_form_model = None;
+            self.settings.set_form_name = None;
+            self.settings.set_form_model_input = None;
+            self.settings.context_window_input = None;
+            self.settings.set_form_billing_url = None;
+            self.settings.set_form_path_balance = None;
+            self.settings.set_form_path_currency = None;
+            self.settings.set_form_path_5h = None;
+            self.settings.set_form_path_7d = None;
+            self.settings.set_form_path_resets = None;
+            self.ensure_provider_form_inputs(window, cx);
+        }
     }
 
     /// 切换外观偏好(light / dark / system;落盘)。返回是否成功——
@@ -755,7 +781,7 @@ impl AppStore {
                 true
             }
             Err(e) => {
-                self.set_settings_notice(false, format!("保存失败:{}", e.message), cx);
+                self.set_settings_notice(false, dict::settings::save_failed(&e.message), cx);
                 false
             }
         }
@@ -768,7 +794,7 @@ impl AppStore {
                 self.settings_refresh(cx);
             }
             Err(e) => {
-                self.set_settings_notice(false, format!("保存失败:{}", e.message), cx);
+                self.set_settings_notice(false, dict::settings::save_failed(&e.message), cx);
             }
         }
     }
@@ -815,7 +841,7 @@ impl AppStore {
     /// 打开行内编辑卡(编辑卡在行卡内展开;预填自定义字段,key 清空)
     pub fn open_provider_editor(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.fill_provider_form(Some(id), window, cx);
-        self.ensure_key_input("sk-…(留空 = 保持既有凭据)", window, cx);
+        self.ensure_key_input(dict::settings::key_keep_placeholder(), window, cx);
         // 目录内厂商 = 内置卡(适配器与目录绑定);其余 = 自定义卡
         let builtin = liuma_core::settings::provider_catalog()
             .iter()
@@ -874,7 +900,7 @@ impl AppStore {
     /// 打开自定义供应商添加卡(空表单;API 格式三选)
     pub fn open_provider_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.fill_provider_form(None, window, cx);
-        self.ensure_key_input("输入 API Key", window, cx);
+        self.ensure_key_input(dict::settings::key_enter_placeholder(), window, cx);
         self.settings.editing_provider = None;
         self.settings.adding_provider = true;
         self.settings.builtin_mode = false;
@@ -888,7 +914,7 @@ impl AppStore {
     /// 模型草稿清单按目录条目预填,折叠区可拉端点更新)
     pub fn open_provider_add_builtin(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.fill_provider_form(None, window, cx);
-        self.ensure_key_input("输入 API 密钥,或留空使用环境认证", window, cx);
+        self.ensure_key_input(dict::settings::key_env_placeholder(), window, cx);
         self.settings.editing_provider = None;
         self.settings.adding_provider = true;
         self.settings.builtin_mode = true;
@@ -937,7 +963,7 @@ impl AppStore {
     pub fn apply_provider_editor(&mut self, cx: &mut Context<Self>) {
         // 展开中的窗口编辑先提交;非法则拒绝保存(不静默丢弃输入)
         if self.settings.context_window_edit.is_some() && !self.commit_context_window_edit(cx) {
-            self.push_local_notice("上下文窗口需为 1 以上的整数 token 数", cx);
+            self.push_local_notice(dict::settings::ctx_invalid_notice(), cx);
             return;
         }
         let id = if let Some(id) = &self.settings.editing_provider {
@@ -957,7 +983,7 @@ impl AppStore {
             return;
         };
         if id.is_empty() {
-            self.push_local_notice("provider id 不可为空", cx);
+            self.push_local_notice(dict::settings::provider_id_empty(), cx);
             return;
         }
         // 新增时查重:ID 是路由键,遮蔽既有条目
@@ -967,7 +993,7 @@ impl AppStore {
                 .as_array()
                 .is_some_and(|ps| ps.iter().any(|p| p["id"].as_str() == Some(id.as_str())));
             if taken {
-                self.push_local_notice("该 Provider ID 已存在,请在列表中编辑它", cx);
+                self.push_local_notice(dict::settings::provider_id_dup(), cx);
                 return;
             }
         }
@@ -1082,7 +1108,7 @@ impl AppStore {
                 self.probe_models_quietly(&id, cx);
             }
             Err(e) => {
-                self.set_settings_notice(false, format!("保存失败:{}", e.message), cx);
+                self.set_settings_notice(false, dict::settings::save_failed(&e.message), cx);
             }
         }
     }
@@ -1297,7 +1323,7 @@ impl AppStore {
             None => form_url,
         };
         if base_url.is_empty() {
-            self.set_settings_notice(false, "先填写 Base URL 再获取模型", cx);
+            self.set_settings_notice(false, dict::settings::billing_need_url(), cx);
             return;
         }
         let dialect = match &catalog {
@@ -1495,10 +1521,12 @@ impl AppStore {
                 s.settings.billing_refreshing = None;
                 match result {
                     Ok(()) => {
-                        s.set_settings_notice(true, "计费已更新", cx);
+                        s.set_settings_notice(true, dict::settings::billing_updated(), cx);
                         s.settings_refresh(cx);
                     }
-                    Err(msg) => s.set_settings_notice(false, format!("计费查询失败:{msg}"), cx),
+                    Err(msg) => {
+                        s.set_settings_notice(false, dict::settings::billing_query_failed(msg), cx)
+                    }
                 }
             });
             Ok::<(), anyhow::Error>(())
@@ -1589,7 +1617,7 @@ impl AppStore {
                 self.settings.saved_provider_notice = None;
                 self.settings_refresh(cx);
             }
-            Err(e) => self.push_local_notice(&format!("删除失败:{}", e.message), cx),
+            Err(e) => self.push_local_notice(&dict::settings::delete_failed(&e.message), cx),
         }
     }
 
@@ -1773,10 +1801,15 @@ pub enum McpDetailMode {
 impl AppStore {
     /// 打开详情页(新增模式:id 可输入;JSON 页签不激活)
     pub fn open_mcp_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let form_id = Some(cx.new(|cx| InputState::new(window, cx).placeholder("server 名")));
-        let form_command =
-            Some(cx.new(|cx| InputState::new(window, cx).placeholder("启动命令(如 npx)")));
-        let form_cwd = Some(cx.new(|cx| InputState::new(window, cx).placeholder("工作目录(可选)")));
+        let form_id = Some(cx.new(|cx| {
+            InputState::new(window, cx).placeholder(dict::settings::mcp_name_placeholder())
+        }));
+        let form_command = Some(cx.new(|cx| {
+            InputState::new(window, cx).placeholder(dict::settings::mcp_command_placeholder())
+        }));
+        let form_cwd = Some(cx.new(|cx| {
+            InputState::new(window, cx).placeholder(dict::settings::mcp_cwd_placeholder())
+        }));
         let form_timeout = Some(cx.new(|cx| InputState::new(window, cx).placeholder("60000")));
         self.settings.mcp_detail = Some(McpDetailState {
             editing: None,
@@ -1809,12 +1842,16 @@ impl AppStore {
         else {
             return;
         };
-        let form_id = cx.new(|cx| InputState::new(window, cx).placeholder("server 名"));
+        let form_id = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(dict::settings::mcp_name_placeholder())
+        });
         let form_command = cx.new(|cx| InputState::new(window, cx));
         form_command.update(cx, |s, cx| {
             s.set_value(entry.command.clone(), window, cx);
         });
-        let form_cwd = cx.new(|cx| InputState::new(window, cx).placeholder("工作目录(可选)"));
+        let form_cwd = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(dict::settings::mcp_cwd_placeholder())
+        });
         if let Some(cwd) = &entry.cwd {
             form_cwd.update(cx, |s, cx| {
                 s.set_value(cwd.clone(), window, cx);
@@ -2033,7 +2070,7 @@ impl AppStore {
         match self.bridge.host().import_mcp_servers_json(&text) {
             Ok(n) => {
                 self.settings.mcp_detail = None;
-                self.settings.settings_notice = Some((true, format!("已导入 {n} 个 MCP server")));
+                self.settings.settings_notice = Some((true, dict::settings::mcp_imported(n)));
                 self.settings_refresh(cx);
             }
             Err(e) => {
@@ -2090,7 +2127,7 @@ impl AppStore {
                 .unwrap_or_default(),
         };
         if id.is_empty() {
-            self.push_mcp_form_notice("id 不能为空", cx);
+            self.push_mcp_form_notice(dict::settings::mcp_id_empty(), cx);
             return;
         }
         let timeout = match detail
@@ -2102,7 +2139,7 @@ impl AppStore {
             Some(t) => match t.parse::<u64>() {
                 Ok(ms) => Some(ms),
                 Err(_) => {
-                    self.push_mcp_form_notice("超时 MS 须为非负整数", cx);
+                    self.push_mcp_form_notice(dict::settings::mcp_timeout_invalid(), cx);
                     return;
                 }
             },
@@ -2115,7 +2152,7 @@ impl AppStore {
                 .map(|i| i.read(cx).value().trim().to_string())
                 .unwrap_or_default();
             if url.is_empty() {
-                self.push_mcp_form_notice("http 传输需要 url", cx);
+                self.push_mcp_form_notice(dict::settings::mcp_need_url(), cx);
                 return;
             }
             let mut header_map = std::collections::BTreeMap::new();
@@ -2140,7 +2177,7 @@ impl AppStore {
             };
             let command = cmd_in.read(cx).value().trim().to_string();
             if command.is_empty() {
-                self.push_mcp_form_notice("command 不能为空", cx);
+                self.push_mcp_form_notice(dict::settings::mcp_need_command(), cx);
                 return;
             }
             let args: Vec<String> = detail
@@ -2209,15 +2246,15 @@ impl AppStore {
             editing: None,
             form_enabled: true,
             form_dialect: "claude-code".to_string(),
-            form_config_path: Some(
-                cx.new(|cx| InputState::new(window, cx).placeholder("hooks.json 路径")),
-            ),
-            form_plugin_root: Some(cx.new(|cx| {
-                InputState::new(window, cx).placeholder("可选;替换 ${CLAUDE_PLUGIN_ROOT}")
+            form_config_path: Some(cx.new(|cx| {
+                InputState::new(window, cx).placeholder(dict::settings::hooks_path_placeholder())
             })),
-            form_project_dir: Some(
-                cx.new(|cx| InputState::new(window, cx).placeholder("可选;缺省 = 会话工作区")),
-            ),
+            form_plugin_root: Some(cx.new(|cx| {
+                InputState::new(window, cx).placeholder(dict::settings::hooks_root_placeholder())
+            })),
+            form_project_dir: Some(cx.new(|cx| {
+                InputState::new(window, cx).placeholder(dict::settings::hooks_cwd_placeholder())
+            })),
             form_timeout: Some(cx.new(|cx| InputState::new(window, cx).placeholder("600000"))),
         });
         cx.notify();

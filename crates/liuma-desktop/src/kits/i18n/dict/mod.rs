@@ -5,4 +5,5 @@
 //! 条目形态与约束见 super 的 `entries!` 宏文档。每个切片文件以
 //! `use crate::kits::i18n::entries;` + `entries! { ... }` 声明条目。
 
+pub(crate) mod common;
 pub(crate) mod settings;
