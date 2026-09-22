@@ -90,25 +90,46 @@ impl EventEnvelope {
     }
 }
 
-/// 读取方入口:解码并执行未知类型守卫与归因守卫。
-///
+/// 读取方守卫(fail-closed,两条解码入口共用):
 /// 已登记类型(见 [`crate::events::KNOWN_EVENT_TYPES`])直接通过;
 /// 未登记类型仅当 `ignorable == true` 时通过(载荷保留原样,投影自行决定忽略)。
 /// 归因守卫仅约束已登记类型:不可归因事件携带 `sourceEventSeqs` 即拒绝
 /// (未知 ignorable 事件不约束——前向兼容,新版本写入的归因事件旧读取方可跳过)。
-pub fn decode_envelope(raw: &serde_json::Value) -> Result<EventEnvelope, EnvelopeError> {
-    let envelope: EventEnvelope =
-        serde_json::from_value(raw.clone()).map_err(|e| EnvelopeError::Decode(e.to_string()))?;
+fn validate_envelope(envelope: &EventEnvelope) -> Result<(), EnvelopeError> {
     let known = crate::events::KNOWN_EVENT_TYPES.contains(&envelope.r#type.as_str());
     if !known && !envelope.ignorable {
-        return Err(EnvelopeError::UnknownNotIgnorable(envelope.r#type));
+        return Err(EnvelopeError::UnknownNotIgnorable(envelope.r#type.clone()));
     }
     if known
         && envelope.source_event_seqs.is_some()
         && !crate::events::ATTRIBUTED_EVENT_TYPES.contains(&envelope.r#type.as_str())
     {
-        return Err(EnvelopeError::MisattributedSources(envelope.r#type));
+        return Err(EnvelopeError::MisattributedSources(envelope.r#type.clone()));
     }
+    Ok(())
+}
+
+/// 读取方入口(Value):解码并执行未知类型守卫与归因守卫。
+///
+/// 与 [`decode_envelope_str`] 守卫语义一致;面向已有 `Value` 在手的
+/// 调用方(快照/网关帧)。冷加载热路径请用 [`decode_envelope_str`]。
+pub fn decode_envelope(raw: &serde_json::Value) -> Result<EventEnvelope, EnvelopeError> {
+    let envelope: EventEnvelope =
+        serde_json::from_value(raw.clone()).map_err(|e| EnvelopeError::Decode(e.to_string()))?;
+    validate_envelope(&envelope)?;
+    Ok(envelope)
+}
+
+/// 读取方入口(str 直解):单遍反序列化 + 同一守卫。
+///
+/// 冷加载热路径(load_log 全档重建):省中间 Value 树与
+/// `from_value` 二次遍历,解析成本约对半。守卫语义与 [`decode_envelope`]
+/// 共用同一实现。已知差异一处:行内重复键(损坏输入)此处直接拒绝,
+/// Value 路径按 last-wins 静默收敛——写入侧单写者不产重复键,拒即 fail-closed。
+pub fn decode_envelope_str(line: &str) -> Result<EventEnvelope, EnvelopeError> {
+    let envelope: EventEnvelope =
+        serde_json::from_str(line).map_err(|e| EnvelopeError::Decode(e.to_string()))?;
+    validate_envelope(&envelope)?;
     Ok(envelope)
 }
 
@@ -203,5 +224,62 @@ mod tests {
         let mut v = raw("future/audit", true);
         v["source_event_seqs"] = json!([1]);
         assert!(decode_envelope(&v).is_ok());
+    }
+
+    /// str 直解与 Value 路径守卫语义差分:同一信封两条入口结果一致
+    /// (ok 时载荷相等;拒时错误变体一致)。load_log 单遍直解的
+    /// 守卫降级防线——两入口共用 validate_envelope,此测试锁其等价性
+    #[test]
+    fn str_entry_matches_value_entry_on_guards() {
+        let line = |mut v: serde_json::Value| {
+            v["seq"] = json!(1);
+            serde_json::to_string(&v).unwrap()
+        };
+        // 已登记类型:双入口同解且载荷一致
+        let ok_line = line(raw("user/message", false));
+        let via_value = serde_json::from_str::<serde_json::Value>(&ok_line).unwrap();
+        assert_eq!(
+            decode_envelope_str(&ok_line).unwrap(),
+            decode_envelope(&via_value).unwrap()
+        );
+        // 未知未标:双入口同拒 UnknownNotIgnorable
+        let evil_line = line(raw("evil/x", false));
+        let via_value = serde_json::from_str::<serde_json::Value>(&evil_line).unwrap();
+        assert!(matches!(
+            decode_envelope_str(&evil_line),
+            Err(EnvelopeError::UnknownNotIgnorable(t)) if t == "evil/x"
+        ));
+        assert!(matches!(
+            decode_envelope(&via_value),
+            Err(EnvelopeError::UnknownNotIgnorable(t)) if t == "evil/x"
+        ));
+        // 归因守卫:双入口同拒 MisattributedSources
+        let mut mis = raw("turn/start", false);
+        mis["source_event_seqs"] = json!([1]);
+        let mis_line = line(mis);
+        let via_value = serde_json::from_str::<serde_json::Value>(&mis_line).unwrap();
+        assert!(matches!(
+            decode_envelope_str(&mis_line),
+            Err(EnvelopeError::MisattributedSources(t)) if t == "turn/start"
+        ));
+        assert!(matches!(
+            decode_envelope(&via_value),
+            Err(EnvelopeError::MisattributedSources(t)) if t == "turn/start"
+        ));
+        // 未知 ignorable:双入口同放行且载荷一致
+        let fut_line = line(raw("future/audit", true));
+        let via_value = serde_json::from_str::<serde_json::Value>(&fut_line).unwrap();
+        assert_eq!(
+            decode_envelope_str(&fut_line).unwrap(),
+            decode_envelope(&via_value).unwrap()
+        );
+        // 损坏行(非 JSON):直解入口拒(Decode 变体)
+        assert!(matches!(
+            decode_envelope_str("{not json"),
+            Err(EnvelopeError::Decode(_))
+        ));
+        // 行尾残渣(单行多文档):直解入口拒——Value 路径在调用方的
+        // from_str::<Value> 同样拒,防线等价
+        assert!(decode_envelope_str(&format!("{ok_line} trailing")).is_err());
     }
 }

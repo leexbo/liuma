@@ -1226,4 +1226,91 @@ mod tests {
             .expect("第二个 message");
         assert!(next.data.get("usage").is_none());
     }
+
+    /// 冷启动计时分解(性能基线,真实大日志缺席即跳过):
+    /// read → Value 解析 → decode_envelope → append → load_log 总账
+    /// → page_cut+translate_window 全量,附单遍直解与序列化对照组。
+    /// load_log 单遍直解改造(B)的前后对照就以此为本底数字
+    #[test]
+    fn cold_open_timing_breakdown() {
+        const REAL_LOG: &str = "/Users/leexbo/.liuma/--Volumes-DATA-projects-liuma--/s-367e20369b584ddebffbc0b9d04501da/session.jsonl";
+        if !std::path::Path::new(REAL_LOG).exists() {
+            return;
+        }
+        use std::time::Instant;
+
+        let t = Instant::now();
+        let text = std::fs::read_to_string(REAL_LOG).unwrap();
+        let read = t.elapsed();
+
+        let t = Instant::now();
+        let values: Vec<Value> = text
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let parse = t.elapsed();
+
+        let t = Instant::now();
+        let envs: Vec<liuma_session::EventEnvelope> = values
+            .iter()
+            .map(|v| liuma_session::decode_envelope(v).unwrap())
+            .collect();
+        let decode = t.elapsed();
+
+        let t = Instant::now();
+        let mut log = liuma_session::EventLog::new();
+        for ev in envs {
+            log.append(ev).unwrap();
+        }
+        let append = t.elapsed();
+
+        let t = Instant::now();
+        let log2 = liuma_app::load_log(REAL_LOG).unwrap();
+        let load_log_total = t.elapsed();
+
+        let slice: Vec<liuma_session::EventEnvelope> = log2.iter().cloned().collect();
+        let provider = super::ProviderInfo {
+            provider: "anthropic".into(),
+            model: "test".into(),
+        };
+        let t = Instant::now();
+        let cut = super::page_cut(&slice, None, usize::MAX);
+        let events = super::translate_window(&provider, &slice, cut, None);
+        let translate = t.elapsed();
+
+        let t = Instant::now();
+        let payload = serde_json::to_string(&events).unwrap();
+        let ser = t.elapsed();
+        let t = Instant::now();
+        let back: Vec<super::SessionEvent> = serde_json::from_str(&payload).unwrap();
+        let de = t.elapsed();
+        assert_eq!(back.len(), events.len());
+
+        // 单遍反序列化对照:Envelope 直解(跳过中间 Value 树 + 二次遍历;
+        // 生产化需把 decode_envelope 的 fail-closed 守卫并入)
+        let t = Instant::now();
+        let direct_envs: Vec<liuma_session::EventEnvelope> = text
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let direct = t.elapsed();
+        assert_eq!(direct_envs.len(), slice.len());
+
+        eprintln!(
+            "\n── 冷启动计时分解(n={} 事件,{} 字节)──",
+            slice.len(),
+            text.len()
+        );
+        eprintln!("read_to_string      {:>10.1?}", read);
+        eprintln!("serde Value 解析    {:>10.1?}", parse);
+        eprintln!("decode_envelope     {:>10.1?}", decode);
+        eprintln!("EventLog::append    {:>10.1?}", append);
+        eprintln!("load_log 总账       {:>10.1?}", load_log_total);
+        eprintln!("page_cut+translate  {:>10.1?}", translate);
+        eprintln!("(对照)单遍 Envelope 解 {:>8.1?}", direct);
+        eprintln!("(对照)serde 序列化  {:>10.1?}  {} 字节", ser, payload.len());
+        eprintln!("(对照)serde 反序列化 {:>10.1?}", de);
+    }
 }

@@ -565,7 +565,9 @@ pub fn open_backend(path: &str) -> Result<JsonlBackend> {
 
 /// 从 JSONL 会话文件重建事件日志(重开会话:模型可见历史与投影
 /// 同源恢复)。文件缺失 = 空日志(新会话);每行经 [`liuma_session::
-/// decode_envelope`] 读取方守卫,未知未标事件即拒(fail-closed)。
+/// decode_envelope_str`] 单遍直解 + 读取方守卫,未知未标事件即拒
+/// (fail-closed)。冷加载热路径:单遍直解省中间 Value 树,全档
+/// 解析成本约对半(守卫语义与 Value 路径共用同一实现)。
 pub fn load_log(path: &str) -> Result<EventLog> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
@@ -578,9 +580,7 @@ pub fn load_log(path: &str) -> Result<EventLog> {
         if line.trim().is_empty() {
             continue;
         }
-        let raw: Value =
-            serde_json::from_str(line).with_context(|| format!("{path}:{lineno} 行解析失败"))?;
-        let ev = liuma_session::decode_envelope(&raw)
+        let ev = liuma_session::decode_envelope_str(line)
             .map_err(|e| anyhow::anyhow!("{path}:{lineno} {e}"))?;
         log.append(ev)
             .map_err(|e| anyhow::anyhow!("{path}:{lineno} {e}"))?;
@@ -671,6 +671,18 @@ mod tests {
         )
         .unwrap();
         assert!(load_log(path.to_str().unwrap()).is_err());
+
+        // 未知已标 ignorable:放行且载荷保留(单遍直解与 Value 路径同守卫)
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"user/message\",\"seq\":1,\"time\":0,\"data\":{\"content\":\"hi\"}}\n",
+                "{\"type\":\"future/audit\",\"seq\":2,\"time\":1,\"data\":{},\"ignorable\":true}\n",
+            ),
+        )
+        .unwrap();
+        let re = load_log(path.to_str().unwrap()).unwrap();
+        assert_eq!(re.high_water(), 2, "ignorable 事件放行入档");
 
         // 文件缺失 = 空日志(新会话)
         let missing = dir.join("none.jsonl");

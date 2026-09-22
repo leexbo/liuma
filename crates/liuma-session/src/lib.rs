@@ -21,7 +21,9 @@ pub mod bindings;
 pub mod guest;
 
 pub use audit::{Attribution, AuditRecord, attribution_chain, audit_call_event, audit_records};
-pub use envelope::{EnvelopeError, EventEnvelope, SESSION_FORMAT_VERSION, decode_envelope};
+pub use envelope::{
+    EnvelopeError, EventEnvelope, SESSION_FORMAT_VERSION, decode_envelope, decode_envelope_str,
+};
 pub use events::{
     ATTRIBUTED_EVENT_TYPES, AssistantChunk, AssistantMessage, CHECKPOINT_PREAMBLE,
     CompactionSummary, GoalItem, GoalState, KNOWN_EVENT_TYPES, LlmRetry, LlmRetryStarted,

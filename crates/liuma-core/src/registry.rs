@@ -12452,4 +12452,44 @@ for line in sys.stdin:
         // 停止后 fork 放行
         assert!(host.fork_session(&id, None).is_ok());
     }
+
+    /// 冷启动端到端计时(性能基线,真实大日志缺席即跳过):
+    /// AppHost 装配后首次 history = attach(load_log 全档解析)+
+    /// 全量翻译折叠,即桌面打开大会话的宿主侧盲区总量;温热复访
+    /// (日志常驻)为对照。load_log 单遍直解改造(B)的端到端验收口
+    #[tokio::test]
+    async fn cold_open_e2e_timing() {
+        const REAL_LOG: &str = "/Users/leexbo/.liuma/--Volumes-DATA-projects-liuma--/s-367e20369b584ddebffbc0b9d04501da/session.jsonl";
+        if !std::path::Path::new(REAL_LOG).exists() {
+            return;
+        }
+        let dir =
+            std::env::temp_dir().join(format!("liuma-core-timing-{}", Uuid::new_v4().simple()));
+        let sroot =
+            std::env::temp_dir().join(format!("liuma-core-timing-s-{}", Uuid::new_v4().simple()));
+        let host = Arc::new(AppHost::new_at(dir, true, "", sroot.clone()).unwrap());
+        let id = host.create_session(None, None, None);
+        let proj_dir = std::fs::read_dir(&sroot)
+            .unwrap()
+            .flatten()
+            .find(|e| e.path().is_dir())
+            .map(|e| e.path())
+            .unwrap();
+        std::fs::copy(REAL_LOG, proj_dir.join(&id).join("session.jsonl")).unwrap();
+
+        let t = std::time::Instant::now();
+        let page = host.history(&id, None, usize::MAX).await.unwrap();
+        let first = t.elapsed();
+        let t = std::time::Instant::now();
+        let page2 = host.history(&id, None, usize::MAX).await.unwrap();
+        let warm = t.elapsed();
+        assert!(!page.events.is_empty());
+        assert_eq!(page.events.len(), page2.events.len());
+        eprintln!(
+            "\n── 冷启动端到端(宿主侧):首次 attach+history = {:?},温热复访 = {:?},events={} ──",
+            first,
+            warm,
+            page.events.len()
+        );
+    }
 }

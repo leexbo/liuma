@@ -1176,6 +1176,7 @@ fn truncate_chars(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     /// 视口顶 → 当前轮锚:最近一个行槽 ≤ top 的已加载锚(未加载锚
     /// slot_ix=None 永不命中;钉底跟随态 top=行槽数,命中最后一个)。
     /// 导航轨 paint 相期位置标记的权威口径回归锁
