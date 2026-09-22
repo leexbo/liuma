@@ -7,6 +7,8 @@
 
 项目起步阶段参照 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的开发快照设计部分语义。
 
+![流马 liuma 桌面客户端](screenshot.png)
+
 ## 特性
 
 - **事件溯源**:会话全部状态是追加式 JSONL 事件日志;模型历史、审计、遥测均为投影,同一日志任意时刻重放结果一致,崩溃后从日志恢复。
