@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# verify-preflight:开发前置自检(cargo / just / 真 Python 3 / wasm32-wasip2 / pwsh)。
+#
+# 缺件即失败并给出安装命令:环境没装齐 ≠ 验证通过(AGENTS.md §2 的精神
+# 同样适用于「跑不了」——不得把它说成 ALL GREEN)。
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+missing=0
+warn=0
+
+say_ok()   { printf '  ok    %s\n' "$1"; }
+say_bad()  { printf '  缺    %s\n        → %s\n' "$1" "$2"; missing=$((missing + 1)); }
+say_warn() { printf '  提示  %s\n        → %s\n' "$1" "$2"; warn=$((warn + 1)); }
+
+# Python 解释器名按平台分叉:Python 官方 Windows 安装器不产 `python3.exe`,
+# 而 `python3` 这个名字在 Windows 上被 Microsoft Store 的应用执行别名占着
+# (命令存在、运行即退出 49);Unix 侧则相反,`python` 在新版发行版上往往缺席。
+case "$(uname -s)" in
+MINGW* | MSYS* | CYGWIN*)
+    win=1
+    python_name=python
+    ;;
+*)
+    win=0
+    python_name=python3
+    ;;
+esac
+
+echo "开发前置自检($(uname -s)):"
+
+if command -v cargo >/dev/null 2>&1; then
+    say_ok "cargo $(cargo --version 2>/dev/null | awk '{print $2}')"
+else
+    say_bad "cargo 不在 PATH" "https://rustup.rs"
+fi
+
+# just:经 `just verify` 调用时必然在场,直接跑本脚本时可能缺席
+if command -v just >/dev/null 2>&1; then
+    say_ok "just $(just --version 2>/dev/null | awk '{print $2}')"
+else
+    say_bad "just 不在 PATH" "winget install Casey.Just(Windows)/ brew install just / cargo install just"
+fi
+
+# Python:不仅要在 PATH 上,还要真能起来(Store 别名恰好过不了这一关)
+if command -v "$python_name" >/dev/null 2>&1 &&
+    "$python_name" -c 'import sys' >/dev/null 2>&1; then
+    say_ok "$python_name $("$python_name" --version 2>&1 | awk '{print $2}')"
+elif [ "$win" = 1 ]; then
+    say_bad "没有可用的 $python_name(Microsoft Store 的应用执行别名不算)" \
+        "winget install --id Python.Python.3.13"
+else
+    say_bad "没有可用的 $python_name" "apt install python3 / brew install python3"
+fi
+
+# wasm 目标:组件契约测试要真的编译 wasm 组件
+if rustup target list --installed 2>/dev/null | grep -qx wasm32-wasip2; then
+    say_ok "rust target wasm32-wasip2"
+else
+    say_bad "rust target wasm32-wasip2 未安装" "rustup target add wasm32-wasip2"
+fi
+
+# 平台壳:Windows 上的 shell 工具走 pwsh;缺席不影响 Unix 侧开发
+if [ "$win" = 1 ]; then
+    if command -v pwsh >/dev/null 2>&1; then
+        say_ok "pwsh 在 PATH"
+    else
+        say_warn "pwsh 不在 PATH(Windows 的 shell 工具需要)" \
+            "winget install --id Microsoft.PowerShell"
+    fi
+fi
+
+if [ "$missing" -gt 0 ]; then
+    printf '\n前置自检失败:%d 项缺件(另有 %d 项提示)。装齐后重跑 just verify。\n' \
+        "$missing" "$warn"
+    exit 1
+fi
+printf '前置自检通过(另有 %d 项提示)。\n' "$warn"

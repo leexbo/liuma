@@ -1,0 +1,18 @@
+# 行尾单一化:文本文件在仓库与工作树中都按 LF 存(git 层面的一致性,
+# 避免 core.autocrlf=true 的宿主上工作树变 CRLF 后,脚本里的 \r 被当成
+# 实参的一部分传出去 —— 如 `cargo test --test verify_wit\r`)。
+* text=auto eol=lf
+
+# 无扩展名的脚本与 justfile:auto 检测对无扩展名文件不可靠,显式声明
+justfile    text eol=lf
+scripts/*   text eol=lf
+
+# Windows 命令脚本按 cmd.exe 要求保留 CRLF
+*.ps1       text eol=crlf
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+
+# 二进制:不做任何转换
+*.png       binary
+*.ico       binary
+*.woff2     binary

@@ -16,6 +16,16 @@
 - **[L3-E2E]**: Mock Provider 驱动全链路，断言日志 Bit-exact 可重放。
 - **[Regression] (MUST)**: 任何行为修复 (Fix) **必须** 携带回归锁测试 (Regression Test)。
 - **[Flaky] (FORBIDDEN)**: 严禁使用 `#[ignore]` 或跳过 (Skip) 机制掩盖偶发失败，必须修复根因。
+- **[Platform] (MUST)**: 平台差异用 `#[cfg]` 门控或平台条件断言表达；运行时早退只允许出现在「已显式检测到的环境事实」分支，且该分支本身必须有断言（「探测不到就 return」= 假绿，属 Flaky 禁令覆盖范围）。
+
+### 平台前置（just preflight 自检）
+
+`just verify` 在 macOS / Linux / Windows 上都应全绿。环境缺件是环境问题，不得表述为通过。
+
+- **真 Python 3**：Microsoft Store 的 `python3` 只是应用执行别名（命令存在、运行即退出 49），`just links`（`scripts/verify-links`）与 liuma-mcp / liuma-core 的 Python fixture 都要真解释器 —— `winget install --id Python.Python.3.13`。解释器名按平台分叉：Windows 用 `python`（官方安装器不产 `python3.exe`），Unix 用 `python3`。
+- **`wasm32-wasip2` 目标**（`rustup target add wasm32-wasip2`）：组件契约测试要真编译 wasm 组件。
+- **`just`**、**`bash`**（Git for Windows 自带）；**`pwsh`** 是 Windows 侧 shell 工具的运行时。
+- **行尾**由 `.gitattributes` 固定（文本 = LF，`*.ps1/*.cmd/*.bat` = CRLF）；不要用 `core.autocrlf` 把它改回去 —— 工作树里的 `\r` 会被当成实参的一部分传给脚本与 cargo。
 
 ## 3. Git 交付契约 (Commit Protocol)
 
