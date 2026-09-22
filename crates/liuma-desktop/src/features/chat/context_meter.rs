@@ -6,6 +6,7 @@
 use gpui_kit::{Bounds, IntoElement, ParentElement, Pixels, Styled, canvas, div, point, px};
 
 use super::store::ContextOccupancy;
+use crate::kits::i18n::dict;
 use crate::kits::theme;
 
 /// 圆环:track 整圈 + 进度弧(顶端起顺时针;0% 只剩 track)。
@@ -84,8 +85,8 @@ pub fn fmt_tok(v: u64) -> String {
 /// 占用详情卡内容行数据(系统提示/工具定义/会话消息)
 pub fn breakdown_rows(o: &ContextOccupancy) -> [(&'static str, gpui_kit::Rgba, u64); 3] {
     [
-        ("系统提示", theme::BRAND(), o.system),
-        ("工具定义", theme::WARN(), o.tools),
-        ("会话消息", theme::SUCCESS(), o.messages),
+        (dict::chat::ctx_system(), theme::BRAND(), o.system),
+        (dict::chat::ctx_tools(), theme::WARN(), o.tools),
+        (dict::chat::ctx_messages(), theme::SUCCESS(), o.messages),
     ]
 }

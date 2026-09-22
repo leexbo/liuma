@@ -19,6 +19,7 @@ use gpui_kit::component::text::markdown_ast as mdast;
 use gpui_kit::component::text::{MarkdownNode, MarkdownParseContext, MarkdownPlugin};
 use gpui_kit::{App, Entity, IntoElement, Window};
 
+use crate::kits::i18n::dict;
 use crate::kits::mermaid::{self, MermaidCards};
 use crate::shell::store::AppStore;
 
@@ -145,11 +146,11 @@ fn mermaid_cards_for(store: &Entity<AppStore>, cx: &App) -> MermaidCards {
             Arc::new(|_card_key, source, window, cx| {
                 let msg = match crate::kits::mermaid::export_diagram_png(&source, 1.0, cx) {
                     Ok(p) => (
-                        "已导出:".to_string() + &p.display().to_string(),
+                        dict::chat::mermaid_exported(p.display()),
                         gpui_kit::component::notification::NotificationType::Success,
                     ),
                     Err(e) => (
-                        format!("导出失败:{e}"),
+                        dict::chat::mermaid_export_failed(&e),
                         gpui_kit::component::notification::NotificationType::Error,
                     ),
                 };

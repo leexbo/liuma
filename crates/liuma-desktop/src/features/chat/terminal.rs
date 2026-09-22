@@ -23,6 +23,7 @@ use gpui_kit::{
 
 use super::projection::ToolState;
 use crate::kits::cache::MemoCache;
+use crate::kits::i18n::dict;
 use crate::kits::theme;
 use crate::shell::store::AppStore;
 
@@ -699,9 +700,9 @@ pub(crate) fn render(
     let pill = if running {
         None
     } else if let Some(sig) = signal {
-        Some(format!("信号 {sig}"))
+        Some(dict::chat::signal(sig))
     } else {
-        exit_code.filter(|c| *c != 0).map(|c| format!("退出码 {c}"))
+        exit_code.filter(|c| *c != 0).map(dict::chat::exit_code)
     };
 
     // 多行命令 = 每行一条提示行;尾随换行是终结符不是空命令
@@ -861,7 +862,11 @@ fn copy_control(
         .text_size(px(13.))
         .text_color(theme::LABEL_2())
         .hover(|st| st.text_color(theme::LABEL()))
-        .child(if copied { "复制成功" } else { "复制" })
+        .child(if copied {
+            dict::common::copied()
+        } else {
+            dict::common::copy()
+        })
         .on_click(move |_, _, cx| {
             let (k, t) = (k.clone(), t.clone());
             s.update(cx, |st, cx| st.copy_message(&k, &t, cx));
@@ -905,7 +910,7 @@ fn empty_output() -> impl IntoElement {
         .pr(px(14.))
         .py(px(12.))
         .text_color(theme::LABEL_3())
-        .child("无输出")
+        .child(dict::chat::no_output())
 }
 
 /// 单输出行(spans 横排;空行保最小行高维持行计数;非交互,无 id)。

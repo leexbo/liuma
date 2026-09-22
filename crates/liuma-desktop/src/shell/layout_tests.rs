@@ -2487,7 +2487,10 @@ fn setter_error_pushes_notice(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let last = cx.update(|app| store.read(app).current_nodes().last().cloned());
     match last {
-        Some(ChatNode::Notice { text, .. }) => {
+        Some(ChatNode::Notice {
+            kind: crate::features::chat::projection::NoticeKind::Local { text },
+            ..
+        }) => {
             assert!(text.contains("切换失败"), "通告文案异常: {text}")
         }
         other => panic!("尾部应为 Notice 节点,实为 {other:?}"),
@@ -7592,7 +7595,9 @@ fn collapsed_turn_has_no_gap_before_notice(cx: &mut TestAppContext) {
             });
             chat.nodes.push(ChatNode::Notice {
                 key: "turn-error:9".into(),
-                text: "回合出错:transport: request: error sending request".into(),
+                kind: crate::features::chat::projection::NoticeKind::TurnError {
+                    detail: Some("transport: request: error sending request".into()),
+                },
             });
             st.state.chats.insert(id, chat);
         });

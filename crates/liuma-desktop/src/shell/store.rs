@@ -1123,7 +1123,9 @@ impl AppStore {
             .or_default()
             .push_node(ChatNode::Notice {
                 key,
-                text: text.to_string(),
+                kind: crate::features::chat::projection::NoticeKind::Local {
+                    text: text.to_string(),
+                },
             });
         self.chat.pinned = true;
         self.chat.chat_version += 1;

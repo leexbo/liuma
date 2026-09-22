@@ -21,6 +21,7 @@ use gpui_kit::{
 
 use super::projection::relativize;
 use crate::kits::highlight::Span;
+use crate::kits::i18n::dict;
 use crate::kits::theme;
 use crate::shell::store::AppStore;
 
@@ -278,11 +279,7 @@ pub(crate) fn render_read(
                             .text_size(px(13.))
                             .line_height(px(18.))
                             .text_color(theme::LABEL_3())
-                            .child(format!(
-                                "显示 {} / {} 行",
-                                card.lines.len(),
-                                card.total_lines
-                            )),
+                            .child(dict::chat::show_rows(card.lines.len(), card.total_lines)),
                     )
                 })
                 .children(card.lang.as_deref().map(|l| {
@@ -371,9 +368,11 @@ fn read_expand_row(
         .text_color(theme::LABEL_3())
         .hover(|st| st.text_color(theme::LABEL_2()))
         .child(if expanded {
-            "收起".to_string()
+            dict::common::collapse().to_string()
+        } else if hidden == 1 {
+            dict::chat::more_rows_one(hidden)
         } else {
-            format!("… 其余 {hidden} 行")
+            dict::chat::more_rows_other(hidden)
         })
         .on_click(move |_, _, cx| {
             let k = k.clone();
@@ -428,11 +427,11 @@ pub(crate) fn render_search(
         } => {
             let shown: usize = files.iter().map(|f| f.matches.len()).sum();
             let count = if *truncated {
-                format!("显示 {shown} / 共 {total}")
+                dict::chat::show_total(shown, *total)
             } else {
-                format!("{shown}")
+                shown.to_string()
             };
-            let summary = format!("{count} 处匹配 · {} 个文件", files.len());
+            let summary = dict::chat::match_summary(&count, files.len());
             let mut rows: Vec<SearchRow> = Vec::new();
             for (group, f) in files.iter().enumerate() {
                 rows.push(SearchRow::File {
@@ -468,11 +467,11 @@ pub(crate) fn render_search(
             total,
         } => {
             let count = if *truncated {
-                format!("显示 {} / 共 {total}", paths.len())
+                dict::chat::show_total(paths.len(), *total)
             } else {
-                format!("{}", paths.len())
+                paths.len().to_string()
             };
-            let summary = format!("{count} 个路径");
+            let summary = dict::chat::paths_summary(&count);
             let rows = paths.iter().map(|p| SearchRow::Path(p.clone())).collect();
             (rows, summary, paths.join("\n"))
         }
@@ -562,7 +561,7 @@ pub(crate) fn render_search(
                 .px(px(14.))
                 .py(px(12.))
                 .text_color(theme::LABEL_3())
-                .child("无结果"),
+                .child(dict::chat::no_results()),
         );
     } else {
         card_el = card_el.child(
@@ -679,9 +678,11 @@ fn search_expand_row(
         .text_color(theme::LABEL_3())
         .hover(|st| st.text_color(theme::LABEL_2()))
         .child(if expanded {
-            "收起".to_string()
+            dict::common::collapse().to_string()
+        } else if hidden == 1 {
+            dict::chat::more_rows_one(hidden)
         } else {
-            format!("… 其余 {hidden} 行")
+            dict::chat::more_rows_other(hidden)
         })
         .on_click(move |_, _, cx| {
             let k = k.clone();
@@ -809,9 +810,11 @@ pub(crate) fn render_diff(
                 .px(px(14.))
                 .pb(px(12.))
                 .text_color(theme::LABEL_3())
-                .child(format!(
-                    "└ +{added} -{removed} · {files} file{}",
-                    if files == 1 { "" } else { "s" }
+                .child(dict::chat::diff_stat(
+                    added,
+                    removed,
+                    files,
+                    if files == 1 { "" } else { "s" },
                 )),
         )
         .when(!copy_text.is_empty(), |el| {
@@ -941,9 +944,11 @@ fn diff_expand_row(
         .text_color(theme::LABEL_3())
         .hover(|st| st.text_color(theme::LABEL_2()))
         .child(if expanded {
-            "收起".to_string()
+            dict::common::collapse().to_string()
+        } else if hidden == 1 {
+            dict::chat::more_rows_one(hidden)
         } else {
-            format!("… 其余 {hidden} 行")
+            dict::chat::more_rows_other(hidden)
         })
         .on_click(move |_, _, cx| {
             let k = k.clone();
@@ -982,7 +987,11 @@ fn copy_button(
         .line_height(px(18.))
         .text_color(theme::LABEL_2())
         .hover(|st| st.text_color(theme::LABEL()))
-        .child(if copied { "复制成功" } else { "复制" })
+        .child(if copied {
+            dict::common::copied()
+        } else {
+            dict::common::copy()
+        })
         .on_click(move |_, _, cx| {
             let (k, t) = (k.clone(), t.clone());
             s.update(cx, |st, cx| st.copy_message(&k, &t, cx));
@@ -1016,7 +1025,7 @@ pub(crate) fn render_skill(
     if error {
         let first = output
             .and_then(|o| o.lines().find(|l| !l.trim().is_empty()))
-            .unwrap_or("skill 加载失败");
+            .unwrap_or(dict::chat::skill_failed());
         return div()
             .ml(px(4.))
             .rounded(px(12.))
@@ -1034,7 +1043,7 @@ pub(crate) fn render_skill(
             .ml(px(4.))
             .text_size(px(13.))
             .text_color(theme::LABEL_3())
-            .child("正在加载 skill")
+            .child(dict::chat::skill_loading())
             .into_any_element();
     };
     let expand_key = format!("{key}·skill");
@@ -1140,9 +1149,11 @@ fn skill_expand_row(
         .text_color(theme::LABEL_3())
         .hover(|st| st.text_color(theme::LABEL_2()))
         .child(if expanded {
-            "收起".to_string()
+            dict::common::collapse().to_string()
+        } else if hidden == 1 {
+            dict::chat::more_rows_one(hidden)
         } else {
-            format!("… 其余 {hidden} 行")
+            dict::chat::more_rows_other(hidden)
         })
         .on_click(move |_, _, cx| {
             let k = k.clone();

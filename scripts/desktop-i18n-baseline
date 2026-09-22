@@ -7,16 +7,6 @@ crates/liuma-desktop/src/features/ask/plan_review.rs 7
 crates/liuma-desktop/src/features/ask/store.rs 9
 crates/liuma-desktop/src/features/attachments/store.rs 11
 crates/liuma-desktop/src/features/attachments/views.rs 1
-crates/liuma-desktop/src/features/chat/chat_pane.rs 58
-crates/liuma-desktop/src/features/chat/composer.rs 18
-crates/liuma-desktop/src/features/chat/context_meter.rs 3
-crates/liuma-desktop/src/features/chat/mermaid_plugin.rs 3
-crates/liuma-desktop/src/features/chat/projection.rs 6
-crates/liuma-desktop/src/features/chat/queue_dock.rs 2
-crates/liuma-desktop/src/features/chat/store.rs 19
-crates/liuma-desktop/src/features/chat/terminal.rs 5
-crates/liuma-desktop/src/features/chat/todo_dock.rs 2
-crates/liuma-desktop/src/features/chat/toolcard.rs 26
 crates/liuma-desktop/src/features/feedback/store.rs 1
 crates/liuma-desktop/src/features/feedback/views.rs 3
 crates/liuma-desktop/src/features/files/face.rs 4
@@ -29,8 +19,7 @@ crates/liuma-desktop/src/features/preview/views.rs 12
 crates/liuma-desktop/src/features/search/store.rs 1
 crates/liuma-desktop/src/features/search/views.rs 3
 crates/liuma-desktop/src/features/subagents/views.rs 7
-crates/liuma-desktop/src/features/trajectory/views.rs 34
+crates/liuma-desktop/src/features/trajectory/views.rs 25
 crates/liuma-desktop/src/kits/filetype.rs 3
-crates/liuma-desktop/src/kits/highlight.rs 4
-crates/liuma-desktop/src/kits/mermaid.rs 14
+crates/liuma-desktop/src/kits/highlight.rs 1
 crates/liuma-desktop/src/kits/modals.rs 4

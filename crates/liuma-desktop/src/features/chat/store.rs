@@ -15,6 +15,7 @@ use gpui_kit::{AppContext as _, Context, Entity, Window};
 
 use super::projection::{ChatNode, ChatState, RowSlot, build_row_slots};
 use crate::features::attachments::AttachmentToast;
+use crate::kits::i18n::dict;
 use crate::shell::store::AppStore;
 
 /// Mermaid 图查看器打开态(`None` = 关闭;打开动作经内嵌图点击)。
@@ -1250,18 +1251,21 @@ impl AppStore {
         if is_cmd && !drafts.is_empty() {
             let has_file = drafts.iter().any(|d| matches!(d, Draft::File(_)));
             self.attachments.attachment_toast = Some(AttachmentToast {
-                text: format!(
-                    "/{} 不接受{},请先移除{}",
+                text: dict::chat::attach_rejected(
                     text.split_whitespace()
                         .next()
                         .unwrap_or_default()
                         .trim_start_matches('/'),
                     if has_file {
-                        "文件附件"
+                        dict::chat::attach_file_full()
                     } else {
-                        "图片附件"
+                        dict::chat::attach_image_full()
                     },
-                    if has_file { "文件" } else { "图片" },
+                    if has_file {
+                        dict::chat::attach_file()
+                    } else {
+                        dict::chat::attach_image()
+                    },
                 ),
             });
             self.attachments.drafts = drafts;
@@ -1523,7 +1527,7 @@ impl AppStore {
             });
             store.update(cx, |s, cx| {
                 if let Err(e) = result {
-                    s.push_local_notice(&format!("队列操作失败:{}", e.message), cx);
+                    s.push_local_notice(&dict::chat::queue_op_failed(&e.message), cx);
                 }
             });
             Ok::<(), anyhow::Error>(())
@@ -1773,7 +1777,7 @@ impl AppStore {
                 self.refresh_list(cx);
                 self.open_session(&new_id, cx);
             }
-            Err(e) => self.push_local_notice(&format!("分支失败:{}", e.message), cx),
+            Err(e) => self.push_local_notice(&dict::chat::branch_failed(&e.message), cx),
         }
     }
 
@@ -2000,7 +2004,8 @@ impl AppStore {
                         else {
                             let _ = wh.update(cx, |_, window, cx| {
                                 window.push_notification(
-                                    Notification::error("导出数据解码失败").title("导出失败"),
+                                    Notification::error(dict::chat::export_decode_failed())
+                                        .title(dict::sessions::export_failed()),
                                     cx,
                                 );
                             });
@@ -2020,8 +2025,8 @@ impl AppStore {
                             Ok(Err(e)) => {
                                 let _ = wh.update(cx, |_, window, cx| {
                                     window.push_notification(
-                                        Notification::error(format!("保存对话框打开失败:{e}"))
-                                            .title("导出失败"),
+                                        Notification::error(dict::sessions::save_dialog_failed(&e))
+                                            .title(dict::sessions::export_failed()),
                                         cx,
                                     );
                                 });
@@ -2032,7 +2037,8 @@ impl AppStore {
                         if let Err(e) = std::fs::write(&chosen, bytes) {
                             let _ = wh.update(cx, |_, window, cx| {
                                 window.push_notification(
-                                    Notification::error(format!("写入失败:{e}")).title("导出失败"),
+                                    Notification::error(dict::sessions::write_failed(&e))
+                                        .title(dict::sessions::export_failed()),
                                     cx,
                                 );
                             });
@@ -2040,7 +2046,8 @@ impl AppStore {
                         }
                         let _ = wh.update(cx, |_, window, cx| {
                             window.push_notification(
-                                Notification::success(chosen.display().to_string()).title("已导出"),
+                                Notification::success(chosen.display().to_string())
+                                    .title(dict::chat::exported()),
                                 cx,
                             );
                         });
@@ -2066,7 +2073,7 @@ impl AppStore {
                         let text = v
                             .get("model")
                             .and_then(|x| x.as_str())
-                            .map(|m| format!("当前: {m}"))
+                            .map(dict::chat::current_model)
                             .unwrap_or_else(|| "done".to_string());
                         store.update(cx, |s, cx| {
                             s.push_local_notice(&text, cx);
@@ -2075,7 +2082,7 @@ impl AppStore {
                 }
                 Ok(Err(e)) => {
                     store.update(cx, |s, cx| {
-                        s.push_local_notice(&format!("命令失败:{}", e.message), cx);
+                        s.push_local_notice(&dict::chat::command_failed(&e.message), cx);
                     });
                 }
                 Err(_) => {}

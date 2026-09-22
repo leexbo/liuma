@@ -18,4 +18,10 @@ entries! {
     uninstall => ["卸载", "Uninstall"],
     /// 确认(复杂承诺的兜底确认钮;纯知会收尾键随 modals 迁移再入)
     confirm => ["确认", "Confirm"],
+    /// 复制
+    copy => ["复制", "Copy"],
+    /// 复制成功(点击后瞬时反馈)
+    copied => ["复制成功", "Copied"],
+    /// 收起(展开态回落)
+    collapse => ["收起", "Collapse"],
 }

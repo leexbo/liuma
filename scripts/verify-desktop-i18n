@@ -46,7 +46,10 @@ DEV_MACROS = {
     "assert", "assert_eq", "assert_ne",
     "debug_assert", "debug_assert_eq", "debug_assert_ne",
     "panic", "unreachable", "todo", "unimplemented",
+    "anyhow",  # 内部不变式/日志错误串(经 ImageCacheError 等落日志)
 }
+# 开发者向方法(不变式消息;值回退类如 unwrap_or 的实参常是文案,不豁免)
+DEV_METHODS = {"expect"}
 
 
 def is_cjk(ch: str) -> bool:
@@ -102,7 +105,10 @@ def scan_file(path: Path) -> list[int]:
             content, i, line = _read_string(text, i, line)
             allowed = (
                 bool(test_scopes)
-                or any(m in DEV_MACROS for m, _ in macro_stack)
+                or any(
+                    m in DEV_MACROS or m in DEV_METHODS
+                    for m, _ in macro_stack
+                )
             )
             if not allowed and any(is_cjk(c) for c in content):
                 hits.append(start_line)
@@ -115,12 +121,19 @@ def scan_file(path: Path) -> list[int]:
         # ── 代码态 ──
         if ch in "([{":
             depth += 1
-            # 宏调用识别:ident ! ws 开括号('!' 分支保持 last_ident)
-            if last_ident in DEV_MACROS:
+            # 宏调用识别:ident ! ws 开括号('!' 分支保持 last_ident);
+            # 方法形态:.expect( 等开发者向不变式消息(回看须先越过
+            # 标识符本体再找 '.' / '!')
+            if last_ident in DEV_MACROS or last_ident in DEV_METHODS:
                 j = i - 1
                 while j >= 0 and text[j] in " \t":
                     j -= 1
-                if j >= 0 and text[j] == "!":
+                if j >= 0 and (text[j].isalnum() or text[j] == "_"):
+                    while j >= 0 and (text[j].isalnum() or text[j] == "_"):
+                        j -= 1
+                    while j >= 0 and text[j] in " \t":
+                        j -= 1
+                if j >= 0 and (text[j] == "!" or text[j] == "."):
                     macro_stack.append((last_ident, depth))
             last_ident = ""
             i += 1
@@ -204,7 +217,8 @@ def _skip_char_or_lifetime(text: str, i: int) -> tuple[int, int]:
     """越过字符面量或生命周期标注,返回(新下标, 跨行数)。
 
     消歧:`'ident` 无闭引号 = 生命周期(&'static / <'a>);其余按字符
-    面量跳过(`'x'` / `'\\n'` / `'\\''`)。
+    面量逐字符走到闭引号(转义体:`\\u{...}` / `\\xNN` / 两字符转义;
+    失同步会把它处之后的注释误读为字符串,必须精确)。
     """
     j = i + 1
     n = len(text)
@@ -212,17 +226,31 @@ def _skip_char_or_lifetime(text: str, i: int) -> tuple[int, int]:
         k = j
         while k < n and (text[k].isalnum() or text[k] == "_"):
             k += 1
-        return k, 0
+        # 标识符后紧跟闭引号 = 单字母/短字符字面量('K' / 'ab' 不存在,
+        # 'K' 是字符 K),落回字符面量通道;否则 = 生命周期('static / 'a)
+        if k >= n or text[k] != "'":
+            return k, 0
     lines = 0
-    if j < n and text[j] == "\\":
-        if text[j + 1 : j + 2] == "\n":
-            lines = 1
-        j += 2
-    elif j < n:
+    while j < n:
+        c = text[j]
+        if c == "'":
+            return j + 1, lines
+        if c == "\n":
+            lines += 1
+            j += 1
+            continue
+        if c == "\\":
+            nxt = text[j + 1 : j + 2]
+            if nxt == "u" and text[j + 2 : j + 3] == "{":
+                k = text.find("}", j + 3)
+                j = k + 1 if k != -1 else j + 3
+            elif nxt == "x":
+                j += 4
+            else:
+                j += 2
+            continue
         j += 1
-    if j < n and text[j] == "'":
-        j += 1
-    return j, lines
+    return j, lines  # 未闭合(畸形容忍)
 
 
 def load_baseline() -> dict[str, int]:

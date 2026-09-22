@@ -14,6 +14,7 @@ use gpui_kit::{
 };
 
 use crate::features::chat::{QueueEntry, QueuePlacement};
+use crate::kits::i18n::dict;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -82,7 +83,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 .text_color(theme::LABEL_2())
                 .hover(|s| s.bg(theme::DOCK()))
                 .child(fixed(LiumaIcon::ListChecks, 13.))
-                .child(format!("队列 {} 条", queued.len()))
+                .child(dict::chat::queue_count(queued.len()))
                 .child(div().flex_1())
                 .child(fixed(
                     if collapsed_now {
@@ -241,7 +242,7 @@ fn queue_actions(
                         .text_size(px(11.))
                         .text_color(theme::CAPTION())
                         .hover(|s| s.bg(theme::BUBBLE()).text_color(theme::LABEL()))
-                        .child("编辑")
+                        .child(dict::common::edit())
                         .on_click(move |_, window, cx| {
                             s_edit.update(cx, |st, cx| {
                                 st.queue_begin_edit(&sid_e, &iid_e, window, cx);

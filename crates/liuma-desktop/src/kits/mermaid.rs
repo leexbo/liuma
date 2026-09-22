@@ -40,6 +40,7 @@ use gpui_kit::{
 use super::icons::{LiumaIcon, fixed};
 use super::theme;
 use super::theme::{Palette, palette_of};
+use crate::kits::i18n::dict;
 
 /// 卡片控件态快照(消息流 per-card map;kits 无状态,不直接引用
 /// AppStore——宿主注入状态与动作,本模块只按快照渲染)。
@@ -433,25 +434,47 @@ fn card_toolbar(
                 .rounded_full()
                 .bg(theme::LAYER())
                 .p(px(2.))
-                .child(segment_button(&key, "chart", "图表", !show_code, {
-                    let key = key.clone();
-                    let f = toggle_code.clone();
-                    move |w, cx| f(&key, w, cx)
-                }))
-                .child(segment_button(&key, "code", "代码", show_code, {
-                    let key = key.clone();
-                    let f = toggle_code.clone();
-                    move |w, cx| f(&key, w, cx)
-                })),
+                .child(segment_button(
+                    &key,
+                    "chart",
+                    dict::chat::mermaid_chart(),
+                    !show_code,
+                    {
+                        let key = key.clone();
+                        let f = toggle_code.clone();
+                        move |w, cx| f(&key, w, cx)
+                    },
+                ))
+                .child(segment_button(
+                    &key,
+                    "code",
+                    dict::chat::mermaid_code(),
+                    show_code,
+                    {
+                        let key = key.clone();
+                        let f = toggle_code.clone();
+                        move |w, cx| f(&key, w, cx)
+                    },
+                )),
         )
         .child(div().flex_1())
         .child({
             // 复制反馈 = 按钮本体态切换:✓ 已复制(SUCCESS 绿)窗口内;
             // 反馈态点击仍重复复制(重启反馈窗,剪贴板被覆盖后可再取)
             let (id, icon, label, color) = if copied {
-                ("copy-done", IconName::Check, "已复制", theme::SUCCESS())
+                (
+                    "copy-done",
+                    IconName::Check,
+                    dict::common::copied(),
+                    theme::SUCCESS(),
+                )
             } else {
-                ("copy", IconName::Copy, "复制", theme::LABEL_2())
+                (
+                    "copy",
+                    IconName::Copy,
+                    dict::common::copy(),
+                    theme::LABEL_2(),
+                )
             };
             toolbar_label_button(&key, id, icon, label, color, {
                 let key = key.clone();
@@ -465,7 +488,7 @@ fn card_toolbar(
             &key,
             "download",
             LiumaIcon::Download,
-            "下载",
+            dict::chat::mermaid_download(),
             theme::LABEL_2(),
             {
                 let key = key.clone();
@@ -478,7 +501,7 @@ fn card_toolbar(
             &key,
             "enlarge",
             IconName::Maximize,
-            "放大",
+            dict::chat::mermaid_zoom(),
             theme::LABEL_2(),
             {
                 let key = key.clone();

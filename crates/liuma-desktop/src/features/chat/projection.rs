@@ -3,6 +3,7 @@
 //!
 //! 事件形状源 `liuma-core/src/translate.rs`(客方 camelCase);未列类型忽略。
 
+use crate::kits::i18n::dict;
 use liuma_core::proto::SessionEvent;
 use serde_json::Value;
 
@@ -24,6 +25,17 @@ pub struct TodoItem {
     pub content: String,
     /// completed / in_progress / pending
     pub status: String,
+}
+
+/// 通告行类别(渲染期词典化;locale-owned:宿主 detail 逐字直显)
+#[derive(Debug, Clone, PartialEq)]
+pub enum NoticeKind {
+    /// 回合错误(detail = 宿主错误原文;缺席时渲染层兜底「未知错误」)
+    TurnError { detail: Option<String> },
+    /// 压缩失败(text = 宿主 settlement 原文直显)
+    Compaction { text: String },
+    /// 本地通告(shell 直推的操作反馈;构建期定稿文案,不随档重渲)
+    Local { text: String },
 }
 
 /// 消息流节点(稳定 key;同 key 增量替换)
@@ -108,8 +120,8 @@ pub enum ChatNode {
     Notice {
         /// 稳定 key
         key: String,
-        /// 文本
-        text: String,
+        /// 类别(渲染期词典化;宿主 detail 逐字)
+        kind: NoticeKind,
     },
     /// 压缩标记行(compaction/summary 落档;
     /// 折叠态显统计行,点击展开摘要全文)
@@ -357,12 +369,12 @@ impl ChatState {
                 }
                 // 错误终止(传输失败/悬挂超时):通告行替代收尾行
                 if kind == Some("error") {
-                    let msg = ev.data["reason"]["error"]["message"]
+                    let detail = ev.data["reason"]["error"]["message"]
                         .as_str()
-                        .unwrap_or("未知错误");
+                        .map(str::to_string);
                     self.push_node(ChatNode::Notice {
                         key: format!("turn-error:{}", ev.seq),
-                        text: format!("回合出错:{msg}"),
+                        kind: NoticeKind::TurnError { detail },
                     });
                 } else {
                     let deliverables = std::mem::take(&mut self.turn_deliverables);
@@ -618,7 +630,9 @@ impl ChatState {
             "compaction/error" => {
                 self.compact_running = false;
                 self.compact_queued = false;
-                let msg = ev.data["message"].as_str().unwrap_or("未知错误");
+                let msg = ev.data["message"]
+                    .as_str()
+                    .unwrap_or(dict::chat::unknown_error());
                 if ev.data["kind"].as_str() == Some("empty") {
                     self.push_node(ChatNode::CompactStatus {
                         key: format!("cpt-empty:{}", ev.seq),
@@ -627,7 +641,9 @@ impl ChatState {
                 } else {
                     self.push_node(ChatNode::Notice {
                         key: format!("cpt-err:{}", ev.seq),
-                        text: msg.to_string(),
+                        kind: NoticeKind::Compaction {
+                            text: msg.to_string(),
+                        },
                     });
                 }
             }
@@ -1124,7 +1140,7 @@ pub(crate) fn todo_row_summary(arguments: &str) -> Option<TodoRowSummary> {
         .filter(|t| t["status"] == "in_progress")
         .filter_map(|t| t["content"].as_str())
         .collect();
-    let mut text = format!("{done}/{} 已完成", todos.len());
+    let mut text = dict::chat::todo_done(done, todos.len());
     // 首个进行中文本可用(非空白)才挂名 + 计额外数
     let mut extra = 0;
     if let Some(first) = actives.first().filter(|c| !c.trim().is_empty()) {
@@ -1447,7 +1463,10 @@ mod tests {
             json!({ "kind": "error", "message": "boom" }),
         ));
         match &st.nodes[2] {
-            ChatNode::Notice { key, text } => {
+            ChatNode::Notice {
+                key,
+                kind: NoticeKind::Compaction { text },
+            } => {
                 assert_eq!(key, "cpt-err:4");
                 assert_eq!(text, "boom");
             }
@@ -1456,7 +1475,10 @@ mod tests {
         // 旧日志无 kind(向后兼容):视作真实失败走红色通告
         st.apply(&ev("compaction/error", 5, json!({ "message": "legacy" })));
         match &st.nodes[3] {
-            ChatNode::Notice { text, .. } => assert_eq!(text, "legacy"),
+            ChatNode::Notice {
+                kind: NoticeKind::Compaction { text },
+                ..
+            } => assert_eq!(text, "legacy"),
             other => panic!("expected notice, got {other:?}"),
         }
     }
@@ -1501,8 +1523,12 @@ mod tests {
         ));
         assert!(!st.running);
         match st.nodes.last() {
-            Some(ChatNode::Notice { text, .. }) => {
-                assert!(text.contains("读超时"), "通告应含错误信息: {text}");
+            Some(ChatNode::Notice {
+                kind: NoticeKind::TurnError { detail },
+                ..
+            }) => {
+                let detail = detail.as_deref().unwrap_or_default();
+                assert!(detail.contains("读超时"), "通告应含错误信息: {detail}");
             }
             other => panic!("expected notice, got {other:?}"),
         }

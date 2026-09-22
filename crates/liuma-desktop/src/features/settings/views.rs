@@ -1380,11 +1380,11 @@ fn relative_time(ms: u64) -> String {
         .as_millis() as u64;
     let mins = now.saturating_sub(ms) / 60_000;
     if mins < 60 {
-        dict::settings::rel_mins_ago(mins)
+        dict::time::rel_mins_ago(mins)
     } else if mins < 60 * 24 {
-        dict::settings::rel_hours_ago(mins / 60)
+        dict::time::rel_hours_ago(mins / 60)
     } else {
-        dict::settings::rel_days_ago(mins / (60 * 24))
+        dict::time::rel_days_ago(mins / (60 * 24))
     }
 }
 

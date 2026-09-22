@@ -7,6 +7,7 @@
 
 pub(crate) mod chat;
 pub(crate) mod common;
+
 pub(crate) mod sessions;
 pub(crate) mod settings;
 pub(crate) mod shell;

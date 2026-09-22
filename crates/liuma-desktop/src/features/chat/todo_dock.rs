@@ -10,6 +10,7 @@ use gpui_kit::{
 };
 
 use super::projection::TodoItem;
+use crate::kits::i18n::dict;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -50,19 +51,14 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
                         div()
                             .text_size(px(12.))
                             .text_color(theme::LABEL_2())
-                            .child("计划"),
+                            .child(dict::shell::plan_tab()),
                     )
                     .child(
                         div()
                             .flex_1()
                             .text_size(px(11.))
                             .text_color(theme::CAPTION())
-                            .child(format!(
-                                "{done} 完成 · {active} 进行 · {pending} 待办",
-                                done = counts.0,
-                                active = counts.1,
-                                pending = counts.2,
-                            )),
+                            .child(dict::chat::todo_counts(counts.0, counts.1, counts.2)),
                     )
                     .child(
                         fixed(

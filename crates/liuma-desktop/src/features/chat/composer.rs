@@ -15,6 +15,7 @@ use gpui_kit::{
 
 use super::store::ComposerMenu;
 use crate::features::attachments;
+use crate::kits::i18n::dict;
 use crate::kits::icons::{self, LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -300,7 +301,7 @@ fn bottom_row(
                     files: true,
                     directories: false,
                     multiple: true,
-                    prompt: Some("选择附件".into()),
+                    prompt: Some(dict::chat::pick_attachment().into()),
                 });
                 // Fn 闭包不能 move 出捕获:异步块内用克隆体
                 let s2 = s.clone();
@@ -553,7 +554,7 @@ fn at_completion_card(
 ) -> gpui_kit::AnyElement {
     let mut rows: Vec<gpui_kit::AnyElement> = vec![];
     if !at.files.is_empty() {
-        rows.push(section_label("文件与文件夹").into_any_element());
+        rows.push(section_label(dict::chat::section_files()).into_any_element());
         for (i, f) in at.files.iter().enumerate() {
             let idx = i; // 高亮索引:文件占 0..files.len
             let s = store.clone();
@@ -589,7 +590,7 @@ fn at_completion_card(
         if !rows.is_empty() {
             rows.push(menu_separator().into_any_element());
         }
-        rows.push(section_label("Session 对话").into_any_element());
+        rows.push(section_label(dict::chat::section_sessions()).into_any_element());
         let file_count = at.files.len();
         for (i, s) in at.sessions.iter().enumerate() {
             let idx = file_count + i;
@@ -692,7 +693,7 @@ fn plan_chip(store: &Entity<AppStore>, hovered: bool) -> impl IntoElement {
         } else {
             fixed(LiumaIcon::ListChecks, 14.)
         })
-        .child("计划")
+        .child(dict::shell::plan_tab())
         // 测试钩子(release 空操作)
         .debug_selector(|| "chip-plan".to_string())
         .on_click(move |_, _, cx| {
@@ -713,7 +714,7 @@ fn commands_card(
 ) -> gpui_kit::AnyElement {
     let mut rows: Vec<gpui_kit::AnyElement> = vec![];
     if !cmds.is_empty() {
-        rows.push(section_label("命令").into_any_element());
+        rows.push(section_label(dict::chat::section_commands()).into_any_element());
         for cmd in cmds {
             let s = store.clone();
             let name = cmd.name.to_string();
@@ -739,14 +740,14 @@ fn commands_card(
         }
     }
     if !skills.is_empty() {
-        rows.push(section_label("技能").into_any_element());
+        rows.push(section_label(dict::chat::section_skills()).into_any_element());
         for sk in skills {
             let s = store.clone();
             let name = sk.name.clone();
             let desc = if sk.model_invocable {
                 sk.description.clone()
             } else {
-                format!("仅用户 · {}", sk.description)
+                dict::chat::user_only(&sk.description)
             };
             let chip_name: &'static str = Box::leak(name.clone().into_boxed_str());
             rows.push(
@@ -867,7 +868,7 @@ fn context_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
                         div()
                             .text_size(px(13.))
                             .text_color(theme::LABEL())
-                            .child(format!("上下文已用 {percent}%")),
+                            .child(dict::chat::ctx_used_pct(percent)),
                     )
                     .child(
                         div()
@@ -925,12 +926,9 @@ fn context_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
                 .child(div().size(px(8.)).rounded_full().bg(color))
                 .child(label)
                 .child(div().flex_1())
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(theme::CAPTION())
-                        .child(format!("{} · {:.0}%", fmt_tok(v), share * 100.0)),
-                )
+                .child(div().text_size(px(11.)).text_color(theme::CAPTION()).child(
+                    dict::chat::tok_share(fmt_tok(v), format!("{:.0}", share * 100.0)),
+                ))
                 .into_any_element(),
         );
     }
@@ -1020,7 +1018,7 @@ fn model_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
     let s_model_row = store.clone();
     // ── 一级卡:模型入口行 + 推理强度平铺(不改)──
     let mut rows: Vec<gpui_kit::AnyElement> = vec![];
-    rows.push(section_label("模型").into_any_element());
+    rows.push(section_label(dict::chat::model_label()).into_any_element());
     rows.push(
         div()
             .id("model-entry")
@@ -1037,7 +1035,7 @@ fn model_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
                 div()
                     .text_size(px(13.))
                     .text_color(theme::LABEL())
-                    .child("模型"),
+                    .child(dict::chat::model_label()),
             )
             .child(div().flex_1())
             .child(
@@ -1071,7 +1069,7 @@ fn model_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
             .into_any_element(),
     );
     rows.push(menu_separator().into_any_element());
-    rows.push(section_label("推理等级").into_any_element());
+    rows.push(section_label(dict::chat::reasoning_level()).into_any_element());
     for (ix, e) in efforts.iter().enumerate() {
         let s = store.clone();
         let v = e.clone();
@@ -1105,7 +1103,7 @@ fn model_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
                 .py(px(4.))
                 .text_size(px(11.))
                 .text_color(theme::CAPTION())
-                .child("模型")
+                .child(dict::chat::model_label())
                 .into_any_element(),
         );
         for (pid, name, models, _d) in &groups {
@@ -1154,7 +1152,7 @@ fn model_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
                     .py(px(6.))
                     .text_size(px(12.))
                     .text_color(theme::CAPTION())
-                    .child("各 Provider 尚未配置模型。")
+                    .child(dict::chat::no_models())
                     .into_any_element(),
             );
         }
@@ -1373,9 +1371,9 @@ fn chip(id: &'static str, label: &str, icon: Icon) -> gpui_kit::Stateful<gpui_ki
 /// 徽标共用):仅可查看 / 工作区内修改 / 完全权限
 pub(crate) fn permission_label(mode: &str) -> &'static str {
     match mode {
-        "read-only" => "仅可查看",
-        "full-access" => "完全权限",
-        _ => "工作区内修改",
+        "read-only" => dict::chat::perm_read_only(),
+        "full-access" => dict::chat::perm_full_access(),
+        _ => dict::chat::perm_workspace_write(),
     }
 }
 

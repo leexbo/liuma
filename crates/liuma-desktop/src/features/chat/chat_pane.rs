@@ -22,6 +22,7 @@ use crate::kits::icons::{self, LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::metrics::{H_PAD, NAV_GUTTER_W, RUN_CLOCK_AFTER_SECS, SCROLLBAR_GUTTER_W};
 
+use crate::kits::i18n::dict;
 use crate::shell::store::AppStore;
 
 // 聊天正文右键「复制」:复制窗口级文档选中(聊天文字拖选)。不复用输入框
@@ -71,7 +72,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 .chats
                 .get(&id)
                 .map(|c| format!("nodes={}", c.nodes.len()))
-                .unwrap_or_else(|| "entry 缺失".into());
+                .unwrap_or_else(|| dict::chat::unknown_error().into());
             eprintln!(
                 "[probe-anchors] sid={id} index={} page [{page}] slots={}",
                 st.chat.anchor_index.len(),
@@ -334,7 +335,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                             st.chat.pending_copy_text = Some(text);
                         });
                         NativeMenu::new()
-                            .menu("复制", Box::new(CopyChatSelection))
+                            .menu(dict::chat::copy_menu(), Box::new(CopyChatSelection))
                             .show(ev.position, window, cx);
                     }
                 })
@@ -358,7 +359,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                                     .text_size(px(13.))
                                     .text_color(theme::CAPTION())
                                     .child(Spinner::new().small())
-                                    .child("正在加载会话内容…"),
+                                    .child(dict::chat::loading_history()),
                             ),
                     )
                 }),
@@ -367,9 +368,9 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
             // 槽位 padding 与 turn-status 同款(与列表容器同一中心线);
             // 排队态静态,进行态 shimmer
             let (message, selector) = if compact_running {
-                ("正在压缩…", "compact-running")
+                (dict::chat::compact_running(), "compact-running")
             } else {
-                ("已排队,回合结束后压缩", "compact-queued")
+                (dict::chat::compact_queued(), "compact-queued")
             };
             el.child(
                 div()
@@ -406,7 +407,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                                     .flex()
                                     .items_center()
                                     .gap(px(4.))
-                                    .child("深入探索中…")
+                                    .child(dict::chat::exploring())
                                     .when_some(dur, |el, label| {
                                         el.child(
                                             div()
@@ -910,9 +911,9 @@ fn context_block(
     let click_key = key.clone();
     let (role, label) = context_provenance(source);
     let title = if role == "recall" {
-        format!("召回·{label}")
+        dict::chat::recall(label)
     } else {
-        format!("注入·{label}")
+        dict::chat::inject(label)
     };
     let icon = if role == "recall" {
         fixed(LiumaIcon::MessageSquare, 14.).into_any_element()
@@ -1026,9 +1027,9 @@ fn compaction_block(
     let key_owned = key.to_string();
     let click_key = key.to_string();
     let message = match (items, tokens) {
-        (Some(n), Some(t)) => format!("已压缩 {n} 条历史记录（约 {t} tokens）"),
-        _ if !summary.is_empty() => "点击查看压缩摘要".to_string(),
-        _ => "压缩摘要不可用".to_string(),
+        (Some(n), Some(t)) => dict::chat::compaction_done(n, t),
+        _ if !summary.is_empty() => dict::chat::compact_summary_hint().to_string(),
+        _ => dict::chat::compact_summary_na().to_string(),
     };
     let sel = format!("compact-done-{ix}");
     let grp = format!("cpt-group-{ix}");
@@ -1128,27 +1129,36 @@ fn notice_card(
     let (status, closing) = if kind == "subagent-message" {
         // 回发消息:正文 = 前缀行之后的消息本体
         (
-            "子代理·消息",
+            dict::chat::subagent_message(),
             content
                 .split_once(":\n\n")
                 .map(|(_, rest)| rest.trim().to_string()),
         )
     } else if summary.contains("was stopped") {
-        ("子代理·已停止", closing_of_settlement(content))
+        (
+            dict::chat::subagent_stopped(),
+            closing_of_settlement(content),
+        )
     } else if summary.contains("was interrupted") {
-        ("子代理·已恢复", closing_of_settlement(content))
+        (
+            dict::chat::subagent_resumed(),
+            closing_of_settlement(content),
+        )
     } else if summary.contains("failed")
         || summary.contains("declined")
         || summary.contains("ended abnormally")
     {
-        ("子代理·已失败", closing_of_settlement(content))
+        (
+            dict::chat::subagent_failed(),
+            closing_of_settlement(content),
+        )
     } else {
-        ("子代理·已完成", closing_of_settlement(content))
+        (dict::chat::subagent_done(), closing_of_settlement(content))
     };
     let folded_summary = closing
         .as_ref()
         .map(|c| summary_line(c))
-        .unwrap_or_else(|| "无收尾消息".to_string());
+        .unwrap_or_else(|| dict::chat::no_closing().to_string());
     let jump = child_id.clone();
     div()
         .id(("notice", ix))
@@ -1173,7 +1183,7 @@ fn notice_card(
                     .text_color(theme::LABEL_3())
                     .line_height(gpui_kit::relative(1.5))
                     .whitespace_normal()
-                    .child(closing.unwrap_or_else(|| "无收尾消息".into())),
+                    .child(closing.unwrap_or_else(|| dict::chat::no_closing().into())),
             );
             if child_id.is_empty() {
                 return body;
@@ -1196,7 +1206,7 @@ fn notice_card(
                     .on_click(move |_, _, cx| {
                         s.update(cx, |st, cx| st.open_session(&jump, cx));
                     })
-                    .child("查看子会话")
+                    .child(dict::chat::view_subsession())
                     .child(fixed(IconName::ArrowRight, 12.)),
             )
         })
@@ -1286,9 +1296,9 @@ fn turn_group_row(
 ) -> impl IntoElement {
     let (steps, tools) =
         super::projection::group_counts(store.read(cx).current_nodes(), first, last);
-    let mut label = format!("思考与工具 · {steps} 步");
+    let mut label = dict::chat::think_tools(steps);
     if tools > 0 {
-        label.push_str(&format!(" · {tools} 个调用"));
+        label.push_str(&dict::chat::calls_suffix(tools));
     }
     let s = store.clone();
     let key = turn_key.to_string();
@@ -1422,7 +1432,23 @@ fn render_node(
             deliverables,
         )
         .into_any_element(),
-        ChatNode::Notice { text, .. } => notice(text).into_any_element(),
+        ChatNode::Notice { kind, .. } => match kind {
+            crate::features::chat::projection::NoticeKind::TurnError { detail } => {
+                notice(&match detail {
+                    Some(d) => dict::chat::turn_error(d),
+                    None => dict::chat::turn_error(dict::chat::unknown_error()),
+                })
+                .into_any_element()
+            }
+            // 宿主 settlement 原文直显(locale-owned 数据);本地通告 =
+            // 构建期定稿文案
+            crate::features::chat::projection::NoticeKind::Compaction { text } => {
+                notice(text).into_any_element()
+            }
+            crate::features::chat::projection::NoticeKind::Local { text } => {
+                notice(text).into_any_element()
+            }
+        },
         ChatNode::Compaction {
             key,
             summary,
@@ -1473,10 +1499,10 @@ fn plan_archive_card(
 ) -> impl IntoElement {
     let open = store.read(cx).chat.open_plans.contains(key);
     let (status_text, status_color) = match status {
-        PlanStatus::Pending => ("待批准", theme::WARN()),
-        PlanStatus::Approved => ("已批准", theme::SUCCESS()),
-        PlanStatus::Declined => ("已拒绝", theme::CAPTION()),
-        PlanStatus::Cancelled => ("已取消", theme::CAPTION()),
+        PlanStatus::Pending => (dict::shell::plan_pending(), theme::WARN()),
+        PlanStatus::Approved => (dict::shell::plan_approved(), theme::SUCCESS()),
+        PlanStatus::Declined => (dict::shell::plan_declined(), theme::CAPTION()),
+        PlanStatus::Cancelled => (dict::shell::plan_cancelled(), theme::CAPTION()),
     };
     let s_toggle = store.clone();
     let key_owned = key.to_string();
@@ -1511,7 +1537,7 @@ fn plan_archive_card(
                         .text_size(px(13.))
                         .font_weight(gpui_kit::FontWeight::MEDIUM)
                         .text_color(theme::LABEL())
-                        .child("计划"),
+                        .child(dict::shell::plan_tab()),
                 )
                 .child(
                     div()
@@ -1542,7 +1568,7 @@ fn plan_archive_card(
                         .text_color(theme::CAPTION())
                         .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL_2()))
                         .child(fixed(IconName::Eye, 12.))
-                        .child("查看")
+                        .child(dict::chat::view())
                         .on_click(move |_, _, cx| {
                             cx.stop_propagation();
                             s_view.update(cx, |st, cx| {
@@ -1960,7 +1986,7 @@ fn tool_block(
                     .text_color(theme::LABEL_2())
                     // todo_write 行标题(「更新任务清单」)
                     .child(if name == "todo_write" {
-                        "更新任务清单".to_string()
+                        dict::chat::todo_write_title().to_string()
                     } else if name == "skill" {
                         "Skill".to_string()
                     } else {
@@ -2218,7 +2244,7 @@ fn todo_write_expanded(
                 div()
                     .text_size(px(12.))
                     .text_color(theme::CAPTION())
-                    .child("(空)"),
+                    .child(dict::chat::empty_output()),
             )
         })
         .children(
@@ -2232,7 +2258,7 @@ fn todo_write_expanded(
             div().text_size(px(12.)).text_color(theme::DANGER()).child(
                 output
                     .and_then(|o| o.lines().find(|l| !l.trim().is_empty()))
-                    .unwrap_or("未知错误")
+                    .unwrap_or(dict::chat::unknown_error())
                     .to_string(),
             ),
         );
@@ -2489,7 +2515,7 @@ fn turn_tail(
                     .text_size(px(12.))
                     .text_color(theme::CAPTION())
                     .child(fixed(IconName::TriangleAlert, 12.))
-                    .child("已中断"),
+                    .child(dict::chat::interrupted()),
             )
         })
         .when_some(total.filter(|t| *t > 0), |el, total| {
@@ -2498,7 +2524,7 @@ fn turn_tail(
                 format!("{key}-usage"),
                 format!("turn-tail-{key}-usage"),
                 fixed(gpui_kit::assets::IconName::Database, 12.).into_any_element(),
-                format!("用量 {} tok", crate::kits::fmt::fmt_tokens_abbrev(total)),
+                dict::chat::usage_tok(crate::kits::fmt::fmt_tokens_abbrev(total)),
                 super::store::TailCardKind::Usage,
                 session.clone(),
                 key,
@@ -2511,7 +2537,7 @@ fn turn_tail(
                 format!("{key}-time"),
                 format!("turn-tail-{key}-time"),
                 fixed(LiumaIcon::Clock, 12.).into_any_element(),
-                format!("用时 {}", crate::kits::fmt::fmt_duration_run(run_ms)),
+                dict::chat::time_run(crate::kits::fmt::fmt_duration_run(run_ms)),
                 super::store::TailCardKind::Time,
                 session.clone(),
                 key,
@@ -2591,7 +2617,7 @@ pub(crate) fn turn_usage_card(store: &Entity<AppStore>, cx: &App) -> AnyElement 
             let reasoning = b["reasoningTokens"].as_u64().unwrap_or(0);
             let total = uncached + read + write + output;
             let mut rows: Vec<(String, String)> = vec![(
-                "提供方 / 模型".to_string(),
+                dict::chat::provider_model().to_string(),
                 b["routes"]
                     .as_array()
                     .map(|r| {
@@ -2603,25 +2629,31 @@ pub(crate) fn turn_usage_card(store: &Entity<AppStore>, cx: &App) -> AnyElement 
                     .unwrap_or_default(),
             )];
             if let Some(hit) = crate::kits::fmt::fmt_cache_hit(read, uncached + read + write) {
-                rows.push(("缓存命中".to_string(), format!("{hit}%")));
+                rows.push((dict::chat::stats_cache_hit().to_string(), format!("{hit}%")));
             }
-            rows.push(("未缓存输入".to_string(), tok_exact(uncached)));
-            rows.push(("缓存读取".to_string(), tok_exact(read)));
+            rows.push((
+                dict::chat::stats_uncached().to_string(),
+                tok_exact(uncached),
+            ));
+            rows.push((dict::chat::stats_cache_read().to_string(), tok_exact(read)));
             if write != 0 {
-                rows.push(("缓存写入".to_string(), tok_exact(write)));
+                rows.push((
+                    dict::chat::stats_cache_write().to_string(),
+                    tok_exact(write),
+                ));
             }
             let mut output_text = tok_exact(output);
             if reasoning > 0 {
-                output_text.push_str(&format!("（其中推理 {} tok）", tok_exact_raw(reasoning)));
+                output_text.push_str(&dict::chat::reasoning_suffix(tok_exact_raw(reasoning)));
             }
-            rows.push(("输出".to_string(), output_text));
+            rows.push((dict::chat::stats_output().to_string(), output_text));
             (Some(total), rows)
         }
         None => (None, vec![]),
     };
     card = card.child(card_head(
         fixed(gpui_kit::assets::IconName::Database, 14.).into_any_element(),
-        "本轮用量",
+        dict::chat::turn_usage(),
         total.map(|t| format!("{} tok", crate::kits::fmt::fmt_exact_count(t))),
     ));
     for (label, value) in rows {
@@ -2637,24 +2669,24 @@ pub(crate) fn turn_time_card(store: &Entity<AppStore>, cx: &App) -> AnyElement {
     let mut card = detail_card_base();
     card = card.child(card_head(
         fixed(LiumaIcon::Clock, 14.).into_any_element(),
-        "本轮用时和速度",
+        dict::chat::turn_time_speed(),
         None,
     ));
     if let Some(b) = bucket {
         card = card
             .child(detail_row(
-                "本轮总用时",
+                dict::chat::turn_total_time(),
                 crate::kits::fmt::fmt_duration_run(b["runMs"].as_i64().unwrap_or(0)),
             ))
             .child(detail_row(
-                "输出速度（TPS）",
+                dict::chat::turn_tps(),
                 format!(
                     "{} tok/s",
                     crate::kits::fmt::fmt_tps(b["tokensPerSecond"].as_f64().unwrap_or(0.0))
                 ),
             ))
             .child(detail_row(
-                "首 token 用时（TTFT）",
+                dict::chat::turn_ttft(),
                 crate::kits::fmt::fmt_duration_compact(b["ttftMs"].as_i64().unwrap_or(0)),
             ));
     }
@@ -2749,7 +2781,7 @@ fn deliverables_row(store: &Entity<AppStore>, deliverables: &[String]) -> impl I
             div()
                 .text_size(px(11.))
                 .text_color(theme::CAPTION())
-                .child("产物"),
+                .child(dict::chat::artifacts()),
         )
         .children(shown.iter().map(|p| deliverable_chip(store, p)))
         .when(more > 0, |el| {
@@ -2757,7 +2789,7 @@ fn deliverables_row(store: &Entity<AppStore>, deliverables: &[String]) -> impl I
                 div()
                     .text_size(px(11.))
                     .text_color(theme::CAPTION())
-                    .child(format!("+ {more} 个文件")),
+                    .child(dict::chat::more_files(more)),
             )
         })
 }
@@ -2823,16 +2855,16 @@ fn retry_row(
         _ => delay_ms.div_ceil(1000).max(1),
     };
     let label = match state {
-        RetryState::Waiting if live => "正在重试模型请求",
-        RetryState::Waiting => "等待重试模型请求",
-        RetryState::Started => "已重试模型请求",
-        RetryState::Cancelled => "模型请求重试已取消",
+        RetryState::Waiting if live => dict::chat::retry_waiting_live(),
+        RetryState::Waiting => dict::chat::retry_waiting(),
+        RetryState::Started => dict::chat::retry_started(),
+        RetryState::Cancelled => dict::chat::retry_cancelled(),
     };
-    let status = format!("{label}（{retry}/{max_retries}） · {seconds}s");
+    let status = dict::chat::retry_status(label, retry, max_retries, seconds);
     let s = store.clone();
     let click_key = key.to_string();
-    let detail_delay = format!("重试延迟：{delay_ms}ms");
-    let detail_message = format!("失败原因：{message}");
+    let detail_delay = dict::chat::retry_delay(delay_ms);
+    let detail_message = dict::chat::retry_reason(message);
     div()
         .id(("retry", ix))
         .debug_selector(move || format!("retry-row-{ix}"))
@@ -2982,7 +3014,7 @@ fn pending_steering_bubble(
                         .gap(px(4.))
                         .text_size(px(11.))
                         .text_color(theme::CAPTION())
-                        .child("插队 · 待投递"),
+                        .child(dict::chat::queue_jump()),
                 ),
         )
 }
