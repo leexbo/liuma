@@ -1312,5 +1312,38 @@ mod tests {
         eprintln!("(对照)单遍 Envelope 解 {:>8.1?}", direct);
         eprintln!("(对照)serde 序列化  {:>10.1?}  {} 字节", ser, payload.len());
         eprintln!("(对照)serde 反序列化 {:>10.1?}", de);
+
+        // 思考链路探针:翻译产物中 reasoning 帧的量与载荷
+        let reasoning: Vec<&super::SessionEvent> = events
+            .iter()
+            .filter(|e| e.ty == "assistant/reasoning")
+            .collect();
+        let with_text = reasoning
+            .iter()
+            .filter(|e| e.data["text"].as_str().is_some_and(|t| !t.is_empty()))
+            .count();
+        eprintln!(
+            "[probe] 翻译产物 reasoning 帧 = {} 条,带非空 text = {} 条",
+            reasoning.len(),
+            with_text
+        );
+        let mut steps: Vec<(u64, u64)> = reasoning
+            .iter()
+            .map(|e| {
+                (
+                    e.data["turn"].as_u64().unwrap_or(0),
+                    e.data["step"].as_u64().unwrap_or(0),
+                )
+            })
+            .collect();
+        steps.sort_unstable();
+        steps.dedup();
+        eprintln!(
+            "[probe] reasoning 跨越的不同 (turn,step) = {} 个",
+            steps.len()
+        );
+        if let Some(first) = reasoning.first() {
+            eprintln!("[probe] 首条 reasoning data = {}", first.data);
+        }
     }
 }

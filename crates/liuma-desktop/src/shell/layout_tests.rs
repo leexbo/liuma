@@ -9184,6 +9184,53 @@ fn real_log_full_load_direct_anchor_and_stable_scrollbar(cx: &mut TestAppContext
         rail.is_some()
     );
 
+    // 思考链路探针:投影后 assistant 节点的 reasoning 留存量
+    let rstat = cx.update(|app| {
+        let st = store.read(app);
+        let nodes = st.state.chats.get(&sid).expect("chat 已投影").nodes.clone();
+        let assistant = nodes
+            .iter()
+            .filter(|n| {
+                matches!(
+                    n,
+                    crate::features::chat::projection::ChatNode::Assistant { .. }
+                )
+            })
+            .count();
+        let with_reasoning = nodes
+            .iter()
+            .filter_map(|n| match n {
+                crate::features::chat::projection::ChatNode::Assistant { reasoning, .. } => {
+                    Some(reasoning)
+                }
+                _ => None,
+            })
+            .filter(|r| !r.is_empty())
+            .count();
+        let reason_chars: usize = nodes
+            .iter()
+            .filter_map(|n| match n {
+                crate::features::chat::projection::ChatNode::Assistant { reasoning, .. } => {
+                    Some(reasoning.len())
+                }
+                _ => None,
+            })
+            .sum();
+        let with_text = nodes
+            .iter()
+            .filter_map(|n| match n {
+                crate::features::chat::projection::ChatNode::Assistant { text, .. } => Some(text),
+                _ => None,
+            })
+            .filter(|t| !t.is_empty())
+            .count();
+        (assistant, with_reasoning, reason_chars, with_text)
+    });
+    eprintln!(
+        "[diag] assistant 节点={} 带思考={} 思考总字符={} 带正文={}",
+        rstat.0, rstat.1, rstat.2, rstat.3
+    );
+
     // 当前轮标记已绘制且 x 在画布内(离屏 = 「不亮」)
     let marker = crate::features::chat::chat_pane::nav_marker_last();
     let (_, _mix, mx, _my, mbx, mbw) = marker.expect("当前轮标记从未绘制(「不亮」)");
