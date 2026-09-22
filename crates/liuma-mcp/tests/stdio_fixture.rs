@@ -10,6 +10,13 @@ use liuma_attachment::ImageAttachmentRef as Ref;
 use liuma_mcp::{BridgeImageInput, ImageStorePort, McpServerConfig, McpServerPort, McpTransport};
 use serde_json::json;
 
+/// 测试用 Python 解释器名。Windows 上 `python3` 是 Microsoft Store 的
+/// 应用执行别名(命令存在、运行时才报错退出 49),真解释器名是 `python`;
+/// Unix 反之(`python` 在新版发行版上往往不存在)。
+fn python_exe() -> &'static str {
+    if cfg!(windows) { "python" } else { "python3" }
+}
+
 const FIXTURE: &str = r#"
 import sys, json
 def send(obj):
@@ -95,7 +102,7 @@ fn start_port(store: Option<Arc<RecordingStore>>) -> McpServerPort {
     let config = McpServerConfig {
         server_name: "fixture".into(),
         transport: McpTransport::Stdio {
-            command: "python3".into(),
+            command: python_exe().into(),
             args: vec![script.display().to_string()],
             env: Default::default(),
             cwd: None,

@@ -1692,6 +1692,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见 tool_loop.rs 文件头)
     #[tokio::test]
     async fn send_message_steers_running_child_mid_turn() {
         let notify = RecordingNotify::default();
@@ -1895,6 +1896,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见 tool_loop.rs 文件头)
     #[tokio::test]
     async fn interrupt_agent_stops_current_turn_child_stays_contidable() {
         let notify = RecordingNotify::default();

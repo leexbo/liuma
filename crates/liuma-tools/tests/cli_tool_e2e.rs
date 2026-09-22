@@ -11,14 +11,24 @@
 use std::sync::{Arc, Mutex};
 
 use liuma_agent_loop::{LoopEngine, RequestHeader};
-use liuma_host::JsonlBackend;
-use liuma_llm::streaming::StreamMode;
-use liuma_llm::{FakeProvider, HttpTransport, InvariantGate, ProviderConfig};
+use liuma_llm::{FakeProvider, InvariantGate};
 use liuma_session::{EventEnvelope, EventLog};
 use liuma_tools::BashTool;
-use serde_json::{Value, json};
+use serde_json::json;
+
+// 仅被门控用例使用(见文件头):Windows 上沙箱链尚未落地,这些符号无消费者
+#[cfg(unix)]
+use liuma_host::JsonlBackend;
+#[cfg(unix)]
+use liuma_llm::streaming::StreamMode;
+#[cfg(unix)]
+use liuma_llm::{HttpTransport, ProviderConfig};
+#[cfg(unix)]
+use serde_json::Value;
+#[cfg(unix)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
 #[tokio::test]
 async fn http_tool_round_trip_through_sandbox() {
     let dir = std::env::temp_dir().join(format!("liuma-cli-e2e-{}", std::process::id()));

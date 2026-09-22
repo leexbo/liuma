@@ -5,6 +5,12 @@
 //! - bash 命令真实经沙箱执行(echo 输出进入 tool/result.output);
 //! - 第二轮出网请求包含 assistant(tool_calls) 与 tool 消息——全部来自日志派生;
 //! - 「记录 ⟺ 可见」:出网消息恰为日志前缀派生(不变式闸门强制)。
+//!
+//! 平台:用例经 `bash` 工具真实执行命令,需要「可用沙箱 rung + POSIX 壳」
+//! 两件东西。Windows 上沙箱 rung(受限令牌 + Job)与 pwsh 壳落地前,这些
+//! 用例以 `#[cfg(unix)]` 排除;落地后改为按平台参数化(见
+//! `crates/liuma-sandbox/tests/windows_acl.rs` 的对应用例)。文件工具
+//! 与纯投影用例(不触达进程)不设门,两端都跑。
 
 use std::sync::{Arc, Mutex};
 
@@ -12,9 +18,11 @@ use liuma_agent_loop::{LlmEvent, LoopEngine, RequestHeader};
 use liuma_host::JsonlBackend;
 use liuma_llm::{FakeProvider, InvariantGate};
 use liuma_session::{EventEnvelope, EventLog};
+#[cfg(unix)] // 仅被门控用例使用(见文件头)
 use liuma_tools::BashTool;
 use serde_json::json;
 
+#[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
 #[tokio::test]
 async fn tool_round_trip_through_sandbox() {
     let dir = std::env::temp_dir().join(format!("liuma-tool-e2e-{}", std::process::id()));
@@ -135,6 +143,7 @@ async fn tool_round_trip_through_sandbox() {
     );
 }
 
+#[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
 #[tokio::test]
 async fn sandboxed_tool_denies_out_of_root_write() {
     // 工具经沙箱执行:可写根外写被拒 → tool/result.success = false,loop 不中断
@@ -202,6 +211,7 @@ async fn sandboxed_tool_denies_out_of_root_write() {
     assert!(!outside.exists(), "根外文件不应存在");
 }
 
+#[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
 #[tokio::test]
 async fn cancel_token_aborts_running_tool_and_turn() {
     // 出口门:取消 token 中止工具(软取消 select → kill_with_grace)
@@ -275,6 +285,7 @@ async fn cancel_token_aborts_running_tool_and_turn() {
     assert_eq!(tool_result.data["output"], "cancelled");
 }
 
+#[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
 #[tokio::test]
 async fn pty_tool_runs_and_reports_tty() {
     // PTY 工具路径:test -t 1 在 PTY 下为真(沙箱经 argv 包装)
@@ -816,6 +827,7 @@ async fn plan_mode_in_turn_review_flow() {
     assert!(persisted.iter().any(|e| e.r#type == "plan/approved"));
 }
 
+#[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
 #[tokio::test]
 async fn subagent_runs_own_session_and_reports_back() {
     // 子代理独立日志 + 能力束窄化 + 报告回主日志。
@@ -912,6 +924,7 @@ async fn subagent_runs_own_session_and_reports_back() {
     assert!(list.output.contains("(no background subagents)"));
 }
 
+#[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
 #[tokio::test]
 async fn subagent_cancel_propagates_from_parent() {
     // 父令牌取消 → 子令牌 → 子引擎安全点收尾(cancelled)
@@ -961,6 +974,7 @@ async fn subagent_cancel_propagates_from_parent() {
     assert_eq!(rec.status, "cancelled");
 }
 
+#[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
 #[tokio::test]
 async fn background_job_runs_reads_and_stops() {
     // run_in_background 立即返回 job id;输出落盘;跨调用可读;

@@ -11225,9 +11225,11 @@ mod tests {
         let other =
             std::env::temp_dir().join(format!("liuma-core-wsleg-b-{}", Uuid::new_v4().simple()));
         std::fs::create_dir_all(&other).unwrap();
+        // 经 serde 序列化而非字符串拼接:Windows 路径带 `\`,直接拼会产出
+        // 非法 JSON 转义(`\U`),读回失败 —— 那是夹具缺陷,不是导入逻辑
         std::fs::write(
             dir.join(WORKSPACES_FILE),
-            format!("[\"{}\"]", other.display()),
+            serde_json::to_string(&[other.display().to_string()]).unwrap(),
         )
         .unwrap();
         let sroot = std::env::temp_dir().join(format!(
@@ -12027,7 +12029,8 @@ for line in sys.stdin:
         host.upsert_mcp_server(crate::settings::McpServerEntry {
             id: "img".into(),
             enabled: true,
-            command: "python3".into(),
+            // Windows 上 `python3` 是 Store 应用执行别名(运行时退出 49)
+            command: if cfg!(windows) { "python" } else { "python3" }.into(),
             args: vec![fixture_path.display().to_string()],
             ..Default::default()
         })

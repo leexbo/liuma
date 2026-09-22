@@ -610,12 +610,19 @@ fn denial_marker(mode: SandboxMode) -> String {
 }
 
 /// 退出状态 → (success, exit_code, signal):
-/// - 有退出码(任意值):落定成功,码作为数据透出
-/// - 信号终止:失败 + 信号名
-/// - 状态不可知:失败,无线索
+/// - 有退出码且**非负**:落定成功,码作为数据透出;
+/// - 有退出码但为负:失败,码照实透出(见下);
+/// - 信号终止:失败 + 信号名;
+/// - 状态不可知:失败,无线索。
+///
+/// 负码是 Windows 的异常终止:进程以 NTSTATUS 收场时 `ExitStatus::code()`
+/// 把它读回成负 i32(`0xC0000005` → `-1073741819`),与 Unix 的被信号杀死
+/// 同类——命令没跑完,不是「有码即成功」(PowerShell 侧 `$LASTEXITCODE`
+/// 显示的也是这个有符号视图)。Unix 退出码恒为 0..=255,该分支不可达,
+/// 行为不变。
 fn settle(status: ExitStatus) -> (bool, Option<i32>, Option<String>) {
     match (status.code, status.signal) {
-        (Some(code), _) => (true, Some(code), None),
+        (Some(code), _) => (code >= 0, Some(code), None),
         (None, Some(sig)) => (false, None, Some(signal_name(sig))),
         (None, None) => (false, None, None),
     }
@@ -666,12 +673,18 @@ mod tests {
         );
     }
 
-    /// 落定快照:有码(任意值)即成功、信号终止失败、状态不可知失败
+    /// 落定快照:非负码即成功、负码(Windows 异常终止)失败、
+    /// 信号终止失败、状态不可知失败
     #[test]
     fn settle_snapshot() {
         let s = |code, signal| ExitStatus { code, signal };
         assert_eq!(settle(s(Some(0), None)), (true, Some(0), None));
         assert_eq!(settle(s(Some(2), None)), (true, Some(2), None));
+        // 回归锚:0xC0000005(访问违例)经 Windows 读回是负码,不得报成功
+        assert_eq!(
+            settle(s(Some(-1073741819), None)),
+            (false, Some(-1073741819), None)
+        );
         assert_eq!(
             settle(s(None, Some(15))),
             (false, None, Some("SIGTERM".into()))
@@ -681,6 +694,7 @@ mod tests {
 
     /// description 必填:缺参/空白拒绝,错误消息固定文案;
     /// 合法调用不受影响
+    #[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见 tool_loop.rs 文件头)
     #[tokio::test]
     async fn bash_requires_non_empty_description() {
         let dir = std::env::temp_dir().join(format!("liuma-bash-desc-{}", std::process::id()));
@@ -718,6 +732,7 @@ mod tests {
     /// 动态模式源:execute 时实时解析——read-only 下写 workspace 根被
     /// 内核拦(拒绝标记带模式名),翻转 workspace-write 后同一命令放行。
     /// 权限切换落档即生效的执行面基础
+    #[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见 tool_loop.rs 文件头)
     #[tokio::test]
     async fn bash_mode_source_resolved_per_execute() {
         let dir = std::env::temp_dir().join(format!("liuma-bash-mode-{}", std::process::id()));
@@ -766,6 +781,7 @@ mod tests {
     /// 一次性升级闸门:port 拒绝 → 逐字拒绝文本且零执行;port 批准 →
     /// 本次以宽策略执行(allow-once);下一次无参执行回到会话模式
     /// (被拒/批准都不落会话态)
+    #[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见 tool_loop.rs 文件头)
     #[tokio::test]
     async fn bash_escalation_gate_and_one_shot() {
         use std::sync::atomic::{AtomicBool, Ordering};

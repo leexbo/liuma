@@ -603,9 +603,12 @@ mod tests {
         assert!(out.success);
         assert!(out.output.contains("<skill_content name=\"review\">"));
         assert!(out.output.contains("body of review"));
+        // 期望值按本平台原生分隔符逐段拼接:断言比的是渲染文本,
+        // 单段 `join(".agents/skills/review")` 会保留 `/` 而发现逻辑
+        // 产出 `\`,字符串不等(PathBuf 比较等价,display 不等价)
         assert!(out.output.contains(&format!(
             "Base directory for this skill: {}",
-            ws.join(".agents/skills/review").display()
+            ws.join(".agents").join("skills").join("review").display()
         )));
     }
 

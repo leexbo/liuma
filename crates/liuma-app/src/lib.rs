@@ -186,8 +186,12 @@ pub fn prompt_parts(resolved: &Resolved, subagent_background: bool) -> PromptPar
     }
     PromptParts {
         identity,
+        // 如实陈述边界:可写根 = 工作区 + 平台暂存区(见
+        // `SandboxPolicy::writable_roots`)——工作区不是唯一的可写根,
+        // 编译类工具在暂存区落中间产物不会被拦
         env_info: format!(
-            "cwd={}\nsandbox: workspace is the only writable root\n\
+            "cwd={}\nsandbox: writable = the workspace plus the platform temp area; \
+             everything else is read-only\n\
              git: 本目录是 git 仓库时,用 bash 工具执行 git 命令查看历史/分支/状态 \
              (git log --oneline -n 20 / git branch -a / git status --short),\
              不要直接读取 .git 目录下的文件",

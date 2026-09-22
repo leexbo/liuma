@@ -4,7 +4,7 @@
 //! 越界 fail-closed 拒绝)。直接 Rust IO,不经沙箱子进程——路径约束由
 //! 本工具在进程内强制(读写都是显式路径,无 shell 注入面)。
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use liuma_agent_loop::{
     FileDiff, FileMatches, ToolCallRequest, ToolOutput, ToolPort, ToolView, ViewLine,
@@ -63,19 +63,31 @@ impl FileTools {
             .unwrap_or(self.readonly)
     }
 
-    /// 相对路径以 root 为基;绝对路径原样
-    fn resolve(&self, path: &str) -> PathBuf {
+    /// 相对路径以 root 为基;绝对路径原样。
+    ///
+    /// 平台语义:`Path::is_absolute` 在 Windows 上要求「盘符前缀 + 根」,故仅
+    /// 带根(`/etc/passwd`)或仅带前缀(`C:foo`)都判非绝对——交给
+    /// `PathBuf::push` 会被静默截断(`D:\repo` + `/etc/passwd` →
+    /// `D:\etc\passwd`),读写的不是调用者指名的东西、错误信息却仍指向原
+    /// 路径。两类一律显式拒绝:要么盘符限定的绝对路径,要么工作区相对路径。
+    /// (Unix 上 `is_absolute()` 即 `has_root()`,该分支不可达,行为不变)
+    fn resolve(&self, path: &str) -> Result<PathBuf, String> {
         let p = Path::new(path);
         if p.is_absolute() {
-            p.to_path_buf()
-        } else {
-            self.root.join(p)
+            return Ok(p.to_path_buf());
         }
+        if p.has_root() || matches!(p.components().next(), Some(Component::Prefix(_))) {
+            return Err(format!(
+                "path must be workspace-relative or an absolute path with a drive letter \
+                 (e.g. C:\\dir\\file); got {path}"
+            ));
+        }
+        Ok(self.root.join(p))
     }
 
     /// 写入前的可写根校验:目标父目录必须落在 root 内(fail-closed)
     fn writable_target(&self, path: &str) -> Result<PathBuf, String> {
-        let target = self.resolve(path);
+        let target = self.resolve(path)?;
         let file_name = target
             .file_name()
             .ok_or_else(|| format!("invalid target path: {path}"))?
@@ -111,7 +123,10 @@ impl FileTools {
         let offset = args["offset"].as_u64().unwrap_or(1).max(1) as usize;
         let limit = args["limit"].as_u64().unwrap_or(2000) as usize;
 
-        let target = self.resolve(path);
+        let target = match self.resolve(path) {
+            Ok(t) => t,
+            Err(e) => return fail(e),
+        };
         let bytes = match tokio::fs::read(&target).await {
             Ok(b) => b,
             Err(e) => return fail(format!("read failed: {path} ({e})")),
@@ -241,7 +256,10 @@ impl FileTools {
             ..Default::default()
         };
         let base = match args["path"].as_str() {
-            Some(p) => self.resolve(p),
+            Some(p) => match self.resolve(p) {
+                Ok(t) => t,
+                Err(e) => return fail(e),
+            },
             None => self.root.clone(),
         };
         let glob = args["glob"].as_str();
@@ -820,6 +838,41 @@ mod tests {
             std::fs::read_to_string(root.join("a.txt")).unwrap(),
             "alpha BETA alpha\n"
         );
+    }
+
+    /// 路径形态解析回归锁:相对 = 以 root 为基;盘符绝对 = 原样;仅带根 /
+    /// 仅带前缀 = 拒绝。Windows 上 `PathBuf::push` 对 `/etc/passwd` 这类
+    /// 「有根无前缀」的路径会截断盘符(`D:\repo` → `D:\etc\passwd`),
+    /// 静默读写另一个文件。
+    #[test]
+    fn resolve_path_forms_by_platform() {
+        let tools = FileTools::new(temp_root("resolve"));
+        // 相对路径:以 root 为基(两平台一致)
+        assert_eq!(
+            tools.resolve("src/main.rs").unwrap(),
+            tools.root.join("src/main.rs")
+        );
+        #[cfg(windows)]
+        {
+            // 仅带根(无盘符):push 会截断到盘符根,拒绝
+            assert!(tools.resolve("/etc/passwd").is_err());
+            // 仅带前缀(驱动器相对):push 会整段替换,拒绝
+            assert!(tools.resolve("C:foo").is_err());
+            // 盘符限定的绝对路径:合法
+            assert!(
+                tools
+                    .resolve(r"C:\Windows\System32\drivers\etc\hosts")
+                    .is_ok()
+            );
+        }
+        #[cfg(unix)]
+        {
+            // Unix 上 is_absolute() 即 has_root():根路径合法,行为不变
+            assert_eq!(
+                tools.resolve("/etc/passwd").unwrap(),
+                PathBuf::from("/etc/passwd")
+            );
+        }
     }
 
     #[tokio::test]

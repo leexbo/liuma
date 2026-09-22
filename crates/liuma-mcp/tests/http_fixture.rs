@@ -8,6 +8,13 @@ use liuma_mcp::{McpServerConfig, McpServerPort, McpTransport};
 use serde_json::json;
 use std::collections::BTreeMap;
 
+/// 测试用 Python 解释器名。Windows 上 `python3` 是 Microsoft Store 的
+/// 应用执行别名(命令存在、运行时才报错退出 49),真解释器名是 `python`;
+/// Unix 反之(`python` 在新版发行版上往往不存在)。
+fn python_exe() -> &'static str {
+    if cfg!(windows) { "python" } else { "python3" }
+}
+
 /// 最小 streamable-http fixture:POST /mcp 收 JSON-RPC;initialize 回
 /// 结果 + mcp-session-id 头;无 id(通知)回 202;tools/* 回工具清单与
 /// 调用结果(echo_auth 回显收到的 Authorization);GET → 405(照 MCP
@@ -82,13 +89,13 @@ fn start_fixture() -> (std::process::Child, u16) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
-    let child = std::process::Command::new("python3")
+    let child = std::process::Command::new(python_exe())
         .arg(&script)
         .arg(port.to_string())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .expect("python3 可用");
+        .expect("python 解释器可用");
     (child, port)
 }
 
