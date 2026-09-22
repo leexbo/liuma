@@ -588,9 +588,48 @@ pub fn load_log(path: &str) -> Result<EventLog> {
     Ok(log)
 }
 
+/// JSONL 事实源读取端([`EventStore`] 首个实现):路径即状态,读时
+/// 全档解析。会话目录布局知识仍收口在宿主 slot_path,本结构只持
+/// 结果路径。守卫语义与 [`load_log`] 一致(读取方守卫 + seq 连续性,
+/// 后者经 `verify_seq_contiguity` 与 `EventLog::append` 同判)。
+pub struct JsonlEventStore {
+    path: String,
+}
+
+impl JsonlEventStore {
+    /// 指向一份会话日志(追加文件;本结构只读不写)
+    pub fn new(path: impl Into<String>) -> Self {
+        Self { path: path.into() }
+    }
+
+    /// 全档解析 + 连续性校验(文件缺失/不可读 = Err,在场性由调用方判定)
+    fn load_all(&self) -> Result<Vec<EventEnvelope>, liuma_session::EventStoreError> {
+        let text = std::fs::read_to_string(&self.path)
+            .map_err(|e| liuma_session::EventStoreError::Io(format!("{}: {e}", self.path)))?;
+        let mut events = Vec::new();
+        for (n, line) in text.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let ev = liuma_session::decode_envelope_str(line).map_err(|e| {
+                liuma_session::EventStoreError::Malformed(format!("{}:{} {e}", self.path, n + 1))
+            })?;
+            events.push(ev);
+        }
+        liuma_session::verify_seq_contiguity(&events)?;
+        Ok(events)
+    }
+}
+
+impl liuma_session::EventStore for JsonlEventStore {
+    fn all(&self) -> Result<Vec<EventEnvelope>, liuma_session::EventStoreError> {
+        self.load_all()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{load_log, prompt_parts};
+    use super::{JsonlEventStore, load_log, prompt_parts};
 
     #[test]
     fn prompt_parts_two_sentence_identity_with_interpolation() {
@@ -687,6 +726,60 @@ mod tests {
         // 文件缺失 = 空日志(新会话)
         let missing = dir.join("none.jsonl");
         assert_eq!(load_log(missing.to_str().unwrap()).unwrap().high_water(), 0);
+    }
+
+    /// EventStore 端口与 load_log 判定一致性:同一文件两路径同判
+    /// (有效日志同载荷;缺口/未知未标同拒)。冷折叠走端口、引擎
+    /// 重建走 load_log,分叉即同文件两侧语义漂移
+    #[test]
+    fn jsonl_store_verdict_matches_load_log() {
+        use liuma_session::EventStore as _;
+        let dir = std::env::temp_dir().join(format!("liuma-store-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        let store = JsonlEventStore::new(path.display().to_string());
+
+        // 有效日志(含 ignorable):同载荷
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"user/message\",\"seq\":1,\"time\":0,\"data\":{\"content\":\"hi\"}}\n",
+                "{\"type\":\"future/audit\",\"seq\":2,\"time\":1,\"data\":{},\"ignorable\":true}\n",
+                "{\"type\":\"assistant/message\",\"seq\":3,\"time\":2,\"data\":{\"content\":\"yo\"}}\n",
+            ),
+        )
+        .unwrap();
+        let via_store = store.all().unwrap();
+        let via_log = load_log(path.to_str().unwrap()).unwrap();
+        let log_events: Vec<_> = via_log.iter().cloned().collect();
+        assert_eq!(via_store.len(), 3);
+        assert_eq!(via_store, log_events, "端口与 load_log 同载荷");
+
+        // seq 缺口:两路径同拒
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"user/message\",\"seq\":1,\"time\":0,\"data\":{}}\n",
+                "{\"type\":\"user/message\",\"seq\":3,\"time\":1,\"data\":{}}\n",
+            ),
+        )
+        .unwrap();
+        assert!(store.all().is_err(), "端口拒缺口");
+        assert!(load_log(path.to_str().unwrap()).is_err(), "load_log 拒缺口");
+
+        // 未知未标:两路径同拒
+        std::fs::write(
+            &path,
+            "{\"type\":\"evil/x\",\"seq\":1,\"time\":0,\"data\":{}}\n",
+        )
+        .unwrap();
+        assert!(store.all().is_err(), "端口拒未知未标");
+        assert!(load_log(path.to_str().unwrap()).is_err());
+
+        // 文件缺失:load_log = 空日志(新会话语义);端口 = Err(在场性由调用方判定)
+        let store = JsonlEventStore::new(dir.join("none.jsonl").display().to_string());
+        assert!(store.all().is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// 回归锁:手动压缩落档由装配点挂入日志的 durability sink 独占——

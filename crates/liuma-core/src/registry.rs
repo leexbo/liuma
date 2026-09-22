@@ -25,7 +25,7 @@ use liuma_agent_loop::{
 use liuma_app::{Resolved, Session};
 use liuma_attachment::ImageMediaType;
 use liuma_llm::{FakeProvider, HttpTransport, InvariantGate};
-use liuma_session::{EventEnvelope, EventLog};
+use liuma_session::{EventEnvelope, EventLog, EventStore as _};
 use serde_json::{Value, json};
 use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use uuid::Uuid;
@@ -904,10 +904,12 @@ fn with_session_events<T>(
         let log = inner.log.lock_recover();
         return Some(f(log.iter().as_slice()));
     }
-    // 冷路径:load_log 一次,直接借用 fold
+    // 冷路径:EventStore 端口全量读取,直接借用 fold
     let path = host.slot_path(id);
-    let log = liuma_app::load_log(path.to_str()?).ok()?;
-    Some(f(log.iter().as_slice()))
+    let events = liuma_app::JsonlEventStore::new(path.to_str()?.to_string())
+        .all()
+        .ok()?;
+    Some(f(events.as_slice()))
 }
 
 /// 会话血缘 header 文件路径(会话目录下;存 parent/origin)
@@ -1995,7 +1997,8 @@ impl AppHost {
     /// 一次借用 fold,不克隆快照)。fold 型消费方(stats/锚点/轨迹/
     /// 事件读)都是借用读,临界区内无 await(std::sync::Mutex);
     /// 代价是运行中会话 fold 期间短暂阻塞 append(纯计数 fold 毫秒级)。
-    /// Err = 会话不存在/日志不可读。
+    /// 冷路径经 [`liuma_session::EventStore`] 读取端口(JSONL 实现;
+    /// 未来索引实现替换点)。Err = 会话不存在/日志不可读。
     fn with_session_log<T>(
         &self,
         id: &str,
@@ -2011,9 +2014,10 @@ impl AppHost {
         if !path.exists() {
             return Err(RpcError::session_not_found(id));
         }
-        let log = liuma_app::load_log(&path.display().to_string())
+        let events = liuma_app::JsonlEventStore::new(path.display().to_string())
+            .all()
             .map_err(|e| RpcError::internal(format!("日志重载失败:{e}")))?;
-        f(log.iter().as_slice())
+        f(events.as_slice())
     }
 
     /// session.trajectory:轨迹台账(记录尾窗 + 全量请求清单)。

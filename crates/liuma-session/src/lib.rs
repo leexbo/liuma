@@ -14,6 +14,7 @@ pub mod audit;
 pub mod envelope;
 pub mod events;
 pub mod log;
+pub mod store;
 
 #[cfg_attr(not(target_family = "wasm"), allow(missing_docs))]
 pub mod bindings;
@@ -33,6 +34,7 @@ pub use events::{
     prune_output,
 };
 pub use log::{EventLog, LogError};
+pub use store::{EventStore, EventStoreError, verify_seq_contiguity};
 
 // 组件导出注册(cdylib 产物的导出入口)
 use guest::SessionComponent;
