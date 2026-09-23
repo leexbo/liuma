@@ -489,7 +489,9 @@ impl ToolPort for BashTool {
                 ApprovalOutcome::Rejected => {
                     return ToolOutput {
                         output: format!(
-                            "the user rejected escalating this command to \"{}\"",
+                            "the user rejected escalating this command to \"{}\"; \
+                             treat the denial as final — do not retry the same command, \
+                             adjust the approach instead",
                             mode_name(target)
                         ),
                         success: false,
@@ -842,6 +844,14 @@ mod tests {
             rejected
                 .output
                 .contains("the user rejected escalating this command to \"full-access\""),
+            "{:?}",
+            rejected.output
+        );
+        // 拒绝文本带行为教学(拒绝即终局,勿原样重试)
+        assert!(
+            rejected
+                .output
+                .contains("do not retry the same command, adjust the approach instead"),
             "{:?}",
             rejected.output
         );
