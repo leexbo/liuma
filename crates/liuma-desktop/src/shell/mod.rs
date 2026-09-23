@@ -531,11 +531,6 @@ impl Render for WorkspaceView {
                                                 .mx_auto()
                                                 .w(col_w)
                                                 .gap(px(8.))
-                                                .child(chat::queue_dock::render(
-                                                    &self.store,
-                                                    window,
-                                                    cx,
-                                                ))
                                                 .children(ask::render_plan(&self.store, window, cx))
                                                 .children(ask::render_approval(&self.store, cx))
                                                 .children(ask::render_question(
@@ -552,11 +547,25 @@ impl Render for WorkspaceView {
                                                     subagents::task_bar(&self.store, cx),
                                                     |el, bar| el.child(bar),
                                                 )
-                                                .child(chat::composer::render(
-                                                    &self.store,
-                                                    window,
-                                                    cx,
-                                                )),
+                                                // composer 附着组(gap 0):队列条贴入
+                                                // 输入卡顶(负 margin 塞 3px,输入卡
+                                                // 顶边收口),DSH QueueDock 同构;队列
+                                                // 空时 dock 为空节点,组退化为裸
+                                                // composer
+                                                .child(
+                                                    div()
+                                                        .v_flex()
+                                                        .child(chat::queue_dock::render(
+                                                            &self.store,
+                                                            window,
+                                                            cx,
+                                                        ))
+                                                        .child(chat::composer::render(
+                                                            &self.store,
+                                                            window,
+                                                            cx,
+                                                        )),
+                                                ),
                                         ),
                                 )
                                 // 组件库默认滚动条(滚动时浮现、闲置淡出;拖

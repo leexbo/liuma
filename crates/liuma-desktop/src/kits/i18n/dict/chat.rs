@@ -93,6 +93,10 @@ entries! {
     compact_summary_na => ["压缩摘要不可用", "Compaction summary unavailable"],
     /// 已中断(回合被打断)
     interrupted => ["已中断", "Interrupted"],
+    /// 队列计数头(多条待运行消息折叠态)
+    queue_count(n) => ["排队消息 {n} 条", "{n} queued messages"],
+    /// 队列行立即投递(把待运行条目转为当前轮插队;仅运行中可用)
+    queue_steer => ["立即投递", "Deliver now"],
 
     // ── 子代理 ──
     /// 子代理回发消息行标
@@ -237,8 +241,6 @@ entries! {
     view => ["查看", "View"],
 
     // ── 队列坞 / todo 坞 ──
-    /// 队列计数标
-    queue_count(n) => ["队列 {n} 条", "{n} queued"],
     /// todo 坞计数标
     todo_counts(done, active, pending) => ["{done} 完成 · {active} 进行 · {pending} 待办", "{done} done · {active} active · {pending} pending"],
 

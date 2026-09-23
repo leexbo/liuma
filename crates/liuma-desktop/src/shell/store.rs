@@ -65,6 +65,9 @@ pub(crate) const TIP_FOLD: usize = 3;
 pub(crate) const TIP_PANEL_TOGGLE: usize = 4;
 /// 会话行归档钮槽位基址(每行 = 基址 + 行序,行数动态)
 pub(crate) const TIP_ARCHIVE_BASE: usize = 100;
+/// 队列行动作钮槽位基址(每行 3 槽 = 基址 + 行序×3 + 钮序;
+/// 钮序:0 编辑 / 1 立即投递 / 2 移除,编辑态复用 0/1 = 保存/取消)
+pub(crate) const TIP_QUEUE_BASE: usize = 300;
 
 /// 应用状态根。
 pub struct AppStore {
