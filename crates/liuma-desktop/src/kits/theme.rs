@@ -1,13 +1,10 @@
-//! 双盘主题:深色盘为蓝灰色相家族(内容区深海军蓝、侧栏板岩蓝灰,
-//! 对照 Finder 暗色侧栏);浅色盘对照系统亮色。macOS 深盘开毛玻璃:
-//! 窗口 background = Transparent,玻璃由应用侧自建 NSVisualEffectView
-//! (shell::vibrancy)承担,色调由 Root 层(`c.background` = 半透
-//! base)单涂层控制——app 层画布不再自铺 base,否则 alpha 叠涂相加
-//! 会吃掉透明度;浅盘涂层不透明,观感与实色一致。色板内联为唯一来源
-//! → gpui-component [`ThemeColor`] 映射。设置页「外观」三档(浅色/
-//! 深色/跟随系统)经 [`apply`] 实装:启动读 settings.yaml、设置点击
-//! 即切、「跟随系统」由窗口外观观察者驱动(shell::store 挂
-//! `observe_window_appearance`)。
+//! 双盘主题:深色盘为纯中性灰家族(内容区 #151515、侧栏/标题栏
+//! #1A1A1A,全部表面实色不透明);浅色盘对照系统亮色。窗口恒实色
+//! (无透明/毛玻璃特效),画布底由组件库 Root 层(`c.background`)
+//! 单涂层承担。色板内联为唯一来源 → gpui-component [`ThemeColor`]
+//! 映射。设置页「外观」三档(浅色/深色/跟随系统)经 [`apply`]
+//! 实装:启动读 settings.yaml、设置点击即切、「跟随系统」由窗口
+//! 外观观察者驱动(shell::store 挂 `observe_window_appearance`)。
 //!
 //! 调用点形态:`theme::BASE()` —— SCREAMING_CASE 取值 fn 保持原常量
 //! 调用形态;运行时按 [`MODE`]
@@ -18,7 +15,7 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use gpui_kit::component::{Theme, ThemeMode, ThemeTokens};
-use gpui_kit::{App, Rgba, Window, WindowAppearance, WindowBackgroundAppearance, rgba};
+use gpui_kit::{App, Rgba, Window, WindowAppearance, rgba};
 
 // ── 外观档位(与 registry settings.yaml appearance 字段同词汇)──
 
@@ -77,7 +74,7 @@ pub const FONT_SANS: &str = "PingFang SC";
 pub struct Palette {
     pub base: Rgba,
     pub sidebar: Rgba,
-    /// 侧栏行 hover(与内容区 hover 分族:板岩底上压海军蓝 hover 显脏)
+    /// 侧栏行 hover(与内容区 hover 分族:侧栏底上压内容区 hover 显脏)
     pub sidebar_hover: Rgba,
     /// 侧栏行激活/选中(对照 Finder 选中行的同级提亮)
     pub sidebar_active: Rgba,
@@ -86,6 +83,9 @@ pub struct Palette {
     pub ink: Rgba,
     pub layer: Rgba,
     pub card: Rgba,
+    /// 输入卡面(浮出画布一档,对照 deepseek harness 输入卡 39,39,41;
+    /// 勿与 CARD 混用——工具卡/终端卡等仍走 CARD 梯位)
+    pub composer: Rgba,
     pub dock: Rgba,
     pub brand: Rgba,
     pub danger: Rgba,
@@ -118,46 +118,37 @@ const fn color(hex: u32, a: f32) -> Rgba {
     }
 }
 
-/// 毛玻璃 tint 涂层不透明度:macOS 深盘的 Root 涂层盖住大部分透视,
-/// 非 macOS 无模糊落地,保持实色
-const WINDOW_TINT_A: f32 = if cfg!(target_os = "macos") { 0.96 } else { 1.0 };
-
-/// 深盘侧栏(用户指定 RGB 36,42,44)。实色:半透 tint 的渲染色随
-/// 桌面壁纸漂移,无法对齐指定值。
-const DARK_SIDEBAR: Rgba = color(0x242A2C, 1.0);
-/// 深盘标题栏(用户指定 RGB 41,45,48;与侧栏分离为双色)
-const DARK_TITLE_BAR: Rgba = color(0x292D30, 1.0);
-
-/// 深色盘:蓝灰色相家族——base 深海军蓝(设计稿采样 #212734),
-/// sidebar 板岩蓝灰(Finder 暗侧栏采样 #253035 一族);macOS 毛玻璃
-/// 下 base/sidebar 为半透 tint 涂层,其余表面不透明浮于涂层上。
-/// 文字取 label 族 alpha 语义色,语义色取系统色暗形态
+/// 深色盘:纯中性灰家族——base 内容区(用户指定 RGB 21,21,21),
+/// sidebar/标题栏同色(用户指定 RGB 26,26,26);全部表面实色不透明,
+/// 其余表面按明度梯递增。文字取 label 族 alpha 语义色,语义色取系统
+/// 色暗形态
 const fn dark_palette() -> Palette {
     Palette {
-        base: color(0x212734, WINDOW_TINT_A),
-        sidebar: DARK_SIDEBAR,
-        // hover 沿用旧版相对基色的提亮步长(+5,+5,+4),跟随新中性灰族
-        sidebar_hover: color(0x292F30, 1.0),
-        // 选中行:比 hover 高一档但收敛亮度
-        // (本盘保持三态互异;0x39454C 过亮过蓝,向 hover 靠拢)
-        sidebar_active: color(0x333D44, 1.0),
-        title_bar: DARK_TITLE_BAR,
+        base: color(0x151515, 1.0),
+        sidebar: color(0x1A1A1A, 1.0),
+        // hover 沿用旧版相对基色的提亮步长(+5,+5,+4),跟随中性灰族
+        sidebar_hover: color(0x232323, 1.0),
+        // 选中行:比 hover 高一档但收敛亮度(三态互异)
+        sidebar_active: color(0x2A2A2A, 1.0),
+        // 标题栏与侧栏同色:顶条延伸侧栏观感,与内容区分色
+        title_bar: color(0x1A1A1A, 1.0),
         ink: color(0x000000, 1.0),
-        layer: color(0x2A3140, 1.0),
-        card: color(0x2E3644, 1.0),
-        dock: color(0x3A4553, 1.0),
+        layer: color(0x1E1E1E, 1.0),
+        card: color(0x202020, 1.0),
+        composer: color(0x272729, 1.0),
+        dock: color(0x2A2A2A, 1.0),
         brand: color(0x0A84FF, 1.0),
         danger: color(0xFF453A, 1.0),
         success: color(0x30D158, 1.0),
         warn: color(0xFF9F0A, 1.0),
-        bubble: color(0x303A49, 1.0),
+        bubble: color(0x232323, 1.0),
         label: color(0xF9FAFB, 1.0),
         label_2: color(0xEBEBF5, 0.72),
         label_3: color(0xEBEBF5, 0.55),
         caption: color(0xEBEBF5, 0.38),
         border: color(0xFFFFFF, 0.08),
         border_2: color(0xFFFFFF, 0.14),
-        code: color(0x191F2B, 1.0),
+        code: color(0x101010, 1.0),
         ongoing: color(0x0A84FF, 1.0),
         glass_bg: color(0xFFFFFF, 0.10),
         glass_border: color(0xFFFFFF, 0.16),
@@ -178,6 +169,7 @@ const fn light_palette() -> Palette {
         ink: color(0x000000, 1.0),
         layer: color(0xECECEE, 1.0),
         card: color(0xFFFFFF, 1.0),
+        composer: color(0xFFFFFF, 1.0),
         dock: color(0xE9E9EB, 1.0),
         brand: color(0x007AFF, 1.0),
         danger: color(0xFF3B30, 1.0),
@@ -223,13 +215,13 @@ pub(crate) fn palette_of(mode: ThemeMode) -> &'static Palette {
 
 // ── 取值 fn(调用点保持原常量形态;语义文档在此处)──────────
 
-/// 主背景(深盘深海军蓝,macOS 下为半透毛玻璃 tint 涂层——由 Root
-/// 层单次铺底 / 浅盘纯白)
+/// 主背景(内容区画布,由组件库 Root 层单次铺底:深盘中性灰
+/// #151515 / 浅盘纯白)
 pub fn BASE() -> Rgba {
     cur().base
 }
-/// 侧栏面板底(深盘板岩蓝灰半透 tint 涂层,对照 Finder 暗侧栏 /
-/// 浅盘浅灰;gpui-component list 面同源)
+/// 侧栏面板底(深盘中性灰 #1A1A1A,标题栏同色 / 浅盘浅灰;
+/// gpui-component list 面同源)
 pub fn SIDEBAR() -> Rgba {
     cur().sidebar
 }
@@ -250,10 +242,15 @@ pub fn INK() -> Rgba {
 pub fn LAYER() -> Rgba {
     cur().layer
 }
-/// 输入卡/卡片底(深盘海军蓝亮一档 / 浅盘纯白——
+/// 输入卡/卡片底(深盘比 base 亮一档 / 浅盘纯白——
 /// 白画布上灰底显脏,靠边框+阴影分层)
 pub fn CARD() -> Rgba {
     cur().card
+}
+/// 输入卡面(深盘 #272729,浮出画布一档;浅盘纯白同 CARD)。
+/// 仅 composer 输入卡用——工具卡/终端卡等走 CARD,两族勿混
+pub fn COMPOSER() -> Rgba {
+    cur().composer
 }
 /// 按钮底/次级填充(深盘再亮一档 / 浅盘极浅灰——chip 类填充
 /// 在白底上只求隐约成形,过深即灰蒙蒙)
@@ -457,7 +454,6 @@ pub fn apply(choice: Appearance, window: Option<&mut Window>, cx: &mut App) {
     MODE.store(mode_flag, Ordering::Relaxed);
     Theme::change(m, window, cx);
     apply_tokens(m, cx);
-    sync_window_background(cx);
     cx.refresh_windows();
 }
 
@@ -469,29 +465,6 @@ pub fn init(cx: &mut App) {
     LAST_CHOICE.store(255, Ordering::Relaxed);
     LAST_MODE.store(255, Ordering::Relaxed);
     apply(Appearance::Dark, None, cx);
-}
-
-/// 生效盘 → 窗口背景特效(纯函数,回归锁决策表):深盘走纯透明,
-/// 模糊由应用侧自建的 NSVisualEffectView 承担(shell::vibrancy;
-/// gpui 自带 Blurred 路径的视图本机不渲染,探针实证 layer=nil),
-/// 浅盘实色;非 macOS 恒实色。开窗装配(main.rs)与盘切换联动
-/// ([`sync_window_background`])共用此决策
-pub(crate) fn window_background_for(dark: bool) -> WindowBackgroundAppearance {
-    if dark && cfg!(target_os = "macos") {
-        WindowBackgroundAppearance::Transparent
-    } else {
-        WindowBackgroundAppearance::Opaque
-    }
-}
-
-/// 全窗同步背景特效(盘切换联动;启动期尚未开窗则为空集)。关窗
-/// 竞态的 Err 忽略——窗口已死无需外观;新开窗经 [`window_background_for`]
-/// 自带你外观
-fn sync_window_background(cx: &mut App) {
-    let target = window_background_for(is_dark());
-    for handle in cx.windows() {
-        let _ = handle.update(cx, |_, window, _| window.set_background_appearance(target));
-    }
 }
 
 /// NSApp 强制外观(值未变不重设,防观察者空转)
@@ -555,7 +528,7 @@ fn apply_tokens(m: ThemeMode, cx: &mut App) {
     c.sidebar_accent_foreground = p.label.into();
     c.scrollbar = p.base.into();
     c.scrollbar_thumb = p.dock.into();
-    // 标题栏 = 中性灰面(不随 base 走海军蓝):顶条与画布分色;
+    // 标题栏 = 中性灰面(与侧栏同色,顶条延伸侧栏观感):顶条与画布分色;
     // title_bar_border 同面无边线
     c.title_bar = p.title_bar.into();
     c.title_bar_border = p.title_bar.into();
@@ -580,15 +553,20 @@ mod tests {
     use super::*;
     use gpui_kit::{Hsla, TestAppContext};
 
-    /// 双盘锚定:深盘 = 蓝灰家族采样基值(base 半透毛玻璃涂层,
-    /// 非 macOS 实色),浅盘 = 纯白底;关键字段两盘互异;INK 双盘
-    /// 恒黑(diff 遮挡罩语义不随盘反色)
+    /// 双盘锚定:深盘 = 纯中性灰家族(用户指定 base 21,21,21 /
+    /// sidebar 与标题栏 26,26,26),浅盘 = 纯白底;关键字段两盘互异;
+    /// INK 双盘恒黑(diff 遮挡罩语义不随盘反色)
     #[test]
     fn palettes_distinct_and_anchored() {
         let l = &PALETTES[M_LIGHT as usize];
         let d = &PALETTES[M_DARK as usize];
-        assert_eq!(d.base, color(0x212734, WINDOW_TINT_A));
-        assert_eq!(d.sidebar, color(0x242A2C, 1.0));
+        assert_eq!(d.base, color(0x151515, 1.0));
+        assert_eq!(d.sidebar, color(0x1A1A1A, 1.0));
+        // 输入卡浮出画布一档(对照 deepseek harness 39,39,41)
+        assert_eq!(d.composer, color(0x272729, 1.0));
+        assert_ne!(d.composer, d.base);
+        assert_ne!(d.composer, d.card);
+        assert_eq!(l.composer, l.card);
         assert_eq!(l.base, color(0xFFFFFF, 1.0));
         assert_ne!(d.label, l.label);
         assert_ne!(d.brand, l.brand);
@@ -598,27 +576,11 @@ mod tests {
         // 侧栏交互三态互异(hover/选中串色即侧栏语义失效)
         assert_ne!(d.sidebar, d.sidebar_hover);
         assert_ne!(d.sidebar_hover, d.sidebar_active);
-        // 标题栏与侧栏分色(用户指定 41,45,48 / 36,42,44)
-        assert_ne!(d.title_bar, d.sidebar);
-        assert_eq!(d.sidebar, color(0x242A2C, 1.0));
-        assert_eq!(d.title_bar, color(0x292D30, 1.0));
+        // 标题栏与侧栏同色(顶条延伸侧栏观感)
+        assert_eq!(d.title_bar, d.sidebar);
+        assert_eq!(d.title_bar, color(0x1A1A1A, 1.0));
         // 标题栏与画布分色
         assert_ne!(d.title_bar, d.base);
-    }
-
-    /// 毛玻璃联动决策表:浅盘恒实色;深盘仅 macOS 走纯透明+
-    /// 应用侧自建效果视图
-    #[test]
-    fn window_background_follows_mode() {
-        assert_eq!(
-            window_background_for(false),
-            WindowBackgroundAppearance::Opaque
-        );
-        #[cfg(target_os = "macos")]
-        assert_eq!(
-            window_background_for(true),
-            WindowBackgroundAppearance::Transparent
-        );
     }
 
     /// 档位解析与 registry settings.yaml 词汇一致,未知值回落深色
@@ -657,7 +619,7 @@ mod tests {
                 Hsla::from(color(0xFFFFFF, 1.0))
             );
             // tokens 语义面镜像(Root 画布读 tokens.background;漏镜像
-            // = 画布露出库默认底,2026-09 毛玻璃批次实测踩坑)
+            // = 画布露出库默认底,2026-09 主题批次实测踩坑)
             assert_eq!(
                 *t.tokens.background,
                 Hsla::from(palette_of(ThemeMode::Light).base)

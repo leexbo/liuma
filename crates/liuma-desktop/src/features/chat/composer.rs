@@ -38,10 +38,11 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         .rounded(px(22.))
         .border_1()
         .border_color(theme::BORDER())
-        // 输入面与画布同底(BASE;参考终端输入区平铺画布,不凸起),
-        // 卡片感只靠描边;勿用 CARD——画布转海军蓝后卡片灰阶脱节
-        .bg(theme::BASE())
-        // 阴影:与画布同底后仅剩描边分层,阴影保留无害
+        // 输入卡浮出画布一档(COMPOSER #272729,对照 deepseek harness
+        // 输入卡 39,39,41;曾与画布同底只靠描边分层,已废);工具卡等
+        // 其余卡面仍走 CARD,两族勿混
+        .bg(theme::COMPOSER())
+        // 阴影:浮层面标配,与描边共同分层
         .shadow(vec![
             gpui_kit::BoxShadow::new(
                 gpui_kit::px(0.),

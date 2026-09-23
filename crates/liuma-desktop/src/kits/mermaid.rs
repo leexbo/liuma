@@ -1180,7 +1180,7 @@ mod tests {
         // 根背景:merman 默认写死 white,RootBackgroundPostprocessor 须
         // 改写为 CODE(卡片底;与节点底融合消除色差)
         assert!(
-            svg.contains("background-color:#191F2B"),
+            svg.contains("background-color:#101010"),
             "根背景应改写为 CODE:{svg}"
         );
         assert!(!svg.contains("background-color:white"), "不应残存白底");
@@ -1275,10 +1275,10 @@ mod tests {
         let vars = theme_variables();
         let get = |k: &str| vars[k].as_str().expect("应有字符串值").to_string();
         // 不透明色直传;BORDER_2(白 14%)按 BASE 合成 → 精确值由 hex 计算
-        assert_eq!(get("background"), "#191F2B", "背景 = CODE(卡片底,消除色差)");
+        assert_eq!(get("background"), "#101010", "背景 = CODE(卡片底,消除色差)");
         assert_eq!(get("textColor"), "#F9FAFB", "主文本 = LABEL");
-        assert_eq!(get("primaryColor"), "#2E3644", "节点面 = CARD");
-        assert_eq!(get("lineColor"), "#404550", "边线 = BORDER_2 合成色");
+        assert_eq!(get("primaryColor"), "#202020", "节点面 = CARD");
+        assert_eq!(get("lineColor"), "#353535", "边线 = BORDER_2 合成色");
         assert_eq!(get("nodeTextColor"), "#F9FAFB");
         assert!(vars.is_object());
         // 系列键齐(8 组 cScale*/pieN)

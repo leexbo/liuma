@@ -79,7 +79,7 @@ grep-searcher = "0.1.17"
 grep-regex = "0.1.14"
 uuid = { version = "1", features = ["v4", "v7"] }
 # GPUI 桌面门面:重导出 gpui(= gpui-pre)+ component/base/assets,升级走 semver
-gpui-kit = "0.6.4"
+gpui-kit = "0.6.6"
 # Mermaid → SVG(引擎选型见 kits/mermaid.rs);alpha 锁死防漂移
 merman = { version = "=0.8.0-alpha.5", default-features = false, features = ["svg", "layout-cytoscape"] }
 # Mermaid 查看器视口裁剪光栅(与 gpui 锁同版去重)
@@ -90,8 +90,6 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "objc2-core-graphics"] }
 objc2-core-graphics = { version = "0.3", features = ["CGBitmapContext", "CGColor", "CGColorSpace", "CGContext", "CGImage"] }
 objc2-foundation = "0.3"
-# 毛玻璃探针 winprobe(lock 内与 gpui 同一 0.6 实例)
-raw-window-handle = "0.6"
 # macOS 钥匙串凭据(非 macOS 平台该级缺席)
 # 附件图片解码校验(与 gpui 锁同版)
 image = "0.25"

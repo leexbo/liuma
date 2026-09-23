@@ -4,7 +4,7 @@
 //! `assets/logo.svg`(设计定稿,唯一权威):编译期内嵌,提取各
 //! `<path>` 的 d(仅 M/C/V/Z)/fill 颜色/fill-rule 与 viewBox,
 //! 极简解析为路径操作 → core-graphics 位图上下文按 viewBox 等比
-//! 缩放居中分层绘制(深色圆角底 = 主题 BASE #212734 + 品牌色
+//! 缩放居中分层绘制(深色圆角底 = 纯黑 BG_RGB + 品牌色
 //! 马形/圆点;evenodd 走 even-odd 填充,孔洞透底)→ CGImage →
 //! NSImage → `setApplicationIconImage`。dev 构建每启一次重绘,
 //! release 源码重编才变。
