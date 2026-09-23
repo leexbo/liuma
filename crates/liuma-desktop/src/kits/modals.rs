@@ -10,7 +10,7 @@ use gpui_kit::{
 };
 
 use crate::kits::i18n::dict;
-use crate::kits::icons::{LiumaIcon, fixed};
+use crate::kits::icons::fixed;
 use crate::kits::theme;
 use crate::shell::store::AppStore;
 
@@ -191,114 +191,5 @@ pub(crate) fn workspace_menu_card(store: &Entity<AppStore>, cx: &App) -> impl In
     div().absolute().top(px(34.)).left(px(left)).child(card)
 }
 
-/// 重命名模态(输入 + 确认/取消;Enter 确认见 open_rename 订阅)
-pub(crate) fn rename_modal(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
-    let st = store.read(cx);
-    let input = st.sessions.rename_input.clone();
-    let (ok, cancel, close) = (store.clone(), store.clone(), store.clone());
-    div()
-        .id("rename-overlay")
-        .absolute()
-        .size_full()
-        .top_0()
-        .left_0()
-        .flex()
-        .items_start()
-        .justify_center()
-        .pt(px(160.))
-        .bg(gpui_kit::Rgba {
-            a: 0.6,
-            ..theme::BASE()
-        })
-        .child(
-            div()
-                .v_flex()
-                .w(px(420.))
-                .gap(px(12.))
-                .rounded(px(14.))
-                .border_1()
-                .border_color(theme::BORDER())
-                .bg(theme::LAYER())
-                .p(px(20.))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .child(fixed(LiumaIcon::Pencil, 14.).text_color(theme::LABEL_2()))
-                        .child(
-                            div()
-                                .text_size(px(14.))
-                                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                                .child(dict::misc::rename_session()),
-                        )
-                        .child(div().flex_1())
-                        .child(modal_close("rename-close", move |_, _, cx| {
-                            close.update(cx, |st, cx| st.cancel_rename(cx));
-                        })),
-                )
-                .children(input.map(|e| div().child(gpui_kit::component::input::Input::new(&e))))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .child(
-                            div()
-                                .id("rename-ok")
-                                .flex()
-                                .h(px(28.))
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(14.))
-                                .bg(theme::BRAND())
-                                .px(px(16.))
-                                .cursor_pointer()
-                                .text_size(px(13.))
-                                .text_color(theme::LABEL())
-                                .child(dict::common::ok())
-                                .on_click(move |_, _, cx| {
-                                    ok.update(cx, |st, cx| st.confirm_rename(cx));
-                                }),
-                        )
-                        .child(
-                            div()
-                                .id("rename-cancel")
-                                .flex()
-                                .h(px(28.))
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(14.))
-                                .bg(theme::DOCK())
-                                .px(px(16.))
-                                .cursor_pointer()
-                                .text_size(px(13.))
-                                .text_color(theme::LABEL_2())
-                                .child(dict::common::cancel())
-                                .on_click(move |_, _, cx| {
-                                    cancel.update(cx, |st, cx| st.cancel_rename(cx));
-                                }),
-                        ),
-                ),
-        )
-}
-
-/// 模态右上关闭钮(24px 命中区)
-fn modal_close(
-    id: &'static str,
-    on_click: impl Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(id)
-        .flex()
-        .size(px(24.))
-        .flex_shrink_0()
-        .items_center()
-        .justify_center()
-        .rounded(px(6.))
-        .cursor_pointer()
-        .hover(|s| s.bg(theme::DOCK()))
-        .text_color(theme::LABEL_3())
-        .child(fixed(IconName::Close, 14.))
-        .on_click(move |ev, w, cx| on_click(ev, w, cx))
-}
+// 重命名模态已迁组件库 Dialog(sessions/store.rs open_rename 经
+// AppStore::with_window 桥打开;输入/确认/取消与 Enter 订阅不变)。

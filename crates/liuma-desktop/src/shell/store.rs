@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
-use gpui_kit::{AppContext, Context, Window};
+use gpui_kit::{App, AppContext, Context, Window};
 use liuma_core::proto::{ServerRequest, SessionSummary};
 
 use crate::features::ask::AskStore;
@@ -93,6 +93,9 @@ pub struct AppStore {
     pub clipboard_intercept: Option<gpui_kit::Subscription>,
     /// 系统外观观察者订阅(窗口挂载时注册一次,drop = 退订)
     pub appearance_sub: Option<gpui_kit::Subscription>,
+    /// 主窗句柄(attach_window_state 挂入):store 方法普遍无 window
+    /// 上下文,模态迁移到组件库 Dialog 后,开/关模态经此桥直驱窗口层
+    pub window: Option<gpui_kit::AnyWindowHandle>,
     /// 全库检索功能切片状态(侧栏搜索输入/命中面板/跳转定位;域与行为见
     /// features::search)
     pub search: SearchStore,
@@ -198,6 +201,7 @@ impl AppStore {
             stats_card: None,
             stats_time_bounds: None,
             stats_usage_bounds: None,
+            window: None,
             clipboard_intercept: None,
             attachments: AttachmentsStore::default(),
             ask: AskStore::default(),
@@ -259,8 +263,29 @@ impl AppStore {
             .find(|s| s.origin.as_deref() != Some("subagent"))
     }
 
+    /// 库 Dialog 桥(延迟一拍):store 方法普遍无 window 上下文,经主
+    /// 窗句柄开/关模态。**不可同步调用**:窗口自身更新期间句柄被
+    /// take 出表(gpui update_window 语义),嵌套 lookup 必然
+    /// 「window not found」——故经 defer 推到本帧更新结束后执行,彼时
+    /// 句柄可解析。f 须 'static(捕获 owned 克隆);窗口未挂时静默跳过
+    pub(crate) fn with_window_deferred(
+        &self,
+        cx: &mut App,
+        f: impl FnOnce(&mut Window, &mut App) + 'static,
+    ) {
+        let window = self.window;
+        cx.defer(move |cx| {
+            if let Some(h) = window
+                && let Err(e) = h.update(cx, |_, window, cx| f(window, cx))
+            {
+                eprintln!("[dialog] 窗口句柄执行失败: {e}");
+            }
+        });
+    }
+
     /// 挂窗态(输入框需要 Window;在 WorkspaceView 构造时调用)
     pub fn attach_window_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.window = Some(window.window_handle());
         // 系统外观观察者:System 档时系统切浅/深 → 主题实时同步
         // (非 System 档回调即短路;显式档强制 NSApp 外观触发的回调同样
         // 短路,不会成环)。订阅存 self,drop = 退订。
@@ -772,7 +797,6 @@ impl AppStore {
         self.sessions.menu_open_ws = None;
         self.sessions.workspace_menu_open = false;
         self.sessions.view_menu_pos = None;
-        self.settings.full_access_confirm = None;
         self.panel_plus_menu_at = None;
         self.preview.menu = None;
         self.billing_card_open = false;
@@ -782,12 +806,17 @@ impl AppStore {
         cx.notify();
     }
 
-    /// composer 权限菜单选「完全权限」:先收菜单,弹风险确认弹窗,
-    /// 确认后才真正 set_session_permission(FullAccessAsk::Session)
+    /// composer 权限菜单选「完全权限」:先收菜单,弹风险确认弹窗
+    /// (组件库 Dialog 层),确认后才真正 set_session_permission
+    /// (FullAccessAsk::Session)
     pub fn ask_full_access_session(&mut self, cx: &mut Context<Self>) {
         self.chat.composer_menu = ComposerMenu::None;
         self.hero_menu = HeroMenu::None;
         self.settings.full_access_confirm = Some(crate::features::settings::FullAccessAsk::Session);
+        let store = cx.entity().clone();
+        self.with_window_deferred(cx, move |window, cx| {
+            crate::features::settings::open_full_access_dialog(&store, window, cx);
+        });
         cx.notify();
     }
 

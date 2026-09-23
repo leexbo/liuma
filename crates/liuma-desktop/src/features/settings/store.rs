@@ -182,8 +182,6 @@ pub(crate) struct SettingsStore {
     pub billing_auto_last: Option<std::time::Instant>,
     /// 保存通告(应用成功后一行 success 文案)
     pub saved_provider_notice: Option<String>,
-    /// 待确认删除的 provider
-    pub delete_provider_target: Option<String>,
     /// 设置页内通告槽(单槽覆盖,不堆积;(成功?, 文案)):计费查询、
     /// 保存失败等设置动作的反馈——**不走聊天区** push_local_notice。
     /// 4s 自动清除(notice_seq 守卫防误清新通告)
@@ -265,7 +263,6 @@ impl Default for SettingsStore {
             billing_auto_running: false,
             billing_auto_last: None,
             saved_provider_notice: None,
-            delete_provider_target: None,
             settings_notice: None,
             settings_notice_seq: 0,
             preset_select: None,
@@ -671,6 +668,10 @@ impl AppStore {
     pub fn set_default_permission(&mut self, id: &str, cx: &mut Context<Self>) {
         if id == "full-access" {
             self.settings.full_access_confirm = Some(FullAccessAsk::Default);
+            let store = cx.entity().clone();
+            self.with_window_deferred(cx, move |window, cx| {
+                crate::features::settings::open_full_access_dialog(&store, window, cx);
+            });
             cx.notify();
             return;
         }
@@ -1342,6 +1343,10 @@ impl AppStore {
             candidates: Vec::new(),
             picked: Vec::new(),
         });
+        let dialog_store = cx.entity().clone();
+        self.with_window_deferred(cx, move |window, cx| {
+            crate::features::settings::open_fetch_models_dialog(&dialog_store, window, cx);
+        });
         cx.notify();
         let store = cx.entity().clone();
         let host = self.bridge.host().clone();
@@ -1591,28 +1596,24 @@ impl AppStore {
         .detach();
     }
 
-    /// 打开 provider 删除确认(移除先经确认模态)
+    /// 打开 provider 删除确认(组件库 Dialog 层;取消即纯关闭,无旗标)
     pub fn ask_delete_provider(&mut self, id: &str, cx: &mut Context<Self>) {
         self.settings.saved_provider_notice = None;
-        self.settings.delete_provider_target = Some(id.to_string());
+        let pid = id.to_string();
+        let store = cx.entity().clone();
+        self.with_window_deferred(cx, move |window, cx| {
+            crate::features::settings::open_delete_provider_dialog(&store, &pid, window, cx);
+        });
         cx.notify();
     }
 
-    /// 取消 provider 删除
-    pub fn cancel_delete_provider(&mut self, cx: &mut Context<Self>) {
-        self.settings.delete_provider_target = None;
-        cx.notify();
-    }
-
-    /// 确认删除 provider(凭据记录是用户资产,不随删)
-    pub fn confirm_delete_provider(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.settings.delete_provider_target.take() else {
-            return;
-        };
-        if self.settings.editing_provider.as_deref() == Some(id.as_str()) {
+    /// 确认删除 provider(凭据记录是用户资产,不随删;id 由弹层确认
+    /// 钮直派,不再经旗标中转)
+    pub fn confirm_delete_provider(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.settings.editing_provider.as_deref() == Some(id) {
             self.settings.editing_provider = None;
         }
-        match self.bridge.host().remove_provider(&id) {
+        match self.bridge.host().remove_provider(id) {
             Ok(()) => {
                 self.settings.saved_provider_notice = None;
                 self.settings_refresh(cx);

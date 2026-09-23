@@ -14,7 +14,7 @@ pub(crate) mod scroll;
 mod statusbar;
 mod topbar;
 
-use crate::kits::modals::{attachment_toast_card, rename_modal, workspace_menu_card};
+use crate::kits::modals::{attachment_toast_card, workspace_menu_card};
 
 use gpui_kit::component::StyledExt;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -902,30 +902,13 @@ impl Render for WorkspaceView {
                 });
                 el.children(card)
             })
-            .when(
-                self.store.read(cx).sessions.rename_target.is_some()
-                    || self.store.read(cx).sessions.rename_ws_target.is_some(),
-                |el| el.child(rename_modal(&self.store, cx)),
-            )
-            .when(
-                self.store
-                    .read(cx)
-                    .settings
-                    .delete_provider_target
-                    .is_some(),
-                |el| el.child(settings::provider_delete_modal(&self.store, cx)),
-            )
-            .when(self.store.read(cx).settings.model_fetch.is_some(), |el| {
-                el.child(settings::provider_models_fetch_modal(&self.store, cx))
-            })
+            // 重命名/删除确认/拉取模型/full-access 风险确认四模态已迁
+            // 组件库 Dialog 层(store 经 with_window 桥开/关;Esc、遮罩
+            // 点击与焦点陷阱由库托管),根级不再条件渲染
             // 首运行 onboarding(无任何可用凭据)
             .when(self.store.read(cx).settings.needs_onboarding, |el| {
                 el.child(settings::onboarding_modal(&self.store, cx))
             })
-            .when(
-                self.store.read(cx).settings.full_access_confirm.is_some(),
-                |el| el.child(settings::full_access_modal(&self.store, cx)),
-            )
             // 图片 Lightbox 与附件拒收 toast(root 级树序末尾,
             // 后绘制在上;Lightbox 遮罩叠于全部内容)
             .when(self.store.read(cx).attachments.lightbox.is_some(), |el| {
@@ -954,6 +937,11 @@ impl Render for WorkspaceView {
                 self.store.read(cx).attachments.attachment_toast.is_some(),
                 |el| el.child(attachment_toast_card(&self.store, cx)),
             )
+            // Dialog/Sheet 层(gpui-component;store 经 with_window 桥
+            // window.open_dialog 打开的模态在此渲染。树序置于手写 overlay
+            // 之后:模态遮罩压过 lightbox/查看器)
+            .children(gpui_kit::component::Root::render_dialog_layer(window, cx))
+            .children(gpui_kit::component::Root::render_sheet_layer(window, cx))
             // 通知层(gpui-component NotificationList;Root 持有实体但
             // 自身不渲染,应用根视图须显式挂层——不挂则 push 的通知
             // 全数不可见)。置于树序最末:浮于含查看器在内的全部 overlay

@@ -6762,14 +6762,15 @@ fn provider_editor_postures(cx: &mut TestAppContext) {
     wcx.refresh().expect("刷新失败");
     wcx.run_until_parked();
     assert!(wcx.debug_bounds("provider-delete-card").is_some());
-    assert_eq!(
-        cx.update(|app| store.read(app).settings.delete_provider_target.clone())
-            .as_deref(),
-        Some("deepseek")
-    );
+    // 确认弹窗已迁组件库 Dialog 层:在场 = dialog-layer 渲染
+    assert!(wcx.debug_bounds("dialog-layer").is_some());
     click_sel(&mut wcx, "provider-delete-cancel");
     wcx.run_until_parked();
-    assert!(cx.update(|app| store.read(app).settings.delete_provider_target.is_none()));
+    wcx.refresh().expect("刷新失败");
+    assert!(
+        wcx.debug_bounds("dialog-layer").is_none(),
+        "取消后确认弹层应已关闭"
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 

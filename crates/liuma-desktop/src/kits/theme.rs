@@ -531,6 +531,9 @@ fn apply_tokens(m: ThemeMode, cx: &mut App) {
     c.sidebar_accent_foreground = p.label.into();
     c.scrollbar = p.base.into();
     c.scrollbar_thumb = p.dock.into();
+    // 模态遮罩 = 画布色 60%(原手写模态遮罩同款;库 Dialog/AlertDialog
+    // 的 overlay 层读此 token)
+    c.overlay = Rgba { a: 0.6, ..p.base }.into();
     // 标题栏 = 中性灰面(与侧栏同色,顶条延伸侧栏观感):顶条与画布分色;
     // title_bar_border 同面无边线
     c.title_bar = p.title_bar.into();

@@ -20,7 +20,7 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
-    Styled, div, px,
+    Styled, Window, div, px,
 };
 
 use crate::features::settings::SettingsNav;
@@ -335,8 +335,9 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                                         let st_switch = st_switch.clone();
                                         let id_sw = id_sw_click.clone();
                                         move |_, _, cx| {
-                                            st_switch
-                                                .update(cx, |st, cx| st.toggle_mcp_server(&id_sw, cx));
+                                            st_switch.update(cx, |st, cx| {
+                                                st.toggle_mcp_server(&id_sw, cx)
+                                            });
                                         }
                                     }),
                             ),
@@ -2587,182 +2588,185 @@ fn caption_line(text: impl Into<String>) -> impl IntoElement {
         .child(text.into())
 }
 
-/// Provider 删除确认模态(shell/mod.rs 根级渲染)
-/// 从端点获取模型弹层(候选多选 + 采纳;loading 态获取中)
-pub fn provider_models_fetch_modal(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
-    let st = store.read(cx);
-    let Some(mf) = &st.settings.model_fetch else {
-        return div().into_any_element();
-    };
-    let loading = st.settings.model_fetch_loading;
-    let picked_count = mf.picked.iter().filter(|p| **p).count();
-    let (s_cancel, s_adopt, s_mask) = (store.clone(), store.clone(), store.clone());
-    let mut rows: Vec<gpui_kit::AnyElement> = Vec::new();
-    if loading {
-        rows.push(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .py(px(20.))
-                .justify_center()
-                .text_size(px(13.))
-                .text_color(theme::CAPTION())
-                .child(dict::settings::fetching())
-                .into_any_element(),
-        );
-    } else {
-        rows.extend(mf.candidates.iter().enumerate().map(|(ix, m)| {
-            let s_toggle = store.clone();
-            let picked = mf.picked.get(ix).copied().unwrap_or(false);
-            div()
-                .id(sid("fetch-cand", &ix.to_string()))
-                .debug_selector(|| format!("fetch-cand-{ix}"))
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .h(px(30.))
-                .px(px(8.))
-                .rounded(px(8.))
-                .cursor_pointer()
-                .hover(|s| s.bg(theme::DOCK()))
-                .child(
-                    div()
-                        .flex()
-                        .size(px(14.))
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(4.))
-                        .border_1()
-                        .border_color(if picked {
-                            theme::BRAND()
-                        } else {
-                            theme::BORDER()
-                        })
-                        .bg(if picked {
-                            theme::BRAND()
-                        } else {
-                            theme::TRANSPARENT()
-                        })
-                        .text_color(theme::LABEL())
-                        .children(picked.then(|| fixed(IconName::Check, 11.))),
-                )
-                .text_size(px(13.))
-                .text_color(theme::LABEL_2())
-                .child(m.clone())
-                .on_click(move |_, _, cx| {
-                    s_toggle.update(cx, |st, cx| st.toggle_fetch_pick(ix, cx));
-                })
-                .into_any_element()
-        }));
-    }
-    div()
-        .id("models-fetch-overlay")
-        .absolute()
-        .size_full()
-        .top_0()
-        .left_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(gpui_kit::Rgba {
-            a: 0.6,
-            ..theme::BASE()
-        })
-        .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, cx| {
-            s_mask.update(cx, |st, cx| st.close_fetch_modal(cx));
-        })
-        .child(
-            div()
-                .id("models-fetch-card")
-                .debug_selector(|| "models-fetch-card".to_string())
-                .v_flex()
-                .w(px(440.))
-                .gap(px(12.))
-                .rounded(px(14.))
-                .border_1()
-                .border_color(theme::BORDER())
-                .bg(theme::LAYER())
-                .p(px(20.))
-                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-                    cx.stop_propagation()
-                })
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            div()
-                                .text_size(px(14.))
-                                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                                .child(dict::settings::fetch_models_title()),
-                        )
+/// 从端点获取模型弹层(组件库 Dialog 层;store 经 with_window 桥打开)。
+/// 候选多选 + 采纳;loading 态获取中——content builder 每帧重放实时读
+/// model_fetch,loading→清单切换与「采纳」钮出现均无需手动刷新,故
+/// 动态尾行一并收进 content(Dialog 静态 footer 槽不随帧重放)
+pub(crate) fn open_fetch_models_dialog(
+    store: &Entity<AppStore>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    use gpui_kit::component::WindowExt as _;
+    let store = store.clone();
+    let s_close = store.clone();
+    window.open_dialog(cx, move |dialog, _, _| {
+        dialog
+            .title(dict::settings::fetch_models_title())
+            .w(px(440.))
+            .bg(theme::LAYER())
+            .content({
+                let s_rows = store.clone();
+                // 取消钮 handler 的克隆源(名字区分两层:Fn 闭包体
+                // 不得移出捕获变量,逐帧取新克隆)
+                let s_close_src = s_close.clone();
+                move |content, _, cx| {
+                    let s_close = s_close_src.clone();
+                    let st = s_rows.read(cx);
+                    let Some(mf) = &st.settings.model_fetch else {
+                        return content;
+                    };
+                    let loading = st.settings.model_fetch_loading;
+                    let picked_count = mf.picked.iter().filter(|p| **p).count();
+                    let mut card = div()
+                        .id("models-fetch-card")
+                        .debug_selector(|| "models-fetch-card".to_string())
+                        .v_flex()
+                        .gap(px(12.))
                         .child(
                             div()
                                 .text_size(px(12.))
                                 .text_color(theme::CAPTION())
                                 .child(dict::settings::picked_count(picked_count)),
-                        ),
-                )
-                .child(
-                    div()
-                        .id("models-fetch-list")
-                        .v_flex()
-                        .gap(px(2.))
-                        .max_h(px(320.))
-                        .overflow_y_scroll()
-                        .children(rows),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .justify_end()
-                        .gap(px(8.))
-                        .child(
+                        );
+                    if loading {
+                        card = card.child(
                             div()
-                                .id("models-fetch-cancel")
                                 .flex()
-                                .h(px(32.))
                                 .items_center()
-                                .px(px(14.))
-                                .rounded(px(16.))
-                                .border_1()
-                                .border_color(theme::BORDER())
-                                .cursor_pointer()
-                                .text_size(px(12.))
-                                .text_color(theme::LABEL_2())
-                                .hover(|s| s.bg(theme::DOCK()))
-                                .child(dict::common::cancel())
-                                .on_click(move |_, _, cx| {
-                                    s_cancel.update(cx, |st, cx| st.close_fetch_modal(cx));
-                                }),
-                        )
-                        .when(!loading, |el| {
-                            el.child(
+                                .gap(px(8.))
+                                .py(px(20.))
+                                .justify_center()
+                                .text_size(px(13.))
+                                .text_color(theme::CAPTION())
+                                .child(dict::settings::fetching()),
+                        );
+                    } else {
+                        card = card.child(
+                            div()
+                                .id("models-fetch-list")
+                                .v_flex()
+                                .gap(px(2.))
+                                .max_h(px(320.))
+                                .overflow_y_scroll()
+                                .children(mf.candidates.iter().enumerate().map(|(ix, m)| {
+                                    let s_toggle = s_rows.clone();
+                                    let picked = mf.picked.get(ix).copied().unwrap_or(false);
+                                    div()
+                                        .id(sid("fetch-cand", &ix.to_string()))
+                                        .debug_selector(|| format!("fetch-cand-{ix}"))
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .h(px(30.))
+                                        .px(px(8.))
+                                        .rounded(px(8.))
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(theme::DOCK()))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .size(px(14.))
+                                                .items_center()
+                                                .justify_center()
+                                                .rounded(px(4.))
+                                                .border_1()
+                                                .border_color(if picked {
+                                                    theme::BRAND()
+                                                } else {
+                                                    theme::BORDER()
+                                                })
+                                                .bg(if picked {
+                                                    theme::BRAND()
+                                                } else {
+                                                    theme::TRANSPARENT()
+                                                })
+                                                .text_color(theme::LABEL())
+                                                .children(
+                                                    picked.then(|| fixed(IconName::Check, 11.)),
+                                                ),
+                                        )
+                                        .text_size(px(13.))
+                                        .text_color(theme::LABEL_2())
+                                        .child(m.clone())
+                                        .on_click(move |_, _, cx| {
+                                            s_toggle
+                                                .update(cx, |st, cx| st.toggle_fetch_pick(ix, cx));
+                                        })
+                                })),
+                        );
+                    }
+                    // 动作尾行(随 content 重放:loading 中只留取消)
+                    let st = s_rows.read(cx);
+                    let loading = st.settings.model_fetch_loading;
+                    let picked_count = st
+                        .settings
+                        .model_fetch
+                        .as_ref()
+                        .map(|mf| mf.picked.iter().filter(|p| **p).count())
+                        .unwrap_or(0);
+                    card = card.child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap(px(8.))
+                            .child(
                                 div()
-                                    .id("models-fetch-adopt")
+                                    .id("models-fetch-cancel")
+                                    .debug_selector(|| "models-fetch-cancel".to_string())
                                     .flex()
                                     .h(px(32.))
                                     .items_center()
                                     .px(px(14.))
                                     .rounded(px(16.))
-                                    .bg(theme::DOCK())
+                                    .border_1()
+                                    .border_color(theme::BORDER())
                                     .cursor_pointer()
                                     .text_size(px(12.))
-                                    .text_color(theme::LABEL())
-                                    .hover(|s| s.bg(theme::BUBBLE()))
-                                    .child(dict::settings::adopt(picked_count))
-                                    .on_click(move |_, _, cx| {
-                                        s_adopt.update(cx, |st, cx| {
-                                            st.adopt_fetched_models(cx);
-                                        });
+                                    .text_color(theme::LABEL_2())
+                                    .hover(|s| s.bg(theme::DOCK()))
+                                    .child(dict::common::cancel())
+                                    .on_click(move |_, window, cx| {
+                                        s_close.update(cx, |st, cx| st.close_fetch_modal(cx));
+                                        window.close_dialog(cx);
                                     }),
                             )
-                        }),
-                ),
-        )
-        .into_any_element()
+                            .when(!loading, |el| {
+                                let s_adopt = s_rows.clone();
+                                el.child(
+                                    div()
+                                        .id("models-fetch-adopt")
+                                        .debug_selector(|| "models-fetch-adopt".to_string())
+                                        .flex()
+                                        .h(px(32.))
+                                        .items_center()
+                                        .px(px(14.))
+                                        .rounded(px(16.))
+                                        .bg(theme::DOCK())
+                                        .cursor_pointer()
+                                        .text_size(px(12.))
+                                        .text_color(theme::LABEL())
+                                        .hover(|s| s.bg(theme::BUBBLE()))
+                                        .child(dict::settings::adopt(picked_count))
+                                        .on_click(move |_, window, cx| {
+                                            s_adopt.update(cx, |st, cx| {
+                                                st.adopt_fetched_models(cx);
+                                            });
+                                            window.close_dialog(cx);
+                                        }),
+                                )
+                            }),
+                    );
+                    content.child(card)
+                }
+            })
+            .on_close({
+                let s_close = s_close.clone();
+                move |_, _, cx| {
+                    s_close.update(cx, |st, cx| st.close_fetch_modal(cx));
+                }
+            })
+    });
 }
 
 /// 首运行 onboarding 模态:无任何可用
@@ -2885,247 +2889,215 @@ pub(crate) fn onboarding_modal(store: &Entity<AppStore>, cx: &App) -> gpui_kit::
         .into_any_element()
 }
 
-pub fn provider_delete_modal(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
-    let Some(id) = store.read(cx).settings.delete_provider_target.clone() else {
-        return div().into_any_element();
-    };
-    let (s_cancel, s_confirm, s_mask) = (store.clone(), store.clone(), store.clone());
-    div()
-        .id("provider-delete-overlay")
-        .absolute()
-        .size_full()
-        .top_0()
-        .left_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(gpui_kit::Rgba {
-            a: 0.6,
-            ..theme::BASE()
-        })
-        .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, cx| {
-            s_mask.update(cx, |st, cx| st.cancel_delete_provider(cx));
-        })
-        .child(
-            div()
-                .id("provider-delete-card")
-                .debug_selector(|| "provider-delete-card".to_string())
-                .v_flex()
-                .w(px(420.))
-                .gap(px(12.))
-                .rounded(px(14.))
-                .border_1()
-                .border_color(theme::BORDER())
-                .bg(theme::LAYER())
-                .p(px(20.))
-                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-                    cx.stop_propagation()
-                })
-                .child(
+/// Provider 删除确认(组件库 Dialog 层;store 经 with_window 桥打开)。
+/// 取消 = 纯关闭(无旗标可清);确认携 id 直派 store 动作
+pub(crate) fn open_delete_provider_dialog(
+    store: &Entity<AppStore>,
+    id: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    use gpui_kit::component::WindowExt as _;
+    let s_confirm = store.clone();
+    let pid = id.to_string();
+    window.open_dialog(cx, move |dialog, _, _| {
+        let s_confirm = s_confirm.clone();
+        let pid = pid.clone();
+        dialog
+            .title(dict::settings::remove_provider(pid.clone()))
+            .w(px(420.))
+            .bg(theme::LAYER())
+            .content(|content, _, _| {
+                content.child(
                     div()
-                        .text_size(px(14.))
-                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                        .child(dict::settings::remove_provider(id)),
+                        .debug_selector(|| "provider-delete-card".to_string())
+                        .child(caption_line(dict::settings::remove_provider_desc())),
                 )
-                .child(caption_line(dict::settings::remove_provider_desc()))
-                .child(
-                    div()
-                        .flex()
-                        .justify_end()
-                        .gap(px(8.))
-                        .child(
-                            div()
-                                .id("provider-delete-cancel")
-                                .debug_selector(|| "provider-delete-cancel".to_string())
-                                .flex()
-                                .h(px(32.))
-                                .items_center()
-                                .px(px(14.))
-                                .rounded(px(16.))
-                                .border_1()
-                                .border_color(theme::BORDER())
-                                .cursor_pointer()
-                                .text_size(px(12.))
-                                .text_color(theme::LABEL_2())
-                                .hover(|s| s.bg(theme::DOCK()))
-                                .child(dict::common::cancel())
-                                .on_click(move |_, _, cx| {
-                                    s_cancel.update(cx, |st, cx| st.cancel_delete_provider(cx));
-                                }),
-                        )
-                        .child(
-                            div()
-                                .id("provider-delete-confirm")
-                                .debug_selector(|| "provider-delete-confirm".to_string())
-                                .flex()
-                                .h(px(32.))
-                                .items_center()
-                                .px(px(14.))
-                                .rounded(px(16.))
-                                .border_1()
-                                .border_color(theme::DANGER())
-                                .cursor_pointer()
-                                .text_size(px(12.))
-                                .text_color(theme::DANGER())
-                                .hover(|s| s.bg(theme::DOCK()))
-                                .child(dict::common::remove())
-                                .on_click(move |_, _, cx| {
-                                    s_confirm.update(cx, |st, cx| st.confirm_delete_provider(cx));
-                                }),
-                        ),
-                ),
-        )
-        .into_any_element()
+            })
+            .footer(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .id("provider-delete-cancel")
+                            .debug_selector(|| "provider-delete-cancel".to_string())
+                            .flex()
+                            .h(px(32.))
+                            .items_center()
+                            .px(px(14.))
+                            .rounded(px(16.))
+                            .border_1()
+                            .border_color(theme::BORDER())
+                            .cursor_pointer()
+                            .text_size(px(12.))
+                            .text_color(theme::LABEL_2())
+                            .hover(|s| s.bg(theme::DOCK()))
+                            .child(dict::common::cancel())
+                            .on_click(|_, window, cx| {
+                                window.close_dialog(cx);
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("provider-delete-confirm")
+                            .debug_selector(|| "provider-delete-confirm".to_string())
+                            .flex()
+                            .h(px(32.))
+                            .items_center()
+                            .px(px(14.))
+                            .rounded(px(16.))
+                            .border_1()
+                            .border_color(theme::DANGER())
+                            .cursor_pointer()
+                            .text_size(px(12.))
+                            .text_color(theme::DANGER())
+                            .hover(|s| s.bg(theme::DOCK()))
+                            .child(dict::common::remove())
+                            .on_click(move |_, window, cx| {
+                                s_confirm.update(cx, |st, cx| st.confirm_delete_provider(&pid, cx));
+                                window.close_dialog(cx);
+                            }),
+                    ),
+            )
+    });
 }
 
-/// full-access 风险确认模态(根级渲染:
-/// 警示标题 + 后果段落 + 能力清单盒 + 风险脚注 + 取消/红色确认)
-pub fn full_access_modal(store: &Entity<AppStore>, _cx: &App) -> gpui_kit::AnyElement {
-    let (s_cancel, s_confirm, s_mask) = (store.clone(), store.clone(), store.clone());
-    div()
-        .id("full-access-overlay")
-        .absolute()
-        .size_full()
-        .top_0()
-        .left_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(gpui_kit::Rgba {
-            a: 0.6,
-            ..theme::BASE()
-        })
-        .on_mouse_down(gpui_kit::MouseButton::Left, move |_, window, cx| {
-            s_mask.update(cx, |st, cx| st.cancel_full_access(window, cx));
-        })
-        .child(
-            div()
-                .id("full-access-card")
-                .debug_selector(|| "full-access-card".to_string())
-                .v_flex()
-                .w(px(440.))
-                .gap(px(14.))
-                .rounded(px(14.))
-                .border_1()
-                .border_color(theme::BORDER())
-                .bg(theme::LAYER())
-                .p(px(22.))
-                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-                    cx.stop_propagation()
-                })
-                // 标题:警示图标 + 问句
-                .child(
+/// full-access 风险确认(组件库 Dialog 层;store 经 with_window 桥打开,
+/// 设置页与 composer 会话权限两来源共用)。警示标题 + 后果段落 +
+/// 能力清单盒 + 风险脚注 + 取消/红色确认;Esc/遮罩/X 走 on_close 统一
+/// 回滚(旗标归位 + 设置页 Select 显示回实际值)
+pub(crate) fn open_full_access_dialog(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) {
+    use gpui_kit::component::WindowExt as _;
+    let (s_cancel, s_confirm, s_close) = (store.clone(), store.clone(), store.clone());
+    window.open_dialog(cx, move |dialog, _, _| {
+        let (s_cancel, s_confirm, s_close) = (s_cancel.clone(), s_confirm.clone(), s_close.clone());
+        dialog
+            .title(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(fixed(IconName::TriangleAlert, 18.).text_color(theme::LABEL()))
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                            .text_color(theme::LABEL())
+                            .child(dict::settings::fa_title()),
+                    ),
+            )
+            .w(px(440.))
+            .bg(theme::LAYER())
+            .content(|content, _, _| {
+                content.child(
                     div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .child(fixed(IconName::TriangleAlert, 18.).text_color(theme::LABEL()))
-                        .child(
-                            div()
-                                .text_size(px(16.))
-                                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                                .text_color(theme::LABEL())
-                                .child(dict::settings::fa_title()),
-                        ),
-                )
-                // 后果段落
-                .child(
-                    div()
-                        .text_size(px(13.))
-                        .text_color(theme::LABEL_2())
-                        .child(dict::settings::fa_body()),
-                )
-                // 能力清单盒(略深一档底;行间发丝线)
-                .child(
-                    div()
-                        .id("full-access-list")
-                        .debug_selector(|| "full-access-list".to_string())
+                        .id("full-access-card")
+                        .debug_selector(|| "full-access-card".to_string())
                         .v_flex()
-                        .rounded(px(10.))
-                        .bg(theme::DOCK())
-                        .child(risk_row(
-                            fixed(IconName::Folder, 16.),
-                            dict::settings::fa_files(),
-                            dict::settings::fa_files_desc(),
-                        ))
-                        .child(div().w_full().h(px(1.)).bg(theme::BORDER()))
-                        .child(risk_row(
-                            fixed(IconName::SquareTerminal, 16.),
-                            dict::settings::fa_terminal(),
-                            dict::settings::fa_terminal_desc(),
-                        ))
-                        .child(div().w_full().h(px(1.)).bg(theme::BORDER()))
-                        .child(risk_row(
-                            fixed(IconName::Globe, 16.),
-                            dict::settings::fa_internet(),
-                            dict::settings::fa_internet_desc(),
-                        )),
-                )
-                // 风险脚注
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(theme::CAPTION())
-                        .child(dict::settings::fa_risk()),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .justify_end()
-                        .items_center()
-                        .gap(px(8.))
+                        .gap(px(14.))
                         .child(
                             div()
-                                .id("full-access-cancel")
-                                .debug_selector(|| "full-access-cancel".to_string())
-                                .flex()
-                                .h(px(32.))
-                                .items_center()
-                                .px(px(14.))
-                                .rounded(px(16.))
-                                .border_1()
-                                .border_color(theme::BORDER())
-                                .cursor_pointer()
                                 .text_size(px(13.))
                                 .text_color(theme::LABEL_2())
-                                .hover(|s| s.bg(theme::DOCK()))
-                                .child(dict::common::cancel())
-                                .on_click(move |_, window, cx| {
-                                    s_cancel.update(cx, |st, cx| st.cancel_full_access(window, cx));
-                                }),
+                                .child(dict::settings::fa_body()),
                         )
                         .child(
                             div()
-                                .id("full-access-confirm")
-                                .debug_selector(|| "full-access-confirm".to_string())
-                                .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .h(px(32.))
-                                .px(px(14.))
-                                .rounded(px(16.))
-                                .bg(gpui_kit::Rgba {
-                                    a: 0.14,
+                                .id("full-access-list")
+                                .debug_selector(|| "full-access-list".to_string())
+                                .v_flex()
+                                .rounded(px(10.))
+                                .bg(theme::DOCK())
+                                .child(risk_row(
+                                    fixed(IconName::Folder, 16.),
+                                    dict::settings::fa_files(),
+                                    dict::settings::fa_files_desc(),
+                                ))
+                                .child(div().w_full().h(px(1.)).bg(theme::BORDER()))
+                                .child(risk_row(
+                                    fixed(IconName::SquareTerminal, 16.),
+                                    dict::settings::fa_terminal(),
+                                    dict::settings::fa_terminal_desc(),
+                                ))
+                                .child(div().w_full().h(px(1.)).bg(theme::BORDER()))
+                                .child(risk_row(
+                                    fixed(IconName::Globe, 16.),
+                                    dict::settings::fa_internet(),
+                                    dict::settings::fa_internet_desc(),
+                                )),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(theme::CAPTION())
+                                .child(dict::settings::fa_risk()),
+                        ),
+                )
+            })
+            .footer(
+                div()
+                    .flex()
+                    .justify_end()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .id("full-access-cancel")
+                            .debug_selector(|| "full-access-cancel".to_string())
+                            .flex()
+                            .h(px(32.))
+                            .items_center()
+                            .px(px(14.))
+                            .rounded(px(16.))
+                            .border_1()
+                            .border_color(theme::BORDER())
+                            .cursor_pointer()
+                            .text_size(px(13.))
+                            .text_color(theme::LABEL_2())
+                            .hover(|s| s.bg(theme::DOCK()))
+                            .child(dict::common::cancel())
+                            .on_click(move |_, window, cx| {
+                                s_cancel.update(cx, |st, cx| st.cancel_full_access(window, cx));
+                                window.close_dialog(cx);
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("full-access-confirm")
+                            .debug_selector(|| "full-access-confirm".to_string())
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .h(px(32.))
+                            .px(px(14.))
+                            .rounded(px(16.))
+                            .bg(gpui_kit::Rgba {
+                                a: 0.14,
+                                ..theme::DANGER()
+                            })
+                            .cursor_pointer()
+                            .text_size(px(13.))
+                            .text_color(theme::DANGER())
+                            .hover(|s| {
+                                s.bg(gpui_kit::Rgba {
+                                    a: 0.22,
                                     ..theme::DANGER()
                                 })
-                                .cursor_pointer()
-                                .text_size(px(13.))
-                                .text_color(theme::DANGER())
-                                .hover(|s| {
-                                    s.bg(gpui_kit::Rgba {
-                                        a: 0.22,
-                                        ..theme::DANGER()
-                                    })
-                                })
-                                .child(fixed(IconName::TriangleAlert, 13.))
-                                .child(dict::common::confirm())
-                                .on_click(move |_, _, cx| {
-                                    s_confirm.update(cx, |st, cx| st.confirm_full_access(cx));
-                                }),
-                        ),
-                ),
-        )
-        .into_any_element()
+                            })
+                            .child(fixed(IconName::TriangleAlert, 13.))
+                            .child(dict::common::confirm())
+                            .on_click(move |_, window, cx| {
+                                s_confirm.update(cx, |st, cx| st.confirm_full_access(cx));
+                                window.close_dialog(cx);
+                            }),
+                    ),
+            )
+            .on_close(move |_, window, cx| {
+                s_close.update(cx, |st, cx| st.cancel_full_access(window, cx));
+            })
+    });
 }
 
 /// 风险确认弹窗能力行(图标 + 标题 + 灰描述;文本列 flex_1 换行,
@@ -3434,8 +3406,9 @@ fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                                         let st_switch = st_switch.clone();
                                         let id_sw = id_sw_click.clone();
                                         move |_, _, cx| {
-                                            st_switch
-                                                .update(cx, |st, cx| st.toggle_hook_bridge(&id_sw, cx));
+                                            st_switch.update(cx, |st, cx| {
+                                                st.toggle_hook_bridge(&id_sw, cx)
+                                            });
                                         }
                                     }),
                             ),

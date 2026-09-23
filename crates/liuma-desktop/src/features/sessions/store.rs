@@ -6,11 +6,13 @@
 
 use std::collections::{HashMap, HashSet};
 
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::input::{InputEvent, InputState};
-use gpui_kit::{AppContext, Context, Entity, Window};
+use gpui_kit::{AppContext, Context, Entity, ParentElement as _, Styled as _, Window, px};
 
 use crate::features::chat::ChatNode;
 use crate::kits::i18n::dict;
+use crate::kits::theme;
 use crate::shell::reducer;
 use crate::shell::store::AppStore;
 use liuma_core::proto::HistoryValue;
@@ -475,6 +477,8 @@ impl AppStore {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let already_open_ws =
+            self.sessions.rename_target.is_some() || self.sessions.rename_ws_target.is_some();
         if self.sessions.rename_input.is_none() {
             let input =
                 cx.new(|cx| InputState::new(window, cx).placeholder(dict::sessions::ws_title_ph()));
@@ -492,6 +496,9 @@ impl AppStore {
         }
         self.sessions.rename_ws_target = Some(name.to_string());
         self.sessions.menu_open_ws = None;
+        if !already_open_ws {
+            self.open_rename_dialog(window, cx);
+        }
         cx.notify();
     }
 
@@ -522,8 +529,11 @@ impl AppStore {
         }
     }
 
-    /// 打开重命名(输入态惰建 + Enter 确认订阅;点击回调自带 window)
+    /// 打开重命名(输入态惰建 + Enter 确认订阅;模态走组件库 Dialog
+    /// 层,Esc/遮罩/焦点陷阱由库托管)
     pub fn open_rename(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let already_open =
+            self.sessions.rename_target.is_some() || self.sessions.rename_ws_target.is_some();
         if self.sessions.rename_input.is_none() {
             let input = cx.new(|cx| {
                 InputState::new(window, cx).placeholder(dict::sessions::session_title_ph())
@@ -542,11 +552,58 @@ impl AppStore {
         }
         self.sessions.rename_target = Some(id.to_string());
         self.sessions.session_menu_pos = None;
+        if !already_open {
+            self.open_rename_dialog(window, cx);
+        }
         cx.notify();
     }
 
-    /// 确认重命名(空标题视为取消;工作区与 会话共用输入态,按目标分派)
+    /// 重命名模态(组件库 Dialog 层:标题 + 输入 + 库默认
+    /// OK/Cancel footer;确认/取消/X/Esc/遮罩全部收敛到 store 动作)
+    fn open_rename_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::WindowExt as _;
+        let Some(input) = self.sessions.rename_input.clone() else {
+            return;
+        };
+        let store = cx.entity();
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .title(dict::misc::rename_session())
+                .w(px(420.))
+                .bg(theme::LAYER())
+                .content({
+                    let input = input.clone();
+                    move |content, _, _| {
+                        content.child(gpui_kit::component::input::Input::new(&input))
+                    }
+                })
+                .on_ok({
+                    let store = store.clone();
+                    move |_, _, cx| {
+                        store.update(cx, |st, cx| st.confirm_rename(cx));
+                        true
+                    }
+                })
+                .on_cancel({
+                    let store = store.clone();
+                    move |_, _, cx| {
+                        store.update(cx, |st, cx| st.cancel_rename(cx));
+                        true
+                    }
+                })
+                .on_close({
+                    let store = store.clone();
+                    move |_, _, cx| {
+                        store.update(cx, |st, cx| st.cancel_rename(cx));
+                    }
+                })
+        });
+    }
+
+    /// 确认重命名(空标题视为取消;工作区与 会话共用输入态,按目标分派;
+    /// Enter 订阅路径无 window,经 with_window 桥关库 Dialog 层)
     pub fn confirm_rename(&mut self, cx: &mut Context<Self>) {
+        self.with_window_deferred(cx, |window, cx| window.close_dialog(cx));
         let title = self
             .sessions
             .rename_input
@@ -582,6 +639,7 @@ impl AppStore {
     /// 取消重命名
     pub fn cancel_rename(&mut self, cx: &mut Context<Self>) {
         self.sessions.rename_target = None;
+        self.sessions.rename_ws_target = None;
         cx.notify();
     }
 
