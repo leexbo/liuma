@@ -355,6 +355,23 @@ mod tests {
         for &(module, entries) in dicts {
             for (key, zh, en) in entries {
                 assert!(!zh.is_empty() && !en.is_empty(), "{module}.{key} 空文案");
+                // 槽位反序签名:zh 槽纯 ASCII 而 en 槽含 CJK(批次 5 的
+                // trajectory 词典曾整表反序)。合法例外 = 两槽同形(双语
+                // 中立键)或 zh 槽含 CJK;en 槽含 CJK 无合理场景。
+                let zh_has_cjk = zh.chars().any(|c| {
+                    ('一'..='鿿').contains(&c)
+                        || ('　'..='〿').contains(&c)
+                        || ('＀'..='￯').contains(&c)
+                });
+                let en_has_cjk = en.chars().any(|c| {
+                    ('一'..='鿿').contains(&c)
+                        || ('　'..='〿').contains(&c)
+                        || ('＀'..='￯').contains(&c)
+                });
+                assert!(
+                    zh == en || zh_has_cjk || !en_has_cjk,
+                    "{module}.{key} 疑似 zh/en 槽位反序: {zh:?} vs {en:?}"
+                );
                 let mut zp = template_placeholders(zh);
                 let mut ep = template_placeholders(en);
                 zp.sort_unstable();
@@ -362,5 +379,25 @@ mod tests {
                 assert_eq!(zp, ep, "{module}.{key} zh/en 占位不一致: {zh:?} vs {en:?}");
             }
         }
+    }
+
+    /// 轨迹页 zh/en 关键标签(冒烟反馈回归锁:批次 5 曾整表槽位反序,
+    /// zh 档工具栏显示英文原字面;经 l:: 纯分派双语言断言,不触语言盘)
+    #[test]
+    fn trajectory_labels_dispatch_both_langs() {
+        use dict::trajectory::l;
+        assert_eq!(l::toolbar_duration(Lang::Zh), "时长");
+        assert_eq!(l::toolbar_duration(Lang::En), "Duration");
+        assert_eq!(l::toolbar_turns(Lang::Zh), "轮次");
+        assert_eq!(l::kind_tool(Lang::Zh), "工具");
+        assert_eq!(l::kind_assistant(Lang::Zh), "助手");
+        assert_eq!(l::kind_assistant(Lang::En), "ASSISTANT");
+        assert_eq!(l::counts(Lang::Zh, 56, 56, 25), "56 / 56 条 · 25 次请求");
+        assert_eq!(
+            l::counts(Lang::En, 56, 56, 25),
+            "56 / 56 entries · 25 requests"
+        );
+        assert_eq!(l::tool_call_only(Lang::Zh), "(仅工具调用)");
+        assert_eq!(l::tool_call_only(Lang::En), "(tool call only)");
     }
 }
