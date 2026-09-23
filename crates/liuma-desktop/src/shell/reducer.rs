@@ -87,7 +87,8 @@ pub struct StoreState {
 
 /// 应用一帧,返回待执行副作用。
 ///
-/// 未列出的帧类型(`session/queue`、`session/subscribed`)落 `_` 兜底静默忽略。
+/// 未列出的帧类型落 `_` 兜底静默忽略(`session/subscribed`、
+/// `session/queue` 已列臂)。
 pub fn apply_frame(state: &mut StoreState, frame: ServerRequest) -> Vec<Effect> {
     match frame.method.as_str() {
         "host/session-added" | "host/session-removed" => vec![Effect::Sessions],
@@ -137,6 +138,18 @@ pub fn apply_frame(state: &mut StoreState, frame: ServerRequest) -> Vec<Effect> 
             vec![]
         }
         "host/workspace-changed" => vec![Effect::HostInfo, Effect::Sessions],
+        // 订阅代际开基线:host 契约(空队列不发基线帧,由本帧表达清旧
+        // 代)。缺此臂时,重订阅后旧代队列条目永久滞留——「插队 · 待
+        // 投递」气泡与已落档 user/message 重复渲染(插队遗留 bug)
+        "session/subscribed" => {
+            let Some(id) = frame.payload["sessionId"].as_str() else {
+                return vec![];
+            };
+            if let Some(chat) = state.chats.get_mut(id) {
+                chat.queue.clear();
+            }
+            vec![]
+        }
         // 队列/插队权威快照(整体替换;host 每次变更广播)。条目仅含文本
         // 块时可编辑
         "session/queue" => {
@@ -619,12 +632,46 @@ mod tests {
     fn unknown_frames_ignored() {
         let mut st = state();
         for method in [
-            "session/subscribed",
             "question/requested", // 空 payload 解析失败 → 静默忽略
             "host/whatever",
         ] {
             assert_eq!(apply_frame(&mut st, frame(method, json!({}))), vec![]);
         }
+    }
+
+    /// 回归锁:subscribed 清旧代队列(host 空队列不发基线帧,由本帧
+    /// 表达)——缺失时重订阅后旧代「插队 · 待投递」气泡滞留,与已落档
+    /// user/message 重复渲染。
+    #[test]
+    fn subscribed_clears_stale_queue() {
+        let mut st = state();
+        let chat = st.chats.entry("s-sub".into()).or_default();
+        chat.queue = vec![crate::features::chat::QueueEntry {
+            id: "q1".into(),
+            placement: crate::features::chat::QueuePlacement::Steering,
+            preview: "插队的".into(),
+            text: Some("插队的".into()),
+        }];
+        let eff = apply_frame(
+            &mut st,
+            frame(
+                "session/subscribed",
+                json!({ "sessionId": "s-sub", "lastSeq": 7 }),
+            ),
+        );
+        assert!(eff.is_empty());
+        assert!(st.chats.get("s-sub").expect("chat 在场").queue.is_empty());
+
+        // 未附着过的会话:清空为 no-op,不建空 chat 条目
+        let eff = apply_frame(
+            &mut st,
+            frame(
+                "session/subscribed",
+                json!({ "sessionId": "s-absent", "lastSeq": 0 }),
+            ),
+        );
+        assert!(eff.is_empty());
+        assert!(!st.chats.contains_key("s-absent"));
     }
 
     #[test]
