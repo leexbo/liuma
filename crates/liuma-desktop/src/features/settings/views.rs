@@ -16,6 +16,7 @@ use gpui_kit::component::Sizable;
 use gpui_kit::component::StyledExt;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::select::{Select, SelectState};
+use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
@@ -321,17 +322,24 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                             ),
                     )
                     .child(
+                        // 库 Switch(组件库迁移):on_click 收 &bool,点击/
+                        // 键盘语义由库托管(此前 on_mouse_down 拖走也触发)
                         div()
                             .id(("mcp-switch", ix))
                             .debug_selector(move || format!("mcp-switch-{id_sw_dbg}"))
-                            .on_mouse_down(gpui_kit::MouseButton::Left, {
-                                let st_switch = st_switch.clone();
-                                let id_sw = id_sw_click.clone();
-                                move |_, _, cx| {
-                                    st_switch.update(cx, |st, cx| st.toggle_mcp_server(&id_sw, cx));
-                                }
-                            })
-                            .child(toggle_switch(enabled)),
+                            .child(
+                                Switch::new(("mcp-switch-toggle", ix))
+                                    .checked(enabled)
+                                    .color(theme::BRAND())
+                                    .on_click({
+                                        let st_switch = st_switch.clone();
+                                        let id_sw = id_sw_click.clone();
+                                        move |_, _, cx| {
+                                            st_switch
+                                                .update(cx, |st, cx| st.toggle_mcp_server(&id_sw, cx));
+                                        }
+                                    }),
+                            ),
                     )
                     .child(
                         div()
@@ -934,17 +942,17 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         }),
                 )
                 .child(
-                    div()
-                        .id("mcp-enabled")
-                        .on_mouse_down(gpui_kit::MouseButton::Left, {
+                    Switch::new("mcp-enabled")
+                        .checked(detail.form_enabled)
+                        .color(theme::BRAND())
+                        .on_click({
                             let st_enable = st_enable.clone();
                             move |_, _, cx| {
                                 st_enable.update(cx, |st, cx| {
                                     st.toggle_mcp_form_enabled(cx);
                                 });
                             }
-                        })
-                        .child(toggle_switch(detail.form_enabled)),
+                        }),
                 ),
         );
     }
@@ -1963,13 +1971,17 @@ fn editor_billing_block(
                         } else {
                             dict::settings::disabled()
                         })
-                        .child(toggle_switch(st.settings.set_form_billing_enabled))
-                        .on_mouse_down(gpui_kit::MouseButton::Left, {
-                            let s = s_billing.clone();
-                            move |_, _, cx| {
-                                s.update(cx, |st, cx| st.toggle_billing_enabled(cx));
-                            }
-                        }),
+                        .child(
+                            Switch::new("billing-enabled")
+                                .checked(st.settings.set_form_billing_enabled)
+                                .color(theme::BRAND())
+                                .on_click({
+                                    let s = s_billing.clone();
+                                    move |_, _, cx| {
+                                        s.update(cx, |st, cx| st.toggle_billing_enabled(cx));
+                                    }
+                                }),
+                        ),
                 ),
         )
         .when(st.settings.set_form_billing_enabled, |el| {
@@ -2232,25 +2244,6 @@ fn context_window_edit_row(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyE
             )
         })
         .into_any_element()
-}
-
-/// 开关(toggle;开 = BRAND 底白点右,关 = DOCK 底灰点左)
-fn toggle_switch(on: bool) -> impl IntoElement {
-    div()
-        .flex()
-        .w(px(34.))
-        .h(px(18.))
-        .items_center()
-        .rounded(px(9.))
-        .bg(if on { theme::BRAND() } else { theme::DOCK() })
-        .px(px(2.))
-        .justify_end()
-        .when(!on, |el| el.flex().justify_start())
-        .child(div().size(px(14.)).rounded_full().bg(if on {
-            theme::LABEL()
-        } else {
-            theme::LABEL_3()
-        }))
 }
 
 /// 计费形态 chip(余额 / 用量)
@@ -3433,15 +3426,19 @@ fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         div()
                             .id(("hooks-switch", ix))
                             .debug_selector(move || format!("hooks-switch-{id_sw_dbg}"))
-                            .on_mouse_down(gpui_kit::MouseButton::Left, {
-                                let st_switch = st_switch.clone();
-                                let id_sw = id_sw_click.clone();
-                                move |_, _, cx| {
-                                    st_switch
-                                        .update(cx, |st, cx| st.toggle_hook_bridge(&id_sw, cx));
-                                }
-                            })
-                            .child(toggle_switch(enabled)),
+                            .child(
+                                Switch::new(("hooks-switch-toggle", ix))
+                                    .checked(enabled)
+                                    .color(theme::BRAND())
+                                    .on_click({
+                                        let st_switch = st_switch.clone();
+                                        let id_sw = id_sw_click.clone();
+                                        move |_, _, cx| {
+                                            st_switch
+                                                .update(cx, |st, cx| st.toggle_hook_bridge(&id_sw, cx));
+                                        }
+                                    }),
+                            ),
                     )
                     .child(
                         div()
@@ -3611,15 +3608,15 @@ fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     col = col
         .child(section_title(dict::settings::enable_section()))
         .child(
-            div()
-                .id("hooks-form-enabled")
-                .on_mouse_down(gpui_kit::MouseButton::Left, {
+            Switch::new("hooks-form-enabled")
+                .checked(detail.form_enabled)
+                .color(theme::BRAND())
+                .on_click({
                     let st_toggle = st_toggle.clone();
                     move |_, _, cx| {
                         st_toggle.update(cx, |st, cx| st.toggle_hooks_form_enabled(cx));
                     }
-                })
-                .child(toggle_switch(detail.form_enabled)),
+                }),
         );
     // 字段
     col = col
