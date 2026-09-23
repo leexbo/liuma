@@ -439,7 +439,7 @@ they remeasure when rem changes because the same fixed width wraps differently
 at a larger base font.
 
 Do not confuse this application zoom with Dock panel zoom. Dock zoom is a
-stateful layout operation that makes one tab group or tile fill the DockArea
+stateful layout operation that makes one tab group fill the DockArea
 while keeping the container chrome and the way back out. It must not modify the
 window rem size.
 
@@ -615,10 +615,12 @@ For reusable components:
 
 Private fields are the default for behavioral state that must evolve without
 breaking callers. Public fields are appropriate for deliberately record-like
-configuration, theme tokens, geometry, and serialized schemas when direct
-construction is part of the contract and the compatibility cost is accepted.
-Use `#[non_exhaustive]` when callers may inspect a record but should not depend
-on exhaustive construction or matching.
+configuration, theme tokens, geometry, and serialized schemas. Every public
+struct with public fields must carry `#[non_exhaustive]`. Provide constructors,
+`Default`, or builders so callers can create values without exhaustive struct
+literals. This preserves the ability to add fields without breaking callers.
+Apply this rule to new types and public API changes; unrelated existing types
+can be migrated separately.
 
 Keep public module paths stable while reorganizing internals: use a module seam
 with deliberate re-exports so folders can change without forcing downstream
