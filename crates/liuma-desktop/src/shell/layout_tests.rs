@@ -5429,7 +5429,7 @@ fn attach_entry_is_standalone_button_not_menu_row(cx: &mut TestAppContext) {
     let perm = wcx.debug_bounds("chip-perm").expect("权限 chip bounds");
     assert!(
         cmd.origin.x < attach.origin.x && attach.origin.x < perm.origin.x,
-        "附件钮应位于 + 与权限 chip 之间(参考形态)"
+        "附件钮应位于 + 与权限 chip 之间(目标形态)"
     );
     // 命令菜单开态:卡在场但无「图片附件」行(缺席可断:此前从未
     // 渲染过,debug_bounds 只增不清)
@@ -7529,8 +7529,7 @@ fn turn_group_collapse_expand_roundtrip(cx: &mut TestAppContext) {
         wcx.debug_bounds("node-1").is_none() && wcx.debug_bounds("node-2").is_none(),
         "think-only 与工具行应收进组"
     );
-    // 答前内嵌思考随组折叠一并隐藏(对齐参考 AssistantNodeView:
-    // 组收起时不漏答前思考)
+    // 答前内嵌思考随组折叠一并隐藏(组收起时不漏答前思考)
     assert!(
         wcx.debug_bounds("think-row-a:1:2").is_none(),
         "折叠轮的答前思考应一并隐藏"
@@ -7559,8 +7558,8 @@ fn turn_group_collapse_expand_roundtrip(cx: &mut TestAppContext) {
         wcx.debug_bounds("think-row-a:1:2").is_some(),
         "展开后答前思考应可见"
     );
-    // 左缘对齐(对齐参考:成员行/答前思考/正文同一左缘——缩进 +
-    // 左引导线是自创层,列内多层左缘错位的根源,已废)
+    // 左缘对齐(成员行/答前思考/正文同一左缘——缩进与左引导线
+    // 已废)
     let member = wcx.debug_bounds("node-2").expect("成员行应在场");
     let answer_think = wcx.debug_bounds("think-row-a:1:2").expect("答前思考应在场");
     assert_eq!(
@@ -7590,7 +7589,7 @@ fn turn_group_collapse_expand_roundtrip(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 中断轮不折叠(对齐参考「折叠必须有定稿答案」):aborted 收口段
+/// 中断轮不折叠(折叠门槛 = 有定稿答案):aborted 收口段
 /// 恒平铺——无组行,过程/正文/收尾全部平铺;未落定的调用已翻成
 /// Stopped(行在场、扫光撤除),半截正文尾挂「已停止」pill,轮尾
 /// 不再双标「已中断」徽标。

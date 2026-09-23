@@ -54,7 +54,7 @@ entries! {
     permission_channel_failed => ["权限切换:通道失败", "Permission switch: channel failure"],
 
     // ── 状态栏 ──
-    /// 统计 pill:轮次与步数(dsh stats.counts 同款)
+    /// 统计 pill:轮次与步数
     stats_counts(turns, steps) => ["{turns} 轮 {steps} 步", "{turns} turns {steps} steps"],
     /// 统计 pill 后缀:缓存命中
     stats_cache_hit_pct(hit) => [" · 缓存命中 {hit}%", " · cache hit {hit}%"],

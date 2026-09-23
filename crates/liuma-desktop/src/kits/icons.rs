@@ -104,7 +104,7 @@ pub enum LiumaIcon {
     FileType,
     /// 换行开关(预览头行)
     TextWrap,
-    // ── 侧栏族(deepseek-harness 16 viewBox fill 形,设计对齐参考)──
+    // ── 侧栏族(16 viewBox fill 形)──
     /// 顶栏搜索钮 / 搜索框前导(ic_ds_search_outline_16)
     SearchOutline,
     /// 顶栏视图选项钮:分组/排序菜单(ic_ds_personalization_outline_16)

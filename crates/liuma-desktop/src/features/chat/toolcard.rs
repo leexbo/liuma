@@ -966,8 +966,7 @@ fn content_lines(text: &str) -> Vec<&str> {
     body.split('\n').collect()
 }
 
-/// 折叠行内 diff 统计(+增/−删行数;对齐参考 diffStat 折叠后缀;
-/// 非 diff 视图 → None)
+/// 折叠行内 diff 统计(+增/−删行数;非 diff 视图 → None)
 pub(crate) fn diff_totals(view: Option<&serde_json::Value>) -> Option<(usize, usize)> {
     let card = match narrow(view?) {
         Some(CardView::Diff(card)) => card,

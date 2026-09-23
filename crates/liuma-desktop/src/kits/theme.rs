@@ -128,7 +128,7 @@ const DARK_SIDEBAR: Rgba = color(0x242A2C, 1.0);
 /// 深盘标题栏(用户指定 RGB 41,45,48;与侧栏分离为双色)
 const DARK_TITLE_BAR: Rgba = color(0x292D30, 1.0);
 
-/// 深色盘:蓝灰色相家族——base 深海军蓝(参考图采样 #212734),
+/// 深色盘:蓝灰色相家族——base 深海军蓝(设计稿采样 #212734),
 /// sidebar 板岩蓝灰(Finder 暗侧栏采样 #253035 一族);macOS 毛玻璃
 /// 下 base/sidebar 为半透 tint 涂层,其余表面不透明浮于涂层上。
 /// 文字取 label 族 alpha 语义色,语义色取系统色暗形态
@@ -138,8 +138,8 @@ const fn dark_palette() -> Palette {
         sidebar: DARK_SIDEBAR,
         // hover 沿用旧版相对基色的提亮步长(+5,+5,+4),跟随新中性灰族
         sidebar_hover: color(0x292F30, 1.0),
-        // 选中行:比 hover 高一档但收敛亮度(参考实现选中 = hover 同色,
-        // 本盘保持三态互异;0x39454C 过亮过蓝,向 hover 靠拢)
+        // 选中行:比 hover 高一档但收敛亮度
+        // (本盘保持三态互异;0x39454C 过亮过蓝,向 hover 靠拢)
         sidebar_active: color(0x333D44, 1.0),
         title_bar: DARK_TITLE_BAR,
         ink: color(0x000000, 1.0),

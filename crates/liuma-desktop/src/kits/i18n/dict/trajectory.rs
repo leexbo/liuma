@@ -4,7 +4,7 @@
 use crate::kits::i18n::entries;
 
 entries! {
-    // ── 工具栏(dsh toolbar.* 同款)──
+    // ── 工具栏 ──
     /// 投影切换:时长
     toolbar_duration => ["时长", "Duration"],
     /// 投影切换:轮次
@@ -12,7 +12,7 @@ entries! {
     /// 投影切换:调用
     toolbar_calls => ["调用", "Calls"],
 
-    // ── 台账 kind 徽章(dsh kind.* 同款;en 保持既有大写)──
+    // ── 台账 kind 徽章(en 保持既有大写)──
     /// 徽章:系统
     kind_system => ["系统", "SYSTEM"],
     /// 徽章:用户
@@ -56,7 +56,7 @@ entries! {
     /// 折叠组摘要(工具调用 + 名称清单)
     folded_tools(count, names) => ["… {count} 个工具调用 · {names}", "… {count} tool calls · {names}"],
 
-    // ── 轮标(dsh kind.* 语境)──
+    // ── 轮标 ──
     /// 轮标:第 n 轮
     /// 轮标:第 n 轮
     turn_n(t) => ["第 {t} 轮", "Turn {t}"],
@@ -78,7 +78,7 @@ entries! {
     tab_raw => ["原始", "Raw"],
     /// 页签:用量
     tab_usage => ["用量", "Usage"],
-    /// 页签:系统提示词(dsh tab.systemPrompt 同款)
+    /// 页签:系统提示词
     tab_system_prompt => ["系统提示词", "System Prompt"],
     /// 页签:预览
     tab_preview => ["预览", "Preview"],
@@ -102,7 +102,7 @@ entries! {
     row_status => ["状态", "Status"],
     /// 状态值:已完成
     status_completed => ["已完成", "Completed"],
-    /// 信息行:时长(dsh timing.duration 同款)
+    /// 信息行:时长
     row_duration => ["时长", "Duration"],
     /// 信息行:Token 数
     row_tokens => ["Token", "Tokens"],

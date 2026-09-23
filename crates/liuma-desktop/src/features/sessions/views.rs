@@ -66,7 +66,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .pb(px(10.))
         .gap(px(8.))
         .child(drag_strip())
-        // 顶部序对齐参考:「新会话」全局钮最顶,其下为顶栏二态
+        // 顶部序:「新会话」全局钮最顶,其下为顶栏二态
         // (搜索关 = 「工作区」标题 + 三图标钮;开 = 搜索框)
         .child(new_session_row(store))
         .child(if st.search.search_open {
@@ -163,7 +163,7 @@ pub(crate) fn drag_strip() -> impl IntoElement {
         })
 }
 
-/// 「新会话」行(全局唯一;⊕ 图标 + 文字居中,对齐参考实现)
+/// 「新会话」行(全局唯一;⊕ 图标 + 文字居中)
 fn new_session_row(store: &Entity<AppStore>) -> impl IntoElement {
     let s = store.clone();
     div().flex().h(px(36.)).items_center().child(
@@ -445,7 +445,7 @@ fn group_header(
         theme::LABEL_3()
     };
     let sel = format!("ws-chevron-{}", if collapsed { "closed" } else { "open" });
-    // 行 hover 组:展开态 chevron 悬停才淡入(参考实现语言),折叠态常显
+    // 行 hover 组:展开态 chevron 悬停才淡入,折叠态常显
     let grp = format!("ws-grp-{gi}");
     div()
         .id(("ws", gi))
@@ -463,7 +463,7 @@ fn group_header(
         .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
         .text_size(px(13.))
         .text_color(fg)
-        // 折叠/文件夹同槽互换(参考实现语言):默认显文件夹,行 hover
+        // 折叠/文件夹同槽互换:默认显文件夹,行 hover
         // 换成折叠箭头;折叠态箭头常显。点击前指针必已悬停于行,箭头
         // 届时可见,无隐形命中问题
         .child(
@@ -478,7 +478,7 @@ fn group_header(
                         .flex()
                         .items_center()
                         .justify_center()
-                        // 选中工作区:打开文件夹 + 品牌色(duotone,对齐参考)
+                        // 选中工作区:打开文件夹 + 品牌色(duotone)
                         .text_color(if active {
                             theme::BRAND()
                         } else {
@@ -623,7 +623,7 @@ fn session_row(
     let sel = format!("session-row-{id}");
     let sel_arch = format!("session-archive-{ix}");
     let arch_slot = TIP_ARCHIVE_BASE + ix;
-    // 行 hover 组:尾部时间 ↔ 归档钮互换(参考实现语言)
+    // 行 hover 组:尾部时间 ↔ 归档钮互换
     let grp = format!("sess-grp-{ix}");
     div()
         .id(("session", ix))
@@ -641,7 +641,7 @@ fn session_row(
         .gap(px(8.))
         .cursor_pointer()
         .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
-        // 行首状态槽(参考实现:活动动画在行首,非运行时空占位对齐)
+        // 行首状态槽(活动动画在行首,非运行时空占位对齐)
         .child(
             div()
                 .flex()

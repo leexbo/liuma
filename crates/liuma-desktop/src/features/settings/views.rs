@@ -2360,7 +2360,7 @@ fn general_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             dict::settings::busy_steer().to_string(),
         ),
     ];
-    // 语言下拉:显示名 = 原文名恒定(两语言同值,dsh 约定);与 store
+    // 语言下拉:显示名 = 原文名恒定(两语言同值);与 store
     // 侧构建同源(id = settings.yaml `language` 词汇)
     let language_options: Vec<(String, String)> = vec![
         (

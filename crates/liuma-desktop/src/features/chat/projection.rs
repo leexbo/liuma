@@ -373,10 +373,9 @@ impl ChatState {
                         }
                     }
                 }
-                // 取消收尾:等待退避中的重试行翻转「已取消」;
-                // 未落定的调用显式翻成「已停止」(amber 点,对齐参考的
-                // interrupted 合成结果——行上不残留运行扫光;错误收口同
-                // 理,否则平铺段残留永久扫光)
+                // 取消/错误收尾:等待退避中的重试行翻转「已取消」;
+                // 未落定的调用显式翻成「已停止」(amber 点,行上不残留
+                // 运行扫光;错误收口同理,否则平铺段残留永久扫光)
                 if aborted || errored {
                     for n in self.nodes.iter_mut() {
                         match n {
@@ -847,8 +846,8 @@ pub(crate) fn process_mask(nodes: &[ChatNode]) -> Vec<bool> {
 /// 节点流 → 渲染行槽(纯函数)。「段」= 上一收口节点之后至下一收口
 /// 之间的全部节点;不依赖 turn 号(Context/Tool 节点不携带),倒扫
 /// 标定后正向拼装。**仅正常完成(TurnTail 非 aborted)的轮可折叠**
-/// ——折叠门槛 = 有定稿答案;中断/错误收口段恒平铺(对齐参考实现,
-/// 中断语义由轮尾徽标与正文尾「已停止」pill 承担)。末尾未收口的段
+/// ——折叠门槛 = 有定稿答案;中断/错误收口段恒平铺,中断语义由
+/// 轮尾徽标与正文尾「已停止」pill 承担。末尾未收口的段
 /// = 直播段,恒平铺——「默认收 + 手动展开例外」由此天然实现
 /// turn/end 自动收拢,无需事件 hook。
 pub fn build_row_slots(
@@ -963,7 +962,7 @@ pub fn group_counts(nodes: &[ChatNode], first: usize, last: usize) -> (usize, us
 }
 
 /// 组区间内中间叙述条数(非空正文的 Assistant)——组头「M 条消息」
-/// 计数口径(对齐参考 messageCount;最终答复在组外,不计入)
+/// 计数口径(最终答复在组外,不计入)
 pub fn group_message_count(nodes: &[ChatNode], first: usize, last: usize) -> usize {
     nodes
         .get(first..=last)
@@ -2332,7 +2331,7 @@ mod tests {
     }
 
     /// 取消收尾(aborted TurnTail)不折叠:轮无定稿答案,段内过程行
-    /// 恒平铺(对齐参考「折叠必须有定稿答案」门槛);直播 → 中断过渡
+    /// 恒平铺(折叠门槛 = 有定稿答案);直播 → 中断过渡
     /// 无行数跳动,中断语义由轮尾徽标与正文尾「已停止」pill 承担。
     #[test]
     fn row_slots_aborted_turn_stays_flat() {

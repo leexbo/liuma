@@ -189,9 +189,8 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         // (release 下 node_ix 无消费者)
         #[cfg_attr(not(test), allow(unused_variables))]
         let (el, node_ix) = match slot {
-            // 展开态成员与平铺节点同构(**无缩进/引导线**,对齐参考:
-            // 成员行与答前思考/正文同左缘——缩进是自创层,列内多层
-            // 左缘错位的根源)
+            // 展开态成员与平铺节点同构(**无缩进/引导线**):
+            // 成员行与答前思考/正文同一左缘,列内不出现多级缩进
             RowSlot::Node(n) | RowSlot::GroupMember(n) => {
                 let Some(node) = st.current_nodes().get(*n) else {
                     return div().into_any_element();
@@ -234,6 +233,16 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         };
         let anim_key = slot_key_for_anim(slot, st.current_nodes());
         let el = enter_anim(el, &anim_key, st.current_chat());
+        // 行距:全部行槽 pt8/pb8(兄弟行隙 16px);唯一例外是紧跟
+        // 折叠组头的答案行 pt0——组头自带 pb8,合 8px(组摘要即
+        // 答案的开场,不另留整档行距)
+        let prev_slot = ix.checked_sub(1).and_then(|p| st.chat.row_slots.get(p));
+        let (row_pt, row_pb) = match slot {
+            RowSlot::Node(_) if prev_slot.is_some_and(|s| matches!(s, RowSlot::Group { .. })) => {
+                (px(0.), px(8.))
+            }
+            _ => (px(8.), px(8.)),
+        };
         // 布局回归测试钩子:节点 bounds 可经 debug_bounds 检索(release 无操作)
         #[cfg(test)]
         let el = {
@@ -242,13 +251,14 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 .map(|n| format!("node-{n}"))
                 .unwrap_or_else(|| format!("row-{ix}"));
             div()
-                .py(px(8.))
+                .pt(row_pt)
+                .pb(row_pb)
                 .debug_selector(move || sel)
                 .child(el)
                 .into_any_element()
         };
         #[cfg(not(test))]
-        let el = div().py(px(8.)).child(el).into_any_element();
+        let el = div().pt(row_pt).pb(row_pb).child(el).into_any_element();
         // 列体本身拉满整行承接滚轮(中栏两侧空白也要能滚——此前列表只有
         // col_w 宽,滚轮命中区随之变窄);行内容限宽居中,**包在最外层**,
         // 上面的 selector bounds 保持与中栏一致(布局测试按它断言缩进)。
@@ -1190,17 +1200,17 @@ fn closing_of_settlement(content: &str) -> Option<String> {
         .filter(|c| !c.is_empty())
 }
 
-/// 成员行摘要槽内容:纯文本 / 可点文件链接(对齐参考 fileLink:
-/// 路径渲染为下划线链接,点击开侧栏预览,行内空白区仍是展开热区)
+/// 成员行摘要槽内容:纯文本 / 可点文件链接(路径渲染为下划线
+/// 链接,点击开侧栏预览,行内空白区仍是展开热区)
 enum MemberSummary {
     Text(String),
     File { text: String, path: String },
 }
 
-/// 成员行统一骨架(对齐参考 DisclosureRow;树内 `compact_row` 同几何):
+/// 成员行统一骨架(与 `compact_row` 同几何):
 /// min_h24 = [leading 14px] gap6 [标题 13px LABEL_2 不收缩] [2×2 圆点]
 /// [摘要 13px LABEL_3 flex_1 + min_w(0) 单行省略——**恒显**
-/// (keepContentWhenOpen,展开态不再换空占位)] [suffix 不收缩]
+/// (展开态不换空占位)] [suffix 不收缩]
 /// [chevron 14(折叠态 hover 才淡入)]。素色行:无底色,hover 铺 LAYER;
 /// summary=None 时圆点连摘要一起消失;follow_end = 流式右跟随(新文本
 /// 自右进入,旧行从左缘推出,不 truncate)。点击区/展开体归各块自有
@@ -1322,7 +1332,7 @@ fn member_row(
     )
 }
 
-/// 状态点(对齐参考 StateDot):10px 双层——外圈同色 10% 光晕 +
+/// 状态点:10px 双层——外圈同色 10% 光晕 +
 /// inset 20% 实心核。失败 = DANGER 红,被中断 = WARN amber。
 fn state_dot(color: Rgba) -> AnyElement {
     div()
@@ -1372,10 +1382,10 @@ fn slot_key_for_anim(slot: &RowSlot, nodes: &[ChatNode]) -> String {
     }
 }
 
-/// 轮过程组摘要行(节标题样式,对齐参考 TurnProcessNodeView):
+/// 轮过程组摘要行(节标题样式):
 /// h33 + 底部发丝分隔线 + Workflow 图标 +「N 次工具调用 · M 条消息」
 /// (工具为 0 → 消息计数;全 0 →「已思考」兜底)+ 展开箭头;
-/// 成员展开后缩进 + 左引导线归属其下。
+/// 成员展开后与正文同左缘平铺。
 /// 点击展开/收拢该轮(行数回缩走 store 侧锚定 reset)
 fn turn_group_row(
     store: &Entity<AppStore>,
@@ -1387,7 +1397,7 @@ fn turn_group_row(
 ) -> impl IntoElement {
     let (_, tools) = super::projection::group_counts(store.read(cx).current_nodes(), first, last);
     let msgs = super::projection::group_message_count(store.read(cx).current_nodes(), first, last);
-    // 文案拼装(对齐参考:有则拼,连接符 ·;全 0 → 兜底)
+    // 文案拼装(有则拼,连接符 ·;全 0 → 兜底)
     let mut label = if tools > 0 {
         dict::chat::tool_calls_count(tools)
     } else {
@@ -1416,8 +1426,7 @@ fn turn_group_row(
         .items_center()
         .gap(px(6.))
         .cursor_pointer()
-        // 素行:无底色无圆角(参考 TurnProcessNodeView bg:none——
-        // 选中态/hover 铺色是自创层,「歪」的高亮源于此)
+        // 素行:无底色无圆角(hover 铺色会让组头呈选中观感)
         .text_size(px(14.))
         .debug_selector(move || sel.clone())
         .child(fixed(LiumaIcon::Workflow, 14.).text_color(theme::CAPTION()))
@@ -1478,7 +1487,6 @@ fn render_node(
             text,
             reasoning,
             streaming,
-            message_id,
             ..
         } => {
             // 中断截尾:紧邻下一节点是 aborted 收口 → 正文尾挂「已停止」pill
@@ -1488,8 +1496,8 @@ fn render_node(
                     Some(ChatNode::TurnTail { aborted: true, .. })
                 )
             });
-            // 折叠轮的最终答复步骤:答前内嵌思考一并隐藏(对齐参考
-            // AssistantNodeView——组收起时不漏答前思考,展开才可见)
+            // 折叠轮的最终答复步骤:答前内嵌思考一并隐藏
+            // (组收起时不漏答前思考,展开才可见)
             let hide_reasoning = {
                 let st = store.read(cx);
                 st.current_chat().is_some_and(|c| {
@@ -1521,8 +1529,6 @@ fn render_node(
                 text,
                 reasoning,
                 *streaming,
-                message_id,
-                actions_in_tail(store, cx, ix),
                 interrupted_after,
                 hide_reasoning,
                 col_w,
@@ -1810,8 +1816,8 @@ fn user_bubble(
                 .when(!text.is_empty(), |el| el.child(bubble_rich_text(ix, text))),
         )
         .child({
-            // 操作行:时间戳 + 复制(对齐参考 message-chrome:时刻在
-            // 图标前;早于最新消息 hover 才显现,最新恒显)
+            // 操作行:时间戳 + 复制(时刻在图标前;早于最新消息
+            // hover 才显现,最新恒显)
             let is_last = store
                 .read(cx)
                 .current_chat()
@@ -1951,8 +1957,6 @@ fn assistant_block(
     text: &str,
     reasoning: &str,
     streaming: bool,
-    message_id: &str,
-    hide_actions: bool,
     interrupted_after: bool,
     hide_reasoning: bool,
     col_w: gpui_kit::Pixels,
@@ -1978,7 +1982,7 @@ fn assistant_block(
         let grp = format!("mr-think-{ix}");
         let row_sel = format!("think-row-{key}");
         // 折叠摘要:直播中取**尾部**(右对齐跟随——新文本自右进入,
-        // 旧行从左缘推出,对齐参考 data-follow-end);定稿后取**开头**
+        // 旧行从左缘推出);定稿后取**开头**
         // (思考首句与正文主题呼应——尾部是下一步动作预告,常与正文
         // 措辞对不上,实测观感「thinking 和输出对不上」)
         let summary = if streaming {
@@ -1999,7 +2003,7 @@ fn assistant_block(
             Some(row_sel),
         )
         .id(("think", ix))
-        // 流式扫光与工具行同款(参考思考行同有)
+        // 流式扫光与工具行同款
         .relative()
         .overflow_hidden()
         .when(streaming, |el| el.child(tool_sweep(ix)))
@@ -2012,7 +2016,7 @@ fn assistant_block(
         });
         col = col.child(row);
         if open {
-            // 展开正文:markdown 渲染 + pl22 与标题文字对齐(参考 thinkBody)
+            // 展开正文:markdown 渲染 + pl22 与标题文字对齐
             col = col.child(div().mt(px(4.)).pl(px(22.)).child(
                 crate::kits::markdown_tv::tv_static(format!("think-{key}"), reasoning),
             ));
@@ -2042,9 +2046,8 @@ fn assistant_block(
             .relative()
             .child(body_view);
         col = col.child(body);
-        // 中断截尾:「已停止」quiet pill 挂正文尾(左对齐,对齐参考
-        // AssistantMarkdown interrupted;轮尾徽标仅在无正文轮兜底,
-        // 不双标)
+        // 中断截尾:「已停止」quiet pill 挂正文尾(左对齐;
+        // 轮尾徽标仅在无正文轮兜底,不双标)
         if interrupted_after && !streaming {
             col = col.child(
                 div().mt(px(6.)).flex().child(
@@ -2062,45 +2065,8 @@ fn assistant_block(
                 ),
             );
         }
-        // 定稿后可复制(流式中复制半截无意义);正文下方左对齐
-        // 常显动作行(文档流内,非浮层)= 复制 + 消息反馈(赞/踩/备注)。
-        // 若紧邻的下一渲染槽是本轮收尾行,动作由收尾行统一承载
-        // (收尾行单行承载;否则赞/踩/复制重复两行)
-        if !streaming && !hide_actions {
-            // 操作行显隐(与轮尾/用户气泡同口径):仅最新一轮的最终
-            // 答复恒显,组内中间叙述等 hover 才显现——常驻按钮行是
-            // 组内「乱」的主源之一
-            let reveal = store.read(cx).current_chat().is_some_and(|c| {
-                c.nodes.len() == ix + 1
-                    || (matches!(c.nodes.get(ix + 1), Some(ChatNode::TurnTail { .. }))
-                        && c.nodes.len() == ix + 2)
-            });
-            let actions = div()
-                .flex()
-                .flex_shrink_0()
-                .items_center()
-                .gap(px(4.))
-                .child(copy_button(
-                    store,
-                    cx,
-                    ("copy-asst", ix),
-                    "copy",
-                    &key,
-                    text,
-                ))
-                .children(crate::features::feedback::actions(store, message_id, cx));
-            col = col.child(if reveal {
-                actions.into_any_element()
-            } else {
-                let grp = format!("asst-act-{ix}");
-                div()
-                    .group(grp.clone())
-                    .flex()
-                    .flex_col()
-                    .child(actions.opacity(0.).group_hover(grp, |st| st.opacity(1.)))
-                    .into_any_element()
-            });
-        }
+        // 消息本体无操作行:复制/赞踩/分支统一由轮尾行承载,
+        // 作用对象 = 轮内最后一条有 message_id 的消息(last_reply)
     }
     col
 }
@@ -2146,8 +2112,8 @@ fn tool_block(
         "skill" => super::toolcard::skill_arg_name(arguments).unwrap_or_default(),
         _ => summary.to_string(),
     };
-    // 标题本地化(对齐参考:不暴露模型面名);todo/skill 维持专名特例,
-    // 未知工具标题「工具调用」、原名进摘要前缀(参考 others 变体同款)
+    // 标题本地化(不暴露模型面名);todo/skill 维持专名特例,
+    // 未知工具标题「工具调用」、原名进摘要前缀
     let title = if name == "todo_write" {
         dict::chat::todo_write_title().to_string()
     } else if name == "skill" {
@@ -2165,8 +2131,8 @@ fn tool_block(
         .map(str::to_string)
         .or(todo_row.as_ref().map(|s| s.text.clone()))
         .unwrap_or(summary_display);
-    // 摘要槽:失败/todo 摘要纯文本;路径工具 = 可点文件链接(对齐
-    // 参考 fileLink,相对路径点击开侧栏预览)
+    // 摘要槽:失败/todo 摘要纯文本;路径工具 = 可点文件链接
+    // (相对路径点击开侧栏预览)
     let summary_slot = if failure_line.is_some() || todo_row.is_some() {
         MemberSummary::Text(summary_line)
     } else if matches!(name, "file_read" | "file_edit") && !summary_line.is_empty() {
@@ -2178,7 +2144,7 @@ fn tool_block(
         MemberSummary::Text(summary_line)
     };
     // 行尾后缀(不收缩):todo 并行计数 +n / diff 行内统计 +a -b
-    // (等宽小字,对齐参考 diffStat 折叠后缀)
+    // (等宽小字)
     let suffix_el = todo_row
         .as_ref()
         .filter(|s| s.extra > 0)
@@ -2208,7 +2174,7 @@ fn tool_block(
         });
     let grp = format!("mr-tool-{ix}");
     let row_sel = format!("tool-row-{key}");
-    // 失败/被中断:leading 换状态点(红/amber,对齐参考 StateDot)
+    // 失败/被中断:leading 换状态点(红/amber)
     let leading: AnyElement = if failure_line.is_some() {
         state_dot(theme::DANGER())
     } else if state == ToolState::Stopped {
@@ -2360,7 +2326,7 @@ fn inspect_button(store: &Entity<AppStore>, ix: usize, key: &str) -> gpui_kit::A
     let k = key.to_string();
     let sel = format!("inspect-{key}");
     let grp = format!("inspect-pill-{key}");
-    // 药丸形态(对齐参考 Inspect 药丸:r999 + 11px,hover 才显现)
+    // 药丸形态(全圆角 + 11px,hover 才显现)
     div()
         .id(("inspect", ix))
         .debug_selector(move || sel.clone())
@@ -2600,24 +2566,6 @@ fn copy_button(
         })
 }
 
-/// 紧邻的下一渲染槽是否为本轮收尾行(Node/组内成员槽位,节点为
-/// TurnTail)——成立时该 assistant 的消息动作行让位给收尾行
-fn actions_in_tail(store: &Entity<AppStore>, cx: &App, ix: usize) -> bool {
-    let st = store.read(cx);
-    let tail_next = st.chat.row_slots.iter().any(|s| match s {
-        RowSlot::Node(n) | RowSlot::GroupMember(n) => *n == ix + 1,
-        _ => false,
-    });
-    tail_next
-        && st
-            .state
-            .current_id
-            .as_deref()
-            .and_then(|id| st.state.chats.get(id))
-            .and_then(|c| c.nodes.get(ix + 1))
-            .is_some_and(|n| matches!(n, ChatNode::TurnTail { .. }))
-}
-
 /// 回合收尾行:复制/赞/踩/
 /// 分支 + 用量 pill + 用时 pill + 时钟,同一行;中断轮保留警示标。
 /// 详情卡根级渲染,点击坐标锚定)+ 产物行
@@ -2664,7 +2612,7 @@ fn turn_tail(
     let has_body_before = nodes
         .and_then(|ns| ix.checked_sub(1).and_then(|p| ns.get(p)))
         .is_some_and(|n| matches!(n, ChatNode::Assistant { text, .. } if !text.is_empty()));
-    // 操作行显隐(对齐参考 data-actions-reveal):最新轮与中断轮恒显,
+    // 操作行显隐:最新轮与中断轮恒显,
     // 更早的轮 hover 才显现
     let is_last = nodes.is_some_and(|ns| ns.len() == ix + 1);
     let reveal_always = is_last || aborted;
@@ -3158,7 +3106,7 @@ fn notice(text: &str) -> impl IntoElement {
         )
 }
 
-/// 回合错误通告(对齐参考 turnErrorRow):红状态点 +「本轮运行失败」
+/// 回合错误通告:红状态点 +「本轮运行失败」
 /// 标题(error 色)+ 宿主错误原文详情(次级色,自动换行)
 fn notice_error(detail: &str) -> impl IntoElement {
     div()

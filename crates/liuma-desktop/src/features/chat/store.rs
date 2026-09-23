@@ -1187,7 +1187,7 @@ impl AppStore {
         }
         // `/plan [on|off|任务]`:切计划模式。裸 /plan 与 /plan on = 进入;
         // /plan off = 退出;其余余文 = 进入计划模式并把余文作为首条任务
-        // 消息发送(参考图流程:composer 内 /plan 前缀 + 任务描述)。
+        // 消息发送(composer 内 /plan 前缀 + 任务描述)。
         // 模式切换不产生聊天区通告(状态由 chip 体现)
         if let Some(rest) = text_owned.strip_prefix("/plan") {
             let rest = rest.trim();

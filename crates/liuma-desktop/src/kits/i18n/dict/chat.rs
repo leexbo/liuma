@@ -11,7 +11,7 @@ entries! {
     composer_plan => ["描述你的任务以生成计划", "Describe your task to generate a plan"],
     /// 附件选择器提示
     pick_attachment => ["选择附件", "Choose attachments"],
-    /// @引用分区:文件与文件夹(dsh 全权清单同词)
+    /// @引用分区:文件与文件夹
     section_files => ["文件与文件夹", "Files and folders"],
     /// @引用分区:Session 对话
     section_sessions => ["Session 对话", "Session chats"],
@@ -41,7 +41,7 @@ entries! {
     attach_file => ["文件", "file"],
     /// 附件类别短称:图片
     attach_image => ["图片", "image"],
-    /// 权限徽标:仅可查看(dsh 权限词汇同源)
+    /// 权限徽标:仅可查看
     perm_read_only => ["仅可查看", "Read-only"],
     /// 权限徽标:完全权限
     perm_full_access => ["完全权限", "Full access"],
@@ -67,25 +67,25 @@ entries! {
     compact_queued => ["已排队,回合结束后压缩", "Queued — compaction starts after this turn"],
     /// 深入探索中(回合计时延长提示)
     exploring => ["深入探索中…", "Digging deeper…"],
-    /// Think 折叠行标签(对齐 dsh 术语)
+    /// Think 折叠行标签
     think_label => ["思考", "Think"],
-    /// 折叠轮标:工具调用数(对齐 dsh「N 次工具调用」)
+    /// 折叠轮标:工具调用数
     tool_calls_count(n) => ["{n} 次工具调用", "{n} tool calls"],
     /// 折叠轮标兜底(无工具调用的纯思考轮)
     thought_fallback => ["已思考", "Thought for a while"],
-    /// 折叠轮标消息计数(对齐 dsh messageCount)
+    /// 折叠轮标消息计数
     messages_count(n) => ["{n} 条消息", "{n} messages"],
-    /// 助手正文尾「已停止」pill(回合被中断;对齐 dsh message.stopped)
+    /// 助手正文尾「已停止」pill(回合被中断)
     message_stopped => ["已停止", "Stopped"],
-    /// 压缩标记行标题(对齐 dsh context compacted)
+    /// 压缩标记行标题
     compact_title => ["上下文已压缩", "Context compacted"],
-    /// 通告行标题(对齐 dsh turn-error 结构)
+    /// 通告行标题
     turn_failed => ["本轮运行失败", "This turn failed"],
     /// 召回行前缀
     recall(label) => ["召回·{label}", "Recall · {label}"],
     /// 注入行前缀
     inject(label) => ["注入·{label}", "Inject · {label}"],
-    /// 压缩完成统计行(dsh message.compaction.completed 同款)
+    /// 压缩完成统计行
     compaction_done(n, t) => ["已压缩 {n} 条历史记录（约 {t} tokens）", "Compacted {n} entries (~{t} tokens)"],
     /// 压缩摘要可展开提示
     compact_summary_hint => ["点击查看压缩摘要", "Click to view the compaction summary"],
@@ -183,9 +183,9 @@ entries! {
     tool_write => ["写入", "Write"],
     /// 工具行标题:编辑
     tool_edit => ["编辑", "Edit"],
-    /// 工具行标题:内容搜索(dsh 词汇,原样)
+    /// 工具行标题:内容搜索(原样)
     tool_grep => ["Grep", "Grep"],
-    /// 工具行标题:文件名匹配(dsh 词汇,原样)
+    /// 工具行标题:文件名匹配(原样)
     tool_glob => ["Glob", "Glob"],
     /// 工具行标题:文件搜索
     tool_search => ["搜索", "Search"],
@@ -281,9 +281,9 @@ entries! {
     command_failed(msg) => ["命令失败:{msg}", "Command failed: {msg}"],
 }
 
-/// 工具行标题槽本地化(对齐参考:不暴露模型面名;标题走词典,
+/// 工具行标题槽本地化(不暴露模型面名;标题走词典,
 /// 摘要槽只放参数摘要)。None = 未知工具:渲染层以 [`generic_tool`]
-/// 兜底,并把原名放进摘要前缀(`{name} · …`,参考 others 变体同款)。
+/// 兜底,并把原名放进摘要前缀(`{name} · …`)。
 pub fn tool_display_name(name: &str) -> Option<&'static str> {
     Some(match name {
         "bash" | "shell" => tool_bash(),
