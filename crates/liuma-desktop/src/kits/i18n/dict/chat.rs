@@ -93,8 +93,6 @@ entries! {
     compact_summary_na => ["压缩摘要不可用", "Compaction summary unavailable"],
     /// 已中断(回合被打断)
     interrupted => ["已中断", "Interrupted"],
-    /// 插队条目徽标(待投递)
-    queue_jump => ["插队 · 待投递", "Steered · pending delivery"],
 
     // ── 子代理 ──
     /// 子代理回发消息行标

@@ -3183,12 +3183,15 @@ fn pretty_json(s: &str) -> String {
         .unwrap_or_else(|_| s.to_string())
 }
 
-/// 插队待投递气泡:用户气泡同款视觉,
-/// pending 态 = 70% 透明 + 「插队 · 待投递」小标;右对齐
+/// 插队待投递气泡:与用户气泡同款视觉(右对齐;无标注无透明度——
+/// 待投递语义由位置表达:气泡位于流尾、认领后由持久 user/message 行
+/// 原位接管,视觉无缝)。标注式 chrome(小标 + 降透明)曾使它成为
+/// 唯一被装饰的用户样式气泡,破坏右对齐节奏,已移除。
 fn pending_steering_bubble(
     entry: &crate::features::chat::QueueEntry,
     col_w: gpui_kit::Pixels,
 ) -> impl IntoElement {
+    let bw = crate::shell::metrics::bubble_w(col_w);
     div()
         .debug_selector(move || format!("pending-steering-{}", entry.id))
         .w(col_w)
@@ -3197,31 +3200,15 @@ fn pending_steering_bubble(
         .px(px(0.))
         .child(
             div()
-                .v_flex()
-                .items_end()
-                .gap(px(2.))
-                .max_w(px(560.))
-                .opacity(0.7)
-                .child(
-                    div()
-                        .rounded(px(16.))
-                        .bg(theme::BUBBLE())
-                        .px(px(12.))
-                        .py(px(8.))
-                        .text_size(px(14.))
-                        .text_color(theme::LABEL_2())
-                        .max_w(px(560.))
-                        .child(entry.preview.clone()),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.))
-                        .text_size(px(11.))
-                        .text_color(theme::CAPTION())
-                        .child(dict::chat::queue_jump()),
-                ),
+                .max_w(bw)
+                .rounded(px(22.))
+                .bg(theme::BUBBLE())
+                .px(px(16.))
+                .py(px(10.))
+                .text_size(px(14.))
+                .text_color(theme::LABEL())
+                .line_height(gpui_kit::relative(1.5))
+                .child(entry.preview.clone()),
         )
 }
 

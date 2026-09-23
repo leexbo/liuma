@@ -3,6 +3,9 @@
 //! 编辑(行内输入)/ 立即投递(steer)/ 移除——走 host `update_queue`
 //! (edit/remove/steer),变更后 `session/queue` 帧自动广播回填。
 //! `steering` 落位不在本组件(消息流尾部的插队气泡,见 chat_pane)。
+//! 立即投递仅在会话运行中渲染:空闲时 queued 条目本就会被驱动立即
+//! 认领,steer 窗口已关,徒行只会收到 steer-unavailable 死胡同
+//! (语义对齐 DeepSeek Harness:动作仅 running 时可用)。
 
 use gpui_kit::component::IconName;
 use gpui_kit::component::Sizable;
@@ -21,7 +24,7 @@ use crate::shell::store::AppStore;
 
 /// 队列条带(空 = 不渲染;仅 `queued` 落位;挂 composer 正上方)
 pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> impl IntoElement {
-    let (col_w, queued, collapsed, editing, session_id) = {
+    let (col_w, queued, collapsed, editing, session_id, running) = {
         let st = store.read(cx);
         let session_id = st.state.current_id.clone();
         let Some(session_id) = session_id else {
@@ -45,7 +48,14 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         );
         let editing = st.chat.queue_editing.clone();
         let collapsed = st.chat.queue_dock_collapsed;
-        (col_w, queued, collapsed, editing, session_id)
+        // host/session-status 广播的运行态(认领~结算窗口;缺省 = 不在运行)
+        let running = st
+            .state
+            .running_by_id
+            .get(&session_id)
+            .copied()
+            .unwrap_or(false);
+        (col_w, queued, collapsed, editing, session_id, running)
     };
     if queued.is_empty() {
         return div().into_any_element();
@@ -101,7 +111,15 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
     let list_visible = !collapsed || is_editing;
     if list_visible {
         for entry in &queued {
-            dock = dock.child(queue_row(store, entry, &session_id, &editing, window, cx));
+            dock = dock.child(queue_row(
+                store,
+                entry,
+                &session_id,
+                &editing,
+                running,
+                window,
+                cx,
+            ));
         }
     }
     dock.into_any_element()
@@ -111,12 +129,15 @@ fn st_chat_collapsed(store: &Entity<AppStore>, cx: &App) -> bool {
     store.read(cx).chat.queue_dock_collapsed
 }
 
-/// 队列行:preview(或行内编辑输入)+ 动作钮(保存/取消 或 编辑/立即投递/移除)
+/// 队列行:preview(或行内编辑输入)+ 动作钮(保存/取消 或 编辑/[立即投递]/移除;
+/// 立即投递钮仅运行中渲染)
+#[allow(clippy::too_many_arguments)]
 fn queue_row(
     store: &Entity<AppStore>,
     entry: &QueueEntry,
     session_id: &str,
     editing: &Option<String>,
+    running: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> impl IntoElement {
@@ -159,11 +180,11 @@ fn queue_row(
         );
     }
     row.child(queue_actions(
-        store, entry, session_id, is_editing, editable, window, cx,
+        store, entry, session_id, is_editing, editable, running, window, cx,
     ))
 }
 
-/// 行内动作钮组(编辑态 = 保存/取消;常态 = 编辑/立即投递/移除)
+/// 行内动作钮组(编辑态 = 保存/取消;常态 = 编辑/[立即投递]/移除)
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
 fn queue_actions(
@@ -172,6 +193,7 @@ fn queue_actions(
     session_id: &str,
     is_editing: bool,
     editable: bool,
+    running: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> impl IntoElement {
@@ -250,29 +272,33 @@ fn queue_actions(
                         }),
                 )
             })
-            .child(
-                div()
-                    .id("queue-steer")
-                    .flex()
-                    .size(px(22.))
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(6.))
-                    .cursor_pointer()
-                    .text_color(theme::CAPTION())
-                    .hover(|s| s.bg(theme::BUBBLE()).text_color(theme::LABEL()))
-                    .child(fixed(IconName::ArrowUp, 13.))
-                    .on_click(move |_, _, cx| {
-                        s_steer.update(cx, |st, cx| {
-                            st.queue_action(
-                                &sid_s,
-                                &iid_s,
-                                serde_json::json!({ "kind": "steer" }),
-                                cx,
-                            );
-                        });
-                    }),
-            )
+            // 立即投递仅运行中渲染:空闲时 steer 窗口已关(host 会回
+            // steer-unavailable),不渲染即不给出死胡同入口
+            .when(running, |el| {
+                el.child(
+                    div()
+                        .id("queue-steer")
+                        .flex()
+                        .size(px(22.))
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .text_color(theme::CAPTION())
+                        .hover(|s| s.bg(theme::BUBBLE()).text_color(theme::LABEL()))
+                        .child(fixed(IconName::ArrowUp, 13.))
+                        .on_click(move |_, _, cx| {
+                            s_steer.update(cx, |st, cx| {
+                                st.queue_action(
+                                    &sid_s,
+                                    &iid_s,
+                                    serde_json::json!({ "kind": "steer" }),
+                                    cx,
+                                );
+                            });
+                        }),
+                )
+            })
             .child(
                 div()
                     .id("queue-remove")
