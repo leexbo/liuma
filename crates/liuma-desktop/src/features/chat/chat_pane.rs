@@ -182,7 +182,15 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
             let Some(entry) = entries.get(off) else {
                 return div().into_any_element();
             };
-            return pending_steering_bubble(entry, col_w).into_any_element();
+            // 与节点行同款包裹(w_full + justify_center + 列宽内衬):
+            // taffy 里 auto 宽收缩到内容宽,缺这层时 justify_end 无自由
+            // 空间可分配,气泡塌到列左缘(「插队消息渲染到左侧」回归源)
+            return div()
+                .w_full()
+                .flex()
+                .justify_center()
+                .child(pending_steering_bubble(entry, col_w))
+                .into_any_element();
         };
         // test 钩子 selector 沿用节点原始序号(组行另行标注):布局
         // 回归测试按 node-{n} 检索,折叠收拢的节点以缺席跳过
@@ -3200,6 +3208,7 @@ fn pending_steering_bubble(
         .px(px(0.))
         .child(
             div()
+                .debug_selector(move || format!("pending-steering-bubble-{}", entry.id))
                 .max_w(bw)
                 .rounded(px(22.))
                 .bg(theme::BUBBLE())

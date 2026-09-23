@@ -9746,3 +9746,76 @@ fn back_to_bottom_button_tracks_scroll(cx: &mut TestAppContext) {
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// 插队待投递气泡右对齐:气泡 hug 内容且贴列右缘(与用户消息同侧)。
+/// 回归「插队消息渲染到列左缘」——流尾伪行的 justify_end 若失去
+/// 作用宽度(容器塌成内容宽),气泡会退到列左缘。
+#[gpui_kit::test]
+fn steering_bubble_hugs_right_edge(cx: &mut TestAppContext) {
+    cx.update(|app| {
+        gpui_kit::component::init(app);
+        crate::kits::theme::init(app);
+    });
+    allow_host_parking(cx);
+    let root = std::env::temp_dir().join(format!("liuma-desktop-steer-{}", std::process::id()));
+    let (bridge, _rx) = HostBridge::new_at(root.join("ws"), true, "", Some(root.join("sessions")))
+        .expect("桥构建失败");
+
+    let (view, cx) = cx.add_window_view(|_window, cx| {
+        let store = cx.new(|cx| AppStore::new(bridge, cx));
+        let id = store
+            .read(cx)
+            .state
+            .current_id
+            .clone()
+            .expect("启动后有当前会话");
+        let mut chat = ChatState::default();
+        chat.nodes.push(ChatNode::Assistant {
+            key: "a:1:0".into(),
+            text: long_para(1),
+            text_ver: 1,
+            reasoning: String::new(),
+            streaming: false,
+            usage: None,
+            message_id: "mid-0".into(),
+        });
+        chat.queue.push(crate::features::chat::QueueEntry {
+            id: "s-1".into(),
+            placement: crate::features::chat::QueuePlacement::Steering,
+            preview: "继续".into(),
+            text: Some("继续".into()),
+        });
+        store.update(cx, |s, _| {
+            s.state.chats.insert(id, chat);
+        });
+        WorkspaceView::new(store, cx)
+    });
+
+    cx.refresh().expect("窗口刷新失败");
+    cx.run_until_parked();
+    let _ = view;
+
+    let outer = cx
+        .debug_bounds("pending-steering-s-1")
+        .expect("插队伪行 bounds 缺失");
+    let bubble = cx
+        .debug_bounds("pending-steering-bubble-s-1")
+        .expect("插队气泡 bounds 缺失");
+    assert!(
+        outer.size.width > px(200.),
+        "伪行容器应有列级宽度,得到 {:?}",
+        outer.size.width
+    );
+    // 右对齐参照:assistant 正文块左缘 = 列左缘。气泡左缘必须落在列
+    // 宽 60% 之外(即贴右),塌左时它会与 assistant 左缘几乎重合
+    let anchor = cx.debug_bounds("node-0").expect("assistant 行缺失");
+    let col_span = anchor.right() - anchor.left();
+    assert!(
+        bubble.left() > anchor.left() + col_span * 0.6,
+        "插队气泡必须右对齐:bubble.left {:?} 落在列左 60% 内(anchor.left {:?},列宽 {:?})",
+        bubble.left(),
+        anchor.left(),
+        col_span
+    );
+    let _ = std::fs::remove_dir_all(root);
+}

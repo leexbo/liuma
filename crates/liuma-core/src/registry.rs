@@ -6396,6 +6396,17 @@ fn commit_splice(log: &Arc<Mutex<EventLog>>, rec: &SpliceRecord) {
 /// inserted,认领/移除只携带 removedCount)。start/removedCount 越界
 /// 防御性截断——日志损坏不留 panic 面
 fn replay_inbox(log: &EventLog) -> (VecDeque<PendingItem>, VecDeque<SteerInput>) {
+    // 认领消费判定:user/message 是 next-step 条目的终态。next-step 条
+    // 目存在双入账路径——队列转存(steer 动作/通知泵侧插入)与引擎
+    // step 边界的 enqueue/dequeue 对——后者只销自己的账,前者的插入
+    // 无对应移除。折叠时按 id 剔除已被 user/message 落档的条目,否则
+    // 重启后 replay 复活已消费条目:幽灵「待投递」气泡 + 消息二次投
+    // 递。位置语义不变:剔除发生在位置折叠之后,不扰动其余条目定位。
+    let claimed: std::collections::HashSet<String> = log
+        .iter()
+        .filter(|e| e.r#type == "user/message")
+        .filter_map(|e| e.data["id"].as_str().map(str::to_string))
+        .collect();
     let mut next_turn: Vec<SpliceItem> = Vec::new();
     let mut next_step: Vec<SpliceItem> = Vec::new();
     for ev in log.iter() {
@@ -6423,6 +6434,7 @@ fn replay_inbox(log: &EventLog) -> (VecDeque<PendingItem>, VecDeque<SteerInput>)
             list.insert(at, item);
         }
     }
+    next_step.retain(|i| !claimed.contains(&i.id));
     (
         next_turn
             .into_iter()
@@ -6994,8 +7006,13 @@ async fn pump_loop(
                 mode,
                 contexts,
             } => {
+                // 空闲即认领:入队帧与认领帧背靠背,中间帧只让桌面
+                // 闪一帧队列条(「发消息都要过一遍排队 UI」);忙碌
+                // 驻留时条目可见性靠帧,必须广播
+                let was_running;
                 let rec = {
                     let mut q = qs.lock_recover();
+                    was_running = q.running;
                     match mode {
                         PromptMode::Queue => {
                             let at = q.pending.len();
@@ -7047,7 +7064,9 @@ async fn pump_loop(
                 };
                 commit_splice(&inner.log, &rec);
                 wake.notify_one();
-                let _ = mux.send(queue_frame(&session_id, inner));
+                if was_running {
+                    let _ = mux.send(queue_frame(&session_id, inner));
+                }
             }
             Job::UpdateQueue {
                 item_id,
@@ -7562,6 +7581,13 @@ async fn driver_loop(
                         && let Some(f) = event_frame(&sid, event)
                     {
                         let _ = mux.send(f);
+                    }
+                    // 引擎 step 边界领用插队会落 enqueue/dequeue 对:队列
+                    // 镜像(steer_buf)随排空即变,此处补发队列帧 retire
+                    // 桌面端待投递气泡——引擎路径无其他帧广播点,缺帧则
+                    // 幽灵「待投递」气泡滞留(#29 双影)
+                    if ev.r#type == "agent/inbox/spliced" {
+                        let _ = mux.send(queue_frame(&sid, inner));
                     }
                     // 轨迹增量:落档即折叠出账,变更即推 delta(亚回合粒度;
                     // 工具/消息/请求在轨迹面板落档即现)
@@ -11008,6 +11034,94 @@ mod tests {
         let (p, s) = replay_inbox(&bad);
         assert_eq!(p.len(), 1);
         assert!(s.is_empty());
+    }
+
+    /// 回归锁:next-step 条目被引擎领用后(user/message 落档),队列
+    /// 转存的那份插入不得随 replay 复活——转存入账与引擎 step 边界的
+    /// enqueue/dequeue 对同一 id 双份入账,前者无对应移除;不剔除则
+    /// 重启后幽灵「待投递」气泡复活 + 消息被二次投递给模型
+    #[test]
+    fn replay_inbox_drops_claimed_next_step_entries() {
+        let splice = |target: &str, start: usize, removed: usize, inserted: &[(&str, &str)]| {
+            EventEnvelope::new(
+                "agent/inbox/spliced",
+                0,
+                json!({
+                    "target": target,
+                    "start": start,
+                    "removedCount": removed,
+                    "inserted": inserted
+                        .iter()
+                        .map(|(id, text)| json!({ "id": id, "content": text }))
+                        .collect::<Vec<_>>(),
+                }),
+            )
+        };
+        let mut log = EventLog::new();
+        // 排队 → steer 转移(next-turn 移除 + next-step 插入)
+        log.append(splice("next-turn", 0, 0, &[("a", "插队的")]))
+            .unwrap();
+        log.append(splice("next-turn", 0, 1, &[])).unwrap();
+        log.append(splice("next-step", 0, 0, &[("a", "插队的")]))
+            .unwrap();
+        // 引擎 step 边界领用:enqueue/dequeue 对 + user/message 终态
+        log.append(splice("next-step", 0, 0, &[("a", "插队的")]))
+            .unwrap();
+        log.append(splice("next-step", 0, 1, &[])).unwrap();
+        log.append(EventEnvelope::new(
+            "user/message",
+            0,
+            json!({ "id": "a", "content": "插队的" }),
+        ))
+        .unwrap();
+        let (pending, steer) = replay_inbox(&log);
+        assert!(pending.is_empty(), "next-turn 已消费");
+        assert!(steer.is_empty(), "已消费条目不得随 replay 复活");
+    }
+
+    /// 剔除不扰动未消费条目:已消费 a 与仍待投递 b 交错时,仅 a 被剔除
+    #[test]
+    fn replay_inbox_keeps_unclaimed_next_step_entries() {
+        let splice = |target: &str, start: usize, removed: usize, inserted: &[(&str, &str)]| {
+            EventEnvelope::new(
+                "agent/inbox/spliced",
+                0,
+                json!({
+                    "target": target,
+                    "start": start,
+                    "removedCount": removed,
+                    "inserted": inserted
+                        .iter()
+                        .map(|(id, text)| json!({ "id": id, "content": text }))
+                        .collect::<Vec<_>>(),
+                }),
+            )
+        };
+        let mut log = EventLog::new();
+        // a 排队 → 转移;随后 b 也排队 → 转移(next_step: [a, b])
+        log.append(splice("next-turn", 0, 0, &[("a", "一")]))
+            .unwrap();
+        log.append(splice("next-turn", 0, 1, &[])).unwrap();
+        log.append(splice("next-step", 0, 0, &[("a", "一")]))
+            .unwrap();
+        log.append(splice("next-turn", 0, 0, &[("b", "二")]))
+            .unwrap();
+        log.append(splice("next-turn", 0, 1, &[])).unwrap();
+        log.append(splice("next-step", 1, 0, &[("b", "二")]))
+            .unwrap();
+        // 引擎只领用 a(enqueue/dequeue 对;位置折叠移除首位的 a)
+        log.append(splice("next-step", 0, 0, &[("a", "一")]))
+            .unwrap();
+        log.append(splice("next-step", 0, 1, &[])).unwrap();
+        log.append(EventEnvelope::new(
+            "user/message",
+            0,
+            json!({ "id": "a", "content": "一" }),
+        ))
+        .unwrap();
+        let (_, steer) = replay_inbox(&log);
+        assert_eq!(steer.len(), 1, "未消费的 b 必须保留");
+        assert_eq!((steer[0].id.as_str(), steer[0].text.as_str()), ("b", "二"));
     }
 
     /// durable 队列:入队 splice 落盘;消费完毕后重启重建队列为空
