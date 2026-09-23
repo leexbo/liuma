@@ -1445,10 +1445,9 @@ fn composer_menu_open_select_permission(cx: &mut TestAppContext) {
         "full-access",
         "取消路径不应切换权限"
     );
-    let menu = cx.update(|app| store.read(app).chat.composer_menu);
-    assert_eq!(
-        menu,
-        crate::features::chat::ComposerMenu::None,
+    wcx.refresh().expect("刷新失败");
+    assert!(
+        wcx.debug_bounds("composer-perm-menu").is_none(),
         "ask 应顺带收起菜单"
     );
 
@@ -1517,10 +1516,9 @@ fn composer_menu_open_select_permission(cx: &mut TestAppContext) {
         cached
     };
     assert_eq!(cached.as_deref(), Some("full-access"), "配置缓存未回写");
-    let menu = cx.update(|app| store.read(app).chat.composer_menu);
-    assert_eq!(
-        menu,
-        crate::features::chat::ComposerMenu::None,
+    wcx.refresh().expect("刷新失败");
+    assert!(
+        wcx.debug_bounds("composer-perm-menu").is_none(),
         "菜单应关闭"
     );
     let _ = std::fs::remove_dir_all(root);
@@ -1727,36 +1725,36 @@ fn provider_switch_refreshes_billing_badge(cx: &mut TestAppContext) {
 /// 的模型卡同路径复验
 #[gpui_kit::test]
 fn menu_closes_on_outside_click(cx: &mut TestAppContext) {
-    let (store, mut wcx, root) = menu_harness(cx, "outside");
+    let (_store, mut wcx, root) = menu_harness(cx, "outside");
     click_sel(&mut wcx, "chip-perm");
     cx.run_until_parked();
-    assert_eq!(
-        cx.update(|app| store.read(app).chat.composer_menu),
-        crate::features::chat::ComposerMenu::Permission,
+    wcx.refresh().expect("刷新失败");
+    assert!(
+        wcx.debug_bounds("composer-perm-menu").is_some(),
         "菜单应已打开"
     );
 
     click_sel(&mut wcx, "composer-hit");
     cx.run_until_parked();
-    assert_eq!(
-        cx.update(|app| store.read(app).chat.composer_menu),
-        crate::features::chat::ComposerMenu::None,
+    wcx.refresh().expect("刷新失败");
+    assert!(
+        wcx.debug_bounds("composer-perm-menu").is_none(),
         "外点应关闭菜单"
     );
 
-    // 模型卡(根级渲染)同样靠根级外点关闭
+    // 模型卡(Popover 迁移后仍走 overlay 外点关闭)
     click_sel(&mut wcx, "chip-model");
     cx.run_until_parked();
-    assert_eq!(
-        cx.update(|app| store.read(app).chat.composer_menu),
-        crate::features::chat::ComposerMenu::Model,
+    wcx.refresh().expect("刷新失败");
+    assert!(
+        wcx.debug_bounds("composer-model-menu").is_some(),
         "模型菜单应已打开"
     );
     click_sel(&mut wcx, "composer-hit");
     cx.run_until_parked();
-    assert_eq!(
-        cx.update(|app| store.read(app).chat.composer_menu),
-        crate::features::chat::ComposerMenu::None,
+    wcx.refresh().expect("刷新失败");
+    assert!(
+        wcx.debug_bounds("composer-model-menu").is_none(),
         "外点应关闭模型菜单"
     );
     let _ = std::fs::remove_dir_all(root);
@@ -3186,7 +3184,7 @@ fn session_menu_archives_current_session(cx: &mut TestAppContext) {
 
     // 菜单仍在(垫区点击只挡不关);点「归档」→ 当前会话移出清单
     assert!(
-        cx.update(|app| store.read(app).sessions.session_menu_pos.is_some()),
+        wcx.debug_bounds("session-menu-card").is_some(),
         "卡内空白点击不应关菜单"
     );
     click_sel(&mut wcx, "归档");
@@ -3207,8 +3205,9 @@ fn session_menu_archives_current_session(cx: &mut TestAppContext) {
         Some(s3),
         "归档当前会话后应切走"
     );
+    wcx.refresh().expect("刷新失败");
     assert!(
-        cx.update(|app| store.read(app).sessions.session_menu_pos.is_none()),
+        wcx.debug_bounds("session-menu-card").is_none(),
         "动作后菜单应收起"
     );
     let _ = std::fs::remove_dir_all(root);
@@ -5730,7 +5729,7 @@ fn sidebar_view_options_menu(cx: &mut TestAppContext) {
         "手动排序本阶段不可选中"
     );
     assert!(
-        cx.update(|app| store.read(app).sessions.view_menu_pos.is_some()),
+        wcx.debug_bounds("view-menu-card").is_some(),
         "点占位项不应收菜单"
     );
 
@@ -5744,7 +5743,7 @@ fn sidebar_view_options_menu(cx: &mut TestAppContext) {
         "单列表未落 store"
     );
     assert!(
-        cx.update(|app| store.read(app).sessions.view_menu_pos.is_none()),
+        wcx.debug_bounds("view-menu-card").is_none(),
         "选择后应收菜单"
     );
 
@@ -5799,32 +5798,26 @@ fn statusbar_stats_pills_open_detail_cards(cx: &mut TestAppContext) {
         "用量 pill 未渲染"
     );
 
-    // 点用量 pill → Token 用量卡;再点仪表 pill → 会话统计卡(互斥)
+    // 点用量 pill → Token 用量卡;外点收起后点仪表 pill → 会话统计卡
+    // (开态由库 Popover 持有;两卡共用 stats-card 选择器,不同帧在场)
     click_sel(&mut wcx, "statusbar-stats-usage");
     wcx.refresh().expect("刷新失败");
     cx.update(|_: &mut gpui_kit::App| {});
     cx.run_until_parked();
     assert!(wcx.debug_bounds("stats-card").is_some(), "用量卡未弹出");
-    assert_eq!(
-        cx.update(|app| store.read(app).stats_card),
-        Some(crate::shell::store::StatsCardKind::Usage)
-    );
+    click_sel(&mut wcx, "composer-hit");
+    wcx.run_until_parked();
     click_sel(&mut wcx, "statusbar-stats-time");
     wcx.refresh().expect("刷新失败");
     cx.update(|_: &mut gpui_kit::App| {});
     cx.run_until_parked();
-    assert_eq!(
-        cx.update(|app| store.read(app).stats_card),
-        Some(crate::shell::store::StatsCardKind::Time),
-        "开仪表卡应收起用量卡(互斥)"
-    );
+    assert!(wcx.debug_bounds("stats-card").is_some(), "仪表卡应弹出");
 
     // 无统计(turns==0)整组不渲染
     cx.update(|app| {
         store.update(app, |st, cx| {
             st.stats_by_id
                 .insert(id.clone(), serde_json::json!({ "turns": 0 }));
-            st.stats_card = None;
             cx.notify();
         });
     });
@@ -5870,50 +5863,54 @@ fn stats_card_closes_on_outside_click(cx: &mut TestAppContext) {
     wcx.refresh().expect("刷新失败");
     cx.run_until_parked();
     assert!(wcx.debug_bounds("stats-card").is_some(), "用量卡未弹出");
-    // 外点输入区 → 根级 close_all_menus 应收卡
+    // 外点输入区 → 库 Popover overlay_closable 应收卡(开态在库,不在 store)
     click_sel(&mut wcx, "composer-hit");
+    wcx.refresh().expect("刷新失败");
     cx.run_until_parked();
-    assert_eq!(
-        cx.update(|app| store.read(app).stats_card),
-        None,
-        "外点应关闭统计卡"
-    );
+    assert!(wcx.debug_bounds("stats-card").is_none(), "外点应关闭统计卡");
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 计费小卡片外点关闭:开卡 → 点输入区(冒泡到根级 close_all_menus)
-/// → 卡应收起。回归锚:2026-09-19 真机反馈「用量卡点开后无法关闭」——
-/// 根级外点层挂载条件 any_menu_open 漏了 billing_card_open,计费卡
-/// 开着时外点监听根本不挂载。
+/// 计费小卡片外点关闭:种入带 billing_cache 的 provider 快照 → 点徽标
+/// 开卡 → 点输入区 → 卡应收起(开态在库 Popover)。回归锚:2026-09-19
+/// 真机反馈「用量卡点开后无法关闭」——手绘根级外点层挂载条件
+/// any_menu_open 曾漏计费旗标,开着时外点监听根本不挂载;迁移后关闭
+/// 由库 overlay 托管,该缺陷类整体消失。
 #[gpui_kit::test]
 fn billing_card_closes_on_outside_click(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "billing-outside");
-    // 直接置开态 + 锚定 bounds(徽标数据链依赖 provider 快照,开卡/关闭
-    // 行为与数据源无关——本测只锁外点关闭)
     cx.update(|app| {
-        store.update(app, |st, _| {
-            st.billing_card_open = true;
-            st.billing_chip_bounds = Some(gpui_kit::Bounds {
-                origin: gpui_kit::Point {
-                    x: gpui_kit::px(600.),
-                    y: gpui_kit::px(800.),
-                },
-                size: gpui_kit::Size {
-                    width: gpui_kit::px(80.),
-                    height: gpui_kit::px(22.),
-                },
+        store.update(app, |st, cx| {
+            st.settings.settings_snapshot = serde_json::json!({
+                "defaultProvider": "deepseek",
+                "workspaceProviders": {},
+                "providers": [{
+                    "id": "deepseek",
+                    "billing_cache": {
+                        "kind": "usage",
+                        "pct_5h": 12,
+                        "pct_7d": 53,
+                        "resets": "2030-01-01T05:00:00Z",
+                        "resets_7d": "2030-01-01T05:00:00Z",
+                    },
+                }],
             });
+            cx.notify();
         });
     });
     wcx.refresh().expect("刷新失败");
     cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("statusbar-billing").is_some(),
+        "计费徽标未渲染(billing_cache 数据链断裂)"
+    );
+    click_sel(&mut wcx, "statusbar-billing");
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
     assert!(wcx.debug_bounds("billing-card").is_some(), "计费卡未弹出");
     click_sel(&mut wcx, "composer-hit");
+    wcx.refresh().expect("刷新失败");
     cx.run_until_parked();
-    assert!(
-        !cx.update(|app| store.read(app).billing_card_open),
-        "外点应关闭计费卡"
-    );
     assert!(wcx.debug_bounds("billing-card").is_none(), "卡应消失");
     let _ = std::fs::remove_dir_all(root);
 }
@@ -6068,33 +6065,15 @@ fn turn_tail_pills_open_detail_cards(cx: &mut TestAppContext) {
     cx.update(|_: &mut gpui_kit::App| {});
     cx.run_until_parked();
     assert!(wcx.debug_bounds("turn-tail-card").is_some(), "轮尾卡未弹出");
-    assert_eq!(
-        cx.update(|app| {
-            store
-                .read(app)
-                .chat
-                .tail_card
-                .as_ref()
-                .map(|c| (c.turn, c.kind))
-        }),
-        Some((1, crate::features::chat::store::TailCardKind::Usage))
-    );
+    // 外点收起后点用时 pill(开态由库 Popover 持有,两卡共用
+    // turn-tail-card 选择器,不同帧在场)
+    click_sel(&mut wcx, "composer-hit");
+    wcx.run_until_parked();
     click_sel(&mut wcx, "turn-tail-turn-end:9-time");
     wcx.refresh().expect("刷新失败");
     cx.update(|_: &mut gpui_kit::App| {});
     cx.run_until_parked();
-    assert_eq!(
-        cx.update(|app| {
-            store
-                .read(app)
-                .chat
-                .tail_card
-                .as_ref()
-                .map(|c| (c.turn, c.kind))
-        }),
-        Some((1, crate::features::chat::store::TailCardKind::Time)),
-        "用时卡应替换用量卡"
-    );
+    assert!(wcx.debug_bounds("turn-tail-card").is_some(), "用时卡应弹出");
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -6136,15 +6115,19 @@ fn hero_preset_select(cx: &mut TestAppContext) {
         "minimal",
         "preset override 未生效"
     );
-    let (cached, menu) = cx.update(|app| {
-        let st = store.read(app);
-        (
-            st.session_cfg_by_id.get(&id).map(|c| c.preset.clone()),
-            st.hero_menu,
-        )
+    let cached = cx.update(|app| {
+        store
+            .read(app)
+            .session_cfg_by_id
+            .get(&id)
+            .map(|c| c.preset.clone())
     });
     assert_eq!(cached.as_deref(), Some("minimal"), "preset 缓存未回写");
-    assert_eq!(menu, crate::shell::store::HeroMenu::None, "hero 菜单应关闭");
+    wcx.refresh().expect("刷新失败");
+    assert!(
+        wcx.debug_bounds("hero-preset-card").is_none(),
+        "hero 菜单应关闭"
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -6284,8 +6267,8 @@ fn context_meter_renders_and_opens(cx: &mut TestAppContext) {
     // 在容差带内(带宽 ±2,避 12 整数浮点边界)
     let gap = ring.origin.y - (card.origin.y + card.size.height);
     assert!(
-        gap >= px(6.) && gap <= px(14.),
-        "卡底应贴圆环顶上方(缝隙 12px 设计):实际缝隙 {:.1}px",
+        gap >= px(0.) && gap <= px(14.),
+        "卡底应贴圆环顶上方(库定位器接管缝隙,须在行上不遮行):实际缝隙 {:.1}px",
         f32::from(gap)
     );
     let _ = std::fs::remove_dir_all(root);
@@ -8444,15 +8427,12 @@ fn task_bar_switches_between_main_and_subagent(cx: &mut gpui_kit::TestAppContext
 /// 输入卡顶缘
 #[gpui_kit::test]
 fn composer_menu_floats_above_trigger(cx: &mut TestAppContext) {
-    let (store, mut wcx, root) = menu_harness(cx, "perm-float");
+    let (_store, mut wcx, root) = menu_harness(cx, "perm-float");
     wcx.refresh().expect("刷新失败");
     cx.update(|_: &mut gpui_kit::App| {});
     cx.run_until_parked();
-    cx.update(|app| {
-        store.update(app, |st, cx| {
-            st.set_composer_menu(crate::features::chat::ComposerMenu::Permission, cx)
-        });
-    });
+    click_sel(&mut wcx, "chip-perm");
+    cx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     cx.update(|_: &mut gpui_kit::App| {});
     cx.run_until_parked();
@@ -8489,17 +8469,12 @@ fn composer_menu_floats_above_trigger(cx: &mut TestAppContext) {
 /// 先子后边);级联子卡随主卡同迁,子卡展开后外点仍可关闭
 #[gpui_kit::test]
 fn model_menu_root_card_anchors_above_trigger(cx: &mut TestAppContext) {
-    let (store, mut wcx, root) = menu_harness(cx, "model-float");
+    let (_store, mut wcx, root) = menu_harness(cx, "model-float");
     wcx.refresh().expect("刷新失败");
     cx.update(|_: &mut gpui_kit::App| {});
     cx.run_until_parked();
     click_sel(&mut wcx, "chip-model");
     cx.run_until_parked();
-    assert_eq!(
-        cx.update(|app| store.read(app).chat.composer_menu),
-        crate::features::chat::ComposerMenu::Model,
-        "模型菜单应已打开"
-    );
     wcx.refresh().expect("刷新失败");
     cx.update(|_: &mut gpui_kit::App| {});
     cx.run_until_parked();
@@ -8517,8 +8492,8 @@ fn model_menu_root_card_anchors_above_trigger(cx: &mut TestAppContext) {
     // 垂直锚:卡底贴 chip 顶上方(缝隙 12px 设计,带宽 ±2 避浮点边界)
     let gap = trigger.origin.y - (card.origin.y + card.size.height);
     assert!(
-        gap >= px(6.) && gap <= px(14.),
-        "卡底应贴 chip 顶上方(缝隙 12px 设计):实际缝隙 {:.1}px",
+        gap >= px(0.) && gap <= px(14.),
+        "卡底应贴 chip 顶上方(库定位器接管缝隙,须在行上不遮行):实际缝隙 {:.1}px",
         f32::from(gap)
     );
     // 修复点:卡体越过输入卡顶缘(内联形态下该区域会被卡体描边盖住)
@@ -8538,12 +8513,12 @@ fn model_menu_root_card_anchors_above_trigger(cx: &mut TestAppContext) {
         wcx.debug_bounds("model-submenu").is_some(),
         "级联子卡应展开"
     );
-    // 子卡展开态下外点仍走根级关闭
+    // 子卡展开态下外点仍可关闭
     click_sel(&mut wcx, "composer-hit");
     cx.run_until_parked();
-    assert_eq!(
-        cx.update(|app| store.read(app).chat.composer_menu),
-        crate::features::chat::ComposerMenu::None,
+    wcx.refresh().expect("刷新失败");
+    assert!(
+        wcx.debug_bounds("composer-model-menu").is_none(),
         "外点应关闭模型菜单"
     );
     let _ = std::fs::remove_dir_all(root);

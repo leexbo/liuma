@@ -58,10 +58,14 @@ pub(crate) fn attachment_toast_card(store: &Entity<AppStore>, cx: &App) -> impl 
         .into_any_element()
 }
 
-/// 工作区菜单行组(标题栏下拉与 hero 工作区 chip 共用):工作区行
-/// (文件夹 + 名 + 勾选;分支只在 StatusBar 徽标显示)+ 添加工作区。
-/// 行点击 = close_all_menus + select_workspace(两处菜单同语义)
-pub(crate) fn workspace_menu_rows(store: &Entity<AppStore>, cx: &App) -> Vec<gpui_kit::AnyElement> {
+/// 工作区菜单行组(标题栏下拉与 hero 工作区 chip 共用;组件库
+/// Popover 内容):工作区行(文件夹 + 名 + 勾选;分支只在 StatusBar
+/// 徽标显示)+ 添加工作区。行点击 = 收起弹层 + select_workspace
+pub(crate) fn workspace_menu_rows(
+    store: &Entity<AppStore>,
+    pop: gpui_kit::Entity<gpui_kit::component::popover::PopoverState>,
+    cx: &App,
+) -> Vec<gpui_kit::AnyElement> {
     let st = store.read(cx);
     let active = st
         .state
@@ -73,6 +77,7 @@ pub(crate) fn workspace_menu_rows(store: &Entity<AppStore>, cx: &App) -> Vec<gpu
         let s = store.clone();
         let w = ws.clone();
         let is_active = *ws == active;
+        let pop = pop.clone();
         let sel = format!("ws-row-{w}");
         rows.push(
             div()
@@ -106,12 +111,11 @@ pub(crate) fn workspace_menu_rows(store: &Entity<AppStore>, cx: &App) -> Vec<gpu
                 })
                 // 测试钩子(release 空操作)
                 .debug_selector(move || sel.clone())
-                .on_click(move |_, _, cx| {
+                .on_click(move |_, window, cx| {
+                    let pop = pop.clone();
                     let w = w.clone();
-                    s.update(cx, |st, cx| {
-                        st.close_all_menus(cx);
-                        st.select_workspace(&w, cx);
-                    });
+                    pop.update(cx, |state, cx| state.dismiss(window, cx));
+                    s.update(cx, |st, cx| st.select_workspace(&w, cx));
                 })
                 .into_any_element(),
         );
@@ -139,11 +143,10 @@ pub(crate) fn workspace_menu_rows(store: &Entity<AppStore>, cx: &App) -> Vec<gpu
             .text_color(theme::LABEL_2())
             .child(fixed(IconName::Plus, 14.))
             .child(dict::misc::add_workspace_ellipsis())
-            .on_click(move |_, _, cx| {
-                s_add.update(cx, |st, cx| {
-                    st.close_all_menus(cx);
-                    st.add_workspace_via_picker(cx);
-                });
+            .on_click(move |_, window, cx| {
+                let pop = pop.clone();
+                pop.update(cx, |state, cx| state.dismiss(window, cx));
+                s_add.update(cx, |st, cx| st.add_workspace_via_picker(cx));
             })
             .into_any_element(),
     );
@@ -175,20 +178,6 @@ pub(crate) fn overlay_card(
         .shadow_md()
         .children(rows)
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-}
-
-/// 标题栏工作区下拉卡(JetBrains 式)。锚在标题栏左区(top 34 =
-/// 标题栏高,left 80 = macOS 交通灯让位)
-pub(crate) fn workspace_menu_card(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
-    let card = overlay_card("ws-menu-card", 320., workspace_menu_rows(store, cx));
-    // 锚右列左缘(侧栏宽随折叠态:8 边距 + 280/56 + 8 沟 + 8 内距)
-    let sidebar_w = if store.read(cx).sidebar_collapsed {
-        56.
-    } else {
-        280.
-    };
-    let left = sidebar_w + 1. + 8.;
-    div().absolute().top(px(34.)).left(px(left)).child(card)
 }
 
 // 重命名模态已迁组件库 Dialog(sessions/store.rs open_rename 经

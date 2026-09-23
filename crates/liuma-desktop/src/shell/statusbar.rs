@@ -3,11 +3,13 @@
 //! 右侧:当前 provider 计费徽标(余额 / 5h·7d 两窗;不同源,另拍板保留)+
 //! preset 模式指示。
 
+use crate::kits::popup::PopTrigger;
 use gpui_kit::component::StyledExt as _;
+use gpui_kit::component::popover::Popover;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, div, px,
+    Anchor, AnyElement, App, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    SharedString, Styled, div, px,
 };
 
 use crate::features::settings::usage_bar;
@@ -16,7 +18,7 @@ use crate::kits::fmt::{
 };
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
-use crate::shell::store::{AppStore, StatsCardKind};
+use crate::shell::store::AppStore;
 
 /// 状态栏整体(统计 pill 居中;右侧计费徽标 + preset 模式;无数据占位)
 pub fn render(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
@@ -82,8 +84,9 @@ fn current_stats(st: &AppStore) -> Option<&serde_json::Value> {
 }
 
 /// 会话统计 pill 组(steps==0 且无 token 整组不渲染;
-/// steps==0 隐仪表 pill,总量 0 隐用量 pill)。两 pill 各自 bounds 捕获,
-/// 点击恒开对应卡(关闭走外点全关;嵌套 on_click toggle 真机连发禁 toggle)
+/// steps==0 隐仪表 pill,总量 0 隐用量 pill)。两 pill 各自弹对应详情
+/// 卡(组件库 Popover 托管开态/外点关闭/上开定位;store 不再有旗标与
+/// bounds 捕获 canvas)
 fn stats_pills(store: &Entity<AppStore>, cx: &App) -> Option<AnyElement> {
     let st = store.read(cx);
     let stats = current_stats(st)?;
@@ -107,8 +110,7 @@ fn stats_pills(store: &Entity<AppStore>, cx: &App) -> Option<AnyElement> {
             "statusbar-stats-time",
             fixed(LiumaIcon::Gauge, 12.).into_any_element(),
             label,
-            StatsCardKind::Time,
-            |st, b| st.stats_time_bounds = Some(b),
+            session_stats_card,
         ));
     }
     let total = input + output;
@@ -122,28 +124,27 @@ fn stats_pills(store: &Entity<AppStore>, cx: &App) -> Option<AnyElement> {
             "statusbar-stats-usage",
             fixed(gpui_kit::assets::IconName::Database, 12.).into_any_element(),
             label,
-            StatsCardKind::Usage,
-            |st, b| st.stats_usage_bounds = Some(b),
+            token_usage_card,
         ));
     }
     Some(row.into_any_element())
 }
 
 /// 统计 pill(billing 徽标同款 chip 形制:h22/rounded6/hover DOCK;
-/// 渲染期 bounds 捕获进指定字段,卡片根级渲染锚定用)
+/// 点击弹详情卡,组件库 Popover 托管开态与生命周期,触发钮保持原 id /
+/// debug_selector 供测试检索)
 fn stats_chip(
     store: &Entity<AppStore>,
     sel: &'static str,
     icon: AnyElement,
     label: String,
-    kind: StatsCardKind,
-    set_bounds: impl Fn(&mut AppStore, gpui_kit::Bounds<gpui_kit::Pixels>) + Copy + 'static,
-) -> AnyElement {
-    let s = store.clone();
-    div()
-        .relative()
-        .flex_shrink_0()
-        .child(
+    card: fn(&Entity<AppStore>, &App) -> AnyElement,
+) -> impl IntoElement {
+    let s_card = store.clone();
+    Popover::new(SharedString::from(format!("stats-pop-{sel}")))
+        .appearance(false)
+        .anchor(Anchor::BottomRight)
+        .trigger(PopTrigger(
             div()
                 .id(SharedString::from(sel))
                 .debug_selector(move || sel.to_string())
@@ -157,26 +158,25 @@ fn stats_chip(
                 .hover(|s| s.bg(theme::DOCK()))
                 .text_color(theme::LABEL_2())
                 .child(icon)
-                .child(label)
-                .on_click(move |_, _, cx| {
-                    s.update(cx, |st, cx| {
-                        st.stats_card = Some(kind);
-                        cx.notify();
-                    });
-                }),
-        )
-        // 渲染期 bounds 捕获(根级卡片锚定分子,同计费徽标)
-        .child(div().absolute().inset_0().child({
-            let cap = store.clone();
-            gpui_kit::canvas(
-                move |b, _, cx| {
-                    cap.update(cx, |st, _| set_bounds(st, b));
-                },
-                |_, _, _, _| {},
-            )
-            .size_full()
-        }))
-        .into_any_element()
+                .child(label),
+        ))
+        // 卡面 chrome(原根级挂载包裹层同款:圆角/描边/亮盘白/阴影)
+        .content(move |_, _, cx| {
+            div()
+                .id("stats-card")
+                .debug_selector(|| "stats-card".to_string())
+                .rounded(px(12.))
+                .border_1()
+                .border_color(theme::BORDER())
+                .bg(if theme::is_dark() {
+                    theme::LAYER()
+                } else {
+                    theme::CARD()
+                })
+                .shadow_md()
+                .child(card(&s_card, cx))
+                .into_any_element()
+        })
 }
 
 /// 会话统计卡(仪表 pill 详情):模型用时/工具调用用时/首 token 平均/输出速度
@@ -359,10 +359,10 @@ fn billing_badge(store: &Entity<AppStore>, cx: &App) -> Option<AnyElement> {
                 return None;
             }
             return Some(
-                div()
-                    .relative()
-                    .flex_shrink_0()
-                    .child(
+                Popover::new("billing-pop")
+                    .appearance(false)
+                    .anchor(Anchor::BottomRight)
+                    .trigger(PopTrigger(
                         div()
                             .id("statusbar-billing")
                             .debug_selector(|| "statusbar-billing".to_string())
@@ -385,29 +385,25 @@ fn billing_badge(store: &Entity<AppStore>, cx: &App) -> Option<AnyElement> {
                                     .child(window_label(crate::kits::i18n::dict::time::window_1w()))
                                     .child(usage_bar(v, 20.))
                                     .child(pct_label(v))
-                            })
-                            .on_click(move |_, _, cx| {
-                                // 绝对方向恒开(toggle 禁:真机嵌套 on_click 连发),
-                                // 关闭走外点全关
-                                s_click.update(cx, |st, cx| {
-                                    st.billing_card_open = true;
-                                    cx.notify();
-                                });
                             }),
-                    )
-                    // 渲染期 bounds 捕获(根级卡片锚定分子,同权限 chip)
-                    .child(div().absolute().inset_0().child({
-                        let cap = store.clone();
-                        gpui_kit::canvas(
-                            move |b, _, cx| {
-                                cap.update(cx, |st, _| {
-                                    st.billing_chip_bounds = Some(b);
-                                });
-                            },
-                            |_, _, _, _| {},
-                        )
-                        .size_full()
-                    }))
+                    ))
+                    // 卡面 chrome(原根级挂载包裹层同款)
+                    .content(move |_, _, cx| {
+                        div()
+                            .id("billing-card")
+                            .debug_selector(|| "billing-card".to_string())
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(theme::BORDER())
+                            .bg(if theme::is_dark() {
+                                theme::LAYER()
+                            } else {
+                                theme::CARD()
+                            })
+                            .shadow_md()
+                            .child(billing_card(&s_click, cx))
+                            .into_any_element()
+                    })
                     .into_any_element(),
             );
         }

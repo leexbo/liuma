@@ -20,4 +20,4 @@ pub(crate) use projection::{
 // RowSlot 仅测试(layout_tests 行槽形状断言)直接引用
 #[cfg(test)]
 pub(crate) use projection::RowSlot;
-pub(crate) use store::{ChatStore, ComposerMenu, ComposerSubmenu};
+pub(crate) use store::ChatStore;

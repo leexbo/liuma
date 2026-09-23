@@ -6,13 +6,15 @@
 use gpui_kit::component::IconName;
 use gpui_kit::component::StyledExt;
 use gpui_kit::component::input::Textarea;
+use gpui_kit::component::popover::{Popover, PopoverState};
 use gpui_kit::{
-    App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
-    Styled, div, px,
+    Anchor, App, Entity, InteractiveElement, IntoElement, ParentElement,
+    StatefulInteractiveElement, Styled, div, px,
 };
 
 use crate::kits::i18n::dict;
 use crate::kits::icons::fixed;
+use crate::kits::popup::PopTrigger;
 use crate::kits::theme;
 use crate::shell::store::AppStore;
 
@@ -75,37 +77,47 @@ pub fn actions(store: &Entity<AppStore>, message_id: &str, cx: &App) -> Vec<gpui
     let note_store = store.clone();
     let note_sel = message_id.to_string();
     els.push(
-        div()
-            .id(gpui_kit::SharedString::from(format!("fb-note-{note_sel}")))
-            .flex()
-            .h(px(24.))
-            .items_center()
-            .rounded(px(12.))
-            .px(px(8.))
-            .cursor_pointer()
-            .hover(|s| s.bg(theme::DOCK()))
-            .text_size(px(11.))
-            .text_color(if note.is_some() {
-                theme::BRAND()
-            } else {
-                theme::CAPTION()
-            })
-            .on_click(move |ev: &gpui_kit::ClickEvent, window, cx| {
-                let s = note_store.clone();
-                let m = note_sel.clone();
-                let pos = match ev {
-                    gpui_kit::ClickEvent::Mouse(mi) => mi.down.position,
-                    gpui_kit::ClickEvent::Keyboard(_) => gpui_kit::Point::default(),
-                    gpui_kit::ClickEvent::Touch(_) => gpui_kit::Point::default(),
-                };
-                s.update(cx, |st, cx| st.open_feedback_note(window, &m, pos, cx));
-            })
-            .child(if note.is_some() {
-                note.clone().unwrap_or_default()
-            } else {
-                dict::misc::supplement().to_string()
-            })
-            .into_any_element(),
+        // 备注弹层(组件库 Popover:下开、外点关闭;输入态懒建与聚焦
+        // 由内容闭包的 window 完成,store 不再有坐标锚)
+        Popover::new(gpui_kit::SharedString::from(format!(
+            "fb-note-pop-{note_sel}"
+        )))
+        .appearance(false)
+        .anchor(Anchor::TopLeft)
+        .trigger(PopTrigger(
+            div()
+                .id(gpui_kit::SharedString::from(format!("fb-note-{note_sel}")))
+                .flex()
+                .h(px(24.))
+                .items_center()
+                .rounded(px(12.))
+                .px(px(8.))
+                .cursor_pointer()
+                .hover(|s| s.bg(theme::DOCK()))
+                .text_size(px(11.))
+                .text_color(if note.is_some() {
+                    theme::BRAND()
+                } else {
+                    theme::CAPTION()
+                })
+                .child(if note.is_some() {
+                    note.clone().unwrap_or_default()
+                } else {
+                    dict::misc::supplement().to_string()
+                }),
+        ))
+        .content(move |_, window, cx| {
+            let pop = cx.entity();
+            let s_open = note_store.clone();
+            s_open.update(cx, |st, cx| {
+                st.open_feedback_note(window, &note_sel, cx);
+                if let Some(input) = &st.feedback.feedback_input {
+                    input.update(cx, |i, cx| i.focus(window, cx));
+                }
+            });
+            note_editor_card(&note_store, pop, cx).into_any_element()
+        })
+        .into_any_element(),
     );
     els
 }
@@ -137,122 +149,107 @@ fn feedback_btn(
         .child(fixed(icon, 12.))
 }
 
-/// 备注弹窗(根级渲染;open → 锚定在「补充说明」钮下方的 popover,非居中模态。
-/// 定位:trigger 下缘 + gap(4px),面板靠右展开。
-/// 透明全屏层捕获外点关闭(无视觉遮罩),卡片 occlude 防穿透)
-pub fn render_note_editor(store: &Entity<AppStore>, cx: &mut App) -> Option<impl IntoElement> {
-    let (_message_id, text) = store.read(cx).feedback.feedback_note_editor.clone()?;
-    let anchor = store.read(cx).feedback.feedback_note_anchor?;
-    let close = store.clone();
-    let close2 = store.clone();
-    let save = store.clone();
-    Some(
-        // 透明全屏命中层:点卡片外任意处关闭(无遮罩视觉层)
-        div()
-            .id("fb-note-dismiss")
-            .absolute()
-            .inset_0()
-            .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, cx| {
-                close.update(cx, |st, cx| st.close_feedback_note(cx))
-            })
-            .child(
-                div()
-                    .id("fb-note-pop")
-                    .debug_selector(|| "fb-note-pop".to_string())
-                    .absolute()
-                    // 锚在触发钮下方:按钮下缘(锚点 y + 约钮高)= 弹层顶;
-                    .top(anchor.y + px(30.))
-                    .left(anchor.x + px(4.))
-                    // 阻断鼠标命中向后方穿透(否则点面板会落到下面消息上)
-                    .occlude()
-                    .v_flex()
-                    .gap(px(10.))
-                    .w(px(320.))
-                    .max_w(px(360.))
-                    .rounded(px(12.))
-                    .border_1()
-                    .border_color(theme::BORDER())
-                    .bg(theme::LAYER())
-                    .p(px(12.))
-                    .shadow_md()
-                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-                        cx.stop_propagation()
-                    })
-                    .child(
-                        div()
-                            .id("fb-note-input")
-                            .flex()
-                            .min_h(px(72.))
-                            .items_center()
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(theme::BORDER())
-                            // 卡上内嵌输入面:CODE(比 CARD 深一阶的内嵌语义)
-                            .bg(theme::CODE())
-                            .px(px(10.))
-                            .py(px(8.))
-                            .child(
-                                store
-                                    .read(cx)
-                                    .feedback
-                                    .feedback_input
-                                    .clone()
-                                    .map(|input| {
-                                        Textarea::new(&input)
-                                            .appearance(false)
-                                            .text_size(px(13.))
-                                            .line_height(gpui_kit::relative(1.5))
-                                            .into_any_element()
-                                    })
-                                    .unwrap_or_else(|| {
-                                        div().child(text.clone()).into_any_element()
-                                    }),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_end()
-                            .gap(px(8.))
-                            .child(
-                                div()
-                                    .id("fb-note-save")
-                                    .flex()
-                                    .h(px(28.))
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded(px(14.))
-                                    // 白色主按钮(白底深字)
-                                    .bg(theme::LABEL())
-                                    .px(px(16.))
-                                    .text_size(px(13.))
-                                    .text_color(gpui_kit::black())
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(theme::LABEL_2()))
-                                    .on_click(move |_, _, cx| {
-                                        save.update(cx, |st, cx| st.commit_feedback_note(cx));
-                                    })
-                                    .child(dict::common::save()),
-                            )
-                            .child(
-                                div()
-                                    .id("fb-note-cancel")
-                                    .flex()
-                                    .h(px(28.))
-                                    .items_center()
-                                    .rounded(px(14.))
-                                    .px(px(12.))
-                                    .text_size(px(13.))
-                                    .text_color(theme::CAPTION())
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(theme::DOCK()))
-                                    .on_click(move |_, _, cx| {
-                                        close2.update(cx, |st, cx| st.close_feedback_note(cx));
-                                    })
-                                    .child(dict::common::cancel()),
-                            ),
-                    ),
-            ),
-    )
+/// 备注卡(组件库 Popover 内容:textarea + 保存/取消;保存与取消均
+/// 收起弹层,外点关闭由库托管)
+fn note_editor_card(
+    store: &Entity<AppStore>,
+    pop: Entity<PopoverState>,
+    cx: &mut App,
+) -> impl IntoElement {
+    let text = store
+        .read(cx)
+        .feedback
+        .feedback_note_editor
+        .clone()
+        .map(|(_, t)| t)
+        .unwrap_or_default();
+    let (save, close) = (store.clone(), store.clone());
+    let pop_save = pop.clone();
+    div()
+        .debug_selector(|| "fb-note-pop".to_string())
+        .v_flex()
+        .gap(px(10.))
+        .w(px(320.))
+        .max_w(px(360.))
+        .rounded(px(12.))
+        .border_1()
+        .border_color(theme::BORDER())
+        .bg(theme::LAYER())
+        .p(px(12.))
+        .shadow_md()
+        .child(
+            div()
+                .id("fb-note-input")
+                .flex()
+                .min_h(px(72.))
+                .items_center()
+                .rounded(px(8.))
+                .border_1()
+                .border_color(theme::BORDER())
+                // 卡上内嵌输入面:CODE(比 CARD 深一阶的内嵌语义)
+                .bg(theme::CODE())
+                .px(px(10.))
+                .py(px(8.))
+                .child(
+                    store
+                        .read(cx)
+                        .feedback
+                        .feedback_input
+                        .clone()
+                        .map(|input| {
+                            Textarea::new(&input)
+                                .appearance(false)
+                                .text_size(px(13.))
+                                .line_height(gpui_kit::relative(1.5))
+                                .into_any_element()
+                        })
+                        .unwrap_or_else(|| div().child(text).into_any_element()),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .id("fb-note-save")
+                        .flex()
+                        .h(px(28.))
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(14.))
+                        // 白色主按钮(白底深字)
+                        .bg(theme::LABEL())
+                        .px(px(16.))
+                        .text_size(px(13.))
+                        .text_color(gpui_kit::black())
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::LABEL_2()))
+                        .on_click(move |_, window, cx| {
+                            pop_save.update(cx, |state, cx| state.dismiss(window, cx));
+                            save.update(cx, |st, cx| st.commit_feedback_note(cx));
+                        })
+                        .child(dict::common::save()),
+                )
+                .child(
+                    div()
+                        .id("fb-note-cancel")
+                        .flex()
+                        .h(px(28.))
+                        .items_center()
+                        .rounded(px(14.))
+                        .px(px(12.))
+                        .text_size(px(13.))
+                        .text_color(theme::CAPTION())
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::DOCK()))
+                        .on_click(move |_, window, cx| {
+                            pop.update(cx, |state, cx| state.dismiss(window, cx));
+                            close.update(cx, |st, cx| st.close_feedback_note(cx));
+                        })
+                        .child(dict::common::cancel()),
+                ),
+        )
 }

@@ -24,8 +24,6 @@ use crate::shell::store::AppStore;
 pub struct PreviewStore {
     /// 预览桶(rel 路径 → 状态)
     pub buckets: HashMap<PathBuf, PreviewBucket>,
-    /// 「打开方式」菜单(根级渲染;键 = 目标文件 rel 路径,值 = 锚点)
-    pub menu: Option<(PathBuf, gpui_kit::Point<gpui_kit::Pixels>)>,
 }
 
 /// 单文件预览桶
@@ -238,7 +236,6 @@ impl AppStore {
             path: rel.clone(),
             line,
         }));
-        self.panel_plus_menu_at = None;
         self.preview_ensure_bucket(&rel, line, cx);
         self.preview_poll_start(cx);
         cx.notify();
@@ -744,7 +741,6 @@ impl AppStore {
         renderer: DocRenderer,
         cx: &mut Context<Self>,
     ) {
-        self.preview.menu = None;
         let mode_change = self
             .preview
             .buckets
@@ -784,23 +780,9 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 「打开方式」菜单开(锚点坐标,根级渲染)
-    pub fn preview_open_menu_at(
-        &mut self,
-        rel: PathBuf,
-        pos: gpui_kit::Point<gpui_kit::Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        self.preview.menu = Some((rel, pos));
-        cx.notify();
-    }
-
     /// 关 tab 即焚桶(纯内存态)
     pub fn preview_forget(&mut self, rel: &std::path::Path) {
         self.preview.buckets.remove(rel);
-        if matches!(self.preview.menu, Some((ref target, _)) if target == rel) {
-            self.preview.menu = None;
-        }
     }
 
     /// 变更轮询(1s;仅存在预览 tab 时跑;stat 失败 → 元数据失败面)。

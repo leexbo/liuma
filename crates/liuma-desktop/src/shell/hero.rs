@@ -6,17 +6,19 @@
 use gpui_kit::component::Icon;
 use gpui_kit::component::IconName;
 use gpui_kit::component::StyledExt;
+use gpui_kit::component::popover::{Popover, PopoverState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    Anchor, App, Entity, InteractiveElement, IntoElement, ParentElement,
     StatefulInteractiveElement, Styled, Window, div, px,
 };
 
 use crate::features::chat::composer;
 use crate::kits::icons::{self, fixed};
 use crate::kits::modals::{overlay_card, workspace_menu_rows};
+use crate::kits::popup::PopTrigger;
 use crate::kits::theme;
-use crate::shell::store::{AppStore, HeroMenu};
+use crate::shell::store::AppStore;
 
 /// Hero 整体(col_w:统一对话列宽,由根布局给定)
 pub fn render(
@@ -33,7 +35,6 @@ pub fn render(
         .unwrap_or_else(|| st.default_workspace());
     let cfg = st.current_cfg_or_default();
     let preset_label = st.preset_label(&cfg.preset);
-    let hero_menu = st.hero_menu;
 
     div()
         .relative()
@@ -107,59 +108,31 @@ pub fn render(
                         .flex()
                         .items_center()
                         .gap(px(8.))
-                        .child(hero_menu_slot(
-                            hero_menu == HeroMenu::Workspace,
-                            hero_chip(store, "hero-ws", &ws, fixed(IconName::FolderOpen, 14.)),
+                        .child(hero_ws_popover(
+                            store,
+                            &ws,
+                            fixed(IconName::FolderOpen, 14.),
                         ))
-                        .child(hero_menu_slot(
-                            hero_menu == HeroMenu::Preset,
-                            hero_chip(
-                                store,
-                                "hero-preset",
-                                &preset_label,
-                                fixed(icons::LiumaIcon::AgentPreset, 14.),
-                            ),
+                        .child(hero_preset_popover(
+                            store,
+                            "hero-preset",
+                            &preset_label,
+                            fixed(icons::LiumaIcon::AgentPreset, 14.),
                         )),
                 )
-                .child(composer::render(store, window, cx))
-                // composer 的权限/模型/上下文卡不在此挂:统一根级渲染于
-                // shell/mod.rs(与 chat 页同根,本页自动生效)
-                // 菜单卡挂列尾(后于 composer,绘制在其上——挂 chip 行内
-                // 会被 composer 盖住).以内容盒为锚,top 从内容盒顶到
-                // chips 行底 + 6:logo(64)+gap(10)+标题(~21)+gap(12)
-                // + chips(28)+6 ≈ 141(内容盒加 relative,不随居中漂移)
-                .when(hero_menu != HeroMenu::None, |el| {
-                    el.child(
-                        div()
-                            .absolute()
-                            .top(px(141.))
-                            .left_0()
-                            .child(match hero_menu {
-                                HeroMenu::Workspace => overlay_card(
-                                    "hero-ws-card",
-                                    320.,
-                                    workspace_menu_rows(store, cx),
-                                )
-                                .into_any_element(),
-                                HeroMenu::Preset => preset_card(store, cx).into_any_element(),
-                                HeroMenu::None => div().into_any_element(),
-                            }),
-                    )
-                }),
+                .child(composer::render(store, window, cx)), // 工作区/模式两 chip 各自弹组件库 Popover(内容闭包捕
+                                                             // 获自身行组;开态/外点关闭/定位由库托管,不再有
+                                                             // hero_menu 旗标与硬编码 top 偏移)
         )
 }
 
-/// hero chip 槽:开态豁免(mousedown stop_prop)+ 触发钮
-fn hero_menu_slot(open: bool, trigger: gpui_kit::Stateful<gpui_kit::Div>) -> impl IntoElement {
-    div()
-        .when(open, |el| {
-            el.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        })
-        .child(trigger)
-}
-
-/// 模式(preset)卡:describe presets(id/name/description;当前勾选)
-fn preset_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::Stateful<gpui_kit::Div> {
+/// 模式(preset)菜单(组件库 Popover 内容;选中即切换并收起菜单):
+/// describe presets(id/name/description;当前勾选)
+fn preset_card(
+    store: &Entity<AppStore>,
+    pop: Entity<PopoverState>,
+    cx: &App,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
     let (current, presets) = {
         let st = store.read(cx);
         (
@@ -174,6 +147,7 @@ fn preset_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::Stateful<gpui_ki
         let desc = p["description"].as_str().unwrap_or_default();
         let s = store.clone();
         let v = id.to_string();
+        let pop = pop.clone();
         let checked = id == current;
         let sel = format!("preset-item-{id}");
         rows.push(
@@ -212,7 +186,8 @@ fn preset_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::Stateful<gpui_ki
                     el.child(fixed(IconName::Check, 14.).text_color(theme::LABEL()))
                 })
                 .debug_selector(move || sel.clone())
-                .on_click(move |_, _, cx| {
+                .on_click(move |_, window, cx| {
+                    pop.update(cx, |state, cx| state.dismiss(window, cx));
                     let v = v.clone();
                     s.update(cx, |st, cx| st.set_session_preset(&v, cx));
                 })
@@ -225,20 +200,9 @@ fn preset_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::Stateful<gpui_ki
         .debug_selector(|| "hero-preset-card".to_string())
 }
 
-/// Hero 态 chip(工作区/模式触发钮;图标 + 文字,点击开下拉)
-fn hero_chip(
-    store: &Entity<AppStore>,
-    id: &'static str,
-    label: &str,
-    icon: Icon,
-) -> gpui_kit::Stateful<gpui_kit::Div> {
+/// Hero 态 chip(工作区/模式触发钮;图标 + 文字,点击弹下拉)
+fn hero_chip(id: &'static str, label: &str, icon: Icon) -> gpui_kit::Stateful<gpui_kit::Div> {
     let sel = id;
-    let menu = if id == "hero-ws" {
-        HeroMenu::Workspace
-    } else {
-        HeroMenu::Preset
-    };
-    let s = store.clone();
     let label = label.to_string();
     div()
         .id(id)
@@ -258,8 +222,36 @@ fn hero_chip(
         .child(label)
         .child(fixed(IconName::ChevronDown, 12.).text_color(theme::CAPTION()))
         .debug_selector(move || sel.to_string())
-        .on_click(move |_, _, cx| {
-            let menu = menu;
-            s.update(cx, |st, cx| st.set_hero_menu(menu, cx));
+}
+
+/// 工作区 chip 弹层(组件库 Popover;行组与标题栏下拉共用)
+fn hero_ws_popover(store: &Entity<AppStore>, ws: &str, icon: Icon) -> impl IntoElement {
+    let s_card = store.clone();
+    Popover::new("hero-ws-pop")
+        .appearance(false)
+        .anchor(Anchor::TopLeft)
+        .trigger(PopTrigger(hero_chip("hero-ws", ws, icon)))
+        .content(move |_, _, cx| {
+            let pop = cx.entity();
+            overlay_card("hero-ws-card", 320., workspace_menu_rows(&s_card, pop, cx))
+                .into_any_element()
+        })
+}
+
+/// 模式 chip 弹层(组件库 Popover)
+fn hero_preset_popover(
+    store: &Entity<AppStore>,
+    id: &'static str,
+    label: &str,
+    icon: Icon,
+) -> impl IntoElement {
+    let s_card = store.clone();
+    Popover::new("hero-preset-pop")
+        .appearance(false)
+        .anchor(Anchor::TopLeft)
+        .trigger(PopTrigger(hero_chip(id, label, icon)))
+        .content(move |_, _, cx| {
+            let pop = cx.entity();
+            preset_card(&s_card, pop, cx).into_any_element()
         })
 }

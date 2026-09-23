@@ -8,6 +8,4 @@ pub(crate) mod store;
 mod views;
 
 pub(crate) use store::SessionsStore;
-pub(crate) use views::{
-    drag_strip, render, session_menu_card, view_options_menu_card, ws_menu_card,
-};
+pub(crate) use views::{drag_strip, render, session_menu_card};

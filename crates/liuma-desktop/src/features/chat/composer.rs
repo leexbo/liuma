@@ -7,16 +7,17 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::IconName;
 use gpui_kit::component::StyledExt;
 use gpui_kit::component::input::Textarea;
+use gpui_kit::component::popover::{Popover, PopoverState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    Anchor, App, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement,
     StatefulInteractiveElement, Styled, Window, div, px,
 };
 
-use super::store::ComposerMenu;
 use crate::features::attachments;
 use crate::kits::i18n::dict;
 use crate::kits::icons::{self, LiumaIcon, fixed};
+use crate::kits::popup::PopTrigger;
 use crate::kits::theme;
 use crate::shell::store::AppStore;
 
@@ -274,22 +275,9 @@ fn bottom_row(
     let st = store.read(cx);
     let cfg = st.current_cfg_or_default();
     let plan_mode = st.current_chat().map(|c| c.plan_mode).unwrap_or(false);
-    let menu = st.chat.composer_menu;
     let occupancy = st.context_occupancy();
     let cmds = st.bridge.host().command_list();
-    // 卡顶锚的 bottom(须在可变借用前读;见 menu_slot 注释)。留 2px
-    // 隙:canvas 量的是去边框内盒,-7 时卡底正好压在 1px 顶描边上被
-    // 后绘盖掉一线(与 @ 补全卡顶上方 2px 同标准)
-    let anchor_bottom = st.chat.composer_h - 5.;
-
-    let cmd_trigger = round_button("composer-cmd", fixed(IconName::Plus, 14.)).on_click({
-        let s = store.clone();
-        move |_, _, cx| {
-            s.update(cx, |st, cx| {
-                st.set_composer_menu(ComposerMenu::Commands, cx)
-            });
-        }
-    });
+    let cmd_trigger = round_button("composer-cmd", fixed(IconName::Plus, 14.));
     // 菜单卡仅在确有行时开:附件移出后,命令与技能皆空 = 空浮层
     let has_menu_rows = !cmds.is_empty() || !st.chat.skill_entries.is_empty();
     // 附件独立钮(+ 旁,不经命令菜单):文件对话框多选(任意文件),
@@ -323,26 +311,13 @@ fn bottom_row(
         "chip-perm",
         permission_label(&cfg.permission),
         icons::permission_icon(&cfg.permission),
-    )
-    .on_click({
-        let s = store.clone();
-        move |_, _, cx| {
-            s.update(cx, |st, cx| {
-                st.set_composer_menu(ComposerMenu::Permission, cx)
-            });
-        }
-    });
+    );
     let model_label = format!(
         "{} · {}",
         cfg.model,
         effort_label(cfg.effort.as_deref().unwrap_or("high"))
     );
-    let model_trigger = chip("chip-model", &model_label, icons::model_icon(&cfg.model)).on_click({
-        let s = store.clone();
-        move |_, _, cx| {
-            s.update(cx, |st, cx| st.set_composer_menu(ComposerMenu::Model, cx));
-        }
-    });
+    let model_trigger = chip("chip-model", &model_label, icons::model_icon(&cfg.model));
 
     div()
         .flex()
@@ -351,19 +326,38 @@ fn bottom_row(
         .gap(px(8.))
         .px(px(10.))
         .pb(px(8.))
-        .child(menu_slot(
-            cmd_trigger,
-            (menu == ComposerMenu::Commands && has_menu_rows).then(|| {
-                commands_card(
-                    store,
-                    cmds.clone(),
-                    &st.chat.skill_entries,
-                    st.chat.composer_w,
-                )
-            }),
-            anchor_bottom,
-            AlignRight(false),
-        ))
+        .child(if has_menu_rows {
+            // 命令菜单(组件库 Popover:开态/外点关闭/上开定位由库托管,
+            // 不再经 menu_slot 内联锚与豁免链)
+            let s_card = store.clone();
+            let s_open = store.clone();
+            Popover::new("composer-cmd-pop")
+                .appearance(false)
+                .anchor(Anchor::BottomLeft)
+                .on_open_change(move |open, _, cx| {
+                    if *open {
+                        s_open.update(cx, |st, cx| st.refresh_command_skills(cx));
+                    }
+                })
+                .trigger(PopTrigger(cmd_trigger))
+                .content(move |_, _, cx| {
+                    let pop = cx.entity();
+                    // 块作用域先收 borrow(read 句柄必须离开作用域才能
+                    // 再取 &s_card)
+                    let (cmds, skills, w) = {
+                        let st = s_card.read(cx);
+                        (
+                            st.bridge.host().command_list(),
+                            st.chat.skill_entries.clone(),
+                            st.chat.composer_w,
+                        )
+                    };
+                    commands_card(&s_card, cmds, &skills, w, pop).into_any_element()
+                })
+                .into_any_element()
+        } else {
+            cmd_trigger.into_any_element()
+        })
         .child(attach_trigger)
         // 「+」与模式 chips 之间的细竖线分组
         .child(
@@ -373,178 +367,62 @@ fn bottom_row(
                 .flex_shrink_0()
                 .bg(theme::BORDER()),
         )
-        // 权限 chip:卡片**根级渲染**(shell/mod.rs,同 +/行/工作区菜单;
-        // 内联浮层叠进输入卡子树会被卡体描边后绘盖住,根级无此问题;
-        // 模型/上下文已同迁根级,见 root_popover_card)。
-        // 这里只放 chip + 渲染期 bounds 捕获(根级锚定的定位分子)
-        .child(div().relative().flex_shrink_0().child(perm_trigger).child(
-            div().absolute().inset_0().child({
-                let cap = store.clone();
-                gpui_kit::canvas(
-                    move |b, _, cx| {
-                        cap.update(cx, |st, _| st.chat.perm_chip_bounds = Some(b));
-                    },
-                    |_, _, _, _| {},
-                )
-                .size_full()
-            }),
-        ))
+        // 权限 chip(组件库 Popover:上开、左缘贴 chip 左;开态/外点
+        // 关闭由库托管,bounds 捕获 canvas 移除)
+        .child({
+            let s_card = store.clone();
+            Popover::new("composer-perm-pop")
+                .appearance(false)
+                .anchor(Anchor::BottomLeft)
+                .trigger(PopTrigger(perm_trigger))
+                .content(move |_, _, cx| {
+                    let pop = cx.entity();
+                    div()
+                        .id("composer-perm-menu")
+                        .debug_selector(|| "composer-perm-menu".to_string())
+                        .child(permission_card(&s_card, pop, cx))
+                        .into_any_element()
+                })
+                .into_any_element()
+        })
         // 计划模式 chip(仅激活态渲染,退出即整个消失;进入唯一入口=
         // 命令菜单「plan」行)
         .children(plan_mode.then(|| plan_chip(store, st.chat.plan_chip_hovered)))
         .child(div().flex_1())
-        // 模型/上下文触发:卡体**根级渲染**(shell/mod.rs,权限卡同模式;
-        // 内联浮层越出输入卡顶会被卡体描边后绘盖住)。这里只放触发钮 +
-        // 渲染期 bounds 捕获(根级锚定的定位分子)
-        .child(root_trigger_slot(
-            store,
-            menu == ComposerMenu::Model,
-            model_trigger,
-            AnchorChip::Model,
-        ))
+        // 模型/上下文触发(组件库 Popover:上开、右缘贴 chip 右向左
+        // 展开——真机反馈卡体右缘被视口切掉的旧对齐保留)
+        .child({
+            let s_card = store.clone();
+            Popover::new("composer-model-pop")
+                .appearance(false)
+                .anchor(Anchor::BottomRight)
+                .trigger(PopTrigger(model_trigger))
+                .content(move |_, _, cx| {
+                    let pop = cx.entity();
+                    div()
+                        .id("composer-model-menu")
+                        .debug_selector(|| "composer-model-menu".to_string())
+                        .child(model_card(&s_card, pop, cx))
+                        .into_any_element()
+                })
+                .into_any_element()
+        })
         .children(occupancy.map(|o| {
-            root_trigger_slot(
-                store,
-                menu == ComposerMenu::Context,
-                context_button(store, o),
-                AnchorChip::Context,
-            )
+            let s_card = store.clone();
+            Popover::new("composer-context-pop")
+                .appearance(false)
+                .anchor(Anchor::BottomRight)
+                .trigger(PopTrigger(context_button(o)))
+                .content(move |_, _, cx| {
+                    div()
+                        .id("composer-context-menu")
+                        .debug_selector(|| "composer-context-menu".to_string())
+                        .child(context_card(&s_card, cx))
+                        .into_any_element()
+                })
+                .into_any_element()
         }))
         .child(send_or_stop(store, running))
-}
-
-/// 下拉槽:relative 锚 + 开态豁免 + 开态锚卡(向上弹,仅开时渲染;
-/// 底缘 = 输入卡顶上方 2px,卡高随命令行/输入行数变化自适应)。
-/// 现仅剩「+」命令菜单走此槽;权限/模型/上下文均根级渲染(见
-/// bottom_row 注释与 root_popover_card)。occlude 阻断
-/// 命中向卡后方穿透。豁免 = wrapper 与锚卡都挂 mousedown
-/// stop_propagation:根级外点关闭按 hitbox 树派发,锚卡几何上超出
-/// wrapper 矩形,豁免必须各自持有——漏挂锚卡则点菜单行先触发关闭
-/// 重绘,行元素消失,on_click(按下+抬起成对)永不完成
-/// 锚卡水平对齐(true = 右缘贴锚右、向左展开;false = 左缘贴锚左)
-#[derive(Clone, Copy)]
-pub(crate) struct AlignRight(pub(crate) bool);
-
-/// 根级锚卡底缘与 trigger 顶的缝隙 = 原内联 TRIGGER_ANCHOR_BOTTOM(36)
-/// 减 trigger 高(24)——保持既有视觉位不变(旧注释「4px」系笔误,
-/// 实际缝隙一直是 12px)
-const TRIGGER_GAP: f32 = 12.;
-
-/// 根级渲染触发槽(权限 chip 同款,见 bottom_row 注释):触发钮 +
-/// 渲染期 bounds 捕获(canvas 默认 0 高,经 absolute inset_0 铺满
-/// wrapper 取尺寸;无 hitbox 不挡交互)+ 开态 mousedown 豁免——
-/// 点触发钮自身 = toggle 关闭,豁免拦下根级外点先关再开的重开
-/// (与 menu_slot wrapper 豁免同语义)
-fn root_trigger_slot(
-    store: &Entity<AppStore>,
-    open: bool,
-    trigger: gpui_kit::Stateful<gpui_kit::Div>,
-    chip: AnchorChip,
-) -> gpui_kit::AnyElement {
-    div()
-        .relative()
-        .flex_shrink_0()
-        .when(open, |el| {
-            el.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        })
-        .child(trigger)
-        .child(div().absolute().inset_0().child({
-            let cap = store.clone();
-            gpui_kit::canvas(
-                move |b, _, cx| {
-                    cap.update(cx, |st, _| match chip {
-                        AnchorChip::Model => st.chat.model_chip_bounds = Some(b),
-                        AnchorChip::Context => st.chat.context_ring_bounds = Some(b),
-                    });
-                },
-                |_, _, _, _| {},
-            )
-            .size_full()
-        }))
-        .into_any_element()
-}
-
-/// root_trigger_slot 的捕获目标(写哪个 bounds 字段)
-#[derive(Clone, Copy)]
-enum AnchorChip {
-    /// 模型 chip(chip-model)
-    Model,
-    /// 上下文圆环钮(context-ring)
-    Context,
-}
-
-/// 根级挂载的模型/上下文下拉卡(由 shell/mod.rs 在根级渲染;hero 挂载
-/// 点与 chat 同根,无需另挂)。vh/vw 由调用方在闭包内取(视口闭包链
-/// 的临时闭包并存,不能可变捕获 window)。几何 = 原内联槽:卡底贴
-/// trigger 顶上方 TRIGGER_GAP、右缘贴 trigger 右向左展开(min 8px
-/// 视口内收,同 menu_slot 右段对齐防溢出)。occlude 阻命中穿透 +
-/// mousedown 豁免防外点关闭吞菜单行点击(同 menu_slot 锚卡豁免语义)
-pub(crate) fn root_popover_card(
-    store: &Entity<AppStore>,
-    menu: ComposerMenu,
-    anchor: gpui_kit::Bounds<gpui_kit::Pixels>,
-    vh: f32,
-    vw: f32,
-    cx: &App,
-) -> gpui_kit::AnyElement {
-    let (id, card) = match menu {
-        ComposerMenu::Model => ("composer-model-menu", model_card(store, cx)),
-        ComposerMenu::Context => ("composer-context-menu", context_card(store, cx)),
-        _ => return div().into_any_element(),
-    };
-    let right = (vw - f32::from(anchor.origin.x + anchor.size.width)).max(8.);
-    div()
-        .id(id)
-        .debug_selector(move || id.to_string())
-        .absolute()
-        .right(px(right))
-        .bottom(px(vh - f32::from(anchor.origin.y) + TRIGGER_GAP))
-        .occlude()
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(card)
-        .into_any_element()
-}
-
-fn menu_slot(
-    trigger: gpui_kit::Stateful<gpui_kit::Div>,
-    card: Option<gpui_kit::AnyElement>,
-    anchor_bottom: f32,
-    align_right: AlignRight,
-) -> impl IntoElement {
-    div()
-        .relative()
-        .flex_shrink_0()
-        .when(card.is_some(), |el| {
-            el.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        })
-        .child(trigger)
-        .when_some(card, |el, card| {
-            let anchor = div()
-                .id(gpui_kit::SharedString::from(format!(
-                    "composer-menu-anchor-{}",
-                    if align_right.0 { "right" } else { "left" }
-                )))
-                .debug_selector(|| {
-                    format!(
-                        "composer-menu-anchor-{}",
-                        if align_right.0 { "right" } else { "left" }
-                    )
-                })
-                .absolute()
-                .bottom(px(anchor_bottom))
-                .occlude()
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(card);
-            // 对齐:锚在 composer 行右段(模型/上下文)→ 卡右缘贴锚右
-            // 缘向左展开(卡宽 > 锚右剩余空间时 left_0 会溢出视口,真机
-            // 反馈上下文卡右缘被切);左段(命令菜单)保持左缘贴齐。
-            let anchor = if align_right.0 {
-                anchor.right_0()
-            } else {
-                anchor.left_0()
-            };
-            el.child(anchor)
-        })
 }
 
 /// @ 引用补全菜单:文件/Session 分组候选,高亮 +
@@ -712,7 +590,9 @@ fn commands_card(
     cmds: Vec<liuma_core::registry::CommandDescriptor>,
     skills: &[super::store::SkillEntry],
     composer_w: f32,
+    pop: Entity<PopoverState>,
 ) -> gpui_kit::AnyElement {
+    let pop_rows = pop.clone();
     let mut rows: Vec<gpui_kit::AnyElement> = vec![];
     if !cmds.is_empty() {
         rows.push(section_label(dict::chat::section_commands()).into_any_element());
@@ -724,8 +604,11 @@ fn commands_card(
             // 命令行呈现(命令与输入文字区分;输入框写任务描述,发送时
             // 拼接 /name + 文本);无参命令 = 保持既有立即执行
             let has_hint = cmd.hint.is_some();
+            let pop = pop_rows.clone();
             rows.push(
-                command_row(name_static, desc, move |cx| {
+                command_row(name_static, desc, move |window, cx| {
+                    let pop = pop.clone();
+                    pop.update(cx, |state, cx| state.dismiss(window, cx));
                     let s = s.clone();
                     s.update(cx, move |st, cx| {
                         if has_hint {
@@ -733,7 +616,6 @@ fn commands_card(
                         } else {
                             st.execute_command(name_static, cx);
                         }
-                        st.close_all_menus(cx);
                     });
                 })
                 .into_any_element(),
@@ -744,6 +626,7 @@ fn commands_card(
         rows.push(section_label(dict::chat::section_skills()).into_any_element());
         for sk in skills {
             let s = store.clone();
+            let pop = pop_rows.clone();
             let name = sk.name.clone();
             let desc = if sk.model_invocable {
                 sk.description.clone()
@@ -752,13 +635,14 @@ fn commands_card(
             };
             let chip_name: &'static str = Box::leak(name.clone().into_boxed_str());
             rows.push(
-                command_row(chip_name, desc, move |cx| {
+                command_row(chip_name, desc, move |window, cx| {
+                    let pop = pop.clone();
+                    pop.update(cx, |state, cx| state.dismiss(window, cx));
                     let s = s.clone();
                     s.update(cx, move |st, cx| {
                         // 技能恒走草稿 chip(参数在输入框;不立即执行)——
                         // 发送拼 /name args,host 侧手势识别接管
                         st.set_pending_command(chip_name, cx);
-                        st.close_all_menus(cx);
                     });
                 })
                 .into_any_element(),
@@ -777,7 +661,7 @@ fn commands_card(
 fn command_row(
     cmd: &'static str,
     desc: String,
-    on_click: impl Fn(&mut App) + 'static,
+    on_click: impl Fn(&mut gpui_kit::Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let sel = cmd.to_string();
     div()
@@ -809,15 +693,11 @@ fn command_row(
         )
         // 测试钩子:行 bounds 按命令文本检索(release 空操作)
         .debug_selector(move || sel.clone())
-        .on_click(move |_, _, cx| on_click(cx))
+        .on_click(move |_, window, cx| on_click(window, cx))
 }
 
 /// 上下文占用圆环钮(环 + 百分比;触发详情卡)
-fn context_button(
-    store: &Entity<AppStore>,
-    o: super::store::ContextOccupancy,
-) -> gpui_kit::Stateful<gpui_kit::Div> {
-    let s = store.clone();
+fn context_button(o: super::store::ContextOccupancy) -> gpui_kit::Stateful<gpui_kit::Div> {
     let percent = (o.percent * 100.0).round() as u64;
     div()
         .id("context-ring")
@@ -838,9 +718,6 @@ fn context_button(
                 .child(format!("{percent}%")),
         )
         .debug_selector(|| "context-ring".to_string())
-        .on_click(move |_, _, cx| {
-            s.update(cx, |st, cx| st.set_composer_menu(ComposerMenu::Context, cx));
-        })
 }
 
 /// 上下文占用详情卡:占比 + 构成三段条(系统提示/工具定义/会话消息)
@@ -940,7 +817,11 @@ fn context_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
 /// **根级渲染**(shell/mod.rs):内联浮层叠进输入卡子树会透视,
 /// 照 +/行/工作区菜单的根级模式挂出(模型/上下文卡已随本改动同迁
 /// 根级,见 root_popover_card)
-pub(crate) fn permission_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
+pub(crate) fn permission_card(
+    store: &Entity<AppStore>,
+    pop: Entity<PopoverState>,
+    cx: &App,
+) -> gpui_kit::AnyElement {
     let st = store.read(cx);
     let current = st.current_cfg_or_default().permission;
     let permissions = st.state.host_info.permissions.clone();
@@ -949,6 +830,7 @@ pub(crate) fn permission_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::A
         .enumerate()
         .map(|(ix, p)| {
             let s = store.clone();
+            let pop = pop.clone();
             let v = p.clone();
             let checked = *p == current;
             menu_row(
@@ -956,7 +838,9 @@ pub(crate) fn permission_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::A
                 icons::permission_icon(p),
                 permission_label(p),
                 checked,
-                move |_, _, cx| {
+                move |_, window, cx| {
+                    let pop = pop.clone();
+                    pop.update(cx, |state, cx| state.dismiss(window, cx));
                     let v = v.clone();
                     s.update(cx, |st, cx| {
                         if v == "full-access" {
@@ -974,8 +858,13 @@ pub(crate) fn permission_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::A
     menu_card(rows, None)
 }
 
-/// 模型 + 推理等级下拉(模型表空则略模型区;等级 low/high/max)
-fn model_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
+/// 模型 + 推理等级下拉(模型表空则略模型区;等级 low/high/max;
+/// 模型入口行 = 内嵌受控子面板开态,选模型/等级即收起弹层)
+fn model_card(
+    store: &Entity<AppStore>,
+    pop: Entity<PopoverState>,
+    cx: &App,
+) -> gpui_kit::AnyElement {
     let st = store.read(cx);
     let cfg = st.current_cfg_or_default();
     let efforts = st.state.host_info.efforts.clone();
@@ -1017,6 +906,7 @@ fn model_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
         .map(|(_, n, ..)| n.clone())
         .unwrap_or_default();
     let s_model_row = store.clone();
+    let pop_sub = pop.clone();
     // ── 一级卡:模型入口行 + 推理强度平铺(不改)──
     let mut rows: Vec<gpui_kit::AnyElement> = vec![];
     rows.push(section_label(dict::chat::model_label()).into_any_element());
@@ -1060,11 +950,7 @@ fn model_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
             .child(fixed(IconName::ChevronRight, 12.).text_color(theme::CAPTION()))
             .on_click(move |_, _, cx| {
                 s_model_row.update(cx, |st, cx| {
-                    let next = match st.chat.composer_submenu {
-                        Some(crate::features::chat::ComposerSubmenu::Models) => None,
-                        _ => Some(crate::features::chat::ComposerSubmenu::Models),
-                    };
-                    st.set_composer_submenu(next, cx);
+                    st.toggle_model_submenu(cx);
                 });
             })
             .into_any_element(),
@@ -1073,6 +959,7 @@ fn model_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
     rows.push(section_label(dict::chat::reasoning_level()).into_any_element());
     for (ix, e) in efforts.iter().enumerate() {
         let s = store.clone();
+        let pop = pop_sub.clone();
         let v = e.clone();
         let checked = *e == current_effort;
         rows.push(
@@ -1081,7 +968,9 @@ fn model_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
                 fixed(LiumaIcon::Brain, 14.),
                 &effort_label(e),
                 checked,
-                move |_, _, cx| {
+                move |_, window, cx| {
+                    let pop = pop.clone();
+                    pop.update(cx, |state, cx| state.dismiss(window, cx));
                     let v = v.clone();
                     s.update(cx, |st, cx| st.set_session_effort(&v, cx));
                 },
@@ -1090,10 +979,10 @@ fn model_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
         );
     }
     // ── 级联子卡(模型选择;挂主卡左侧,右缘窗口放不下右侧)──
-    let sub = st.chat.composer_submenu;
+    let sub = st.chat.model_submenu_open;
     let main = menu_card(rows, None);
     let mut wrap = div().relative().child(main);
-    if sub == Some(crate::features::chat::ComposerSubmenu::Models) {
+    if sub {
         let mut sub_rows: Vec<gpui_kit::AnyElement> = vec![];
         sub_rows.push(
             div()
@@ -1123,6 +1012,7 @@ fn model_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
             );
             for (ix, m) in models.iter().enumerate() {
                 let s = store.clone();
+                let pop = pop_sub.clone();
                 let v = m.clone();
                 let gpid = pid.clone();
                 sub_rows.push(
@@ -1133,12 +1023,13 @@ fn model_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
                         icons::model_icon(m),
                         m,
                         *m == current_model,
-                        move |_, _, cx| {
+                        move |_, window, cx| {
+                            let pop = pop.clone();
+                            pop.update(cx, |state, cx| state.dismiss(window, cx));
                             let v = v.clone();
                             let gpid = gpid.clone();
                             s.update(cx, |st, cx| {
                                 st.set_session_provider_model(&gpid, &v, cx);
-                                st.close_composer_menu(cx);
                             });
                         },
                     )

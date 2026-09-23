@@ -51,11 +51,13 @@ pub(crate) enum OrderMode {
 /// 重命名目标、工作区路径/标题/分支表、折叠组)。
 #[derive(Default)]
 pub(crate) struct SessionsStore {
-    /// 标题栏会话菜单(⋯)开时的点击坐标(菜单卡根级渲染定位锚;
-    /// 菜单作用于当前会话,None = 收起)
-    pub session_menu_pos: Option<gpui_kit::Point<gpui_kit::Pixels>>,
     /// 重命名目标会话
     pub rename_target: Option<String>,
+    /// 标题栏会话 ⋯ 菜单开态(受控 Popover;该钮在标题栏拖拽区上,
+    /// 须保留 mousedown 豁免 → 无法用库内部开态,退化为纯 bool)
+    pub session_menu_open: bool,
+    /// 侧栏视图选项菜单开态(受控;同上,钮在侧栏头拖拽区上)
+    pub view_menu_open: bool,
     /// 重命名输入态(挂窗后建)
     pub rename_input: Option<Entity<InputState>>,
     /// 标题栏工作区下拉开态
@@ -64,10 +66,6 @@ pub(crate) struct SessionsStore {
     pub ws_paths: HashMap<String, std::path::PathBuf>,
     /// 工作区名 → 显示标题(workspace_view 解析;标题仅显示层)
     pub ws_titles: HashMap<String, String>,
-    /// 侧栏组头 ⋯ 菜单打开的工作区
-    pub menu_open_ws: Option<String>,
-    /// 工作区菜单开时的点击坐标(根级渲染定位锚)
-    pub ws_menu_pos: Option<gpui_kit::Point<gpui_kit::Pixels>>,
     /// 重命名目标工作区(与会话重命名共用输入态)
     pub rename_ws_target: Option<String>,
     /// 工作区名 → git 分支(None = 非 repo)。模型可经 bash 切分支,
@@ -79,8 +77,6 @@ pub(crate) struct SessionsStore {
     pub group_mode: GroupMode,
     /// 侧栏列表排序方式(顶栏视图选项菜单)
     pub order_mode: OrderMode,
-    /// 视图选项菜单开时的点击坐标(根级渲染定位锚)
-    pub view_menu_pos: Option<gpui_kit::Point<gpui_kit::Pixels>>,
 }
 
 impl AppStore {
@@ -410,52 +406,21 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 组头 ⋯ 菜单开(带坐标;根级渲染定位)
-    pub fn open_ws_menu_at(
-        &mut self,
-        name: &str,
-        pos: gpui_kit::Point<gpui_kit::Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        self.sessions.session_menu_pos = None;
-        self.sessions.menu_open_ws = Some(name.to_string());
-        self.sessions.ws_menu_pos = Some(pos);
+    /// 标题栏会话 ⋯ 菜单开/收(受控 Popover)
+    pub fn toggle_session_menu(&mut self, cx: &mut Context<Self>) {
+        self.sessions.session_menu_open = !self.sessions.session_menu_open;
         cx.notify();
     }
 
-    /// 标题栏会话菜单(⋯)开/收(toggle;带坐标,根级渲染定位)。
-    /// 菜单作用于当前会话;与其余菜单互斥
-    pub fn toggle_session_menu(
-        &mut self,
-        pos: gpui_kit::Point<gpui_kit::Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        self.sessions.session_menu_pos = if self.sessions.session_menu_pos.is_some() {
-            None
-        } else {
-            Some(pos)
-        };
-        cx.notify();
-    }
-
-    /// 顶栏视图选项菜单开(带坐标;根级渲染定位,右对齐滑块钮展开)。
-    /// 与其余菜单互斥:开时清兄弟菜单开态
-    pub fn open_view_menu_at(
-        &mut self,
-        pos: gpui_kit::Point<gpui_kit::Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        self.sessions.session_menu_pos = None;
-        self.sessions.menu_open_ws = None;
-        self.sessions.workspace_menu_open = false;
-        self.sessions.view_menu_pos = Some(pos);
+    /// 侧栏视图选项菜单开/收(受控 Popover)
+    pub fn toggle_view_menu(&mut self, cx: &mut Context<Self>) {
+        self.sessions.view_menu_open = !self.sessions.view_menu_open;
         cx.notify();
     }
 
     /// 切换列表分组方式(菜单项选择即收菜单)
     pub fn set_group_mode(&mut self, mode: GroupMode, cx: &mut Context<Self>) {
         self.sessions.group_mode = mode;
-        self.sessions.view_menu_pos = None;
         cx.notify();
     }
 
@@ -466,7 +431,6 @@ impl AppStore {
             return;
         }
         self.sessions.order_mode = mode;
-        self.sessions.view_menu_pos = None;
         cx.notify();
     }
 
@@ -495,7 +459,6 @@ impl AppStore {
             input.update(cx, |s, cx| s.set_value(&current, window, cx));
         }
         self.sessions.rename_ws_target = Some(name.to_string());
-        self.sessions.menu_open_ws = None;
         if !already_open_ws {
             self.open_rename_dialog(window, cx);
         }
@@ -507,7 +470,6 @@ impl AppStore {
     pub fn remove_workspace(&mut self, name: &str, cx: &mut Context<Self>) {
         match self.bridge.host().remove_workspace(name) {
             Ok(()) => {
-                self.sessions.menu_open_ws = None;
                 self.refresh_workspaces();
                 let default = self.default_workspace();
                 self.state
@@ -551,7 +513,6 @@ impl AppStore {
             input.update(cx, |s, cx| s.set_value(&current, window, cx));
         }
         self.sessions.rename_target = Some(id.to_string());
-        self.sessions.session_menu_pos = None;
         if !already_open {
             self.open_rename_dialog(window, cx);
         }

@@ -4,13 +4,16 @@
 //! 自侧栏行 ⋯ 菜单迁入此处 ⋯ 菜单(行尾仅留 hover 归档)。
 
 use gpui_kit::component::IconName;
+use gpui_kit::component::popover::Popover;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    Anchor, App, Entity, InteractiveElement, IntoElement, ParentElement,
     StatefulInteractiveElement, Styled, Window, div, px,
 };
 
 use crate::kits::icons::{LiumaIcon, fixed};
+use crate::kits::modals::overlay_card;
+use crate::kits::popup::PopTrigger;
 use crate::kits::theme;
 use crate::shell::metrics::RUN_CLOCK_AFTER_SECS;
 use crate::shell::store::AppStore;
@@ -67,7 +70,7 @@ pub fn title_bar_row(store: &Entity<AppStore>, window: &mut Window, cx: &App) ->
         .child(div().flex_1())
         // 会话管理菜单钮(右侧面板开关左侧;作用于当前会话,无会话不渲染)
         .when(st.state.current_id.is_some(), |el| {
-            el.child(session_menu_button(store))
+            el.child(session_menu_button(store, cx))
         })
         .when(!st.panel_open, |el| {
             el.child(panel_toggle_button(store, cx))
@@ -173,7 +176,8 @@ fn sidebar_fold_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
 }
 
 /// 工作区下拉触发钮(JetBrains 式:folder + 活动工作区名 + chevron)。
-/// 卡片在 ui 根布局(root 级,TitleBar 内会被主内容盖住)
+/// 受控 Popover:钮在标题栏拖拽区上,occlude 豁免不可去(见
+/// sidebar_fold_button 说明),开态存 store 纯 bool(无坐标/无根级卡)
 fn workspace_trigger(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let st = store.read(cx);
     let ws = st
@@ -183,32 +187,50 @@ fn workspace_trigger(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .unwrap_or_else(|| st.default_workspace());
     let open = st.sessions.workspace_menu_open;
     let s = store.clone();
+    let s_card = store.clone();
     let label = ws.clone();
-    div()
-        .id("ws-trigger")
-        .flex()
-        .h(px(26.))
-        .flex_shrink_0()
-        .items_center()
-        .gap(px(5.))
-        .rounded(px(8.))
-        .px(px(8.))
-        .cursor_pointer()
-        .hover(|st| st.bg(theme::LAYER()))
-        .text_size(px(14.))
-        .text_color(theme::LABEL_2())
-        // 拖拽区豁免,见 sidebar_fold_button 的说明
-        .occlude()
-        .child(fixed(IconName::FolderClosed, 16.))
-        .child(div().max_w(px(140.)).truncate().child(label))
-        .child(fixed(IconName::ChevronDown, 14.).text_color(theme::CAPTION()))
-        // 开态豁免(根级外点关闭;关-再 toggle 重开竞态)
-        .when(open, |el| {
-            el.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+    Popover::new("ws-menu-pop")
+        .appearance(false)
+        .anchor(Anchor::TopLeft)
+        .open(open)
+        .on_open_change({
+            let s_open = store.clone();
+            move |open, _, cx| {
+                s_open.update(cx, |st, _| st.sessions.workspace_menu_open = *open);
+            }
         })
-        .debug_selector(|| "ws-trigger".to_string())
-        .on_click(move |_, _, cx| {
-            s.update(cx, |st, cx| st.toggle_workspace_menu(cx));
+        .trigger(PopTrigger(
+            div()
+                .id("ws-trigger")
+                .flex()
+                .h(px(26.))
+                .flex_shrink_0()
+                .items_center()
+                .gap(px(5.))
+                .rounded(px(8.))
+                .px(px(8.))
+                .cursor_pointer()
+                .hover(|st| st.bg(theme::LAYER()))
+                .text_size(px(14.))
+                .text_color(theme::LABEL_2())
+                // 拖拽区豁免,见 sidebar_fold_button 的说明
+                .occlude()
+                .child(fixed(IconName::FolderClosed, 16.))
+                .child(div().max_w(px(140.)).truncate().child(label))
+                .child(fixed(IconName::ChevronDown, 14.).text_color(theme::CAPTION()))
+                .debug_selector(|| "ws-trigger".to_string())
+                .on_click(move |_, _, cx| {
+                    s.update(cx, |st, cx| st.toggle_workspace_menu(cx));
+                }),
+        ))
+        .content(move |_, _, cx| {
+            let pop = cx.entity();
+            overlay_card(
+                "ws-menu-card",
+                320.,
+                crate::kits::modals::workspace_menu_rows(&s_card, pop, cx),
+            )
+            .into_any_element()
         })
 }
 
@@ -245,30 +267,46 @@ fn panel_toggle_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
 }
 
 /// 会话管理菜单钮(右侧面板开关左侧;⋯ 形。菜单 = 重命名/归档/
-/// 分叉/导出日志,作用于当前会话;菜单卡根级渲染)
-fn session_menu_button(store: &Entity<AppStore>) -> impl IntoElement {
-    let s = store.clone();
-    div()
-        .id("session-menu-btn")
-        .debug_selector(|| "session-menu-btn".to_string())
-        .flex()
-        .size(px(26.))
-        .flex_shrink_0()
-        .items_center()
-        .justify_center()
-        .rounded(px(8.))
-        .cursor_pointer()
-        .text_color(theme::LABEL_3())
-        .hover(|st| st.bg(theme::LAYER()).text_color(theme::LABEL()))
-        // 拖拽区豁免,见 sidebar_fold_button 的说明
-        .occlude()
-        .child(fixed(IconName::Ellipsis, 14.))
-        .on_click(move |ev: &gpui_kit::ClickEvent, _, cx| {
-            cx.stop_propagation();
-            let pos = match ev {
-                gpui_kit::ClickEvent::Mouse(m) => m.down.position,
-                _ => gpui_kit::Point::default(),
-            };
-            s.update(cx, |st, cx| st.toggle_session_menu(pos, cx));
+/// 分叉/导出日志,作用于当前会话;组件库 Popover 托管开态/外点关闭,
+/// 菜单内容见 sessions::session_menu_card)
+fn session_menu_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
+    let s_card = store.clone();
+    let s_toggle = store.clone();
+    let open = store.read(cx).sessions.session_menu_open;
+    Popover::new("session-menu-pop")
+        .appearance(false)
+        .anchor(Anchor::TopRight)
+        // 受控开态:钮在标题栏拖拽区上,occlude/mousedown 豁免不可去
+        // (见 sidebar_fold_button 说明),库内部开态收不到点击
+        .open(open)
+        .on_open_change({
+            let s_open = store.clone();
+            move |open, _, cx| {
+                s_open.update(cx, |st, _| st.sessions.session_menu_open = *open);
+            }
+        })
+        .trigger(PopTrigger(
+            div()
+                .id("session-menu-btn")
+                .debug_selector(|| "session-menu-btn".to_string())
+                .flex()
+                .size(px(26.))
+                .flex_shrink_0()
+                .items_center()
+                .justify_center()
+                .rounded(px(8.))
+                .cursor_pointer()
+                .text_color(theme::LABEL_3())
+                .hover(|st| st.bg(theme::LAYER()).text_color(theme::LABEL()))
+                // 拖拽区豁免,见 sidebar_fold_button 的说明
+                .occlude()
+                .child(fixed(IconName::Ellipsis, 14.))
+                .on_click(move |_, _, cx| {
+                    s_toggle.update(cx, |st, cx| st.toggle_session_menu(cx));
+                }),
+        ))
+        .content(move |_, _, cx| {
+            let pop = cx.entity();
+            crate::features::sessions::session_menu_card(&s_card, pop).into_any_element()
         })
 }

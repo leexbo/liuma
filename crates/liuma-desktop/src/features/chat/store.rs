@@ -92,21 +92,6 @@ pub struct SkillEntry {
     pub model_invocable: bool,
 }
 
-/// composer 底排下拉(互斥单开;根级外点全关)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ComposerMenu {
-    /// 关
-    None,
-    /// + 指令菜单(/plan 等)
-    Commands,
-    /// 权限选择
-    Permission,
-    /// 模型 + 推理等级
-    Model,
-    /// 上下文占用详情(圆环点击)
-    Context,
-}
-
 /// @ 引用补全状态:探测 hit + 候选(文件/会话分组)+ 高亮。
 #[derive(Debug, Clone)]
 pub struct AtCompletion {
@@ -136,13 +121,6 @@ pub struct ContextOccupancy {
     /// 会话消息段
     pub messages: u64,
 }
-/// 模型菜单的级联子菜单(一级行 → 右侧子卡)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ComposerSubmenu {
-    /// 模型选择(按 provider 分组;推理强度维持平铺不做子菜单)
-    Models,
-}
-
 /// 聊天消息流功能切片状态(composer/消息列/折叠/补全/复制反馈)。
 #[allow(missing_docs)]
 pub(crate) struct ChatStore {
@@ -233,21 +211,8 @@ pub(crate) struct ChatStore {
     pub chat_version: u64,
     /// 渲染侧已消费的消息流版本(render 回写)
     pub rendered_version: u64,
-    /// composer 底排下拉开态(互斥)
-    pub composer_menu: ComposerMenu,
-    /// 权限 chip 的窗口 bounds(渲染期 canvas 捕获,上一帧值):权限
-    /// 下拉卡**根级渲染**的锚——卡底缘贴 chip 顶上方 5px、左对齐
-    /// (根级原因见 permission_card)
-    pub perm_chip_bounds: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
-    /// 模型 chip 的窗口 bounds(渲染期 canvas 捕获,上一帧值):模型
-    /// 下拉卡**根级渲染**的锚——卡底缘贴 chip 顶上方 12px、右对齐
-    /// (根级原因见 composer::root_popover_card)
-    pub model_chip_bounds: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
-    /// 上下文圆环钮的窗口 bounds(同 model_chip_bounds):上下文详情
-    /// 卡根级渲染的锚
-    pub context_ring_bounds: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
-    /// 模型菜单级联子菜单(一级行点开的右侧子卡;None = 全收)
-    pub composer_submenu: Option<ComposerSubmenu>,
+    /// 模型菜单级联子面板开态(模型入口行点击开合;选模型即收)
+    pub model_submenu_open: bool,
     /// 队列条带折叠态(多条时计数头收起;单条恒直显)
     pub queue_dock_collapsed: bool,
     /// 行内编辑中的队列条目 id(None = 无)
@@ -311,8 +276,6 @@ pub(crate) struct ChatStore {
     /// 历史加载中(冷会话整档读档期间聊天区骨架占位的显示条件之一;
     /// load_history 置位,落地/失败清位)
     pub history_loading: bool,
-    /// 轮尾统计卡开态(用量/用时 pill 点击;点击坐标锚定,根级渲染)
-    pub tail_card: Option<TailCard>,
     /// 轮号用量桶,键 = (会话 id, 轮号)。挂应用级 ChatStore 而非会话
     /// 投影:回填 RPC 与投影建立谁先到都不丢(投影重建不焚毁),重开
     /// 会话由冷读 turnList 再灌一次
@@ -330,20 +293,6 @@ pub(crate) struct NavAnchorsCache {
     pub version: u64,
     /// 缓存的全量锚点
     pub anchors: Vec<NavAnchor>,
-}
-
-/// 轮尾统计卡(用量/用时 pill 的详情弹层)
-#[derive(Debug, Clone, PartialEq)]
-pub struct TailCard {
-    /// 归属会话(切会话后残留卡不渲染)
-    pub session_id: String,
-    /// 尾行 key(turn-end:<seq>)
-    pub turn_key: String,
-    /// 轮号(用量桶查询键)
-    pub turn: u64,
-    pub kind: TailCardKind,
-    /// 触发点击的窗口坐标(根级卡片左上锚,同 row_menu)
-    pub pos: gpui_kit::Point<gpui_kit::Pixels>,
 }
 
 /// 轮尾统计卡种类
@@ -394,13 +343,8 @@ impl Default for ChatStore {
             at_bottom_ui: true,
             chat_version: 0,
             rendered_version: 0,
-            composer_menu: ComposerMenu::None,
-            perm_chip_bounds: None,
-            model_chip_bounds: None,
-            context_ring_bounds: None,
-            tail_card: None,
             turn_usage: HashMap::new(),
-            composer_submenu: None,
+            model_submenu_open: false,
             queue_dock_collapsed: true,
             queue_editing: None,
             queue_edit_input: None,
@@ -1535,29 +1479,23 @@ impl AppStore {
         .detach();
     }
 
-    pub fn set_composer_menu(&mut self, menu: ComposerMenu, cx: &mut Context<Self>) {
-        self.chat.composer_menu = if self.chat.composer_menu == menu {
-            ComposerMenu::None
-        } else {
-            menu
-        };
-        // 打开指令菜单时刷新技能候选(session_skills 直读宿主;空会话
-        // 清空=节略)。同步 fs 扫描仅菜单打开时发生,两根一层扫描开销可忽略
-        if self.chat.composer_menu == ComposerMenu::Commands {
-            self.chat.skill_entries = self
-                .state
-                .current_id
-                .as_deref()
-                .and_then(|sid| self.bridge.host().session_skills(sid).ok())
-                .unwrap_or_default()
-                .into_iter()
-                .map(|v| SkillEntry {
-                    name: v["name"].as_str().unwrap_or_default().to_string(),
-                    description: v["description"].as_str().unwrap_or_default().to_string(),
-                    model_invocable: v["modelInvocable"].as_bool().unwrap_or(true),
-                })
-                .collect();
-        }
+    /// 指令菜单打开时刷新技能候选(session_skills 直读宿主;空会话
+    /// 清空=节略)。同步 fs 扫描仅菜单打开时发生,两根一层扫描开销
+    /// 可忽略。由 composer 命令菜单 Popover 的 on_open_change 调用
+    pub fn refresh_command_skills(&mut self, cx: &mut Context<Self>) {
+        self.chat.skill_entries = self
+            .state
+            .current_id
+            .as_deref()
+            .and_then(|sid| self.bridge.host().session_skills(sid).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|v| SkillEntry {
+                name: v["name"].as_str().unwrap_or_default().to_string(),
+                description: v["description"].as_str().unwrap_or_default().to_string(),
+                model_invocable: v["modelInvocable"].as_bool().unwrap_or(true),
+            })
+            .collect();
         cx.notify();
     }
 
@@ -1779,27 +1717,6 @@ impl AppStore {
             }
             Err(e) => self.push_local_notice(&dict::chat::branch_failed(&e.message), cx),
         }
-    }
-
-    /// 轮尾统计卡开态(pill 点击恒开;关闭走外点全关。绝对方向,
-    /// 禁 toggle——真机嵌套 on_click 连发纪律)
-    pub fn open_turn_tail_card(
-        &mut self,
-        session_id: &str,
-        turn_key: &str,
-        turn: u64,
-        kind: TailCardKind,
-        pos: gpui_kit::Point<gpui_kit::Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        self.chat.tail_card = Some(TailCard {
-            session_id: session_id.to_string(),
-            turn_key: turn_key.to_string(),
-            turn,
-            kind,
-            pos,
-        });
-        cx.notify();
     }
 
     /// 喂入最近完成轮的用量桶(session/stats `lastTurn` 直播推送;

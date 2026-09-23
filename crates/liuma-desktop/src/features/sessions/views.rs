@@ -7,10 +7,11 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::IconName;
 use gpui_kit::component::InteractiveElementExt as _;
 use gpui_kit::component::StyledExt;
+use gpui_kit::component::popover::{Popover, PopoverState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Entity, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, StatefulInteractiveElement, Styled, div, px,
+    Anchor, App, Entity, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement, StatefulInteractiveElement, Styled, div, px,
 };
 use liuma_core::proto::SessionSummary;
 
@@ -19,6 +20,7 @@ use crate::features::sessions::store::{GroupMode, OrderMode};
 use crate::features::settings;
 use crate::kits::i18n::dict;
 use crate::kits::icons::{LiumaIcon, fixed};
+use crate::kits::popup::PopTrigger;
 use crate::kits::theme;
 use crate::shell::reducer::{relative_time, workspace_of};
 use crate::shell::store::AppStore;
@@ -234,20 +236,41 @@ fn header_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 s_search.update(cx, |st, cx| st.toggle_search_open(window, cx));
             }),
         )
-        .child(
-            header_icon_button(
-                dict::sessions::view_options(),
-                fixed(LiumaIcon::Personalization, 15.),
-            )
-            .on_click(move |ev: &gpui_kit::ClickEvent, _, cx| {
-                cx.stop_propagation();
-                let pos = match ev {
-                    gpui_kit::ClickEvent::Mouse(m) => m.down.position,
-                    _ => gpui_kit::Point::default(),
-                };
-                s_view.update(cx, |st, cx| st.open_view_menu_at(pos, cx));
-            }),
-        )
+        .child({
+            // 视图选项菜单(组件库 Popover 托管定位/外点关闭)。受控
+            // 开态:钮在侧栏头拖拽区上,mousedown 豁免不可去(头行为
+            // 窗口拖拽区),库内部开态收不到点击
+            let open = store.read(cx).sessions.view_menu_open;
+            Popover::new("view-menu-pop")
+                .appearance(false)
+                .anchor(Anchor::TopRight)
+                .open(open)
+                .on_open_change({
+                    let s_open = s_view.clone();
+                    move |open, _, cx| {
+                        s_open.update(cx, |st, _| st.sessions.view_menu_open = *open);
+                    }
+                })
+                .trigger({
+                    let s_click = s_view.clone();
+                    PopTrigger(
+                        header_icon_button(
+                            dict::sessions::view_options(),
+                            fixed(LiumaIcon::Personalization, 15.),
+                        )
+                        .on_click(move |_, _, cx| {
+                            s_click.update(cx, |st, cx| st.toggle_view_menu(cx));
+                        }),
+                    )
+                })
+                .content({
+                    let s_view = s_view.clone();
+                    move |_, _, cx| {
+                        let pop = cx.entity();
+                        view_options_menu_card(&s_view, pop, cx).into_any_element()
+                    }
+                })
+        })
         .child(
             header_icon_button(
                 dict::sessions::add_workspace(),
@@ -488,34 +511,32 @@ fn group_header(
         .child(div().flex_1())
         // hover ⋯:工作区整理菜单(重命名/排序/移除)
         .child(
-            div()
-                .id(("ws-menu", gi))
-                .debug_selector(|| "ws-menu-btn".to_string())
-                .flex()
-                .size(px(20.))
-                .flex_shrink_0()
-                .items_center()
-                .justify_center()
-                .rounded(px(4.))
-                .opacity(0.)
-                .hover(|s| s.opacity(1.).bg(theme::SIDEBAR_HOVER()))
-                .text_color(theme::CAPTION())
-                .child(fixed(IconName::Ellipsis, 13.))
-                .on_click(move |ev: &gpui_kit::ClickEvent, _, cx| {
-                    cx.stop_propagation();
-                    let pos = match ev {
-                        gpui_kit::ClickEvent::Mouse(m) => m.down.position,
-                        gpui_kit::ClickEvent::Keyboard(_) => gpui_kit::Point::default(),
-                        gpui_kit::ClickEvent::Touch(_) => gpui_kit::Point::default(),
-                    };
-                    s_menu.update(cx, |st, cx| {
-                        if st.sessions.menu_open_ws.as_deref() == Some(&ws_menu) {
-                            st.sessions.menu_open_ws = None;
-                            cx.notify();
-                        } else {
-                            st.open_ws_menu_at(&ws_menu, pos, cx);
-                        }
-                    });
+            // 工作区 ⋯ 菜单(组件库 Popover 托管开态/外点关闭/定位)
+            Popover::new(("ws-menu-pop", gi))
+                .appearance(false)
+                .anchor(Anchor::TopRight)
+                .trigger(PopTrigger(
+                    div()
+                        .id(("ws-menu", gi))
+                        .debug_selector(|| "ws-menu-btn".to_string())
+                        .flex()
+                        .size(px(20.))
+                        .flex_shrink_0()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(4.))
+                        .opacity(0.)
+                        .hover(|s| s.opacity(1.).bg(theme::SIDEBAR_HOVER()))
+                        .text_color(theme::CAPTION())
+                        .child(fixed(IconName::Ellipsis, 13.)),
+                ))
+                .content({
+                    let s_menu = s_menu.clone();
+                    let ws_menu = ws_menu.clone();
+                    move |_, _, cx| {
+                        let pop = cx.entity();
+                        ws_menu_card(&s_menu, cx, &ws_menu, pop).into_any_element()
+                    }
                 }),
         )
         // hover「+」:该工作区新建会话(web 同位)
@@ -675,23 +696,16 @@ fn session_row(
 /// **当前会话**,根级渲染按 ⋯ 钮点击坐标定位,向左展开避开窗口右缘)。
 /// 整卡挂 mousedown 豁免(同 composer 菜单:防根级外点关闭吞掉菜单项
 /// 点击)
-pub fn session_menu_card(
+pub(crate) fn session_menu_card(
     store: &Entity<AppStore>,
-    pos: gpui_kit::Point<gpui_kit::Pixels>,
+    pop: Entity<PopoverState>,
 ) -> impl IntoElement {
     let (rename, archive, fork, export_log) =
         (store.clone(), store.clone(), store.clone(), store.clone());
+    let (p_arch, p_fork, p_export) = (pop.clone(), pop.clone(), pop.clone());
     div()
         .id("session-menu-card")
-        .absolute()
-        // 阻断鼠标命中向卡后方穿透(否则点击会落到后面的内容区上)
-        .occlude()
         .debug_selector(|| "session-menu-card".to_string())
-        // 锚在标题栏 ⋯ 钮下方,卡右缘对齐钮右缘(钮 26px,点击点近似
-        // 钮中心)、向左展开避开窗右缘
-        .top(pos.y + px(14.))
-        .left(pos.x - px(112.) + px(13.))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .v_flex()
         .w(px(112.))
         .gap(px(2.))
@@ -705,6 +719,7 @@ pub fn session_menu_card(
             dict::sessions::rename(),
             fixed(LiumaIcon::Pencil, 13.),
             move |_, window, cx| {
+                pop.update(cx, |state, cx| state.dismiss(window, cx));
                 rename.update(cx, |st, cx| {
                     let Some(id) = st.state.current_id.clone() else {
                         return;
@@ -716,26 +731,26 @@ pub fn session_menu_card(
         .child(menu_item(
             dict::sessions::archive(),
             fixed(LiumaIcon::Archive, 13.),
-            move |_, _, cx| {
+            move |_, window, cx| {
+                p_arch.update(cx, |state, cx| state.dismiss(window, cx));
                 archive.update(cx, |st, cx| {
                     let Some(id) = st.state.current_id.clone() else {
                         return;
                     };
                     st.archive(&id, cx);
-                    st.sessions.session_menu_pos = None;
                 });
             },
         ))
         .child(menu_item(
             dict::sessions::fork(),
             fixed(LiumaIcon::GitBranch, 13.),
-            move |_, _, cx| {
+            move |_, window, cx| {
+                p_fork.update(cx, |state, cx| state.dismiss(window, cx));
                 fork.update(cx, |st, cx| {
                     let Some(id) = st.state.current_id.clone() else {
                         return;
                     };
                     st.fork(&id, cx);
-                    st.sessions.session_menu_pos = None;
                 });
             },
         ))
@@ -744,11 +759,11 @@ pub fn session_menu_card(
             dict::sessions::export_log(),
             fixed(LiumaIcon::Download, 13.),
             move |_, window, cx| {
+                p_export.update(cx, |state, cx| state.dismiss(window, cx));
                 export_log.update(cx, |st, cx| {
                     let Some(id) = st.state.current_id.clone() else {
                         return;
                     };
-                    st.sessions.session_menu_pos = None;
                     st.export_session_log(&id, window, cx);
                 });
             },
@@ -792,25 +807,21 @@ fn menu_item(
         })
 }
 
-/// 工作区分组头 ⋯ 菜单卡(重命名/删除工作区;根级渲染按点击坐标
-/// 定位,向左展开。默认工作区不提供删除)
-pub fn ws_menu_card(
+/// 工作区分组头 ⋯ 菜单(重命名/删除工作区;组件库 Popover 内容,
+/// 库托管开合/定位。默认工作区不提供删除)
+fn ws_menu_card(
     store: &Entity<AppStore>,
     cx: &App,
     ws: &str,
-    pos: gpui_kit::Point<gpui_kit::Pixels>,
+    pop: Entity<PopoverState>,
 ) -> impl IntoElement {
     let is_default = store.read(cx).default_workspace() == ws;
     let (rename, remove) = (store.clone(), store.clone());
     let (wid_r, wid_x) = (ws.to_string(), ws.to_string());
+    let (p_ren, p_del) = (pop.clone(), pop.clone());
     div()
         .id("ws-menu-card")
-        .absolute()
-        .occlude()
         .debug_selector(|| "ws-menu-card".to_string())
-        .top(pos.y + px(14.))
-        .left(pos.x - px(112.) - px(8.))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .v_flex()
         .w(px(112.))
         .gap(px(2.))
@@ -824,6 +835,7 @@ pub fn ws_menu_card(
             dict::sessions::rename(),
             fixed(LiumaIcon::Pencil, 13.),
             move |_, window, cx| {
+                p_ren.update(cx, |state, cx| state.dismiss(window, cx));
                 let id = wid_r.clone();
                 rename.update(cx, |st, cx| st.open_rename_workspace(&id, window, cx));
             },
@@ -832,7 +844,8 @@ pub fn ws_menu_card(
             el.child(menu_item(
                 dict::sessions::delete_workspace(),
                 fixed(IconName::Delete, 13.),
-                move |_, _, cx| {
+                move |_, window, cx| {
+                    p_del.update(cx, |state, cx| state.dismiss(window, cx));
                     let id = wid_x.clone();
                     remove.update(cx, |st, cx| st.remove_workspace(&id, cx));
                 },
@@ -840,26 +853,21 @@ pub fn ws_menu_card(
         })
 }
 
-/// 顶栏视图选项菜单卡(分组方式/排序方式两组;根级渲染按点击坐标
-/// 定位,右对齐滑块钮展开)。整卡挂 mousedown 豁免(同 row/ws 菜单)。
-/// 「手动排序」本期占位:置灰不可点,拖拽重排后续实现
-pub fn view_options_menu_card(
+/// 顶栏视图选项菜单(分组方式/排序方式两组;组件库 Popover 内容,
+/// 库托管开合/定位)。「手动排序」本期占位:置灰不可点,拖拽重排
+/// 后续实现
+fn view_options_menu_card(
     store: &Entity<AppStore>,
+    pop: Entity<PopoverState>,
     cx: &App,
-    pos: gpui_kit::Point<gpui_kit::Pixels>,
 ) -> impl IntoElement {
     let st = store.read(cx);
     let (group, order) = (st.sessions.group_mode, st.sessions.order_mode);
     let (s_ws, s_flat, s_updated) = (store.clone(), store.clone(), store.clone());
+    let (p_ws, p_flat, p_updated) = (pop.clone(), pop.clone(), pop.clone());
     div()
         .id("view-menu-card")
-        .absolute()
-        .occlude()
         .debug_selector(|| "view-menu-card".to_string())
-        // 锚在滑块钮下方,右对齐钮(钮 26px 宽)
-        .top(pos.y + px(14.))
-        .left(pos.x - px(200.) + px(26.))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .v_flex()
         .w(px(200.))
         .rounded(px(12.))
@@ -873,6 +881,7 @@ pub fn view_options_menu_card(
             "view-group-ws",
             dict::sessions::by_workspace(),
             group == GroupMode::Workspace,
+            p_ws.clone(),
             move |_, _, cx| {
                 s_ws.update(cx, |st, cx| st.set_group_mode(GroupMode::Workspace, cx));
             },
@@ -881,6 +890,7 @@ pub fn view_options_menu_card(
             "view-group-flat",
             dict::sessions::single_list(),
             group == GroupMode::Flat,
+            p_flat.clone(),
             move |_, _, cx| {
                 s_flat.update(cx, |st, cx| st.set_group_mode(GroupMode::Flat, cx));
             },
@@ -891,6 +901,7 @@ pub fn view_options_menu_card(
             "view-order-updated",
             dict::sessions::recent_updates(),
             order == OrderMode::Updated,
+            p_updated.clone(),
             move |_, _, cx| {
                 s_updated.update(cx, |st, cx| st.set_order_mode(OrderMode::Updated, cx));
             },
@@ -928,6 +939,7 @@ fn view_menu_item(
     id: &'static str,
     label: &'static str,
     selected: bool,
+    pop: Entity<PopoverState>,
     on_click: impl Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
     div()
@@ -946,7 +958,7 @@ fn view_menu_item(
         .child(div().flex_1().child(label))
         .children(selected.then(|| fixed(IconName::Check, 14.).text_color(theme::LABEL())))
         .on_click(move |ev, w, cx| {
-            cx.stop_propagation();
+            pop.update(cx, |state, cx| state.dismiss(w, cx));
             on_click(ev, w, cx)
         })
 }

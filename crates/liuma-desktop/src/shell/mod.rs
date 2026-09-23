@@ -14,7 +14,7 @@ pub(crate) mod scroll;
 mod statusbar;
 mod topbar;
 
-use crate::kits::modals::{attachment_toast_card, workspace_menu_card};
+use crate::kits::modals::attachment_toast_card;
 
 use gpui_kit::component::StyledExt;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -27,8 +27,6 @@ use gpui_kit::{
 use crate::features::ask;
 use crate::features::attachments;
 use crate::features::chat;
-use crate::features::chat::ComposerMenu;
-use crate::features::feedback;
 use crate::features::sessions;
 use crate::features::settings;
 use crate::features::subagents;
@@ -397,21 +395,6 @@ impl Render for WorkspaceView {
             st.panel_open,
             st.panel_px,
         );
-        // 任一菜单开 → 根级 mousedown 全关(bubble 相,命中树祖先皆达)。
-        // 开着的菜单区自带 stop_propagation 豁免(composer 菜单槽/⋯ 钮/
-        // 菜单卡/工作区下拉),豁免与关闭同挂 mousedown,不会先关再被
-        // toggle 重开
-        let any_menu_open = st.chat.composer_menu != ComposerMenu::None
-            || st.hero_menu != crate::shell::store::HeroMenu::None
-            || st.sessions.session_menu_pos.is_some()
-            || st.sessions.menu_open_ws.is_some()
-            || st.sessions.workspace_menu_open
-            || st.sessions.view_menu_pos.is_some()
-            || st.panel_plus_menu_at.is_some()
-            || st.preview.menu.is_some()
-            || st.billing_card_open
-            || st.stats_card.is_some()
-            || st.chat.tail_card.is_some();
         let settings_open = st.settings.settings_open;
         div()
             .relative()
@@ -433,14 +416,6 @@ impl Render for WorkspaceView {
                 "sel-sink-chat",
                 crate::kits::selection_order::CHAT_TAIL_ORDER,
             )))
-            .when(any_menu_open, |el| {
-                el.on_mouse_down(gpui_kit::MouseButton::Left, {
-                    let store = self.store.clone();
-                    move |_, _, cx| {
-                        store.update(cx, |st, cx| st.close_all_menus(cx));
-                    }
-                })
-            })
             // Esc = 关查看器(捕获相:查看器开启时拦截吞掉;查看器关闭
             // 时无其他 Esc 语义,放行)
             .capture_key_down({
@@ -622,286 +597,9 @@ impl Render for WorkspaceView {
                     .then(|| panel::render(&self.store, window, cx)),
                 |el, panel| el.child(panel),
             )
-            // 标题栏工作区下拉卡(root 级:TitleBar 是首个子,后续兄弟
-            // 绘制在其上,卡放 TitleBar 内会被主内容盖住)
-            .when(self.store.read(cx).sessions.workspace_menu_open, |el| {
-                el.child(workspace_menu_card(&self.store, cx))
-            })
-            // 标题栏会话菜单(⋯;根级定位渲染,作用于当前会话)
-            .when(
-                self.store.read(cx).sessions.session_menu_pos.is_some(),
-                |el| {
-                    let card = self
-                        .store
-                        .read(cx)
-                        .sessions
-                        .session_menu_pos
-                        .map(|pos| sessions::session_menu_card(&self.store, pos));
-                    el.children(card)
-                },
-            )
-            // 工作区分组头 ⋯ 菜单(同上:root 级定位渲染)
-            .when(self.store.read(cx).sessions.menu_open_ws.is_some(), |el| {
-                let card = {
-                    let st = self.store.read(cx);
-                    st.sessions
-                        .menu_open_ws
-                        .as_deref()
-                        .zip(st.sessions.ws_menu_pos)
-                        .map(|(ws, pos)| sessions::ws_menu_card(&self.store, cx, ws, pos))
-                };
-                el.children(card)
-            })
-            // 顶栏视图选项菜单(分组/排序;root 级定位渲染,同 ⋯ 菜单模式)
-            .when(self.store.read(cx).sessions.view_menu_pos.is_some(), |el| {
-                let card = self
-                    .store
-                    .read(cx)
-                    .sessions
-                    .view_menu_pos
-                    .map(|pos| sessions::view_options_menu_card(&self.store, cx, pos));
-                el.children(card)
-            })
-            // 顶栏钮 tooltip 已迁组件库 `.tooltip()`(原生 overlay 托管
-            // 生命周期:hover 消失/元素卸载/点击均自动退场)
-            // 面板「+」菜单(root 级定位渲染,同 row/ws 菜单;徽标文案
-            // 与面板空态同源:键表生成)
-            .when(self.store.read(cx).panel_plus_menu_at.is_some(), |el| {
-                let card = self.store.read(cx).panel_plus_menu_at.map(|pos| {
-                    let shortcut = window.keystroke_text_for(&panel::OpenPanelPlan);
-                    panel::plus_menu_card(&self.store, pos, shortcut)
-                });
-                el.children(card)
-            })
-            // 预览「打开方式」菜单(根级定位渲染,同 + 菜单模式)
-            .when(self.store.read(cx).preview.menu.is_some(), |el| {
-                let card = self.store.read(cx).preview.menu.as_ref().map(|(rel, pos)| {
-                    crate::features::preview::renderer_menu_card(&self.store, rel, *pos, cx)
-                });
-                el.children(card)
-            })
-            // composer 权限下拉(根级渲染,同 +/行/工作区菜单模式:
-            // 内联浮层叠进输入卡子树会被卡体描边后绘盖住;模型/上下文
-            // 两卡已同迁根级,见下)。锚 = 渲染期捕获的
-            // chip bounds(见 ChatState.perm_chip_bounds):卡底缘贴
-            // chip 顶上方 5px、左缘对齐。settings 整列接管时
-            // 不渲染(composer 已让位,bounds 为陈旧值)
-            .when(
-                self.store.read(cx).chat.composer_menu == ComposerMenu::Permission
-                    && !self.store.read(cx).settings.settings_open,
-                |el| {
-                    let card = {
-                        let st = self.store.read(cx);
-                        st.chat.perm_chip_bounds.map(|b| {
-                            let card = chat::composer::permission_card(&self.store, cx);
-                            let vh = f32::from(window.viewport_size().height);
-                            div()
-                                .id("composer-perm-menu")
-                                .absolute()
-                                .left(px(f32::from(b.origin.x)))
-                                .bottom(px(vh - f32::from(b.origin.y) + 5.))
-                                // 阻断命中穿透 + 外点关闭豁免(同 + 菜单卡)
-                                .occlude()
-                                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-                                    cx.stop_propagation()
-                                })
-                                .child(card)
-                        })
-                    };
-                    el.children(card)
-                },
-            )
-            // composer 模型下拉卡(根级渲染,权限卡同模式:内联浮层越出
-            // 输入卡顶会被卡体描边后绘盖住,见 composer::root_popover_card)。
-            // 锚 = 渲染期捕获的 chip bounds(ChatState.model_chip_bounds):
-            // 卡底缘贴 chip 顶上方 12px、右缘对齐。hero 挂载点与本根同源,
-            // 无需另挂;settings 整列接管时不渲染(composer 已让位,
-            // bounds 为陈旧值)
-            .when(
-                self.store.read(cx).chat.composer_menu == ComposerMenu::Model
-                    && !self.store.read(cx).settings.settings_open,
-                |el| {
-                    let card = {
-                        let st = self.store.read(cx);
-                        st.chat.model_chip_bounds.map(|b| {
-                            let vh = f32::from(window.viewport_size().height);
-                            let vw = f32::from(window.viewport_size().width);
-                            chat::composer::root_popover_card(
-                                &self.store,
-                                ComposerMenu::Model,
-                                b,
-                                vh,
-                                vw,
-                                cx,
-                            )
-                        })
-                    };
-                    el.children(card)
-                },
-            )
-            // composer 上下文详情卡(同模型卡模式;锚 =
-            // ChatState.context_ring_bounds)
-            .when(
-                self.store.read(cx).chat.composer_menu == ComposerMenu::Context
-                    && !self.store.read(cx).settings.settings_open,
-                |el| {
-                    let card = {
-                        let st = self.store.read(cx);
-                        st.chat.context_ring_bounds.map(|b| {
-                            let vh = f32::from(window.viewport_size().height);
-                            let vw = f32::from(window.viewport_size().width);
-                            chat::composer::root_popover_card(
-                                &self.store,
-                                ComposerMenu::Context,
-                                b,
-                                vh,
-                                vw,
-                                cx,
-                            )
-                        })
-                    };
-                    el.children(card)
-                },
-            )
-            // 计费小卡片(状态栏徽标点击;右缘对齐徽标,卡底缘贴 chip 顶
-            // 上方 5px,同权限菜单模式)
-            .when(
-                self.store.read(cx).billing_card_open
-                    && !self.store.read(cx).settings.settings_open,
-                |el| {
-                    let card = self.store.read(cx).billing_chip_bounds.map(|b| {
-                        let card = statusbar::billing_card(&self.store, cx);
-                        let vh = f32::from(window.viewport_size().height);
-                        let vw = f32::from(window.viewport_size().width);
-                        div()
-                            .id("billing-card")
-                            .debug_selector(|| "billing-card".to_string())
-                            .absolute()
-                            .right(px(vw - f32::from(b.origin.x + b.size.width)))
-                            .bottom(px(vh - f32::from(b.origin.y) + 5.))
-                            .rounded(px(12.))
-                            .border_1()
-                            .border_color(theme::BORDER())
-                            .bg(if theme::is_dark() {
-                                theme::LAYER()
-                            } else {
-                                theme::CARD()
-                            })
-                            .shadow_md()
-                            .occlude()
-                            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-                                cx.stop_propagation()
-                            })
-                            .child(card)
-                    });
-                    el.children(card)
-                },
-            )
-            // 会话统计 / Token 用量卡(状态栏两 pill 点击;仪表卡左缘对齐
-            // pill 左、用量卡右缘对齐 pill 右,卡底缘贴 chip 顶上方 5px,
-            // 同计费卡模式)
-            .when(
-                self.store.read(cx).stats_card.is_some()
-                    && !self.store.read(cx).settings.settings_open,
-                |el| {
-                    let st = self.store.read(cx);
-                    let (bounds, align_right) = match st.stats_card {
-                        Some(crate::shell::store::StatsCardKind::Time) => {
-                            (st.stats_time_bounds, false)
-                        }
-                        Some(crate::shell::store::StatsCardKind::Usage) => {
-                            (st.stats_usage_bounds, true)
-                        }
-                        None => (None, false),
-                    };
-                    let card = bounds.map(|b| {
-                        let card = match st.stats_card {
-                            Some(crate::shell::store::StatsCardKind::Usage) => {
-                                statusbar::token_usage_card(&self.store, cx)
-                            }
-                            _ => statusbar::session_stats_card(&self.store, cx),
-                        };
-                        let vh = f32::from(window.viewport_size().height);
-                        let vw = f32::from(window.viewport_size().width);
-                        let mut anchor = div()
-                            .id("stats-card")
-                            .debug_selector(|| "stats-card".to_string())
-                            .absolute()
-                            .bottom(px(vh - f32::from(b.origin.y) + 5.))
-                            .rounded(px(12.))
-                            .border_1()
-                            .border_color(theme::BORDER())
-                            .bg(if theme::is_dark() {
-                                theme::LAYER()
-                            } else {
-                                theme::CARD()
-                            })
-                            .shadow_md()
-                            .occlude()
-                            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-                                cx.stop_propagation()
-                            })
-                            .child(card);
-                        // 用量卡右缘贴 pill 右;仪表卡左缘贴 pill 左(窄窗
-                        // clamp 进视口,卡体 min_w 260)
-                        anchor = if align_right {
-                            anchor.right(px(vw - f32::from(b.origin.x + b.size.width)))
-                        } else {
-                            anchor.left(px(f32::from(b.origin.x).min((vw - 268.).max(8.))))
-                        };
-                        anchor
-                    });
-                    el.children(card)
-                },
-            )
-            // 轮尾统计卡(聊天区轮尾 pill 点击;卡在触发行上方生长,视口
-            // 内 clamp,同计费卡模式)
-            .when(self.store.read(cx).chat.tail_card.is_some(), |el| {
-                let st = self.store.read(cx);
-                let card = st.chat.tail_card.as_ref().and_then(|tc| {
-                    // 切会话后残留卡不渲染
-                    if st.state.current_id.as_deref() != Some(tc.session_id.as_str()) {
-                        return None;
-                    }
-                    let card = match tc.kind {
-                        crate::features::chat::store::TailCardKind::Usage => {
-                            crate::features::chat::chat_pane::turn_usage_card(&self.store, cx)
-                        }
-                        crate::features::chat::store::TailCardKind::Time => {
-                            crate::features::chat::chat_pane::turn_time_card(&self.store, cx)
-                        }
-                    };
-                    let vh = f32::from(window.viewport_size().height);
-                    let vw = f32::from(window.viewport_size().width);
-                    // 卡在触发行上方生长(bottom 锚,同计费卡):永不遮盖
-                    // pill 行,开卡后两 pill 仍可点;左缘贴 pill 左侧,视口
-                    // 内 clamp(卡体 min_w 260)
-                    let left = (f32::from(tc.pos.x) - 20.).min((vw - 268.).max(8.)).max(8.);
-                    Some(
-                        div()
-                            .id("turn-tail-card")
-                            .debug_selector(|| "turn-tail-card".to_string())
-                            .absolute()
-                            .left(px(left))
-                            .bottom(px(vh - f32::from(tc.pos.y) + 15.))
-                            .rounded(px(12.))
-                            .border_1()
-                            .border_color(theme::BORDER())
-                            .bg(if theme::is_dark() {
-                                theme::LAYER()
-                            } else {
-                                theme::CARD()
-                            })
-                            .shadow_md()
-                            .occlude()
-                            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-                                cx.stop_propagation()
-                            })
-                            .child(card),
-                    )
-                });
-                el.children(card)
-            })
+            // composer 权限/模型/上下文三卡已迁组件库 Popover(触发钮
+            // 即弹层锚;开态/外点关闭/上开定位由库托管,根级挂载与
+            // bounds 捕获 canvas 移除)
             // 重命名/删除确认/拉取模型/full-access 风险确认四模态已迁
             // 组件库 Dialog 层(store 经 with_window 桥开/关;Esc、遮罩
             // 点击与焦点陷阱由库托管),根级不再条件渲染
@@ -928,11 +626,6 @@ impl Render for WorkspaceView {
                     cx,
                 ))
             })
-            // 消息反馈备注弹窗(根级;open_note → 输入框+保存/取消)
-            .when(
-                self.store.read(cx).feedback.feedback_note_editor.is_some(),
-                |el| el.children(feedback::render_note_editor(&self.store, cx)),
-            )
             .when(
                 self.store.read(cx).attachments.attachment_toast.is_some(),
                 |el| el.child(attachment_toast_card(&self.store, cx)),

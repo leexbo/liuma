@@ -9,16 +9,18 @@ use gpui_kit::component::IconName;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::StyledExt;
 use gpui_kit::component::native_menu::NativeMenu;
+use gpui_kit::component::popover::Popover;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Animation, AnimationExt as _, AnyElement, App, Div, Entity, InteractiveElement, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement, Rgba, SharedString, StatefulInteractiveElement,
-    Styled, Window, actions, div, px,
+    Anchor, Animation, AnimationExt as _, AnyElement, App, Div, Entity, InteractiveElement,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement, Rgba, SharedString,
+    StatefulInteractiveElement, Styled, Window, actions, div, px,
 };
 
 use super::projection::{ChatNode, NavAnchor, PlanStatus, RetryState, RowSlot, ToolState};
 use crate::kits::icons::{self, LiumaIcon, fixed};
+use crate::kits::popup::PopTrigger;
 use crate::kits::theme;
 use crate::shell::metrics::{H_PAD, NAV_GUTTER_W, RUN_CLOCK_AFTER_SECS, SCROLLBAR_GUTTER_W};
 
@@ -2704,7 +2706,6 @@ fn turn_tail(
                 dict::chat::usage_tok(crate::kits::fmt::fmt_tokens_abbrev(total)),
                 super::store::TailCardKind::Usage,
                 session.clone(),
-                key,
                 turn,
             ))
         })
@@ -2717,7 +2718,6 @@ fn turn_tail(
                 dict::chat::time_run(crate::kits::fmt::fmt_duration_run(run_ms)),
                 super::store::TailCardKind::Time,
                 session.clone(),
-                key,
                 turn,
             ))
         })
@@ -2745,7 +2745,9 @@ fn turn_tail(
     tail.children((!deliverables.is_empty()).then(|| deliverables_row(store, deliverables)))
 }
 
-/// 轮尾统计 pill(用量/用时;点击恒开对应卡,根级渲染见 shell/mod)
+/// 轮尾统计 pill(用量/用时;点击弹对应卡——组件库 Popover 托管开
+/// 态/外点关闭/上开定位,内容闭包捕获本 pill 的会话与轮号,store 不
+/// 再有开态旗标与点击坐标捕获)
 #[allow(clippy::too_many_arguments)]
 fn tail_pill(
     store: &Entity<AppStore>,
@@ -2755,43 +2757,62 @@ fn tail_pill(
     label: String,
     kind: super::store::TailCardKind,
     session: String,
-    turn_key: &str,
     turn: u64,
 ) -> AnyElement {
-    let s = store.clone();
-    let turn_key = turn_key.to_string();
-    div()
-        .id(SharedString::from(id))
-        .debug_selector(move || sel.clone())
-        .flex()
-        .items_center()
-        .gap(px(4.))
-        .px(px(8.))
-        .h(px(24.))
-        .rounded_full()
-        .cursor_pointer()
-        .text_size(px(13.))
-        .text_color(theme::LABEL_2())
-        .hover(|s| s.bg(theme::DOCK()))
-        .child(icon)
-        .child(label)
-        .on_click(move |ev: &gpui_kit::ClickEvent, _, cx| {
-            let pos = match ev {
-                gpui_kit::ClickEvent::Mouse(m) => m.down.position,
-                _ => Default::default(),
+    let s_card = store.clone();
+    Popover::new(SharedString::from(format!("tail-pop-{sel}")))
+        .appearance(false)
+        .anchor(Anchor::BottomLeft)
+        .trigger(PopTrigger(
+            div()
+                .id(SharedString::from(id))
+                .debug_selector(move || sel.clone())
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .px(px(8.))
+                .h(px(24.))
+                .rounded_full()
+                .cursor_pointer()
+                .text_size(px(13.))
+                .text_color(theme::LABEL_2())
+                .hover(|s| s.bg(theme::DOCK()))
+                .child(icon)
+                .child(label),
+        ))
+        // 卡面 chrome(原根级挂载包裹层同款:圆角/描边/亮盘白/阴影)
+        .content(move |_, _, cx| {
+            let card = match kind {
+                super::store::TailCardKind::Usage => turn_usage_card(&s_card, cx, &session, turn),
+                super::store::TailCardKind::Time => turn_time_card(&s_card, cx, &session, turn),
             };
-            let (session, turn_key, turn, kind) = (session.clone(), turn_key.clone(), turn, kind);
-            s.update(cx, |st, cx| {
-                st.open_turn_tail_card(&session, &turn_key, turn, kind, pos, cx)
-            });
+            div()
+                .id("turn-tail-card")
+                .debug_selector(|| "turn-tail-card".to_string())
+                .rounded(px(12.))
+                .border_1()
+                .border_color(theme::BORDER())
+                .bg(if theme::is_dark() {
+                    theme::LAYER()
+                } else {
+                    theme::CARD()
+                })
+                .shadow_md()
+                .child(card)
+                .into_any_element()
         })
         .into_any_element()
 }
 
 /// 本轮用量卡(用量 pill 详情):头部总数 +
 /// 提供方 / 模型 + 缓存命中 + 输入侧桶 + 输出(含推理后缀)
-pub(crate) fn turn_usage_card(store: &Entity<AppStore>, cx: &App) -> AnyElement {
-    let bucket = tail_card_bucket(store, cx);
+pub(crate) fn turn_usage_card(
+    store: &Entity<AppStore>,
+    cx: &App,
+    session: &str,
+    turn: u64,
+) -> AnyElement {
+    let bucket = turn_bucket(store, cx, session, turn);
     let mut card = detail_card_base();
     let (total, rows) = match bucket {
         Some(b) => {
@@ -2849,8 +2870,13 @@ pub(crate) fn turn_usage_card(store: &Entity<AppStore>, cx: &App) -> AnyElement 
 
 /// 本轮用时和速度卡(用时 pill 详情):
 /// 本轮总用时 / 输出速度（TPS）/ 首 token 用时（TTFT）
-pub(crate) fn turn_time_card(store: &Entity<AppStore>, cx: &App) -> AnyElement {
-    let bucket = tail_card_bucket(store, cx);
+pub(crate) fn turn_time_card(
+    store: &Entity<AppStore>,
+    cx: &App,
+    session: &str,
+    turn: u64,
+) -> AnyElement {
+    let bucket = turn_bucket(store, cx, session, turn);
     let mut card = detail_card_base();
     card = card.child(card_head(
         fixed(LiumaIcon::Clock, 14.).into_any_element(),
@@ -2878,13 +2904,18 @@ pub(crate) fn turn_time_card(store: &Entity<AppStore>, cx: &App) -> AnyElement {
     card.into_any_element()
 }
 
-/// 开着的轮尾卡对应的轮桶(无卡/会话失配/无桶 → None)
-fn tail_card_bucket(store: &Entity<AppStore>, cx: &App) -> Option<serde_json::Value> {
-    let st = store.read(cx);
-    let tc = st.chat.tail_card.as_ref()?;
-    st.chat
+/// 指定轮的用量桶(无桶 → None)
+fn turn_bucket(
+    store: &Entity<AppStore>,
+    cx: &App,
+    session: &str,
+    turn: u64,
+) -> Option<serde_json::Value> {
+    store
+        .read(cx)
+        .chat
         .turn_usage
-        .get(&(tc.session_id.clone(), tc.turn))
+        .get(&(session.to_string(), turn))
         .cloned()
 }
 

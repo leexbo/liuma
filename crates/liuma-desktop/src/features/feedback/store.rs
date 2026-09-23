@@ -23,7 +23,6 @@ pub(crate) struct FeedbackStore {
     /// 备注弹窗开态(Some = (messageId, 当前文本初值))
     pub feedback_note_editor: Option<(String, String)>,
     /// 备注弹窗锚点(触发钮的窗口坐标;root 级绝对定位锚在按钮下方)
-    pub feedback_note_anchor: Option<gpui_kit::Point<gpui_kit::Pixels>>,
     /// 备注弹窗输入(可聚焦;挂窗后经 ensure_feedback_input 懒建,
     /// Change 订阅写回 feedback_note_editor 文本)
     pub feedback_input: Option<Entity<TextareaState>>,
@@ -114,7 +113,6 @@ impl AppStore {
         &mut self,
         window: &mut Window,
         message_id: &str,
-        anchor: gpui_kit::Point<gpui_kit::Pixels>,
         cx: &mut Context<Self>,
     ) {
         self.load_feedback(cx);
@@ -125,7 +123,6 @@ impl AppStore {
             .and_then(|it| it.note.clone())
             .unwrap_or_default();
         self.feedback.feedback_note_editor = Some((message_id.to_string(), initial.clone()));
-        self.feedback.feedback_note_anchor = Some(anchor);
         self.ensure_feedback_input(window, cx);
         if let Some(input) = &self.feedback.feedback_input {
             input.update(cx, |s, cx| s.set_value(initial, window, cx));
@@ -163,7 +160,6 @@ impl AppStore {
     /// 关闭弹窗(不保存)
     pub fn close_feedback_note(&mut self, cx: &mut Context<Self>) {
         self.feedback.feedback_note_editor = None;
-        self.feedback.feedback_note_anchor = None;
         cx.notify();
     }
 
@@ -172,7 +168,6 @@ impl AppStore {
         if let Some((mid, text)) = self.feedback.feedback_note_editor.clone() {
             self.save_feedback_note(&mid, &text, cx);
             self.feedback.feedback_note_editor = None;
-            self.feedback.feedback_note_anchor = None;
         }
         cx.notify();
     }

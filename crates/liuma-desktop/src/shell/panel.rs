@@ -6,14 +6,17 @@
 //! (浏览器/命令行类)加 `PanelTab` 变体即自动进「+」与空态清单。
 //! 设置页整列接管时面板隐藏。
 
+use gpui_kit::component::popover::Popover;
 use gpui_kit::component::{IconName, InteractiveElementExt as _, StyledExt};
 use gpui_kit::{
-    App, Entity, InteractiveElement, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, actions, div, px,
+    Anchor, App, Entity, InteractiveElement, IntoElement, MouseButton, MouseMoveEvent,
+    MouseUpEvent, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, actions,
+    div, px,
 };
 
 use crate::features::chat::{ChatNode, PlanStatus};
 use crate::kits::icons::{LiumaIcon, fixed};
+use crate::kits::popup::PopTrigger;
 use crate::kits::theme;
 use crate::shell::store::AppStore;
 
@@ -225,31 +228,36 @@ fn panel_header(
             panel_tab_pill(store, tab.clone(), Some(tab.clone()) == active).into_any_element(),
         );
     }
-    let s_plus = store.clone();
     let s_toggle = store.clone();
     if !tabs.is_empty() {
         strip.push(
-            div()
-                .id("panel-plus")
-                .debug_selector(|| "panel-plus".to_string())
-                .flex()
-                .size(px(22.))
-                .flex_shrink_0()
-                .items_center()
-                .justify_center()
-                .rounded(px(6.))
-                .cursor_pointer()
-                .text_color(theme::CAPTION())
-                .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL()))
-                .child(fixed(IconName::Plus, 13.))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(move |ev: &gpui_kit::ClickEvent, _, cx| {
-                    cx.stop_propagation();
-                    let pos = match ev {
-                        gpui_kit::ClickEvent::Mouse(m) => m.down.position,
-                        _ => gpui_kit::Point::default(),
-                    };
-                    s_plus.update(cx, |st, cx| st.open_panel_plus_menu_at(pos, cx));
+            // 「+」清单菜单(组件库 Popover 托管开态/外点关闭/下方向左
+            // 展开;快捷键文案由内容闭包的 window 现取)
+            Popover::new("panel-plus-pop")
+                .appearance(false)
+                .anchor(Anchor::TopRight)
+                .trigger(PopTrigger(
+                    div()
+                        .id("panel-plus")
+                        .debug_selector(|| "panel-plus".to_string())
+                        .flex()
+                        .size(px(22.))
+                        .flex_shrink_0()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .text_color(theme::CAPTION())
+                        .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL()))
+                        .child(fixed(IconName::Plus, 13.)),
+                ))
+                .content({
+                    let store = store.clone();
+                    move |_, window, cx| {
+                        let shortcut = window.keystroke_text_for(&OpenPanelPlan);
+                        let pop = cx.entity();
+                        plus_menu_card(&store, pop, shortcut).into_any_element()
+                    }
                 })
                 .into_any_element(),
         );
@@ -504,12 +512,11 @@ fn empty_menu(store: &Entity<AppStore>, shortcut: &str) -> gpui_kit::AnyElement 
         .into_any_element()
 }
 
-/// 面板「+」菜单卡(root 级定位渲染,同 row/ws 菜单:occlude + 整卡
-/// mousedown 豁免 + 根级外点关闭);锚「+」下方向左展开(面板贴窗右缘,
-/// 右展出窗)。项与空态菜单同份 [`PanelTab::ALL`]
-pub fn plus_menu_card(
+/// 面板「+」菜单(组件库 Popover 内容;点项即开 tab 并收起菜单)。
+/// 项与空态菜单同份 [`PanelTab::ALL`]
+fn plus_menu_card(
     store: &Entity<AppStore>,
-    pos: gpui_kit::Point<gpui_kit::Pixels>,
+    pop: Entity<gpui_kit::component::popover::PopoverState>,
     shortcut: String,
 ) -> impl IntoElement {
     let items: Vec<gpui_kit::AnyElement> = PanelTab::ALL
@@ -517,6 +524,7 @@ pub fn plus_menu_card(
         .map(|tab| {
             let s = store.clone();
             let shortcut = shortcut.clone();
+            let pop = pop.clone();
             let open = tab.clone();
             div()
                 .id(SharedString::from(format!("panel-plus-item-{}", tab.key())))
@@ -539,21 +547,17 @@ pub fn plus_menu_card(
                         .text_color(theme::CAPTION())
                         .child(shortcut.to_string()),
                 )
-                .on_click(move |_, _, cx| {
-                    s.update(cx, |st, cx| st.open_panel_tab(open.clone(), cx))
+                .on_click(move |_, window, cx| {
+                    let pop = pop.clone();
+                    s.update(cx, |st, cx| st.open_panel_tab(open.clone(), cx));
+                    pop.update(cx, |state, cx| state.dismiss(window, cx));
                 })
                 .into_any_element()
         })
         .collect();
     div()
         .id("panel-plus-menu")
-        .absolute()
-        // 阻断鼠标命中向卡后方穿透(否则外点会落到面板/聊天区上)
-        .occlude()
         .debug_selector(|| "panel-plus-menu".to_string())
-        .top(pos.y + px(12.))
-        .left(pos.x - px(152.))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .v_flex()
         .w(px(176.))
         .gap(px(2.))

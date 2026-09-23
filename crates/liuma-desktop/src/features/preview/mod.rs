@@ -7,4 +7,4 @@ pub(crate) mod store;
 mod views;
 
 pub(crate) use store::PreviewStore;
-pub(crate) use views::{render, renderer_menu_card};
+pub(crate) use views::render;

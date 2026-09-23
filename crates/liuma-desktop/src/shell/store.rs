@@ -9,7 +9,7 @@ use liuma_core::proto::{ServerRequest, SessionSummary};
 
 use crate::features::ask::AskStore;
 use crate::features::attachments::AttachmentsStore;
-use crate::features::chat::{ChatNode, ChatStore, ComposerMenu};
+use crate::features::chat::{ChatNode, ChatStore};
 use crate::features::feedback::FeedbackStore;
 use crate::features::search::SearchStore;
 use crate::features::sessions::SessionsStore;
@@ -20,26 +20,6 @@ use crate::kits::theme;
 use crate::shell::host::HostBridge;
 use crate::shell::panel::PanelTab;
 use crate::shell::reducer::{self, Effect, StoreState};
-
-/// hero 空态 chip 下拉(工作区/模式;互斥)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HeroMenu {
-    /// 关
-    None,
-    /// 工作区选择
-    Workspace,
-    /// 模式(preset)选择
-    Preset,
-}
-
-/// 状态栏统计卡种类(两 pill 各自的详情卡;与计费卡互斥)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatsCardKind {
-    /// 会话统计(仪表 pill:模型用时/工具用时/TTFT/TPS)
-    Time,
-    /// Token 用量(数据库 pill:缓存命中/输入侧桶/输出)
-    Usage,
-}
 
 /// 会话级配置缓存(打开会话时拉取,设置成功后回写)
 #[derive(Debug, Clone, PartialEq)]
@@ -79,15 +59,6 @@ pub struct AppStore {
     pub lineage_tick: Option<gpui_kit::Task<()>>,
     /// 额度自动刷新 5min 节拍(挂窗一次常驻;触发面见 start_billing_tick)
     pub billing_tick: Option<gpui_kit::Task<()>>,
-    /// 计费小卡片开合(状态栏徽标点击恒开;关闭走外点全关)
-    pub billing_card_open: bool,
-    /// 徽标渲染期捕获 bounds(计费卡片根级渲染的锚定分子,同权限 chip)
-    pub billing_chip_bounds: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
-    /// 状态栏统计卡开态(仪表/数据库 pill 点击恒开;与计费卡互斥,关闭走外点全关)
-    pub stats_card: Option<StatsCardKind>,
-    /// 两统计 pill 渲染期捕获 bounds(统计卡根级渲染的锚定分子,同计费徽标)
-    pub stats_time_bounds: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
-    pub stats_usage_bounds: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
     /// 剪贴板快捷键 App 级拦截订阅(cmd-v 图片粘贴 / cmd-c 文档选中复制;
     /// 挂窗一次;见 attach_window_state 注册点)
     pub clipboard_intercept: Option<gpui_kit::Subscription>,
@@ -118,8 +89,6 @@ pub struct AppStore {
     pub panel_tabs: Vec<PanelTab>,
     /// 面板激活标签(None = 空态快捷菜单,面板不自动收)
     pub panel_active_tab: Option<PanelTab>,
-    /// 面板「+」菜单锚点坐标(root 级渲染;None = 关)
-    pub panel_plus_menu_at: Option<gpui_kit::Point<gpui_kit::Pixels>>,
     /// 侧栏展开宽(用户可拖宽;clamp 到 [SIDEBAR_MIN, SIDEBAR_MAX],
     /// 独立于折叠——折叠不写 0,重开仍用此宽)
     pub sidebar_px: f32,
@@ -133,8 +102,6 @@ pub struct AppStore {
     /// 重命名/删除目标、工作区路径/标题/分支表、折叠组;域与行为
     /// 见 features::sessions)
     pub sessions: SessionsStore,
-    /// hero 空态 chip 下拉开态(互斥)
-    pub hero_menu: HeroMenu,
     /// 会话 → 配置缓存(模型/权限/思考等级/模式)
     pub session_cfg_by_id: HashMap<String, SessionCfg>,
     /// 子代理血缘功能切片状态(后代目录开态;域与行为见
@@ -196,11 +163,6 @@ impl AppStore {
             run_tick: None,
             lineage_tick: None,
             billing_tick: None,
-            billing_card_open: false,
-            billing_chip_bounds: None,
-            stats_card: None,
-            stats_time_bounds: None,
-            stats_usage_bounds: None,
             window: None,
             clipboard_intercept: None,
             attachments: AttachmentsStore::default(),
@@ -217,12 +179,10 @@ impl AppStore {
             appearance_sub: None,
             panel_tabs: Vec::new(),
             panel_active_tab: None,
-            panel_plus_menu_at: None,
             sidebar_resize_anchor: None,
             sidebar_auto_collapsed: false,
             panel_auto_closed: false,
             sessions: SessionsStore::default(),
-            hero_menu: HeroMenu::None,
             session_cfg_by_id: HashMap::new(),
             subagents: SubagentsStore::default(),
             trajectory: TrajectoryStore::default(),
@@ -787,21 +747,11 @@ impl AppStore {
     }
 
     /// 外点全关(composer 下拉 + hero chip 下拉 + 行内 ⋯ + 标题栏
-    /// 工作区下拉 + 顶栏视图选项菜单 + 面板「+」菜单 + 计费小卡片;
-    /// 开着的菜单区自带 mousedown stop_propagation 豁免,不会误伤
-    /// 自身交互)
+    /// 收受控浮层(标题栏工作区下拉)+ 同步子代理刷新节拍。此前的
+    /// 根级外点全关枢纽已随浮层迁移组件库而退位:各 Popover/Dialog 的
+    /// 开态与外点关闭由库托管,只剩受控开态仍需显式收起
     pub fn close_all_menus(&mut self, cx: &mut Context<Self>) {
-        self.chat.composer_menu = ComposerMenu::None;
-        self.hero_menu = HeroMenu::None;
-        self.sessions.session_menu_pos = None;
-        self.sessions.menu_open_ws = None;
         self.sessions.workspace_menu_open = false;
-        self.sessions.view_menu_pos = None;
-        self.panel_plus_menu_at = None;
-        self.preview.menu = None;
-        self.billing_card_open = false;
-        self.stats_card = None;
-        self.chat.tail_card = None;
         self.sync_lineage_tick(cx);
         cx.notify();
     }
@@ -810,8 +760,6 @@ impl AppStore {
     /// (组件库 Dialog 层),确认后才真正 set_session_permission
     /// (FullAccessAsk::Session)
     pub fn ask_full_access_session(&mut self, cx: &mut Context<Self>) {
-        self.chat.composer_menu = ComposerMenu::None;
-        self.hero_menu = HeroMenu::None;
         self.settings.full_access_confirm = Some(crate::features::settings::FullAccessAsk::Session);
         let store = cx.entity().clone();
         self.with_window_deferred(cx, move |window, cx| {
@@ -885,8 +833,6 @@ impl AppStore {
         let Some(id) = self.state.current_id.clone() else {
             return;
         };
-        self.chat.composer_menu = ComposerMenu::None;
-        self.hero_menu = HeroMenu::None;
         let v = permission.to_string();
         let prior = self
             .session_cfg_by_id
@@ -1016,19 +962,9 @@ impl AppStore {
         cx.notify();
     }
 
-    pub fn set_composer_submenu(
-        &mut self,
-        sub: Option<crate::features::chat::ComposerSubmenu>,
-        cx: &mut Context<Self>,
-    ) {
-        self.chat.composer_submenu = sub;
-        cx.notify();
-    }
-
-    /// 关闭模型菜单(选中后整体收起)
-    pub fn close_composer_menu(&mut self, cx: &mut Context<Self>) {
-        self.chat.composer_menu = ComposerMenu::None;
-        self.chat.composer_submenu = None;
+    /// 模型菜单级联子面板开/收(模型入口行点击)
+    pub fn toggle_model_submenu(&mut self, cx: &mut Context<Self>) {
+        self.chat.model_submenu_open = !self.chat.model_submenu_open;
         cx.notify();
     }
 
@@ -1045,15 +981,6 @@ impl AppStore {
     }
 
     /// hero chip 下拉开关(互斥;同菜单再点 = 关)
-    pub fn set_hero_menu(&mut self, menu: HeroMenu, cx: &mut Context<Self>) {
-        self.hero_menu = if self.hero_menu == menu {
-            HeroMenu::None
-        } else {
-            menu
-        };
-        cx.notify();
-    }
-
     /// 会话设置公共路径:成功回写缓存,失败本地通告;一律关菜单
     fn mutate_session_cfg(
         &mut self,
@@ -1071,8 +998,6 @@ impl AppStore {
         } else {
             self.refresh_session_cfg(&id, cx);
         }
-        self.chat.composer_menu = ComposerMenu::None;
-        self.hero_menu = HeroMenu::None;
         cx.notify();
     }
 
@@ -1205,7 +1130,6 @@ impl AppStore {
             self.panel_tabs.push(tab.clone());
         }
         self.panel_active_tab = Some(tab);
-        self.panel_plus_menu_at = None;
         if matches!(self.panel_active_tab, Some(PanelTab::Trajectory)) {
             self.refresh_trajectory(cx);
         }
@@ -1259,16 +1183,6 @@ impl AppStore {
     /// 轨迹面板当前可见(激活标签 = 轨迹):直播重拉与切会话刷新的门控判据
     pub fn trajectory_visible(&self) -> bool {
         self.panel_active_tab == Some(PanelTab::Trajectory)
-    }
-
-    /// 面板「+」菜单开(坐标锚定,root 级渲染;同行 ⋯ 菜单模式)
-    pub fn open_panel_plus_menu_at(
-        &mut self,
-        pos: gpui_kit::Point<gpui_kit::Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        self.panel_plus_menu_at = Some(pos);
-        cx.notify();
     }
 
     /// 面板拖宽开始(锚点 = 光标 x + 当时宽 + 视口宽)

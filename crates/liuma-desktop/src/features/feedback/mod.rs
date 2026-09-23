@@ -6,4 +6,4 @@ pub(crate) mod store;
 mod views;
 
 pub(crate) use store::FeedbackStore;
-pub(crate) use views::{actions, render_note_editor};
+pub(crate) use views::actions;

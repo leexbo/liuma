@@ -11,20 +11,21 @@ use std::sync::Arc;
 use std::path::PathBuf;
 
 use gpui_kit::base::SelectableText;
+use gpui_kit::component::popover::Popover;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{IconName, Sizable as _, StyledExt};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, ClickEvent, Entity, HighlightStyle, InteractiveElement, IntoElement, ObjectFit,
-    ParentElement, StatefulInteractiveElement, Styled, StyledImage, StyledText, Window, div, img,
-    px,
+    Anchor, App, Entity, HighlightStyle, InteractiveElement, IntoElement, ObjectFit, ParentElement,
+    StatefulInteractiveElement, Styled, StyledImage, StyledText, Window, div, img, px,
 };
 
 use super::store::PreviewBucket;
 use crate::kits::filetype::{self, DocRenderer};
 use crate::kits::i18n::dict;
 use crate::kits::icons::{LiumaIcon, fixed};
+use crate::kits::popup::PopTrigger;
 use crate::kits::theme;
 use crate::shell::panel::PreviewTab;
 use crate::shell::scroll::FullTrackHandle;
@@ -165,7 +166,8 @@ fn preview_header(
                 .child(div().truncate().text_color(theme::CAPTION()).child(prefix))
                 .child(div().truncate().text_color(theme::LABEL_2()).child(last)),
         );
-    // 渲染器菜单(候选 > 1 才显示;钮文案 = 当前渲染器名)
+    // 渲染器菜单(候选 > 1 才显示;钮文案 = 当前渲染器名;组件库
+    // Popover 托管开态/外点关闭/定位,store 不再有旗标与坐标捕获)
     if snap.candidates.len() > 1 {
         let s_menu = store.clone();
         let menu_rel = rel.clone();
@@ -174,29 +176,29 @@ fn preview_header(
             .map(DocRenderer::title)
             .unwrap_or_else(|| dict::shell::preview_tab());
         header = header.child(
-            div()
-                .id("preview-renderer-menu")
-                .debug_selector(|| "preview-renderer-menu".to_string())
-                .flex()
-                .items_center()
-                .gap(px(4.))
-                .h(px(24.))
-                .px(px(8.))
-                .rounded(px(6.))
-                .cursor_pointer()
-                .text_size(px(12.))
-                .text_color(theme::LABEL_2())
-                .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL()))
-                .child(title)
-                .child(fixed(IconName::ChevronDown, 11.))
-                .on_click(move |ev: &ClickEvent, _, cx| {
-                    let pos = match ev {
-                        ClickEvent::Mouse(m) => m.down.position,
-                        _ => gpui_kit::Point::default(),
-                    };
-                    s_menu.update(cx, |st, cx| {
-                        st.preview_open_menu_at(menu_rel.clone(), pos, cx)
-                    });
+            Popover::new("preview-renderer-pop")
+                .appearance(false)
+                .anchor(Anchor::TopLeft)
+                .trigger(PopTrigger(
+                    div()
+                        .id("preview-renderer-menu")
+                        .debug_selector(|| "preview-renderer-menu".to_string())
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .h(px(24.))
+                        .px(px(8.))
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(theme::LABEL_2())
+                        .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL()))
+                        .child(title)
+                        .child(fixed(IconName::ChevronDown, 11.)),
+                ))
+                .content(move |_, _, cx| {
+                    let pop = cx.entity();
+                    renderer_menu_card(&s_menu, &menu_rel, pop, cx).into_any_element()
                 }),
         );
     }
@@ -757,12 +759,12 @@ fn preview_lines_body(
         .into_any_element()
 }
 
-/// 「打开方式」菜单卡(root 级定位渲染,同面板「+」菜单:occlude +
-/// 整卡 mousedown 豁免 + 外点关闭);当前生效项打勾
-pub fn renderer_menu_card(
+/// 「打开方式」菜单(组件库 Popover 内容;开合/定位/外点关闭由库
+/// 托管;选中即换渲染器并收起菜单)。当前生效项打勾
+fn renderer_menu_card(
     store: &Entity<AppStore>,
     rel: &PathBuf,
-    pos: gpui_kit::Point<gpui_kit::Pixels>,
+    pop: Entity<gpui_kit::component::popover::PopoverState>,
     cx: &App,
 ) -> impl IntoElement {
     let name = rel
@@ -782,6 +784,7 @@ pub fn renderer_menu_card(
         .map(|renderer| {
             let s = store.clone();
             let item_rel = rel.clone();
+            let pop = pop.clone();
             let selected = current == Some(renderer);
             let sel_renderer = renderer;
             div()
@@ -805,24 +808,19 @@ pub fn renderer_menu_card(
                     fixed(IconName::Check, 12.).opacity(0.)
                 }))
                 .child(div().text_size(px(12.)).child(renderer.title()))
-                .on_click(move |_, _, cx| {
+                .on_click(move |_, window, cx| {
+                    let pop = pop.clone();
                     s.update(cx, |st, cx| {
-                        st.preview_select_renderer(&item_rel, sel_renderer, cx)
+                        st.preview_select_renderer(&item_rel, sel_renderer, cx);
                     });
+                    pop.update(cx, |state, cx| state.dismiss(window, cx));
                 })
                 .into_any_element()
         })
         .collect();
     div()
         .id("preview-renderer-menu-card")
-        .absolute()
-        .occlude()
         .debug_selector(|| "preview-renderer-menu-card".to_string())
-        .top(pos.y + px(12.))
-        .left(pos.x)
-        .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-            cx.stop_propagation();
-        })
         .v_flex()
         .w(px(140.))
         .gap(px(2.))

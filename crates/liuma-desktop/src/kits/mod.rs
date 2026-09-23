@@ -10,6 +10,7 @@ pub(crate) mod icons;
 pub(crate) mod markdown_tv;
 pub(crate) mod mermaid;
 pub(crate) mod modals;
+pub(crate) mod popup;
 pub(crate) mod selection_order;
 pub(crate) mod state_dot;
 pub(crate) mod theme;
