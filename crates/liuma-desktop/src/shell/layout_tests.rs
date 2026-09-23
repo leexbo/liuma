@@ -5648,19 +5648,22 @@ fn sidebar_header_search_toggle(cx: &mut TestAppContext) {
     wcx.refresh().expect("刷新失败");
     cx.run_until_parked();
     assert!(wcx.debug_bounds("sidebar-header").is_some(), "标题行应渲染");
-    assert!(wcx.debug_bounds("header-btn-0").is_some(), "搜索钮应渲染");
     assert!(
-        wcx.debug_bounds("header-btn-1").is_some(),
+        wcx.debug_bounds("header-btn-搜索会话").is_some(),
+        "搜索钮应渲染"
+    );
+    assert!(
+        wcx.debug_bounds("header-btn-视图选项").is_some(),
         "视图选项钮应渲染"
     );
     assert!(
-        wcx.debug_bounds("header-btn-2").is_some(),
+        wcx.debug_bounds("header-btn-添加工作区").is_some(),
         "添加工作区钮应渲染"
     );
     assert!(wcx.debug_bounds("new-session").is_some(), "新会话行应渲染");
 
     // 搜索开:header 切换为搜索框,× 钮在场
-    click_sel(&mut wcx, "header-btn-0");
+    click_sel(&mut wcx, "header-btn-搜索会话");
     cx.run_until_parked();
     assert!(
         cx.update(|app| store.read(app).search.search_open),
@@ -5698,7 +5701,7 @@ fn sidebar_view_options_menu(cx: &mut TestAppContext) {
     );
 
     // 滑块钮开菜单
-    click_sel(&mut wcx, "header-btn-1");
+    click_sel(&mut wcx, "header-btn-视图选项");
     cx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     assert!(
@@ -5746,7 +5749,7 @@ fn sidebar_view_options_menu(cx: &mut TestAppContext) {
     );
 
     // 切回按工作区(菜单重开 → 选按工作区)
-    click_sel(&mut wcx, "header-btn-1");
+    click_sel(&mut wcx, "header-btn-视图选项");
     cx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     click_sel(&mut wcx, "view-item-view-group-ws");

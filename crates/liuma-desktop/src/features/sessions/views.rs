@@ -21,8 +21,7 @@ use crate::kits::i18n::dict;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::reducer::{relative_time, workspace_of};
-use crate::shell::store::{AppStore, TIP_ADD_WS, TIP_ARCHIVE_BASE, TIP_SEARCH, TIP_VIEW_MENU};
-use crate::shell::tip_capture_layer;
+use crate::shell::store::AppStore;
 
 /// 侧栏整体(展开 280px 胶囊卡;收起完全隐藏不渲染——
 /// 折叠不再保留 56px rail,展开入口仅标题栏缩进钮)。
@@ -227,8 +226,6 @@ fn header_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .child(div().flex_1())
         .child(
             header_icon_button(
-                store,
-                TIP_SEARCH,
                 dict::sessions::search_ph(),
                 fixed(LiumaIcon::SearchOutline, 14.),
             )
@@ -239,8 +236,6 @@ fn header_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         )
         .child(
             header_icon_button(
-                store,
-                TIP_VIEW_MENU,
                 dict::sessions::view_options(),
                 fixed(LiumaIcon::Personalization, 15.),
             )
@@ -255,8 +250,6 @@ fn header_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         )
         .child(
             header_icon_button(
-                store,
-                TIP_ADD_WS,
                 dict::sessions::add_workspace(),
                 fixed(LiumaIcon::ProjectAdd, 16.),
             )
@@ -267,20 +260,14 @@ fn header_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         )
 }
 
-/// 顶栏图标钮(圆形 hover 底;hover 500ms 出 tooltip)。含渲染期
-/// bounds 捕获层(canvas 写 tip_bounds[slot],tooltip 锚定用)与
-/// mousedown 豁免(头行为窗口拖拽区,钮点击不得触发拖窗)
-fn header_icon_button(
-    store: &Entity<AppStore>,
-    slot: usize,
-    tip: &'static str,
-    icon: Icon,
-) -> gpui_kit::Stateful<gpui_kit::Div> {
-    let s = store.clone();
-    let sel = format!("header-btn-{slot}");
+/// 顶栏图标钮(圆形 hover 底;tooltip 走组件库 `.tooltip()` 托管)。
+/// 含 mousedown 豁免(头行为窗口拖拽区,钮点击不得触发拖窗)
+fn header_icon_button(tip: &'static str, icon: Icon) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let id: gpui_kit::SharedString = format!("header-btn-{tip}").into();
+    let sel = id.clone();
     div()
-        .id(("header-btn", slot))
-        .debug_selector(move || sel.clone())
+        .id(id)
+        .debug_selector(move || sel.to_string())
         .relative()
         .flex()
         .size(px(26.))
@@ -293,39 +280,8 @@ fn header_icon_button(
         .text_color(theme::LABEL_3())
         .hover(|s| s.bg(theme::LAYER()).text_color(theme::LABEL_2()))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_hover(move |enter: &bool, _, cx| {
-            s.update(cx, |st, cx| st.header_tip_hover(slot, tip, *enter, cx));
-        })
+        .tooltip(crate::shell::tip(tip))
         .child(icon)
-        .child(tip_capture_layer(store, slot))
-}
-
-/// 顶栏钮 tooltip 卡(根级渲染;按钮下方居中,窗缘钳制;非交互不
-/// occlude,不挡下方命中)
-pub fn header_tip_card(
-    text: gpui_kit::SharedString,
-    b: gpui_kit::Bounds<gpui_kit::Pixels>,
-    viewport_w: f32,
-) -> impl IntoElement {
-    let w = text.chars().count() as f32 * 12. + 20.;
-    let center = f32::from(b.origin.x) + f32::from(b.size.width) / 2.;
-    let left = (center - w / 2.).clamp(8., (viewport_w - w - 8.).max(8.));
-    div()
-        .absolute()
-        .top(px(f32::from(b.origin.y) + f32::from(b.size.height) + 6.))
-        .left(px(left))
-        .flex()
-        .h(px(24.))
-        .items_center()
-        .px(px(10.))
-        .rounded(px(6.))
-        .border_1()
-        .border_color(theme::BORDER_2())
-        .bg(theme::DOCK())
-        .shadow_md()
-        .text_size(px(12.))
-        .text_color(theme::LABEL_2())
-        .child(text)
 }
 
 /// 会话树:按工作区分组(首见序),搜索过滤;单列表态(视图选项)
@@ -617,12 +573,10 @@ fn session_row(
     let sub_running = st.running_subagent_count(&s.session_id);
     let target = store.clone();
     let archived = store.clone();
-    let arch_tip = store.clone();
     let id = s.session_id.clone();
     let arch_id = id.clone();
     let sel = format!("session-row-{id}");
     let sel_arch = format!("session-archive-{ix}");
-    let arch_slot = TIP_ARCHIVE_BASE + ix;
     // 行 hover 组:尾部时间 ↔ 归档钮互换
     let grp = format!("sess-grp-{ix}");
     div()
@@ -701,17 +655,7 @@ fn session_row(
                         .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
                         .text_color(theme::CAPTION())
                         .child(fixed(LiumaIcon::Archive, 14.))
-                        .child(crate::shell::tip_capture_layer(store, arch_slot))
-                        .on_hover(move |enter: &bool, _, cx| {
-                            arch_tip.update(cx, |st, cx| {
-                                st.header_tip_hover(
-                                    arch_slot,
-                                    dict::sessions::tip_archive(),
-                                    *enter,
-                                    cx,
-                                )
-                            });
-                        })
+                        .tooltip(crate::shell::tip(dict::sessions::tip_archive()))
                         .on_click(move |_, _, cx| {
                             cx.stop_propagation();
                             let id = arch_id.clone();

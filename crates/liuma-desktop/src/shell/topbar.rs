@@ -13,8 +13,7 @@ use gpui_kit::{
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::metrics::RUN_CLOCK_AFTER_SECS;
-use crate::shell::store::{AppStore, TIP_FOLD, TIP_PANEL_TOGGLE};
-use crate::shell::tip_capture_layer;
+use crate::shell::store::AppStore;
 
 /// 标题栏内容行(置于 TitleBar 内):工作区下拉 + git 分支 …… 会话
 /// 标题**真居中**(对称内缩绝对区,避开两侧控件)。分支自 StatusBar
@@ -138,7 +137,7 @@ fn branch_badge(branch: String) -> impl IntoElement {
 /// 折叠入口移此)。折叠态显「展开」图标、展开态显「收起」——是折叠
 /// 控制的唯一入口(rail 不再重复放 expand)。形态与工作区触发钮同高共形
 fn sidebar_fold_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
-    let (s, s_tip) = (store.clone(), store.clone());
+    let s = store.clone();
     let collapsed = store.read(cx).sidebar_collapsed;
     let icon = if collapsed {
         IconName::PanelLeftOpen
@@ -164,18 +163,10 @@ fn sidebar_fold_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         // 命中收集,拖拽盒不进集合,点击才回到钮上(macOS 无此机制,
         // 遮挡无副作用)。标题栏内**每个可点元素**都必须带这一行
         .occlude()
+        .tooltip(crate::shell::tip(
+            crate::kits::i18n::dict::shell::tip_toggle_sidebar(),
+        ))
         .child(fixed(icon, 14.))
-        .child(tip_capture_layer(store, TIP_FOLD))
-        .on_hover(move |enter: &bool, _, cx| {
-            s_tip.update(cx, |st, cx| {
-                st.header_tip_hover(
-                    TIP_FOLD,
-                    crate::kits::i18n::dict::shell::tip_toggle_sidebar(),
-                    *enter,
-                    cx,
-                )
-            });
-        })
         .on_click(move |_, _, cx| {
             s.update(cx, |st, cx| st.toggle_sidebar(cx));
         })
@@ -224,7 +215,7 @@ fn workspace_trigger(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
 /// 右侧面板开关钮(左组尾;开态前景提亮、无底色——开关
 /// 是普通 chrome 钮,不走品牌蓝高亮)
 fn panel_toggle_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
-    let (open, s, s_tip) = (store.read(cx).panel_open, store.clone(), store.clone());
+    let (open, s) = (store.read(cx).panel_open, store.clone());
     div()
         .id("panel-toggle")
         .debug_selector(|| "panel-toggle".to_string())
@@ -244,18 +235,10 @@ fn panel_toggle_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .hover(|s| s.bg(theme::LAYER()).text_color(theme::LABEL()))
         // 拖拽区豁免,见 sidebar_fold_button 的说明
         .occlude()
+        .tooltip(crate::shell::tip(
+            crate::kits::i18n::dict::shell::tip_toggle_panel(),
+        ))
         .child(fixed(IconName::PanelRight, 14.))
-        .child(tip_capture_layer(store, TIP_PANEL_TOGGLE))
-        .on_hover(move |enter: &bool, _, cx| {
-            s_tip.update(cx, |st, cx| {
-                st.header_tip_hover(
-                    TIP_PANEL_TOGGLE,
-                    crate::kits::i18n::dict::shell::tip_toggle_panel(),
-                    *enter,
-                    cx,
-                )
-            });
-        })
         .on_click(move |_, _, cx| {
             s.update(cx, |st, cx| st.toggle_panel(cx));
         })

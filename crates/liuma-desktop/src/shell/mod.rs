@@ -35,24 +35,14 @@ use crate::features::subagents;
 use crate::kits::theme;
 use crate::shell::store::AppStore;
 
-/// 应用全局键表(main.rs 启动与 layout_tests 装配共用同源,防漂移;
-/// 处理器在 WorkspaceView 根 on_action 收口)
-/// tooltip 锚定 bounds 捕获层:canvas 在 paint 相位把元素 bounds 写入
-/// tip_bounds[slot](无 notify,不驱动新帧;perm_chip_bounds 同款)。
-/// 须挂在带定位的宿主元素内(`.absolute().inset_0()`)
-pub(crate) fn tip_capture_layer(store: &Entity<AppStore>, slot: usize) -> gpui_kit::AnyElement {
-    let cap = store.clone();
-    gpui_kit::canvas(
-        move |b: gpui_kit::Bounds<gpui_kit::Pixels>, _, cx| {
-            cap.update(cx, |st, _| {
-                st.tip_bounds.insert(slot, b);
-            });
-        },
-        |_, _, _, _| {},
-    )
-    .absolute()
-    .inset_0()
-    .into_any_element()
+/// 统一 tooltip 构造:字号 12px(组件库默认 text_sm = 14px,相对本
+/// 应用 13px 正文偏大)。全站 tooltip 一律经此构造,别直接 build。
+pub(crate) fn tip(text: &'static str) -> impl Fn(&mut Window, &mut App) -> gpui_kit::AnyView {
+    move |window, cx| {
+        gpui_kit::component::tooltip::Tooltip::new(text)
+            .text_size(px(12.))
+            .build(window, cx)
+    }
 }
 
 /// 平台主修饰键名(macOS = `cmd`;Windows/Linux = `ctrl`)。
@@ -672,12 +662,8 @@ impl Render for WorkspaceView {
                     .map(|pos| sessions::view_options_menu_card(&self.store, cx, pos));
                 el.children(card)
             })
-            // 顶栏钮 tooltip(hover 500ms;root 级定位渲染,非交互不 occlude)
-            .when(self.store.read(cx).header_tip.is_some(), |el| {
-                let tip = self.store.read(cx).header_tip.clone();
-                let vw = f32::from(window.viewport_size().width);
-                el.children(tip.map(|(text, b)| sessions::header_tip_card(text, b, vw)))
-            })
+            // 顶栏钮 tooltip 已迁组件库 `.tooltip()`(原生 overlay 托管
+            // 生命周期:hover 消失/元素卸载/点击均自动退场)
             // 面板「+」菜单(root 级定位渲染,同 row/ws 菜单;徽标文案
             // 与面板空态同源:键表生成)
             .when(self.store.read(cx).panel_plus_menu_at.is_some(), |el| {

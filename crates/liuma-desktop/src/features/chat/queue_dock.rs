@@ -4,9 +4,9 @@
 //! 空队列不渲染;单条直显行(自带队列图标);多条 = 「N 条排队消息」
 //! 计数头 + 可折叠列表,行间发丝分隔。行内动作:编辑(行内输入)/
 //! 立即投递(steer)/ 移除——走 host `update_queue`(edit/remove/
-//! steer),变更后 `session/queue` 帧自动广播回填;动作钮悬停出
-//! tooltip(槽位 [`crate::shell::store::TIP_QUEUE_BASE`] + 行序×3 +
-//! 钮序)。`steering` 落位不在本组件(消息流尾部的插队气泡,见
+//! steer),变更后 `session/queue` 帧自动广播回填;动作钮 tooltip 走
+//! 组件库 `.tooltip()`(原生 overlay 托管生命周期)。
+//! `steering` 落位不在本组件(消息流尾部的插队气泡,见
 //! chat_pane)。立即投递仅在会话运行中渲染:空闲时 queued 条目本就
 //! 会被驱动立即认领,steer 窗口已关,徒行只会收到 steer-unavailable
 //! 死胡同(DSH 同规:动作仅 running 时可用)。
@@ -25,8 +25,6 @@ use crate::kits::i18n::dict;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
-use crate::shell::store::TIP_QUEUE_BASE;
-use crate::shell::tip_capture_layer;
 
 /// 队列条带(空 = 不渲染;仅 `queued` 落位;composer 附着面)
 pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> impl IntoElement {
@@ -207,22 +205,20 @@ fn queue_row(
         );
     }
     row.child(queue_actions(
-        store, ix, entry, session_id, is_editing, editable, running, window, cx,
+        store, entry, session_id, is_editing, editable, running, window, cx,
     ))
 }
 
-/// 动作钮(28px 圆形透明底;悬停浮底 + 提亮;悬停 100ms 出 tooltip)。
-/// `slot`/`tip` = tooltip 锚槽位与文案;`on_click` 收 (store, window,
-/// ctx)——编辑进入需要 window,其余忽略。
+/// 动作钮(28px 圆形透明底;悬停浮底 + 提亮;tooltip 走组件库托管
+/// 生命周期)。`tip` = 文案;`on_click` 收 (store, window, ctx)——
+/// 编辑进入需要 window,其余忽略。
 fn action_button(
     store: &Entity<AppStore>,
-    slot: usize,
     tip: &'static str,
     icon: gpui_kit::AnyElement,
     id: &'static str,
     on_click: impl Fn(&mut AppStore, &mut Window, &mut Context<AppStore>) + 'static,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
-    let s = store.clone();
     let s_click = store.clone();
     div()
         .id(id)
@@ -235,14 +231,11 @@ fn action_button(
         .cursor_pointer()
         .text_color(theme::CAPTION())
         .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL()))
-        .on_hover(move |enter: &bool, _, cx| {
-            s.update(cx, |st, cx| st.header_tip_hover(slot, tip, *enter, cx));
-        })
+        .tooltip(crate::shell::tip(tip))
         .on_click(move |_, window, cx| {
             s_click.update(cx, |st, cx| on_click(st, window, cx));
         })
         .child(icon)
-        .child(tip_capture_layer(store, slot))
 }
 
 /// 行内动作钮组(编辑态 = 保存/取消;常态 = 编辑/[立即投递]/移除)。
@@ -253,7 +246,6 @@ fn action_button(
 #[allow(clippy::type_complexity)]
 fn queue_actions(
     store: &Entity<AppStore>,
-    ix: usize,
     entry: &QueueEntry,
     session_id: &str,
     is_editing: bool,
@@ -265,14 +257,12 @@ fn queue_actions(
     let _ = (window, cx);
     let session_id = SharedString::from(session_id.to_string());
     let item_id = entry.id.clone();
-    let slot = |n: usize| TIP_QUEUE_BASE + ix * 3 + n;
     let mut actions = div().flex().items_center().gap(px(10.));
     if is_editing {
         let (sid_c, iid_c) = (session_id.clone(), item_id.clone());
         actions = actions
             .child(action_button(
                 store,
-                slot(0),
                 dict::common::save(),
                 fixed(IconName::Check, 14.).into_any_element(),
                 "queue-save",
@@ -280,7 +270,6 @@ fn queue_actions(
             ))
             .child(action_button(
                 store,
-                slot(1),
                 dict::common::cancel(),
                 fixed(IconName::Close, 14.).into_any_element(),
                 "queue-cancel-edit",
@@ -295,7 +284,6 @@ fn queue_actions(
             .when(editable, |el| {
                 el.child(action_button(
                     store,
-                    slot(0),
                     dict::common::edit(),
                     fixed(LiumaIcon::Pencil, 14.).into_any_element(),
                     "queue-edit",
@@ -307,7 +295,6 @@ fn queue_actions(
             .when(running, |el| {
                 el.child(action_button(
                     store,
-                    slot(1),
                     dict::chat::queue_steer(),
                     fixed(IconName::ArrowUp, 14.).into_any_element(),
                     "queue-steer",
@@ -318,7 +305,6 @@ fn queue_actions(
             })
             .child(action_button(
                 store,
-                slot(2),
                 dict::common::remove(),
                 fixed(IconName::Delete, 14.).into_any_element(),
                 "queue-remove",
