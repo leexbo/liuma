@@ -67,6 +67,8 @@ entries! {
     compact_queued => ["已排队,回合结束后压缩", "Queued — compaction starts after this turn"],
     /// 深入探索中(回合计时延长提示)
     exploring => ["深入探索中…", "Digging deeper…"],
+    /// Think 折叠行标签(zh 依 dsh 推理术语)
+    think_label => ["推理", "Think"],
     /// 折叠轮标:思考与工具步数
     think_tools(steps) => ["思考与工具 · {steps} 步", "Thinking & tools · {steps} steps"],
     /// 折叠轮标后缀:工具调用数

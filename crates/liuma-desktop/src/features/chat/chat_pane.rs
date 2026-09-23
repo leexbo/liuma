@@ -1815,7 +1815,7 @@ fn assistant_block(
                     // (公共折叠头,与注入行同族)
                     collapse_row_header(
                         fixed(LiumaIcon::Brain, 14.).into_any_element(),
-                        "Think",
+                        dict::chat::think_label(),
                         (!open).then(|| {
                             // 折叠摘要:直播中取**尾部**(实时跟随正在思考的
                             // 末尾);定稿后取**开头**(思考首句与正文主题

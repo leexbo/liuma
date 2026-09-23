@@ -12,6 +12,24 @@ entries! {
     /// 投影切换:调用
     toolbar_calls => ["Calls", "调用"],
 
+    // ── 台账 kind 徽章(dsh kind.* 同款;en 保持既有大写)──
+    /// 徽章:系统
+    kind_system => ["SYSTEM", "系统"],
+    /// 徽章:用户
+    kind_user => ["USER", "用户"],
+    /// 徽章:上下文
+    kind_context => ["CONTEXT", "上下文"],
+    /// 徽章:已压缩
+    kind_compacted => ["COMPACTED", "已压缩"],
+    /// 徽章:助手
+    kind_assistant => ["ASSISTANT", "助手"],
+    /// 徽章:工具
+    kind_tool => ["TOOL", "工具"],
+    /// 助手行占位(无文本仅有工具调用的轮;liuma-core 自产展示文案)
+    tool_call_only => ["(仅工具调用)", "(tool call only)"],
+    /// 请求标(Request #N;时间线头与层级行)
+    request_n(n) => ["Request #{n}", "请求 #{n}"],
+
     // ── 时间线图例 ──
     /// 泳道:输入
     legend_input => ["Input", "输入"],
@@ -40,8 +58,7 @@ entries! {
 
     // ── 轮标(dsh kind.* 语境)──
     /// 轮标:第 n 轮
-    turn_n(t) => ["Turn {t}", "第 {t} 轮"],
-    /// 轮标 + 定位段(段为线上数据 Step N,逐字拼接)
+    turn_n(t) => ["Turn {t}", "第 {t} 轮"],    /// 轮标 + 定位段(段为线上数据 Step N,逐字拼接)
     turn_at(t, at) => ["Turn {t} · {at}", "第 {t} 轮 · {at}"],
     /// 轮标 + 消息(无 Step 归属)
     turn_message(t) => ["Turn {t} · Message", "第 {t} 轮 · 消息"],

@@ -107,12 +107,12 @@ fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
 /// kind → 台账标签文本
 fn kind_label(kind: &str) -> &'static str {
     match kind {
-        "system" => "SYSTEM",
-        "user" => "USER",
-        "context" => "CONTEXT",
-        "compacted" => "COMPACTED",
-        "message" => "ASSISTANT",
-        _ => "TOOL",
+        "system" => dict::trajectory::kind_system(),
+        "user" => dict::trajectory::kind_user(),
+        "context" => dict::trajectory::kind_context(),
+        "compacted" => dict::trajectory::kind_compacted(),
+        "message" => dict::trajectory::kind_assistant(),
+        _ => dict::trajectory::kind_tool(),
     }
 }
 
@@ -1488,7 +1488,13 @@ fn record_row(
             .px(px(8.))
             .text_size(px(12.))
             .text_color(color)
-            .child(rec.text.clone())
+            // liuma-core 自产的展示占位在渲染层词典化(检索面仍用线上
+            // 原文,见 filter haystack);其余逐字
+            .child(if rec.text == "(tool call only)" {
+                dict::trajectory::tool_call_only().to_string()
+            } else {
+                rec.text.clone()
+            })
             .into_any_element()
     };
 
@@ -1643,7 +1649,7 @@ fn inspector(
                     .font_family("Menlo")
                     .text_size(px(12.))
                     .text_color(theme::LABEL_2())
-                    .child(format!("Request #{n}")),
+                    .child(dict::trajectory::request_n(n)),
             )
             .child(
                 div()
@@ -2361,11 +2367,13 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
         if let Some(q) = req {
             let s2 = store.clone();
             let n = q.number;
-            dd = dd.child(nav_link("goto-request", format!("Request #{n}")).on_click(
-                move |_, _, cx| {
-                    s2.update(cx, |st, cx| st.select_trajectory_request(n, cx));
-                },
-            ));
+            dd = dd.child(
+                nav_link("goto-request", dict::trajectory::request_n(n)).on_click(
+                    move |_, _, cx| {
+                        s2.update(cx, |st, cx| st.select_trajectory_request(n, cx));
+                    },
+                ),
+            );
         }
         if let Some(p) = parent {
             let s2 = store.clone();
