@@ -16,6 +16,9 @@ pub enum ToolState {
     Done,
     /// 失败
     Error,
+    /// 被中断(回合中止时仍未落定;渲染层 amber 状态点,
+    /// 不再残留运行扫光)
+    Stopped,
 }
 
 /// todo 条目(todo/write 投影;渲染在 todo_dock)
@@ -51,6 +54,8 @@ pub enum ChatNode {
         images: Vec<serde_json::Value>,
         /// 文件块(attachment 引用数组;空 = 无文件)
         files: Vec<serde_json::Value>,
+        /// 消息时刻(信封毫秒;操作行时间戳,0 = 缺席)
+        time: i64,
     },
     /// 注入上下文(user/message + source.kind ≠ "user";4a 完整溯源模型):
     /// 模型实际收到的非用户来源消息(AGENTS.md / @session 快照),折叠渲染
@@ -357,13 +362,31 @@ impl ChatState {
                 }
                 let kind = ev.data["reason"]["kind"].as_str();
                 let aborted = kind == Some("aborted");
-                // 取消收尾:等待退避中的重试行翻转「已取消」
-                if aborted {
+                let errored = kind == Some("error");
+                // 终态收口:残留流式位熄灭(半截正文冻结——「已停止」pill
+                // 与动作行得以定稿;引擎对中断/错误路径不发 assistant/message
+                // 定稿,不在此熄灭则指示永不出现)
+                if aborted || errored {
                     for n in self.nodes.iter_mut() {
-                        if let ChatNode::Retry { state, .. } = n
-                            && *state == RetryState::Waiting
-                        {
-                            *state = RetryState::Cancelled;
+                        if let ChatNode::Assistant { streaming, .. } = n {
+                            *streaming = false;
+                        }
+                    }
+                }
+                // 取消收尾:等待退避中的重试行翻转「已取消」;
+                // 未落定的调用显式翻成「已停止」(amber 点,对齐参考的
+                // interrupted 合成结果——行上不残留运行扫光;错误收口同
+                // 理,否则平铺段残留永久扫光)
+                if aborted || errored {
+                    for n in self.nodes.iter_mut() {
+                        match n {
+                            ChatNode::Retry { state, .. } if *state == RetryState::Waiting => {
+                                *state = RetryState::Cancelled;
+                            }
+                            ChatNode::Tool { state, .. } if *state == ToolState::Running => {
+                                *state = ToolState::Stopped;
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -400,6 +423,7 @@ impl ChatState {
                         text: content_text(&ev.data["content"]),
                         images: image_blocks(&ev.data["content"]),
                         files: file_blocks(&ev.data["content"]),
+                        time: ev.time,
                     });
                 } else {
                     self.push_node(ChatNode::Context {
@@ -787,9 +811,9 @@ pub enum RowSlot {
 /// DeepSeek 每步都带 reasoning + 过渡文本,若按「text 空才算过程」
 /// 中间叙述会全部漏收(实测 72 步只收走 51 个工具)。
 /// **答案豁免只对正常完成(TurnTail 非 aborted)段生效**:error 收尾
-/// (Notice)与用户取消/中断(aborted TurnTail)的轮没有最终答复——
-/// 唯一/最后的正文其实是中间叙述,须一并收进组(实测「回合出错」前
-/// 与「已中断」前残留 Think+正文,真实会话日志重放验证)。
+/// (Notice)与用户取消/中断(aborted TurnTail)的轮没有最终答复,
+/// 整段在 `build_row_slots` 倒扫即不归组(恒平铺),此处的 mask 值
+/// 对这些段不再被消费(保留计算纯函数语义,注释记录口径)。
 pub(crate) fn process_mask(nodes: &[ChatNode]) -> Vec<bool> {
     let mut mask = vec![false; nodes.len()];
     let mut answer_taken = false;
@@ -821,8 +845,10 @@ pub(crate) fn process_mask(nodes: &[ChatNode]) -> Vec<bool> {
 }
 
 /// 节点流 → 渲染行槽(纯函数)。「段」= 上一收口节点之后至下一收口
-/// (TurnTail / error 的 Notice)之间的全部节点;不依赖 turn 号
-/// (Context/Tool 节点不携带),倒扫标定后正向拼装。末尾未收口的段
+/// 之间的全部节点;不依赖 turn 号(Context/Tool 节点不携带),倒扫
+/// 标定后正向拼装。**仅正常完成(TurnTail 非 aborted)的轮可折叠**
+/// ——折叠门槛 = 有定稿答案;中断/错误收口段恒平铺(对齐参考实现,
+/// 中断语义由轮尾徽标与正文尾「已停止」pill 承担)。末尾未收口的段
 /// = 直播段,恒平铺——「默认收 + 手动展开例外」由此天然实现
 /// turn/end 自动收拢,无需事件 hook。
 pub fn build_row_slots(
@@ -831,12 +857,17 @@ pub fn build_row_slots(
 ) -> Vec<RowSlot> {
     let mask = process_mask(nodes);
     // 倒扫:每节点所属段的收口 key(收口自身也标自己,但收口非过程项,
-    // 恒走 Node 分支)
+    // 恒走 Node 分支)。aborted TurnTail 与 Notice 不下发收口,且截断
+    // 向前的传播(错误段不得并入相邻轮的组)
     let mut close_key: Vec<Option<&str>> = vec![None; nodes.len()];
     let mut cur: Option<&str> = None;
     for (i, n) in nodes.iter().enumerate().rev() {
-        if matches!(n, ChatNode::TurnTail { .. } | ChatNode::Notice { .. }) {
-            cur = Some(n.key());
+        match n {
+            ChatNode::TurnTail { key, aborted, .. } => {
+                cur = (!*aborted).then_some(key.as_str());
+            }
+            ChatNode::Notice { .. } => cur = None,
+            _ => {}
         }
         close_key[i] = cur;
     }
@@ -929,6 +960,19 @@ pub fn group_counts(nodes: &[ChatNode], first: usize, last: usize) -> (usize, us
         })
         .unwrap_or(0);
     (steps, tools)
+}
+
+/// 组区间内中间叙述条数(非空正文的 Assistant)——组头「M 条消息」
+/// 计数口径(对齐参考 messageCount;最终答复在组外,不计入)
+pub fn group_message_count(nodes: &[ChatNode], first: usize, last: usize) -> usize {
+    nodes
+        .get(first..=last)
+        .map(|s| {
+            s.iter()
+                .filter(|n| matches!(n, ChatNode::Assistant { text, .. } if !text.is_empty()))
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 // ---- 导航轨锚点(读取层派生)----
@@ -2150,6 +2194,7 @@ mod tests {
             text: "hi".into(),
             images: vec![],
             files: Vec::new(),
+            time: 0,
         }));
     }
 
@@ -2219,9 +2264,9 @@ mod tests {
     }
 
     /// 整轮一组:正文交错不打断组;折叠态组行后的穿插正文保持原序;
-    /// error 通告与 TurnTail 同为收口
+    /// **error 收口段不折叠**(无定稿答案 → 恒平铺,与中断轮同门槛)
     #[test]
-    fn row_slots_whole_turn_group_with_interleaved_text() {
+    fn row_slots_whole_turn_group_with_error_tail_flat() {
         let mut evs = vec![
             ev("turn/start", 1, json!({ "turn": 1 })),
             ev("user/message", 2, json!({ "content": "hi" })),
@@ -2279,37 +2324,18 @@ mod tests {
         let nodes = project(std::mem::take(&mut evs));
         // 0 user, 1 ctx, 2 正文, 3 call:a, 4 think-only, 5 call:b, 6 notice
         let none = SlotSet::new();
-        // error 收口段无最终答复:唯一正文也是中间叙述,一并收进组
+        // error 收口段无定稿答案:不归组,恒平铺(语义由 Notice 行承担)
         assert_eq!(
             slot_shapes(&build_row_slots(&nodes, &none)),
-            vec!["n0", "g[1..=5]turn-error:9", "n6"]
-        );
-        // 计数:5 过程步(ctx/正文/2 工具/think) · 2 工具
-        assert_eq!(group_counts(&nodes, 1, 5), (5, 2));
-
-        // 展开后交错正文位于原序位(组头 → 成员按事件序,正文夹在其间)
-        let mut open = SlotSet::new();
-        open.insert("turn-error:9".to_string());
-        assert_eq!(
-            slot_shapes(&build_row_slots(&nodes, &open)),
-            vec![
-                "n0",
-                "G[1..=5]turn-error:9",
-                "n1",
-                "n2",
-                "n3",
-                "n4",
-                "n5",
-                "n6"
-            ]
+            vec!["n0", "n1", "n2", "n3", "n4", "n5", "n6"]
         );
     }
 
-    /// 取消收尾(aborted TurnTail)与错误收口同待遇:轮无最终答复,
-    /// 段内最后正文也是中间叙述,一并收进组(真实会话日志重放复现:
-    /// 软取消「已中断」轮的 a:N:31 残留在组外)。
+    /// 取消收尾(aborted TurnTail)不折叠:轮无定稿答案,段内过程行
+    /// 恒平铺(对齐参考「折叠必须有定稿答案」门槛);直播 → 中断过渡
+    /// 无行数跳动,中断语义由轮尾徽标与正文尾「已停止」pill 承担。
     #[test]
-    fn row_slots_aborted_turn_folds_last_narration() {
+    fn row_slots_aborted_turn_stays_flat() {
         let mut evs = vec![
             ev("turn/start", 1, json!({ "turn": 1 })),
             ev("user/message", 2, json!({ "content": "接下来做什么" })),
@@ -2335,20 +2361,70 @@ mod tests {
                 json!({ "turn": 1, "step": step, "callId": format!("{step}"), "name": "bash", "arguments": "{}" }),
             ));
         }
-        // 软取消收尾(cancelled → aborted TurnTail)
+        // 软取消收尾(reason.kind=aborted → aborted TurnTail)
         evs.push(ev(
             "turn/end",
             10,
-            json!({ "turn": 1, "cancelled": "token" }),
+            json!({ "turn": 1, "reason": { "kind": "aborted" } }),
         ));
         let nodes = project(evs);
-        // 0 user, 1 叙①, 2 tool1, 3 叙②(最后正文,旧判定误豁免), 4 tool2, 5 tail(aborted)
+        // 0 user, 1 叙①, 2 tool1, 3 叙②, 4 tool2, 5 tail(aborted)——全平铺
         let none = SlotSet::new();
         assert_eq!(
             slot_shapes(&build_row_slots(&nodes, &none)),
-            vec!["n0", "g[1..=4]turn-end:10", "n5"]
+            vec!["n0", "n1", "n2", "n3", "n4", "n5"]
         );
-        assert_eq!(group_counts(&nodes, 1, 4), (4, 2));
+    }
+
+    /// 中断/错误收口:未落定的调用显式翻成 Stopped(渲染层 amber
+    /// 状态点、撤扫光),已配对成功/失败的调用不受影响;残留流式位
+    /// 同步熄灭(半截正文冻结,pill/动作行定稿)
+    #[test]
+    fn aborted_flip_running_tools_to_stopped() {
+        let mut st = ChatState::default();
+        st.apply(&ev("turn/start", 1, json!({ "turn": 1 })));
+        st.apply(&ev(
+            "tool/call",
+            2,
+            json!({ "turn": 1, "step": 1, "callId": "a", "name": "bash", "arguments": "{}" }),
+        ));
+        st.apply(&ev(
+            "tool/result",
+            3,
+            json!({
+                "message": { "content": [ { "type": "tool-result", "toolCallId": "a",
+                    "content": [ { "type": "text", "text": "ok" } ] } ] },
+            }),
+        ));
+        st.apply(&ev(
+            "tool/call",
+            4,
+            json!({ "turn": 1, "step": 2, "callId": "b", "name": "bash", "arguments": "{}" }),
+        ));
+        st.apply(&ev(
+            "assistant/chunk",
+            5,
+            json!({ "turn": 1, "step": 3, "chunk": { "text": "半截" } }),
+        ));
+        st.apply(&ev(
+            "turn/end",
+            6,
+            json!({ "turn": 1, "reason": { "kind": "aborted" } }),
+        ));
+        assert_eq!(
+            [st.nodes[0].clone(), st.nodes[1].clone()]
+                .iter()
+                .map(|n| match n {
+                    ChatNode::Tool { state, .. } => *state,
+                    other => panic!("{other:?}"),
+                })
+                .collect::<Vec<_>>(),
+            [ToolState::Done, ToolState::Stopped]
+        );
+        assert!(
+            matches!(&st.nodes[2], ChatNode::Assistant { streaming: false, text, .. } if text == "半截"),
+            "中断应冻结残留流式位"
+        );
     }
 
     /// DeepSeek 真实形态:每步 reasoning+过渡文本。段内**最后一个**正文

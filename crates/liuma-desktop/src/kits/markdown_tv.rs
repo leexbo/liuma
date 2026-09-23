@@ -45,8 +45,8 @@ fn styled_view(view: TextView) -> gpui_kit::AnyElement {
 
 fn view_style() -> TextViewStyle {
     TextViewStyle {
-        // 旧块距 mb(8)
-        paragraph_gap: gpui_kit::rems(0.5),
+        // 块距 16(对齐参考 markdown 正文 p margin 16;旧值 8 过密)
+        paragraph_gap: gpui_kit::rems(1.),
         heading_base_font_size: px(14.),
         // 标题与正文同字号,仅粗细区分(多级字号混排显「大大小小」)
         heading_font_size: Some(std::sync::Arc::new(|_level: u8, base| base)),

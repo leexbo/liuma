@@ -67,12 +67,20 @@ entries! {
     compact_queued => ["已排队,回合结束后压缩", "Queued — compaction starts after this turn"],
     /// 深入探索中(回合计时延长提示)
     exploring => ["深入探索中…", "Digging deeper…"],
-    /// Think 折叠行标签(zh 依 dsh 推理术语)
-    think_label => ["推理", "Think"],
-    /// 折叠轮标:思考与工具步数
-    think_tools(steps) => ["思考与工具 · {steps} 步", "Thinking & tools · {steps} steps"],
-    /// 折叠轮标后缀:工具调用数
-    calls_suffix(tools) => [" · {tools} 个调用", " · {tools} calls"],
+    /// Think 折叠行标签(对齐 dsh 术语)
+    think_label => ["思考", "Think"],
+    /// 折叠轮标:工具调用数(对齐 dsh「N 次工具调用」)
+    tool_calls_count(n) => ["{n} 次工具调用", "{n} tool calls"],
+    /// 折叠轮标兜底(无工具调用的纯思考轮)
+    thought_fallback => ["已思考", "Thought for a while"],
+    /// 折叠轮标消息计数(对齐 dsh messageCount)
+    messages_count(n) => ["{n} 条消息", "{n} messages"],
+    /// 助手正文尾「已停止」pill(回合被中断;对齐 dsh message.stopped)
+    message_stopped => ["已停止", "Stopped"],
+    /// 压缩标记行标题(对齐 dsh context compacted)
+    compact_title => ["上下文已压缩", "Context compacted"],
+    /// 通告行标题(对齐 dsh turn-error 结构)
+    turn_failed => ["本轮运行失败", "This turn failed"],
     /// 召回行前缀
     recall(label) => ["召回·{label}", "Recall · {label}"],
     /// 注入行前缀
@@ -139,6 +147,8 @@ entries! {
     more_files(n) => ["+ {n} 个文件", "+{n} files"],
 
     // ── 重试行 ──
+    /// 重试行标题(member_row 标题槽)
+    retry_title => ["模型重试", "Model retry"],
     /// 重试:正在重试(存活连接)
     retry_waiting_live => ["正在重试模型请求", "Retrying model request"],
     /// 重试:等待重试(连接已断)
@@ -155,8 +165,6 @@ entries! {
     retry_reason(msg) => ["失败原因：{msg}", "Failure reason: {msg}"],
 
     // ── 通告与投影 ──
-    /// 回合错误行(detail = 宿主错误原文)
-    turn_error(detail) => ["回合出错:{detail}", "Turn failed: {detail}"],
     /// 宿主消息缺席兜底
     unknown_error => ["未知错误", "Unknown error"],
     /// todo_write 行摘要
@@ -165,6 +173,46 @@ entries! {
     // ── 工具卡 ──
     /// 工具卡行:todo_write 标题
     todo_write_title => ["更新任务清单", "Update to-dos"],
+    /// 工具行标题:未知工具兜底(原名进摘要前缀)
+    generic_tool => ["工具调用", "Tool call"],
+    /// 工具行标题:shell 族
+    tool_bash => ["Bash", "Bash"],
+    /// 工具行标题:读取
+    tool_read => ["读取", "Read"],
+    /// 工具行标题:写入
+    tool_write => ["写入", "Write"],
+    /// 工具行标题:编辑
+    tool_edit => ["编辑", "Edit"],
+    /// 工具行标题:内容搜索(dsh 词汇,原样)
+    tool_grep => ["Grep", "Grep"],
+    /// 工具行标题:文件名匹配(dsh 词汇,原样)
+    tool_glob => ["Glob", "Glob"],
+    /// 工具行标题:文件搜索
+    tool_search => ["搜索", "Search"],
+    /// 工具行标题:网页搜索
+    tool_web_search => ["网页搜索", "Web search"],
+    /// 工具行标题:网页获取
+    tool_web_fetch => ["网页获取", "Web fetch"],
+    /// 工具行标题:读取图片
+    tool_read_image => ["读取图片", "Read image"],
+    /// 工具行标题:代码
+    tool_code => ["代码", "Code"],
+    /// 工具行标题:向用户提问
+    tool_ask => ["提问", "Ask"],
+    /// 工具行标题:后台任务
+    tool_jobs => ["任务", "Jobs"],
+    /// 工具行标题:目标管理
+    tool_goal => ["目标", "Goal"],
+    /// 工具行标题:工作流
+    tool_workflow => ["工作流", "Workflow"],
+    /// 工具行标题:子代理调用
+    tool_subagent => ["子代理", "Subagent"],
+    /// 工具行标题:子代理列表
+    tool_subagent_list => ["子代理列表", "Subagents"],
+    /// 工具行标题:退出计划模式
+    tool_exit_plan => ["退出计划", "Exit plan"],
+    /// 工具行标题:ralph 循环(专名不译)
+    tool_ralph => ["Ralph", "Ralph"],
     /// 空输出占位
     empty_output => ["(空)", "(empty)"],
     /// read 卡截断提示(shown/total 行)
@@ -231,4 +279,32 @@ entries! {
     current_model(m) => ["当前: {m}", "Current: {m}"],
     /// 命令失败
     command_failed(msg) => ["命令失败:{msg}", "Command failed: {msg}"],
+}
+
+/// 工具行标题槽本地化(对齐参考:不暴露模型面名;标题走词典,
+/// 摘要槽只放参数摘要)。None = 未知工具:渲染层以 [`generic_tool`]
+/// 兜底,并把原名放进摘要前缀(`{name} · …`,参考 others 变体同款)。
+pub fn tool_display_name(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "bash" | "shell" => tool_bash(),
+        "file_read" | "read" => tool_read(),
+        "write" => tool_write(),
+        "file_edit" | "edit" => tool_edit(),
+        "grep" => tool_grep(),
+        "glob" => tool_glob(),
+        "file_search" => tool_search(),
+        "web_search" => tool_web_search(),
+        "web_fetch" => tool_web_fetch(),
+        "read_image" => tool_read_image(),
+        "code" => tool_code(),
+        "ask" => tool_ask(),
+        "jobs" => tool_jobs(),
+        "goal" => tool_goal(),
+        "workflow" => tool_workflow(),
+        "subagent" => tool_subagent(),
+        "subagent_list" => tool_subagent_list(),
+        "exit_plan_mode" => tool_exit_plan(),
+        "ralph" => tool_ralph(),
+        _ => return None,
+    })
 }

@@ -49,6 +49,7 @@ fn workspace_chat_nodes_do_not_overlap(cx: &mut TestAppContext) {
                     text: long_para(i),
                     images: Vec::new(),
                     files: Vec::new(),
+                    time: 0,
                 });
             } else {
                 chat.nodes.push(ChatNode::Assistant {
@@ -202,12 +203,14 @@ fn user_bubble_width_adapts_to_content(cx: &mut TestAppContext) {
             text: "@file:justfile".into(),
             images: Vec::new(),
             files: Vec::new(),
+            time: 0,
         });
         chat.nodes.push(ChatNode::User {
             key: "user:long".into(),
             text: long_para(4),
             images: Vec::new(),
             files: Vec::new(),
+            time: 0,
         });
         store.update(cx, |s, _| {
             s.state.chats.insert(id, chat);
@@ -1992,6 +1995,7 @@ fn file_attachments_intake_and_cards_render(cx: &mut TestAppContext) {
                         "bytes": 18_874_368u64,
                     }
                 })],
+                time: 0,
             });
         });
     });
@@ -2272,6 +2276,7 @@ fn history_image_click_opens_lightbox(cx: &mut TestAppContext) {
                     }
                 })],
                 files: vec![],
+                time: 0,
             });
         });
     });
@@ -2402,6 +2407,7 @@ fn user_bubble_text_is_drag_selectable(cx: &mut TestAppContext) {
                 text: "用户发送的这段文字应当可以拖选复制。".into(),
                 images: vec![],
                 files: Vec::new(),
+                time: 0,
             });
         });
     });
@@ -3492,6 +3498,7 @@ fn plan_review_compact_card_two_options(cx: &mut TestAppContext) {
                     text: "先聊着".into(),
                     images: vec![],
                     files: Vec::new(),
+                    time: 0,
                 });
             });
         });
@@ -3787,6 +3794,7 @@ fn narrow_window_panel_yields_and_column_holds(cx: &mut TestAppContext) {
                     text: big_md(&format!("窄窗布局 {ix}")),
                     images: vec![],
                     files: Vec::new(),
+                    time: 0,
                 });
             }
             st.state.chats.insert(id, chat);
@@ -3923,6 +3931,7 @@ fn narrow_window_gutters_keep_anchors_and_scrollbar_out_of_text(cx: &mut TestApp
                     text: big_md(&format!("边槽 {ix}")),
                     images: vec![],
                     files: Vec::new(),
+                    time: 0,
                 });
             }
             st.state.chats.insert(id, chat);
@@ -3977,6 +3986,7 @@ fn full_track_scrollbar_reaches_true_bottom(cx: &mut TestAppContext) {
                     text: big_md(&format!("全轨 {ix}")),
                     images: vec![],
                     files: Vec::new(),
+                    time: 0,
                 });
             }
             st.state.chats.insert(id, chat);
@@ -4571,6 +4581,7 @@ fn ask_user_question_card_pops_via_pump(cx: &mut TestAppContext) {
                 text: "先聊着".into(),
                 images: vec![],
                 files: Vec::new(),
+                time: 0,
             });
         });
     });
@@ -4624,6 +4635,7 @@ fn ask_card_header_states_never_fall_back_to_question(cx: &mut TestAppContext) {
                 text: "先聊着".into(),
                 images: vec![],
                 files: Vec::new(),
+                time: 0,
             });
         });
     });
@@ -4696,6 +4708,7 @@ fn ask_custom_input_not_rewritten_each_frame(cx: &mut TestAppContext) {
                 text: "先聊着".into(),
                 images: vec![],
                 files: Vec::new(),
+                time: 0,
             });
         });
     });
@@ -4777,6 +4790,7 @@ fn ask_card_multi_page_gating(cx: &mut TestAppContext) {
                 text: "先聊着".into(),
                 images: vec![],
                 files: Vec::new(),
+                time: 0,
             });
         });
     });
@@ -4876,6 +4890,7 @@ fn ask_option_long_ascii_description_stays_in_card(cx: &mut TestAppContext) {
                 text: "先聊着".into(),
                 images: vec![],
                 files: Vec::new(),
+                time: 0,
             });
         });
     });
@@ -4936,6 +4951,7 @@ fn approval_card_renders_and_answers(cx: &mut TestAppContext) {
                 text: "先聊着".into(),
                 images: vec![],
                 files: Vec::new(),
+                time: 0,
             });
             st.state.pending_approval = Some(crate::shell::reducer::PendingApproval {
                 rpc_id: "rpc-approval".into(),
@@ -6322,6 +6338,7 @@ fn message_copy_to_clipboard(cx: &mut TestAppContext) {
                 text: "要被复制的消息文本".into(),
                 images: Vec::new(),
                 files: Vec::new(),
+                time: 0,
             });
         });
     });
@@ -7093,6 +7110,7 @@ fn chat_scroll_survives_window_width_change(cx: &mut TestAppContext) {
                     text: long_para(i),
                     images: Vec::new(),
                     files: Vec::new(),
+                    time: 0,
                 });
             }
             chat.nodes.push(ChatNode::Assistant {
@@ -7229,6 +7247,7 @@ fn streaming_entrance_gate_and_tool_sweep(cx: &mut TestAppContext) {
                 text: "hi".into(),
                 images: vec![],
                 files: Vec::new(),
+                time: 0,
             });
             chat.node_born
                 .insert("user:1".into(), std::time::Instant::now());
@@ -7324,6 +7343,7 @@ fn turn_status_gated_by_running(cx: &mut TestAppContext) {
                 text: "hi".into(),
                 images: vec![],
                 files: Vec::new(),
+                time: 0,
             });
             chat.node_born
                 .insert("user:1".into(), std::time::Instant::now());
@@ -7394,7 +7414,7 @@ fn todo_write_row_summary_from_call_args(cx: &mut TestAppContext) {
     );
     redraw(cx, &mut wcx);
     assert!(
-        wcx.debug_bounds("todo-row-extra").is_some(),
+        wcx.debug_bounds("row-suffix").is_some(),
         "并行进行中应有 +N 后缀"
     );
 
@@ -7402,7 +7422,7 @@ fn todo_write_row_summary_from_call_args(cx: &mut TestAppContext) {
     inject(cx, "not json");
     redraw(cx, &mut wcx);
     assert!(
-        wcx.debug_bounds("todo-row-extra").is_none(),
+        wcx.debug_bounds("row-suffix").is_none(),
         "解析失败回落通用摘要(无 +N)"
     );
 
@@ -7445,13 +7465,14 @@ fn turn_group_collapse_expand_roundtrip(cx: &mut TestAppContext) {
         store.update(app, |st, _| {
             let id = st.state.current_id.clone().expect("当前会话");
             let mut chat = crate::features::chat::ChatState::default();
-            // user(0) / think-only(1) / tool(2) / turn-end(3):
-            // 过程项 1..=2 折进组,user 与收尾行在外
+            // user(0) / think-only(1) / tool(2) / 答复步(3,带答前思考)
+            // / turn-end(4):过程项 1..=2 折进组,最终答复与收尾在外
             chat.nodes.push(ChatNode::User {
                 key: "user:1".into(),
                 text: "hi".into(),
                 images: vec![],
                 files: Vec::new(),
+                time: 0,
             });
             chat.nodes.push(ChatNode::Assistant {
                 key: "a:1:1".into(),
@@ -7472,6 +7493,15 @@ fn turn_group_collapse_expand_roundtrip(cx: &mut TestAppContext) {
                 view: None,
                 images: Vec::new(),
             });
+            chat.nodes.push(ChatNode::Assistant {
+                key: "a:1:2".into(),
+                text: "最终答复".into(),
+                text_ver: 1,
+                reasoning: "答前思考".into(),
+                streaming: false,
+                usage: None,
+                message_id: String::new(),
+            });
             chat.nodes.push(ChatNode::TurnTail {
                 key: "turn-end:99".into(),
                 aborted: false,
@@ -7485,24 +7515,31 @@ fn turn_group_collapse_expand_roundtrip(cx: &mut TestAppContext) {
     });
     redraw(cx, &mut wcx);
 
-    // 折叠态:组行在场,user/收尾在外,过程项被折(bounds 缺席)
+    // 折叠态:组行在场,user/答复/收尾在外,过程项被折(bounds 缺席)
     assert!(
         wcx.debug_bounds("turn-group-turn-end:99").is_some(),
         "组摘要行应在场"
     );
     assert!(
-        wcx.debug_bounds("node-0").is_some() && wcx.debug_bounds("node-3").is_some(),
+        wcx.debug_bounds("node-0").is_some() && wcx.debug_bounds("node-4").is_some(),
         "用户消息与收尾行不应折叠"
     );
+    assert!(wcx.debug_bounds("node-3").is_some(), "最终答复应平铺在外");
     assert!(
         wcx.debug_bounds("node-1").is_none() && wcx.debug_bounds("node-2").is_none(),
         "think-only 与工具行应收进组"
     );
-    // 行槽数(4 节点 − 2 过程项 + 1 组行)与列表记账一致
+    // 答前内嵌思考随组折叠一并隐藏(对齐参考 AssistantNodeView:
+    // 组收起时不漏答前思考)
+    assert!(
+        wcx.debug_bounds("think-row-a:1:2").is_none(),
+        "折叠轮的答前思考应一并隐藏"
+    );
+    // 行槽数(5 节点 − 2 过程项 + 1 组行)与列表记账一致
     cx.update(|app| {
         store.update(app, |st, _| {
-            assert_eq!(st.chat.row_slots.len(), 3);
-            assert_eq!(st.chat.chat_list.item_count(), 3);
+            assert_eq!(st.chat.row_slots.len(), 4);
+            assert_eq!(st.chat.chat_list.item_count(), 4);
         });
     });
 
@@ -7518,33 +7555,147 @@ fn turn_group_collapse_expand_roundtrip(cx: &mut TestAppContext) {
         wcx.debug_bounds("node-1").is_some() && wcx.debug_bounds("node-2").is_some(),
         "展开后 think/工具行应平铺在场"
     );
-    // 层级视觉:成员行带左引导线(位于行内缩进处的 2px 细线,与组外
-    // 平铺节点可辨——组头/成员同款卡片导致展开迷失的跟进;node bounds
-    // 是整行 wrapper,故以「线在行内的偏移」锁缩进)
-    let rail = wcx
-        .debug_bounds("group-rail")
-        .expect("展开态应有成员引导线");
-    let member = wcx.debug_bounds("node-2").expect("成员行应在场");
-    let indent = rail.left() - member.left();
     assert!(
-        (px(3.)..=px(10.)).contains(&indent),
-        "引导线应在行内缩进处,实际偏移 {indent:?}"
+        wcx.debug_bounds("think-row-a:1:2").is_some(),
+        "展开后答前思考应可见"
     );
-    let rail_w = rail.right() - rail.left();
-    assert!(rail_w <= px(4.), "引导线应为细线,实际宽 {rail_w:?}");
+    // 左缘对齐(对齐参考:成员行/答前思考/正文同一左缘——缩进 +
+    // 左引导线是自创层,列内多层左缘错位的根源,已废)
+    let member = wcx.debug_bounds("node-2").expect("成员行应在场");
+    let answer_think = wcx.debug_bounds("think-row-a:1:2").expect("答前思考应在场");
+    assert_eq!(
+        member.left(),
+        answer_think.left(),
+        "组成员行应与答前思考同左缘(无缩进)"
+    );
 
-    // 再点收拢:成员折回
+    // 骨架一致:组成员行同高(统一 member_row 骨架,min_h24 单行,
+    // 长短不一的旧行家族已废)
+    let think = wcx.debug_bounds("think-row-a:1:1").expect("think 行应在场");
+    let tool = wcx.debug_bounds("tool-row-call:8").expect("工具行应在场");
+    assert_eq!(
+        think.bottom() - think.top(),
+        tool.bottom() - tool.top(),
+        "成员行应同高(统一 member_row 骨架)"
+    );
+
+    // 再点收拢:成员折回,答前思考一并隐藏
     click_sel(&mut wcx, "turn-group-turn-end:99");
     redraw(cx, &mut wcx);
     assert!(wcx.debug_bounds("node-1").is_none(), "再点组头应收回成员");
+    assert!(
+        wcx.debug_bounds("think-row-a:1:2").is_none(),
+        "收拢后答前思考应再次隐藏"
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 折叠态列表无异常间隙:组行收走过程项后,剩余内容行
-/// (最终答复等)与错误通告行之间不得出现巨大空白。构造 DeepSeek 真实
-/// 形态:每步 reasoning+过渡文本(中间叙述入组,最终答复在外)。
+/// 中断轮不折叠(对齐参考「折叠必须有定稿答案」):aborted 收口段
+/// 恒平铺——无组行,过程/正文/收尾全部平铺;未落定的调用已翻成
+/// Stopped(行在场、扫光撤除),半截正文尾挂「已停止」pill,轮尾
+/// 不再双标「已中断」徽标。
 #[gpui_kit::test]
-fn collapsed_turn_has_no_gap_before_notice(cx: &mut TestAppContext) {
+fn aborted_turn_stays_flat_with_stopped_tool(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "aborted-flat");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.run_until_parked();
+    };
+
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            let mut chat = crate::features::chat::ChatState::default();
+            // user(0) / think-only(1) / tool 中断(2) / 半截正文(3) / aborted 收尾(4)
+            chat.nodes.push(ChatNode::User {
+                key: "user:1".into(),
+                text: "hi".into(),
+                images: vec![],
+                files: Vec::new(),
+                time: 0,
+            });
+            chat.nodes.push(ChatNode::Assistant {
+                key: "a:1:1".into(),
+                text: String::new(),
+                text_ver: 0,
+                reasoning: "思考中".into(),
+                streaming: false,
+                usage: None,
+                message_id: String::new(),
+            });
+            chat.nodes.push(ChatNode::Tool {
+                key: "call:8".into(),
+                name: "bash".into(),
+                summary: "ls -la".into(),
+                state: ToolState::Stopped,
+                arguments: "{\"command\":\"ls -la\"}".into(),
+                output: None,
+                view: None,
+                images: Vec::new(),
+            });
+            chat.nodes.push(ChatNode::Assistant {
+                key: "a:1:2".into(),
+                text: "半截回复".into(),
+                text_ver: 1,
+                reasoning: String::new(),
+                streaming: false,
+                usage: None,
+                message_id: String::new(),
+            });
+            chat.nodes.push(ChatNode::TurnTail {
+                key: "turn-end:98".into(),
+                aborted: true,
+                turn: 1,
+                ended_ms: 0,
+                run_ms: 0,
+                deliverables: vec![],
+            });
+            st.state.chats.insert(id, chat);
+        });
+    });
+    redraw(cx, &mut wcx);
+
+    // 无组行,全部平铺
+    assert!(
+        wcx.debug_bounds("turn-group-turn-end:98").is_none(),
+        "中断轮不得生成组行"
+    );
+    for i in 0..=4 {
+        let name = format!("node-{i}").leak() as &'static str;
+        assert!(wcx.debug_bounds(name).is_some(), "中断轮应平铺 node-{i}");
+    }
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            assert_eq!(st.chat.row_slots.len(), 5, "中断轮 5 节点全平铺");
+        });
+    });
+    // Stopped 工具行:在场且不残留扫光
+    assert!(
+        wcx.debug_bounds("tool-row-call:8").is_some(),
+        "中断的工具行应平铺在场"
+    );
+    assert!(
+        wcx.debug_bounds("tool-sweep-2").is_none(),
+        "中断行不应残留扫光"
+    );
+    // 半截正文尾「已停止」pill;轮尾不双标
+    assert!(
+        wcx.debug_bounds("asst-stopped").is_some(),
+        "中断正文应带停止 pill"
+    );
+    assert!(
+        wcx.debug_bounds("tail-aborted").is_none(),
+        "有正文的中断轮不应在轮尾重复标「已中断」"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 折叠 reset 钉底:组行收走过程项后,剩余内容行(最终答复/轮尾/
+/// 通告)必须钉底可见,不得出现巨大空白。构造 DeepSeek 真实形态:每步
+/// reasoning+过渡文本(中间叙述入组,最终答复在外)。挂在正常轮组上
+/// ——错误/中断段已无折叠门槛(恒平铺),原「error 收口折叠」场景消失。
+#[gpui_kit::test]
+fn collapsed_turn_reset_pins_tail_visible(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "turn-gap");
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
@@ -7560,6 +7711,7 @@ fn collapsed_turn_has_no_gap_before_notice(cx: &mut TestAppContext) {
                 text: "跑一下测试".into(),
                 images: vec![],
                 files: Vec::new(),
+                time: 0,
             });
             // 30 × (中间叙述 + 工具) + 最终答复 + 错误通告:
             // 列表高远超视口,折叠 reset 后必须钉底可见尾部
@@ -7593,6 +7745,16 @@ fn collapsed_turn_has_no_gap_before_notice(cx: &mut TestAppContext) {
                 usage: None,
                 message_id: String::new(),
             });
+            // 正常收尾(折叠门槛 = 有定稿答案;错误/中断段恒平铺,
+            // 钉底回归改挂正常轮组)
+            chat.nodes.push(ChatNode::TurnTail {
+                key: "turn-end:8".into(),
+                aborted: false,
+                turn: 1,
+                ended_ms: 0,
+                run_ms: 0,
+                deliverables: Vec::new(),
+            });
             chat.nodes.push(ChatNode::Notice {
                 key: "turn-error:9".into(),
                 kind: crate::features::chat::projection::NoticeKind::TurnError {
@@ -7604,7 +7766,7 @@ fn collapsed_turn_has_no_gap_before_notice(cx: &mut TestAppContext) {
     });
     redraw(cx, &mut wcx);
 
-    // 折叠态(error 收口段无最终答复):用户 + 组行(含全部过程/正文) + 通告
+    // 折叠态:用户 + 组行(过程项)+ 答复 + 轮尾 + 通告
     cx.update(|app| {
         store.update(app, |st, _| {
             let shapes: Vec<String> = st
@@ -7622,21 +7784,22 @@ fn collapsed_turn_has_no_gap_before_notice(cx: &mut TestAppContext) {
                     }
                 })
                 .collect();
-            assert_eq!(shapes, vec!["n0", "g[1..=61]", "n62"]);
+            assert_eq!(shapes, vec!["n0", "g[1..=60]", "n61", "n62", "n63"]);
         });
     });
 
     // 钉底可见性 + 相邻间隙(remeasure 前后都成立:测试时钟不走真实
-    // 时间,advance_clock 推过 250ms settle 才触发 measure_all)
+    // 时间,advance_clock 推过 250ms settle 才触发 measure_all)。
+    // 组行与通告之间隔着答复 + 轮尾两行,上限放宽到 160
     let assert_tail = |wcx: &mut gpui_kit::VisualTestContext, phase: &str| {
         let group = wcx
-            .debug_bounds("turn-group-turn-error:9")
+            .debug_bounds("turn-group-turn-end:8")
             .unwrap_or_else(|| panic!("{phase}: 组行应在场(滚动位不得悬挂)"));
         let notice = wcx
             .debug_bounds("turn-notice")
             .unwrap_or_else(|| panic!("{phase}: 通告行应钉底在场"));
         let gap = notice.top() - group.bottom();
-        assert!(gap < px(60.), "{phase}: 组行与通告之间间隙异常:{gap:?}");
+        assert!(gap < px(160.), "{phase}: 组行与通告之间间隙异常:{gap:?}");
     };
     assert_tail(&mut wcx, "reset 后");
     cx.executor()
@@ -7688,6 +7851,7 @@ fn compaction_rows_quiet_states(cx: &mut TestAppContext) {
                             text: "先聊着".into(),
                             images: vec![],
                             files: Vec::new(),
+                            time: 0,
                         });
                     }
                     chat.compact_queued = true;
@@ -7699,6 +7863,7 @@ fn compaction_rows_quiet_states(cx: &mut TestAppContext) {
                         text: "先聊着".into(),
                         images: vec![],
                         files: Vec::new(),
+                        time: 0,
                     });
                     chat.compact_queued = true;
                     st.state.chats.insert(id, chat);
@@ -7865,6 +8030,7 @@ fn nav_rail_show_hover_card_and_jump(cx: &mut TestAppContext) {
                     text: format!("第{t}问\n这是第{t}轮的补充说明正文"),
                     images: vec![],
                     files: Vec::new(),
+                    time: 0,
                 });
                 chat.nodes.push(ChatNode::Assistant {
                     key: format!("a:{t}:1"),
@@ -8086,6 +8252,7 @@ fn subagent_tool_expand_body_stays_in_viewport(cx: &mut TestAppContext) {
                 text: "后台派一个子代理，统计这个仓库里所有 TODO 注释并汇报".into(),
                 images: vec![],
                 files: Vec::new(),
+                time: 0,
             });
             chat.nodes.push(ChatNode::Tool {
                 key: "call:9".into(),
@@ -8164,6 +8331,7 @@ fn task_bar_switches_between_main_and_subagent(cx: &mut gpui_kit::TestAppContext
                 text: "后台派一个子代理".into(),
                 images: vec![],
                 files: Vec::new(),
+                time: 0,
             });
             st.state.chats.insert(id, chat);
             cx.notify();
@@ -8220,6 +8388,7 @@ fn task_bar_switches_between_main_and_subagent(cx: &mut gpui_kit::TestAppContext
                 text: "请统计仓库 TODO".into(),
                 images: vec![],
                 files: Vec::new(),
+                time: 0,
             });
             st.state.chats.insert(child.clone(), chat);
             cx.notify();
@@ -8897,6 +9066,7 @@ fn cross_domain_drag_selection_stays_in_chat(cx: &mut TestAppContext) {
                 text: USER_MARK.into(),
                 images: Vec::new(),
                 files: Vec::new(),
+                time: 0,
             });
             chat.nodes.push(ChatNode::Assistant {
                 key: "a:sel:0".into(),
@@ -8996,6 +9166,7 @@ fn chat_drag_across_user_bubbles_excludes_textview_body(cx: &mut TestAppContext)
                         text,
                         images: Vec::new(),
                         files: Vec::new(),
+                        time: 0,
                     });
                 } else {
                     chat.nodes.push(ChatNode::Assistant {
@@ -9128,6 +9299,7 @@ fn row_slots_sig_skips_text_only_rebuild(cx: &mut TestAppContext) {
                 text: "问".into(),
                 images: Vec::new(),
                 files: Vec::new(),
+                time: 0,
             });
             chat.nodes.push(ChatNode::Assistant {
                 key: "a:1:1".into(),
@@ -9171,6 +9343,7 @@ fn row_slots_sig_skips_text_only_rebuild(cx: &mut TestAppContext) {
                 text: "再问".into(),
                 images: Vec::new(),
                 files: Vec::new(),
+                time: 0,
             });
             s.ensure_row_slots();
         });
@@ -9499,6 +9672,7 @@ fn back_to_bottom_button_tracks_scroll(cx: &mut TestAppContext) {
                     text: long_para(i),
                     images: Vec::new(),
                     files: Vec::new(),
+                    time: 0,
                 });
             }
             chat.nodes.push(ChatNode::Assistant {
