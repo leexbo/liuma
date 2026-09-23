@@ -516,7 +516,10 @@ fn apply_tokens(m: ThemeMode, cx: &mut App) {
     c.danger_foreground = on_fill;
     c.success = p.success.into();
     c.success_foreground = on_fill;
-    c.popover = p.layer.into();
+    // 浮层面 = 卡面(card):Popover/PopupMenu/Dialog/Tooltip 等库浮层
+    // 全读此 token,须与手绘浮层卡同走 CARD 梯位——若指向 layer,浅色
+    // 盘下迁移后的弹层会整体变灰(浅盘 layer=ECECEE ≠ card=FFFFFF)
+    c.popover = p.card.into();
     c.popover_foreground = p.label.into();
     c.list = p.sidebar.into();
     c.list_hover = p.sidebar_hover.into();
