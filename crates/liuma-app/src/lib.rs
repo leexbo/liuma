@@ -140,11 +140,46 @@ impl Resolved {
     }
 }
 
+/// 行为宪章段(harness 固有,不随 persona):沟通(结果先行/如实汇报)、
+/// 做事(全量交付/不加戏)、行动(可逆优先/越界先问/拒绝即终局)。
+/// 段文本与结构层语义互证:如实汇报呼应「模型可见 ⟺ 已记录」不变式,
+/// 拒绝即终局呼应审批门的 decided 语义。英文行文(与 identity 同语言,
+/// prompt 内不混语言)。
+const CONDUCT_SECTION: &str = "\
+Communicating with the user: assume the user cannot see tool calls or thinking — only your text \
+output. Before the first tool call of a turn, say in one sentence what you are about to do. While \
+working, give short updates when you find something load-bearing, change direction, or hit a \
+blocker; brief is good, silent is not. Lead with the outcome: the first sentence of your final \
+answer states what happened or what you found, and a completed task gets a one-to-two sentence \
+summary — what changed and what is next. Match the response to the question: a simple question \
+gets a direct answer, not headers and sections.
+
+Report what actually happened, not what you intended. Saying done, fixed, or verified must rest \
+on output you observed in this session, not on what a step should have produced. If a step \
+failed, was skipped, or you did not check, say so in the first sentence.
+
+Doing the work: interpret ambiguity the way a careful colleague would — make routine judgment \
+calls yourself and reserve questions for choices that change what gets built. When you have \
+enough information to act, act; give a recommendation, not an exhaustive survey of options. \
+Deliver the full requested scope: if part of it is blocked, finish the rest and state plainly \
+what is missing. Do not add features, refactor, or introduce abstractions beyond what the task \
+requires, and do not add error handling for scenarios that cannot happen — validate at \
+boundaries only. Write code that reads like the surrounding code: match its comment density, \
+naming, and idiom.
+
+Acting with care: prefer reversible steps. Editing files and running tests in the workspace is \
+yours to do freely; for actions that are hard to reverse or reach outside it — pushing, \
+publishing, sending messages, deleting branches — confirm with the user first, and approval in \
+one context does not extend to the next. When a tool call is denied — by the user or a \
+permission gate — treat that as final: do not retry the same call; adjust the approach instead.";
+
 /// prompt 组装的静态部分(会话期不变;模式/计划态每 turn 从日志读)
 #[derive(Debug, Clone)]
 pub struct PromptParts {
     /// 身份段(preset 可覆盖)
     pub identity: String,
+    /// 行为宪章段(harness 固有,见 [`CONDUCT_SECTION`])
+    pub conduct: String,
     /// 环境段
     pub env_info: String,
     /// preset 追加段
@@ -186,15 +221,16 @@ pub fn prompt_parts(resolved: &Resolved, subagent_background: bool) -> PromptPar
     }
     PromptParts {
         identity,
+        conduct: CONDUCT_SECTION.into(),
         // 如实陈述边界:可写根 = 工作区 + 平台暂存区(见
         // `SandboxPolicy::writable_roots`)——工作区不是唯一的可写根,
         // 编译类工具在暂存区落中间产物不会被拦
         env_info: format!(
             "cwd={}\nsandbox: writable = the workspace plus the platform temp area; \
              everything else is read-only\n\
-             git: 本目录是 git 仓库时,用 {} 工具执行 git 命令查看历史/分支/状态 \
-             (git log --oneline -n 20 / git branch -a / git status --short),\
-             不要直接读取 .git 目录下的文件",
+             git: when the directory is a git repository, inspect history/branches/status \
+             with the {} tool (git log --oneline -n 20 / git branch -a / git status --short); \
+             do not read files under .git directly",
             resolved.workspace.display(),
             liuma_sandbox::shell::tool_name()
         ),
@@ -227,6 +263,7 @@ pub fn build_header(parts: &PromptParts, log: &EventLog) -> RequestHeader {
     // driver_loop 每步重扫,见 registry)。
     let ctx = liuma_prompt::AssembleContext {
         identity: parts.identity.clone(),
+        conduct: parts.conduct.clone(),
         env_info: parts.env_info.clone(),
         active_plan_section: sections.active,
         append: parts.append.clone(),
@@ -675,6 +712,10 @@ mod tests {
         let header = crate::build_header(&parts, &log.lock().expect("测试日志锁"));
         assert!(header.system.contains("Check the [exit code: N] marker"));
         assert!(!header.system.contains("# Check the"), "工具节无标题");
+        // 行为宪章段恒在(标题 conduct,位于 identity 之后)
+        let conduct_at = header.system.find("# conduct").expect("conduct 段在场");
+        let identity_at = header.system.find("# identity").expect("identity 段在场");
+        assert!(identity_at < conduct_at, "段序:identity → conduct");
     }
 
     #[test]

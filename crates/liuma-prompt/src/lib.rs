@@ -19,6 +19,8 @@ pub struct PromptSection {
 pub struct AssembleContext {
     /// 身份段(产品自述/行为约束)
     pub identity: String,
+    /// 行为宪章段(沟通/做事/行动规范;harness 固有,不随 persona)
+    pub conduct: String,
     /// 环境段(cwd/平台/日期等;由宿主注入,组件不读时钟)
     pub env_info: String,
     /// 指令文件内容(AGENTS.md;由宿主读取注入,prompt 保持纯函数)
@@ -41,6 +43,12 @@ pub fn assemble(ctx: &AssembleContext) -> String {
         title: "identity".into(),
         body: ctx.identity.clone(),
     }];
+    if !ctx.conduct.is_empty() {
+        sections.push(PromptSection {
+            title: "conduct".into(),
+            body: ctx.conduct.clone(),
+        });
+    }
     if !ctx.env_info.is_empty() {
         sections.push(PromptSection {
             title: "environment".into(),
@@ -118,6 +126,7 @@ mod tests {
     fn assembles_sections_in_order() {
         let ctx = AssembleContext {
             identity: "You are liuma.".into(),
+            conduct: "act with care.".into(),
             env_info: "cwd=/tmp".into(),
             active_plan_section: None,
             append: None,
@@ -128,12 +137,33 @@ mod tests {
         let out = assemble(&ctx);
         assert!(out.contains("# identity\n\nYou are liuma."));
         assert!(out.contains("# environment\n\ncwd=/tmp"));
+        // 段序:identity → conduct → environment
+        let identity_at = out.find("# identity").expect("在场");
+        let conduct_at = out.find("# conduct").expect("在场");
+        let env_at = out.find("# environment").expect("在场");
+        assert!(identity_at < conduct_at && conduct_at < env_at);
+    }
+
+    #[test]
+    fn conduct_section_optional() {
+        let ctx = AssembleContext {
+            identity: "id".into(),
+            conduct: "be concise.".into(),
+            ..Default::default()
+        };
+        assert!(assemble(&ctx).contains("# conduct\n\nbe concise."));
+        let none = assemble(&AssembleContext {
+            conduct: String::new(),
+            ..ctx
+        });
+        assert!(!none.contains("# conduct"));
     }
 
     #[test]
     fn append_section_optional() {
         let ctx = AssembleContext {
             identity: "id".into(),
+            conduct: String::new(),
             env_info: String::new(),
             active_plan_section: None,
             append: Some("always answer in Chinese".into()),
@@ -158,6 +188,7 @@ mod tests {
         // liuma-plan 产出,此层只管槽位)
         let ctx = AssembleContext {
             identity: "id".into(),
+            conduct: String::new(),
             env_info: "env".into(),
             active_plan_section: Some(PromptSection {
                 title: "active-plan".into(),
