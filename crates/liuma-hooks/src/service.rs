@@ -536,8 +536,13 @@ impl HookPort for HookPortImpl {
 }
 
 /// 参数摘要(审批卡与审计面用;截断防日志膨胀)
+/// 参数摘要(审批卡/审计面人读)。
+///
+/// 先归一回对象:wire 字符串直接 `to_string` 会带外层引号与转义
+/// (`"{\"command\":\"ls\"}"`),同一份裁定在卡面和审计里都难读,喂给
+/// 风险评审员的那句「command」也是这团转义文本。
 fn abbreviated_args(args: &Value) -> String {
-    let s = args.to_string();
+    let s = crate::payloads::parsed_arguments(args).to_string();
     if s.chars().count() > 200 {
         let cut: String = s.chars().take(200).collect();
         format!("{cut}…")
@@ -551,4 +556,36 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 回归锁:审批摘要对 wire 字符串形态不做二次转义。
+    #[test]
+    fn abbreviated_args_unescapes_wire_string_form() {
+        // wire 字符串形态 → 对象文本(无外层引号、无转义)
+        assert_eq!(
+            abbreviated_args(&json!("{\"command\":\"ls -la\"}")),
+            "{\"command\":\"ls -la\"}"
+        );
+        // 对象形态不变(既有行为)
+        assert_eq!(
+            abbreviated_args(&json!({"command":"ls -la"})),
+            "{\"command\":\"ls -la\"}"
+        );
+        // 非 JSON 字符串保留原值
+        assert_eq!(abbreviated_args(&json!("oops")), "\"oops\"");
+    }
+
+    /// 超长摘要按字符截断(多字节安全)
+    #[test]
+    fn abbreviated_args_truncates_by_chars() {
+        let long = json!({"command": "x".repeat(300)});
+        let s = abbreviated_args(&long);
+        assert_eq!(s.chars().count(), 201, "200 字符 + 省略号");
+        assert!(s.ends_with('…'));
+    }
 }

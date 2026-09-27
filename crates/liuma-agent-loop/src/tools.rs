@@ -16,8 +16,33 @@ use crate::presentation::ToolView;
 pub struct ToolCallRequest {
     /// 工具名
     pub name: String,
-    /// 调用参数
+    /// 调用参数,**形态随来源而异**:OpenAI 兼容 wire 是 JSON 编码字符串
+    /// (引擎原样透传),Anthropic 与本地夹具是对象。
+    ///
+    /// 读参数一律走 [`ToolCallRequest::parsed_arguments`],别直接索引本字段
+    /// ——`arguments["k"]` 在字符串形态上恒为 `Null`,症状是「形状完全正确
+    /// 的参数被判成缺字段/类型错」,不报错、只给错误结论。写回模型面时
+    /// 保持原样(provider 要的是它自己那种形态)。
     pub arguments: Value,
+}
+
+impl ToolCallRequest {
+    /// 解析后的调用参数。
+    ///
+    /// OpenAI 兼容 wire 上 `arguments` 是 **JSON 编码字符串**(流式增量
+    /// 累积,引擎原样透传);本地夹具与部分方言直接给对象。两种形态都接受。
+    ///
+    /// 字符串解析失败返回 `Err`——**不静默降级成空对象**:那会把「参数不是
+    /// JSON」误报成「缺字段」,把排查方向带偏(实测:一个形状完全正确的
+    /// questions 数组,被报成「必须是数组」)。
+    pub fn parsed_arguments(&self) -> Result<Value, String> {
+        match self.arguments.as_str() {
+            Some(s) => {
+                serde_json::from_str(s).map_err(|e| format!("arguments is not valid JSON: {e}"))
+            }
+            None => Ok(self.arguments.clone()),
+        }
+    }
 }
 
 /// 工具执行输出

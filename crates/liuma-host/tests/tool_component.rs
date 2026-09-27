@@ -68,6 +68,23 @@ async fn loads_describes_and_executes() {
     assert_eq!(value["config"]["label"], "test-lab", "config 透传进组件");
     assert_eq!(value["input"]["message"], "hello", "入参往返");
 
+    // 回归锁:wire 字符串形态(OpenAI 兼容方言上 engine 透传的原样值)
+    // 必须归一回对象再进组件——否则组件按自己声明的 object schema 读
+    // 字段恒得 null。
+    let out = tool
+        .execute(&ToolCallRequest {
+            name: "echo_config".into(),
+            arguments: serde_json::json!("{\"message\":\"world\"}"),
+        })
+        .await;
+    assert!(out.success, "执行成功:{}", out.output);
+    let value: serde_json::Value = serde_json::from_str(&out.output).expect("输出是 JSON");
+    assert_eq!(
+        value["input"]["message"], "world",
+        "wire 字符串形态的入参也要往返进组件:{}",
+        out.output
+    );
+
     // 未知工具名 → 组件级失败
     let out = tool
         .execute(&ToolCallRequest {

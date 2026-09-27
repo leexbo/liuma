@@ -172,7 +172,15 @@ impl ToolPort for WasmTool {
     /// (不推进全局 epoch,防误伤并发调用),死循环由 epoch 预算硬停兜底
     async fn execute(&mut self, call: &ToolCallRequest) -> ToolOutput {
         let name = call.name.clone();
-        let input = serde_json::to_vec(&call.arguments).unwrap_or_default();
+        // 组件声明给模型的 input_schema 是 **object**,而引擎透传的
+        // `arguments` 在 OpenAI 兼容 wire 上是 JSON 编码字符串——不归一
+        // 就把字符串喂进组件,组件读 `input["field"]` 恒 null,与它自己
+        // 声明的契约相悖。解析失败保留原值:坏输入原样进组件,让它自己
+        // 报错,不在宿主侧悄悄改成空对象。
+        let arguments = call
+            .parsed_arguments()
+            .unwrap_or_else(|_| call.arguments.clone());
+        let input = serde_json::to_vec(&arguments).unwrap_or_default();
         let store = Arc::clone(&self.store);
         let instance = self.instance;
         let budget = self.epoch_budget;

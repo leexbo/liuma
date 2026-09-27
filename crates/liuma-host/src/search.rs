@@ -95,7 +95,13 @@ pub fn project(ev: &EventEnvelope) -> Option<(&'static str, String)> {
         }
         "tool/call" => {
             let name = d["name"].as_str().unwrap_or_default();
-            let args = d["arguments"].as_str().unwrap_or_default();
+            // 两种形态都取文本:wire 字符串直接用,对象形态序列化——
+            // 二者对同一入参产出同一段 JSON 文本。只认字符串会让对象
+            // 形态的日志(本地夹具/Anthropic 归一后的产物)索引为空。
+            let args = match &d["arguments"] {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
             (!name.is_empty() || !args.is_empty()).then_some(("tool", format!("{name} {args}")))
         }
         _ => None,

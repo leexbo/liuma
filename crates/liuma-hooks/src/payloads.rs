@@ -2,9 +2,9 @@
 #![allow(clippy::too_many_arguments)] // 载荷形状 = wire 契约,参数面即契约
 //!
 //! CC:基座 session_id/transcript_path('')/cwd/hook_event_name,带尾换行;
-//! PreToolUse 的 tool_input = 原始 arguments。Codex:snake_case + model +
-//! permission_mode:'default',turn 域事件 + turn_id,transcript_path 恒
-//! null,tool_input = 简化形 {command},无尾换行。
+//! PreToolUse 的 tool_input = 解析后的 arguments 对象。Codex:snake_case +
+//! model + permission_mode:'default',turn 域事件 + turn_id,
+//! transcript_path 恒 null,tool_input = 简化形 {command},无尾换行。
 
 use serde_json::{Value, json};
 
@@ -37,6 +37,22 @@ fn codex_turn_base(session_id: &str, cwd: &str, event: &str, model: &str, turn: 
     let mut v = codex_base(session_id, cwd, event, model);
     v["turn_id"] = json!(turn.to_string());
     v
+}
+
+/// 归一 arguments 为**对象**。
+///
+/// 引擎把模型 wire 上的 `arguments` 原样透传(OpenAI 兼容方言里它是
+/// JSON **编码字符串**,流式增量累积的产物),但两个 hook 方言的契约
+/// 都要对象:CC 的 `tool_input` 就是工具入参对象本身,Codex 的
+/// `command` 得从对象里取字段。不归一 = 外部脚本 `jq .tool_input.command`
+/// 拿到 null、Codex 方言恒拿到空命令——**守卫面静默失效**(不报错,
+/// 只是永远看到空)。解析失败保留原值:模型给了非 JSON 就给钩子看非
+/// JSON,不吞成空对象(那会把「模型输出坏了」伪装成「没有参数」)。
+pub(crate) fn parsed_arguments(v: &Value) -> Value {
+    match v {
+        Value::String(s) => serde_json::from_str(s).unwrap_or_else(|_| v.clone()),
+        _ => v.clone(),
+    }
 }
 
 /// Codex 的 tool_input 简化形:取 arguments.command 字符串,缺失/非串 ⇒ ''
@@ -101,7 +117,7 @@ pub fn prompt_submit(
     }
 }
 
-/// PreToolUse 载荷(CC tool_input = 原始 arguments / Codex {command})
+/// PreToolUse 载荷(CC tool_input = arguments 对象 / Codex {command})
 pub fn pre_tool_use(
     dialect: HookDialect,
     session_id: &str,
@@ -112,18 +128,19 @@ pub fn pre_tool_use(
     model: &str,
     turn: u64,
 ) -> Value {
+    let arguments = parsed_arguments(arguments);
     match dialect {
         HookDialect::ClaudeCode => {
             let mut v = cc_base(session_id, cwd, "PreToolUse");
             v["tool_name"] = json!(tool_name);
-            v["tool_input"] = arguments.clone();
+            v["tool_input"] = arguments;
             v["tool_use_id"] = json!(tool_use_id);
             v
         }
         HookDialect::Codex => {
             let mut v = codex_turn_base(session_id, cwd, "PreToolUse", model, turn);
             v["tool_name"] = json!(tool_name);
-            v["tool_input"] = command_of(arguments);
+            v["tool_input"] = command_of(&arguments);
             v["tool_use_id"] = json!(tool_use_id);
             v
         }
@@ -242,6 +259,38 @@ mod tests {
             1,
         );
         assert_eq!(v["tool_input"], json!({"command":""}));
+    }
+
+    /// 回归锁:wire 字符串形态的 arguments 必须被解析成对象再进载荷。
+    ///
+    /// 引擎透传的是 OpenAI 兼容方言的原始值(JSON 编码字符串),若直接
+    /// 透给载荷:CC 的 tool_input 变成字符串(外部脚本 `.tool_input.command`
+    /// ⇒ null),Codex 的 command_of 取不到键 ⇒ **恒空命令**。两种方言都锁。
+    #[test]
+    fn wire_string_arguments_reach_hooks_as_an_object() {
+        let wire = json!("{\"command\":\"rm -rf /tmp/build\"}");
+        for dialect in [HookDialect::ClaudeCode, HookDialect::Codex] {
+            let v = pre_tool_use(dialect, "s", "/ws", "bash", "c", &wire, "", 1);
+            assert_eq!(
+                v["tool_input"],
+                json!({"command":"rm -rf /tmp/build"}),
+                "{dialect:?} 的 tool_input 应是对象"
+            );
+        }
+        // 非 JSON 字符串保留原值——不吞成空对象(那会把「模型输出坏了」
+        // 伪装成「没有参数」,把排查方向带偏)
+        let bad = json!("not json at all");
+        let v = pre_tool_use(
+            HookDialect::ClaudeCode,
+            "s",
+            "/ws",
+            "bash",
+            "c",
+            &bad,
+            "",
+            1,
+        );
+        assert_eq!(v["tool_input"], bad);
     }
 
     #[test]
