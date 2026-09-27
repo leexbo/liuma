@@ -28,11 +28,7 @@ pub fn render(
     cx: &mut App,
 ) -> impl IntoElement {
     let st = store.read(cx);
-    let ws = st
-        .state
-        .active_workspace
-        .clone()
-        .unwrap_or_else(|| st.default_workspace());
+    let ws = st.effective_workspace();
     let cfg = st.current_cfg_or_default();
     let preset_label = st.preset_label(&cfg.preset);
 

@@ -317,6 +317,12 @@ pub struct SettingsFile {
     /// 仅显示层——工作区身份恒为 basename,与路径绑定)
     #[serde(default)]
     pub workspace_titles: HashMap<String, String>,
+    /// 置顶会话(session id;侧栏「置顶」节顺序,写侧去重截断)
+    #[serde(default)]
+    pub pinned_sessions: Vec<String>,
+    /// 置顶工作区(basename;侧栏「置顶」节顺序,写侧去重截断)
+    #[serde(default)]
+    pub pinned_workspaces: Vec<String>,
     /// 运行中 Enter 行为(queue = 排队下一轮 / steer = 转向当前轮)
     #[serde(default = "default_busy_enter")]
     pub busy_enter: String,
@@ -584,6 +590,8 @@ impl Default for SettingsFile {
             workspaces: HashMap::new(),
             workspace_paths: Vec::new(),
             workspace_titles: HashMap::new(),
+            pinned_sessions: Vec::new(),
+            pinned_workspaces: Vec::new(),
             busy_enter: default_busy_enter(),
             language: default_language(),
             appearance: default_appearance(),

@@ -142,7 +142,6 @@ impl AppStore {
     pub fn new(bridge: HostBridge, cx: &mut Context<Self>) -> Self {
         let host_info = bridge.describe();
         let mut sessions = bridge.host().list_sessions();
-        let active_workspace = host_info.workspaces.first().cloned();
         let mut store = Self {
             state: StoreState {
                 sessions: vec![],
@@ -151,7 +150,9 @@ impl AppStore {
                 running_by_id: HashMap::new(),
                 running_since_by_id: HashMap::new(),
                 host_info,
-                active_workspace,
+                // 启动无工作区选中:打开首会话后,会话是唯一选中项
+                // (侧栏单选互斥,见 select_workspace 文档)
+                active_workspace: None,
                 chats: HashMap::new(),
                 jobs_by_id: HashMap::new(),
                 pending_plan: None,
@@ -204,7 +205,9 @@ impl AppStore {
         // onboarding 基线(未引导且凭据缺席 → hero 引导条)
         store.settings.settings_snapshot = store.bridge.host().settings_view();
         store.recalc_onboarding();
-        // 启动即完整打开首个**主**会话(history 折叠 + 统计),不再等点击
+        // 启动即完整打开首个**主**会话(history 折叠 + 统计),不再等点击。
+        // 不派生工作区选中:会话即唯一选中项(active_workspace 留空,
+        // 工作区行无高亮;读侧上下文走 effective_workspace)
         if let Some(first) =
             Self::initial_session(&store.state.sessions).map(|s| s.session_id.clone())
         {
@@ -922,11 +925,7 @@ impl AppStore {
         cx: &mut Context<Self>,
     ) {
         let host = self.bridge.host().clone();
-        if let Some(ws) = self
-            .state
-            .active_workspace
-            .clone()
-            .or_else(|| host.workspace_names().first().cloned())
+        let ws = self.effective_workspace();
         {
             let prev = self.settings.settings_snapshot["workspaceProviders"][&ws]
                 .as_str()

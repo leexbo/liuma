@@ -41,6 +41,13 @@ pub enum LiumaIcon {
     ListChecks,
     /// 会话行
     MessageSquare,
+    /// 置顶(侧栏行菜单;pin.svg,ISC 内置资产)
+    Pin,
+    /// 取消置顶(已置顶行的置顶钮形态;pin-off.svg 同源。中性灰,
+    /// 状态只由图标区分——品牌蓝高亮被否)
+    PinOff,
+    /// 工作区信息卡「编辑项目」行(settings.svg,ISC 同源)
+    Settings,
     /// hero 品牌流马(assets/logo.svg,设计定稿)
     Logo,
     /// Session log 导出
@@ -129,11 +136,15 @@ impl IconNamed for LiumaIcon {
             Self::Shield => "shield",
             Self::ShieldAlert => "shield-alert",
             Self::ShieldCheck => "shield-check",
-            Self::Pencil => "pencil",
+            // 编辑钮图标 = file-pen(笔写纸形,用户指定;原 pencil 素材退役)
+            Self::Pencil => "file-pen",
             Self::GitBranch => "git-branch",
             Self::Archive => "archive",
             Self::ListChecks => "list-checks",
             Self::MessageSquare => "message-square",
+            Self::Pin => "pin",
+            Self::PinOff => "pin-off",
+            Self::Settings => "settings",
             Self::Logo => "logo",
             Self::Download => "download",
             Self::Clock => "clock",
@@ -211,8 +222,20 @@ const LIUMA_ICONS: &[(&str, &[u8])] = &[
         include_bytes!("../../assets/icons/shield-check.svg"),
     ),
     (
-        "icons/_liuma/pencil.svg",
-        include_bytes!("../../assets/icons/pencil.svg"),
+        "icons/_liuma/file-pen.svg",
+        include_bytes!("../../assets/icons/file-pen.svg"),
+    ),
+    (
+        "icons/_liuma/pin.svg",
+        include_bytes!("../../assets/icons/pin.svg"),
+    ),
+    (
+        "icons/_liuma/pin-off.svg",
+        include_bytes!("../../assets/icons/pin-off.svg"),
+    ),
+    (
+        "icons/_liuma/settings.svg",
+        include_bytes!("../../assets/icons/settings.svg"),
     ),
     (
         "icons/_liuma/git-branch.svg",
@@ -479,7 +502,7 @@ mod tests {
     /// 枚举全变体的 path 必须命中 LIUMA_ICONS 静态表(防加枚举忘加 SVG)
     #[test]
     fn liuma_icon_paths_all_embedded() {
-        const ALL: [LiumaIcon; 49] = [
+        const ALL: [LiumaIcon; 52] = [
             LiumaIcon::Sparkles,
             LiumaIcon::Zap,
             LiumaIcon::Brain,
@@ -492,6 +515,9 @@ mod tests {
             LiumaIcon::Archive,
             LiumaIcon::ListChecks,
             LiumaIcon::MessageSquare,
+            LiumaIcon::Pin,
+            LiumaIcon::PinOff,
+            LiumaIcon::Settings,
             LiumaIcon::Logo,
             LiumaIcon::Download,
             LiumaIcon::Clock,
@@ -559,7 +585,7 @@ mod tests {
                 "icons/square-terminal.svg",
             ),
             ("file_read", "icons/book-open.svg"),
-            ("file_edit", "icons/_liuma/pencil.svg"),
+            ("file_edit", "icons/_liuma/file-pen.svg"),
             ("file_search", "icons/search.svg"),
             ("todo_write", "icons/_liuma/list-checks.svg"),
             ("exit_plan_mode", "icons/_liuma/list-checks.svg"),
@@ -572,8 +598,8 @@ mod tests {
             // 遗留/扩展别名
             ("read", "icons/book-open.svg"),
             ("web_fetch", "icons/book-open.svg"),
-            ("edit", "icons/_liuma/pencil.svg"),
-            ("write", "icons/_liuma/pencil.svg"),
+            ("edit", "icons/_liuma/file-pen.svg"),
+            ("write", "icons/_liuma/file-pen.svg"),
             ("grep", "icons/search.svg"),
             ("glob", "icons/search.svg"),
             ("web_search", "icons/globe.svg"),

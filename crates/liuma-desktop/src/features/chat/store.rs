@@ -1114,12 +1114,11 @@ impl AppStore {
     /// 发送(queue 模式;命令类 `/plan` 不做乐观 running——宿主短路
     /// 无 turn 结束帧复位,乐观会永久卡「停止」)
     pub fn send(&mut self, text: &str, cx: &mut Context<Self>) {
-        let Some(id) = self.state.current_id.clone() else {
-            return;
-        };
         let mut text_owned = text.to_string();
         // 命令行态:命令 + 参数拼接为 /name args,走既有文本路径(命令
-        // 短路、命令拒图片、命令不乐观 running 等语义全在下游)
+        // 短路、命令拒图片、命令不乐观 running 等语义全在下游)。先于
+        // 建会话取出:hero 态发送即建会话,open_session 会清
+        // pending_command,后取必丢
         if let Some(cmd) = self.chat.pending_command.take() {
             let arg = text_owned.trim();
             text_owned = if arg.is_empty() {
@@ -1129,6 +1128,19 @@ impl AppStore {
             };
             cx.notify();
         }
+        let id = match self.state.current_id.clone() {
+            Some(id) => id,
+            // hero / 工作区选中态:发送即建会话(目标 = 生效工作区,见
+            // non_default_workspace)。此前无会话时静默吞稿且草稿照清,
+            // 发送语义不完整
+            None => {
+                self.create_session(cx);
+                self.state
+                    .current_id
+                    .clone()
+                    .expect("create_session 应打开新会话")
+            }
+        };
         // `/plan [on|off|任务]`:切计划模式。裸 /plan 与 /plan on = 进入;
         // /plan off = 退出;其余余文 = 进入计划模式并把余文作为首条任务
         // 消息发送(composer 内 /plan 前缀 + 任务描述)。

@@ -180,11 +180,7 @@ fn sidebar_fold_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
 /// sidebar_fold_button 说明),开态存 store 纯 bool(无坐标/无根级卡)
 fn workspace_trigger(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let st = store.read(cx);
-    let ws = st
-        .state
-        .active_workspace
-        .clone()
-        .unwrap_or_else(|| st.default_workspace());
+    let ws = st.effective_workspace();
     let open = st.sessions.workspace_menu_open;
     let s = store.clone();
     let s_card = store.clone();
@@ -307,6 +303,6 @@ fn session_menu_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         ))
         .content(move |_, _, cx| {
             let pop = cx.entity();
-            crate::features::sessions::session_menu_card(&s_card, pop).into_any_element()
+            crate::features::sessions::session_menu_card(&s_card, pop, cx).into_any_element()
         })
 }

@@ -871,13 +871,11 @@ fn model_card(
     let current_model = cfg.model.clone();
     let current_effort = cfg.effort.clone().unwrap_or_else(|| "high".into());
     // provider 分组(设置快照注册表;清单 = 用户圈定优先、探测缓存回退)。
-    // 当前生效 provider 标记与计费徽标同源:工作区绑定 > 宿主默认
+    // 当前生效 provider 标记与计费徽标同源:生效工作区绑定 > 宿主默认
     let snap = &st.settings.settings_snapshot;
-    let default_pid = st
-        .state
-        .active_workspace
-        .as_deref()
-        .and_then(|ws| snap["workspaceProviders"][ws].as_str())
+    let ws = st.effective_workspace();
+    let default_pid = snap["workspaceProviders"][&ws]
+        .as_str()
         .unwrap_or_else(|| snap["defaultProvider"].as_str().unwrap_or_default())
         .to_string();
     let mut groups: Vec<(String, String, Vec<String>, bool)> = Vec::new();

@@ -28,6 +28,26 @@ entries! {
     export_log => ["导出日志", "Export log"],
     /// 行菜单:删除工作区
     delete_workspace => ["删除工作区", "Delete workspace"],
+    /// 行菜单:置顶(会话/工作区通用;已置顶 = 取消置顶)
+    pin => ["置顶", "Pin"],
+    /// 工作区 ⋯ 钮 tooltip
+    ws_actions => ["工作区操作", "Workspace actions"],
+    /// 工作区信息卡:会话数行(n = 工作区内会话数)
+    ws_task_count(n) => ["{n} 个任务", "{n} tasks"],
+    /// 工作区信息卡:编辑入口行
+    edit_project => ["编辑项目", "Edit project"],
+    /// 行菜单:取消置顶
+    unpin => ["取消置顶", "Unpin"],
+    /// 侧栏小节标签:置顶
+    pinned_section => ["置顶", "Pinned"],
+    /// 侧栏小节标签:项目(工作区分组列表)
+    projects_section => ["项目", "Projects"],
+    /// 组内清单折叠:展开显示(N 条以上默认截断)
+    expand_show => ["展开显示", "Show more"],
+    /// 组内清单展开态:收起显示
+    collapse_show => ["收起显示", "Show less"],
+    /// 组空状态:组内无可见会话(会话全上提置顶或本无会话)
+    empty_chats => ["暂无聊天", "No chats"],
 
     /// 视图菜单:分组方式组头
     group_label => ["分组方式", "Group by"],

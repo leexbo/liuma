@@ -8,7 +8,10 @@ use std::collections::{HashMap, HashSet};
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::input::{InputEvent, InputState};
-use gpui_kit::{AppContext, Context, Entity, ParentElement as _, Styled as _, Window, px};
+use gpui_kit::{
+    AppContext, Context, Entity, InteractiveElement as _, ParentElement as _,
+    StatefulInteractiveElement as _, Styled as _, Window, div, px,
+};
 
 use crate::features::chat::ChatNode;
 use crate::kits::i18n::dict;
@@ -77,6 +80,24 @@ pub(crate) struct SessionsStore {
     pub group_mode: GroupMode,
     /// 侧栏列表排序方式(顶栏视图选项菜单)
     pub order_mode: OrderMode,
+    /// 置顶会话(host settings 权威,refresh 时拉取;侧栏「置顶」节)
+    pub pinned_sessions: Vec<String>,
+    /// 置顶工作区(host settings 权威;置顶的工作区从「项目」节提出)
+    pub pinned_workspaces: Vec<String>,
+    /// 「展开显示」已额外展开的批数(键 = 工作区;每批 5 条,分页
+    /// 渐进;重置 = 收起。内存视图态)
+    pub expanded_show: HashMap<String, usize>,
+    /// 工作区信息卡悬停源:行右段 / 铅笔钮 / 卡本体。内存视图态
+    pub ws_info_hover_row: Option<String>,
+    pub ws_info_hover_card: bool,
+    /// 信息卡关闭延迟任务(行/卡双离开后启动;新悬停 drop 旧任务 =
+    /// 取消)
+    pub ws_info_close_task: Option<gpui_kit::Task<()>>,
+    /// 信息卡开态:Some((工作区, 进入点光标位置))。hover 回调在事件
+    /// 分发期执行,window.mouse_position() 即当帧指针位,卡随开随有
+    /// 锚——无渲染期捕获(canvas/prepaint)的一帧延迟。根级卡按侧栏
+    /// 右缘 + 锚 y 定位(见 shell/mod)
+    pub ws_info_card: Option<(String, gpui_kit::Point<gpui_kit::Pixels>)>,
 }
 
 impl AppStore {
@@ -105,9 +126,20 @@ impl AppStore {
         });
     }
 
+    /// 侧栏单选写入口:开会话即清工作区选中(清会话选中不动工作区
+    /// 选中,remove_workspace 需先清会话再重指工作区)。current_id
+    /// 的所有写入必须经此,保证两态互斥
+    fn select_session(&mut self, id: Option<String>) {
+        let selected = id.is_some();
+        self.state.current_id = id;
+        if selected {
+            self.state.active_workspace = None;
+        }
+    }
+
     /// 打开会话:切换 + 历史尾窗加载(后台折叠)+ 统计 + 配置缓存
     pub fn open_session(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.state.current_id = Some(id.to_string());
+        self.select_session(Some(id.to_string()));
         // 命令行是输入意图,不属于会话状态:切换即弃(否则残留到别的
         // 会话,发送时被拼上 /plan 等——跨会话污染)
         self.chat.pending_command = None;
@@ -124,7 +156,9 @@ impl AppStore {
         self.chat.anchor_index.clear();
         self.chat.row_slots.clear();
         self.chat.row_slots_sig = None;
-        self.sync_active_workspace_from_current();
+        // active_workspace 不随会话联动:工作区选中是独立状态,仅由
+        // 显式点击工作区行/下拉设置(否则会话选中跨节点亮工作区行,
+        // 见侧栏互斥渲染的系列回归)
         // 配置异步回填:permission fold 大日志,同步跑主线程冻结切换瞬间
         // (见 shell::AppStore::refresh_session_cfg)
         self.refresh_session_cfg(id, cx);
@@ -220,53 +254,41 @@ impl AppStore {
     /// 晚一拍(负载下可见);回填后以宿主清单为权威
     pub fn create_session(&mut self, cx: &mut Context<Self>) {
         let ws = self.non_default_workspace();
-        let id = self.bridge.host().create_session(None, None, ws);
-        let cwd = self.bridge.host().workspace().display().to_string();
+        let id = self.bridge.host().create_session(None, None, ws.clone());
+        let cwd = self.ws_cwd_label(ws.as_deref());
         self.push_local_session_row(id.clone(), true, None, Some(cwd));
         self.refresh_list(cx);
         self.open_session(&id, cx);
     }
 
-    /// 切换工作区:打开其最近会话(优先非空白),无则新建;
-    /// 目标组自动展开,分支表顺带刷新(切到的可能是别的 repo)
+    /// 选中工作区(侧栏组头/置顶行/工作区下拉/添加工作区共用):设
+    /// active_workspace + 目标组自动展开 + 分支表刷新(切到的可能是
+    /// 别的 repo),并清空会话选中(右栏切 hero 空态)。不打开也不
+    /// 新建会话——新建经「+」钮/新会话钮落入选中工作区
     pub fn select_workspace(&mut self, ws: &str, cx: &mut Context<Self>) {
         self.state.active_workspace = Some(ws.to_string());
+        // 单选互斥:选中工作区即清会话选中(右栏切 hero 空态;新会话
+        // 经「+」钮/顶栏按钮落入选中工作区,hero 态发送即建会话)。
+        // 此前「顺手打开/新建会话」会让两态并存,侧栏多行同亮
+        self.state.current_id = None;
         self.sessions.collapsed_workspaces.remove(ws);
         self.refresh_branches();
-        let default = self.default_workspace();
-        let sessions: Vec<String> = self
-            .state
-            .sessions
-            .iter()
-            .filter(|s| reducer::workspace_of(&s.session_id, &default) == ws)
-            .map(|s| s.session_id.clone())
-            .collect();
-        match sessions.iter().find(|id| !self.is_blank(id)) {
-            Some(id) => self.open_session(id, cx),
-            None => {
-                let target = if ws == default {
-                    None
-                } else {
-                    Some(ws.to_string())
-                };
-                let id = self.bridge.host().create_session(None, None, target);
-                self.push_local_session_row(id.clone(), true, None, None);
-                self.refresh_list(cx);
-                self.open_session(&id, cx);
-            }
-        }
+        cx.notify();
     }
 
-    /// 当前会话归属工作区的绝对路径(@file 补全根;源以 header.cwd 为根)。
-    /// 会话 id 形如 `wsName/sessionId`(非默认工作区)或裸 id(默认)。
+    /// 生效工作区的绝对路径(@file 补全根;源以 header.cwd 为根)。
+    /// 会话态取会话归属(id 形如 `wsName/sessionId` 非默认区 / 裸 id
+    /// 默认区);工作区选中态取所选区(hero 态 @file/文件树/预览有根)
     pub fn current_workspace_dir(&self) -> Option<std::path::PathBuf> {
-        let cid = self.state.current_id.clone()?;
         let default = self.default_workspace();
-        let ws = crate::shell::reducer::workspace_of(&cid, &default);
+        let ws = match &self.state.current_id {
+            Some(cid) => reducer::workspace_of(cid, &default).to_string(),
+            None => self.state.active_workspace.clone()?,
+        };
         // ws_paths 以工作区名为键;兜底用自身(单工作区场景默认工作区)
         self.sessions
             .ws_paths
-            .get(ws)
+            .get(&ws)
             .cloned()
             .or_else(|| self.sessions.ws_paths.values().next().cloned())
     }
@@ -292,6 +314,102 @@ impl AppStore {
             }
         }
         self.refresh_branches();
+        let (pinned_sessions, pinned_workspaces) = self.bridge.host().pinned();
+        self.sessions.pinned_sessions = pinned_sessions;
+        self.sessions.pinned_workspaces = pinned_workspaces;
+    }
+
+    /// 置顶/取消置顶会话(host 落盘为权威,成功后本地同步 + 清单刷新)
+    pub fn toggle_pinned_session(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.bridge.host().toggle_pinned_session(id).is_ok() {
+            let (ps, pw) = self.bridge.host().pinned();
+            self.sessions.pinned_sessions = ps;
+            self.sessions.pinned_workspaces = pw;
+            self.refresh_list(cx);
+        }
+    }
+
+    /// 置顶/取消置顶工作区(同上)
+    pub fn toggle_pinned_workspace(&mut self, name: &str, cx: &mut Context<Self>) {
+        if self.bridge.host().toggle_pinned_workspace(name).is_ok() {
+            let (ps, pw) = self.bridge.host().pinned();
+            self.sessions.pinned_sessions = ps;
+            self.sessions.pinned_workspaces = pw;
+            self.refresh_list(cx);
+        }
+    }
+
+    /// 行右段悬停变化:进入即开卡(锚 = 进入点光标位置;hover 回调
+    /// 在事件分发期执行,window.mouse_position() 即当帧指针位);离开
+    /// 启动 300ms 延迟关(卡悬停或重入行即取消——指针跨越行与卡间
+    /// 空隙时卡保持在场)
+    pub fn set_ws_info_hover_row(
+        &mut self,
+        ws: Option<String>,
+        at: gpui_kit::Point<gpui_kit::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        match ws {
+            Some(key) => {
+                self.sessions.ws_info_hover_row = Some(key.clone());
+                self.sessions.ws_info_card = Some((key, at));
+                self.sessions.ws_info_close_task = None;
+            }
+            None => {
+                self.sessions.ws_info_hover_row = None;
+                if !self.sessions.ws_info_hover_card {
+                    self.ws_info_arm_close(cx);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// 卡本体悬停变化
+    pub fn set_ws_info_hover_card(&mut self, hovering: bool, cx: &mut Context<Self>) {
+        self.sessions.ws_info_hover_card = hovering;
+        if hovering {
+            self.sessions.ws_info_close_task = None;
+        } else if self.sessions.ws_info_hover_row.is_none() {
+            self.ws_info_arm_close(cx);
+        }
+        cx.notify();
+    }
+
+    /// 双离开后 300ms 关卡(期间任一悬停恢复即取消任务)
+    fn ws_info_arm_close(&mut self, cx: &mut Context<Self>) {
+        if self.sessions.ws_info_close_task.is_some() {
+            return;
+        }
+        let store = cx.entity().clone();
+        self.sessions.ws_info_close_task = Some(cx.spawn(async move |_this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(300))
+                .await;
+            store.update(cx, |s, cx| {
+                if s.sessions.ws_info_hover_row.is_none() && !s.sessions.ws_info_hover_card {
+                    s.sessions.ws_info_card = None;
+                    s.sessions.ws_info_close_task = None;
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    /// 「展开显示」:该组多显一批(5 条;分页渐进)
+    pub fn expand_workspace_more(&mut self, ws: &str, cx: &mut Context<Self>) {
+        *self
+            .sessions
+            .expanded_show
+            .entry(ws.to_string())
+            .or_insert(0) += 1;
+        cx.notify();
+    }
+
+    /// 「收起显示」:重置该组为预览态(5 条)
+    pub fn collapse_workspace(&mut self, ws: &str, cx: &mut Context<Self>) {
+        self.sessions.expanded_show.remove(ws);
+        cx.notify();
     }
 
     /// 只读分支(ws_paths 已知)。HEAD 为本地微秒级单文件读,同步即可
@@ -306,11 +424,7 @@ impl AppStore {
 
     /// 活动工作区分支(徽标用;未知工作区/非 repo → None)
     pub fn active_branch(&self) -> Option<String> {
-        let ws = self
-            .state
-            .active_workspace
-            .clone()
-            .unwrap_or_else(|| self.default_workspace());
+        let ws = self.effective_workspace();
         self.sessions.ws_branches.get(&ws).cloned().flatten()
     }
 
@@ -331,21 +445,6 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 在指定工作区新建会话。默认工作区规范化为 None:宿主对任何
-    /// 已知工作区名都会加 `<ws>/` 前缀,而默认区会话历史无前缀,
-    /// 传 Some(default) 会造出混合 id 形态(registry resolve_session)
-    pub fn create_session_in(&mut self, ws: &str, cx: &mut Context<Self>) {
-        let target = if ws == self.default_workspace() {
-            None
-        } else {
-            Some(ws.to_string())
-        };
-        let id = self.bridge.host().create_session(None, None, target);
-        self.push_local_session_row(id.clone(), true, None, None);
-        self.refresh_list(cx);
-        self.open_session(&id, cx);
-    }
-
     /// 系统目录选择器添加工作区(osascript / PowerShell 阻塞模态 → 宿主
     /// runtime spawn_blocking;占普通 worker 会饿死共享 runtime 的会话
     /// worker)。成功 → 刷新 describe/工作区表并切换;取消(bad-request)
@@ -356,22 +455,22 @@ impl AppStore {
         let rx = self.bridge.call(async move {
             // JoinError(spawn_blocking 任务崩溃)在块内折成 internal,
             // 通道里只剩「选择结果」一层
-            match tokio::task::spawn_blocking(move || host.pick_workspace_directory()).await {
-                Ok(picked) => picked,
-                Err(e) => Err(liuma_core::proto::RpcError::internal(
-                    dict::sessions::picker_task_failed(&e),
-                )),
-            }
+            tokio::task::spawn_blocking(move || host.pick_workspace_directory())
+                .await
+                .unwrap_or_else(|e| {
+                    Err(liuma_core::proto::RpcError::internal(
+                        dict::sessions::picker_task_failed(&e),
+                    ))
+                })
         });
         let store = cx.entity().clone();
         cx.spawn(async move |_this, cx| {
             // 内层 Err = 选择失败/取消;外层 = 通道
-            let picked = match rx.await {
-                Ok(picked) => picked,
-                Err(_) => Err(liuma_core::proto::RpcError::internal(
+            let picked = rx.await.unwrap_or_else(|_| {
+                Err(liuma_core::proto::RpcError::internal(
                     dict::sessions::picker_channel_failed().to_string(),
-                )),
-            };
+                ))
+            });
             match picked {
                 Ok(path) => {
                     store.update(cx, |s, cx| {
@@ -476,16 +575,23 @@ impl AppStore {
                     .sessions
                     .retain(|s| reducer::workspace_of(&s.session_id, &default) != name);
                 self.refresh_list(cx);
+                // 单选互斥收口:① 被删区正被选中 → 选首余工作区(不落
+                // 会话);② 当前会话属被删区(或已不在清单)→ 清会话选中
+                // 回 hero。先清会话再重指工作区,顺序不可倒。不再强开/
+                // 新建会话——同 select_workspace 的单选纪律
+                if self
+                    .state
+                    .current_id
+                    .as_deref()
+                    .is_some_and(|cid| !self.state.sessions.iter().any(|s| s.session_id == *cid))
+                {
+                    self.select_session(None);
+                }
                 if self.state.active_workspace.as_deref() == Some(name) {
                     self.state.active_workspace =
                         self.bridge.host().workspace_names().first().cloned();
-                    match self.state.sessions.first().map(|s| s.session_id.clone()) {
-                        Some(next) => self.open_session(&next, cx),
-                        None => self.create_session(cx),
-                    }
-                } else {
-                    cx.notify();
                 }
+                cx.notify();
             }
             Err(e) => self.push_local_notice(&dict::sessions::remove_failed(&e.message), cx),
         }
@@ -519,17 +625,27 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 重命名模态(组件库 Dialog 层:标题 + 输入 + 库默认
-    /// OK/Cancel footer;确认/取消/X/Esc/遮罩全部收敛到 store 动作)
+    /// 重命名模态(组件库 Dialog 层:标题按目标分派会话/工作区 +
+    /// 输入 + 取消/重命名 footer;确认/取消/X/Esc/遮罩全部收敛到
+    /// store 动作。库 Dialog 无默认 footer——按钮自绘)
     fn open_rename_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use gpui_kit::component::WindowExt as _;
         let Some(input) = self.sessions.rename_input.clone() else {
             return;
         };
+        let ws_mode = self.sessions.rename_ws_target.is_some();
         let store = cx.entity();
         window.open_dialog(cx, move |dialog, _, _| {
+            let input = input.clone();
+            let title = if ws_mode {
+                dict::misc::rename_workspace()
+            } else {
+                dict::misc::rename_session()
+            };
+            let store_ok = store.clone();
+            let store_cancel = store.clone();
             dialog
-                .title(dict::misc::rename_session())
+                .title(title)
                 .w(px(420.))
                 .bg(theme::LAYER())
                 .content({
@@ -538,24 +654,68 @@ impl AppStore {
                         content.child(gpui_kit::component::input::Input::new(&input))
                     }
                 })
-                .on_ok({
-                    let store = store.clone();
-                    move |_, _, cx| {
-                        store.update(cx, |st, cx| st.confirm_rename(cx));
-                        true
-                    }
-                })
+                .footer(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .id("rename-cancel")
+                                .debug_selector(|| "rename-cancel".to_string())
+                                .flex()
+                                .h(px(32.))
+                                .items_center()
+                                .px(px(16.))
+                                .rounded(px(16.))
+                                .border_1()
+                                .border_color(theme::BORDER())
+                                .cursor_pointer()
+                                .text_size(px(13.))
+                                .text_color(theme::LABEL_2())
+                                .hover(|s| s.bg(theme::DOCK()))
+                                .child(dict::common::cancel())
+                                .on_click(|_, window, cx| {
+                                    window.close_dialog(cx);
+                                }),
+                        )
+                        .child(
+                            div()
+                                .id("rename-ok")
+                                .debug_selector(|| "rename-ok".to_string())
+                                .flex()
+                                .h(px(32.))
+                                .items_center()
+                                .px(px(16.))
+                                .rounded(px(16.))
+                                .bg(theme::BRAND())
+                                .cursor_pointer()
+                                .text_size(px(13.))
+                                .text_color(theme::LABEL())
+                                .hover(|s| s.opacity(0.9))
+                                // 确认钮文案 = 动作词(参照:「重命名」)
+                                .child(if ws_mode {
+                                    dict::sessions::rename()
+                                } else {
+                                    dict::misc::rename_session()
+                                })
+                                .on_click(move |_, window, cx| {
+                                    store_ok.update(cx, |st, cx| st.confirm_rename(cx));
+                                    window.close_dialog(cx);
+                                }),
+                        ),
+                )
                 .on_cancel({
-                    let store = store.clone();
+                    let store_cancel = store_cancel.clone();
                     move |_, _, cx| {
-                        store.update(cx, |st, cx| st.cancel_rename(cx));
+                        store_cancel.update(cx, |st, cx| st.cancel_rename(cx));
                         true
                     }
                 })
                 .on_close({
-                    let store = store.clone();
+                    let store_close = store_cancel.clone();
                     move |_, _, cx| {
-                        store.update(cx, |st, cx| st.cancel_rename(cx));
+                        store_close.update(cx, |st, cx| st.cancel_rename(cx));
                     }
                 })
         });
@@ -623,12 +783,12 @@ impl AppStore {
         if self.bridge.host().archive_session(id).is_ok() {
             self.state.sessions.retain(|s| s.session_id != id);
             self.refresh_list(cx);
+            // 归档当前会话 → 回 hero(不隐式跳下一会话:单选模型下
+            // 自动导航属意外选中;再聊点行或「+」)
             if self.state.current_id.as_deref() == Some(id) {
-                match self.state.sessions.first().map(|s| s.session_id.clone()) {
-                    Some(next) => self.open_session(&next, cx),
-                    None => self.create_session(cx),
-                }
+                self.select_session(None);
             }
+            cx.notify();
         }
     }
 
@@ -754,21 +914,37 @@ impl AppStore {
             .unwrap_or_else(|| basename(&self.state.host_info.cwd))
     }
 
-    /// 非默认工作区才返回 Some(新建会话目标)
+    /// 非默认工作区才返回 Some(新建会话目标)。读生效工作区:选中态
+    /// 落选中工作区;会话态落当前会话工作区(新会话跟手)
     pub(crate) fn non_default_workspace(&self) -> Option<String> {
         let default = self.default_workspace();
-        match &self.state.active_workspace {
-            Some(ws) if *ws != default => Some(ws.clone()),
-            _ => None,
-        }
+        let ws = self.effective_workspace();
+        (ws != default).then_some(ws)
     }
 
-    /// 会话活动连带其工作区选中(对齐 web)
-    fn sync_active_workspace_from_current(&mut self) {
-        if let Some(id) = &self.state.current_id {
-            let default = self.default_workspace();
-            self.state.active_workspace = Some(reducer::workspace_of(id, &default).to_string());
+    /// 新会话本地行的 cwd 标签:目标工作区路径(`ws_paths` 由宿主工作
+    /// 区表回填),无表项兜底宿主当前路径。此前恒记宿主当前路径(=
+    /// 默认区),非默认目标的新会话行 @file 根错位
+    fn ws_cwd_label(&self, ws: Option<&str>) -> String {
+        let default = self.default_workspace();
+        let name = ws.unwrap_or(&default);
+        if let Some(p) = self.sessions.ws_paths.get(name) {
+            return p.display().to_string();
         }
+        self.bridge.host().workspace().display().to_string()
+    }
+
+    /// 生效工作区 = 显式选中 > 当前会话归属 > 默认工作区。
+    /// 选中态互斥(active_workspace 与 current_id 不同时在场),读端
+    /// 统一走此入口取「界面上下文工作区」,不感知选中形态
+    pub fn effective_workspace(&self) -> String {
+        if let Some(ws) = &self.state.active_workspace {
+            return ws.clone();
+        }
+        if let Some(id) = &self.state.current_id {
+            return reducer::workspace_of(id, &self.default_workspace()).to_string();
+        }
+        self.default_workspace()
     }
 }
 

@@ -1619,9 +1619,12 @@ fn billing_auto_refresh_quiet_writes_cache(cx: &mut TestAppContext) {
 fn provider_switch_refreshes_billing_badge(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "billing-switch");
     let host = cx.update(|app| store.read(app).bridge.host().clone());
-    let ws = cx
-        .update(|app| store.read(app).state.active_workspace.clone())
-        .expect("工作区在场");
+    // 启动选中态 = 仅会话(active_workspace None);provider 绑定按
+    // 工作区,显式选中默认区再切
+    let ws = cx.update(|app| store.read(app).default_workspace());
+    cx.update(|app| {
+        store.update(app, |s, cx| s.select_workspace(&ws, cx));
+    });
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
@@ -2455,6 +2458,48 @@ fn user_bubble_text_is_drag_selectable(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 工作区选中态(hero)发送 = 发送即建会话:会话落入选中工作区、
+/// 打开后 prompt 送达,选中态切回会话(active_workspace 清空)。
+/// 回归「无会话时 send 静默吞稿」
+#[gpui_kit::test]
+fn send_in_workspace_selected_mode_creates_session(cx: &mut TestAppContext) {
+    let (store, _wcx, root) = menu_harness(cx, "hero-send-create");
+    let default = cx.update(|app| store.read(app).default_workspace());
+    // 前置:选中工作区(current 清空,右栏 hero)
+    cx.update(|app| {
+        store.update(app, |s, cx| s.select_workspace(&default, cx));
+    });
+    assert!(cx.update(|app| store.read(app).hero()), "前置:应为 hero 态");
+    cx.update(|app| {
+        store.update(app, |st, cx| st.send("工作区里第一条消息", cx));
+    });
+    cx.run_until_parked();
+    let (current, active) = cx.update(|app| {
+        let st = store.read(app);
+        (
+            st.state.current_id.clone(),
+            st.state.active_workspace.clone(),
+        )
+    });
+    let current = current.expect("发送应建会话并打开");
+    assert_eq!(active, None, "新会话打开后工作区选中应清空");
+    assert!(
+        !current.contains('/'),
+        "默认工作区会话 id 应无前缀,实际:{current}"
+    );
+    // 用户消息确已送达新会话(回合尾标记在后,扫全节点断言)
+    cx.run_until_parked();
+    let nodes = cx.update(|app| store.read(app).current_nodes().to_vec());
+    assert!(
+        nodes.iter().any(|n| matches!(
+            n,
+            ChatNode::User { text, .. } if text.contains("工作区里第一条消息")
+        )),
+        "prompt 未送达新会话:{nodes:?}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 首条消息后标题 = 内容摘录(60 字):turn 开始边沿刷清单即取到;
 /// 回归锚:此前 history 对空会话恒下发 title=""(title_of 烧穿空串),
 /// 客户端 titles 表被空串永久遮蔽,清单摘录进不来 → 标题永远「新会话」
@@ -3200,10 +3245,15 @@ fn session_menu_archives_current_session(cx: &mut TestAppContext) {
     });
     assert!(!ids.contains(&s3), "s3 应被归档移出清单: {ids:?}");
     assert!(ids.contains(&first) && ids.contains(&s2), "其余会话保留");
-    assert_ne!(
+    // 归档当前 → 回 hero(不隐式跳下一会话;单选互斥下无工作区选中)
+    assert_eq!(
         cx.update(|app| store.read(app).state.current_id.clone()),
-        Some(s3),
-        "归档当前会话后应切走"
+        None,
+        "归档当前会话应清空会话选中"
+    );
+    assert!(
+        cx.update(|app| store.read(app).hero()),
+        "归档当前会话后右栏应为 hero 空态"
     );
     wcx.refresh().expect("刷新失败");
     assert!(
@@ -5448,7 +5498,8 @@ fn attach_entry_is_standalone_button_not_menu_row(cx: &mut TestAppContext) {
 }
 
 /// 标题栏工作区下拉:列出全部工作区 → 点选切换 active_workspace
-/// + 菜单关(select_workspace 无会话则在该区新建)
+/// + 菜单关,不开/不建会话;选中后点「新会话」钮 → 会话落入选中
+/// 工作区(前缀形态)
 #[gpui_kit::test]
 fn workspace_dropdown_lists_and_selects(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "wsdd");
@@ -5481,32 +5532,59 @@ fn workspace_dropdown_lists_and_selects(cx: &mut TestAppContext) {
     }
     assert!(listed, "工作区行未列出(host_info 未刷新?)");
 
+    let (current_before, count_before) = cx.update(|app| {
+        let st = store.read(app);
+        (st.state.current_id.clone(), st.state.sessions.len())
+    });
     click_sel(&mut wcx, row_sel);
     cx.run_until_parked();
-    let (active, menu_open) = cx.update(|app| {
+    let (active, menu_open, current) = cx.update(|app| {
         let st = store.read(app);
         (
             st.state.active_workspace.clone(),
             st.sessions.workspace_menu_open,
+            st.state.current_id.clone(),
         )
     });
     assert_eq!(active.as_deref(), Some(ws2.as_str()), "工作区未切换");
     assert!(!menu_open, "下拉应随选择关闭");
-    // 新工作区无会话 → 应已在该区新建并打开(前缀形态)
-    let current = cx
-        .update(|app| store.read(app).state.current_id.clone())
-        .expect("当前会话");
+    // 单选互斥:选中工作区即清会话选中(右栏 hero),不新建
+    assert_eq!(
+        cx.update(|app| store.read(app).state.sessions.len()),
+        count_before,
+        "选工作区不应新建会话"
+    );
+    assert_eq!(current, None, "选工作区应清空会话选中");
+    assert!(
+        cx.update(|app| store.read(app).hero()),
+        "工作区选中态右栏应为 hero 空态"
+    );
+    // 选中态点「新会话」:会话落入选中工作区(前缀形态),选中态随之
+    // 切回会话(工作区行熄灭)
+    click_sel(&mut wcx, "new-session");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    let (current, active) = cx.update(|app| {
+        let st = store.read(app);
+        (
+            st.state.current_id.clone(),
+            st.state.active_workspace.clone(),
+        )
+    });
+    let current = current.expect("新会话已打开");
     assert!(
         current.starts_with(&format!("{ws2}/")),
-        "新工作区会话 id 形态异常:{current}"
+        "新会话应落入选中工作区,实际:{current}"
     );
+    assert_eq!(active, None, "新会话打开后工作区选中应清空");
+    assert_ne!(Some(current), current_before, "应切到新会话");
     let _ = std::fs::remove_dir_all(root);
 }
 
 /// 侧栏树形:组头 chevron 折叠(store 态 + 开合异键渲染)、
-/// 组头「+」在该工作区新建
+/// select_workspace 自动展开目标组
 #[gpui_kit::test]
-fn sidebar_group_collapse_and_new(cx: &mut TestAppContext) {
+fn sidebar_group_collapse_and_auto_expand(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "tree");
 
     // 初始展开 → 点 chevron 折叠
@@ -5539,28 +5617,11 @@ fn sidebar_group_collapse_and_new(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let collapsed = cx.update(|app| store.read(app).sessions.collapsed_workspaces.clone());
     assert!(!collapsed.contains(&default), "select_workspace 应自动展开");
-
-    // 组头「+」:该工作区新建会话(before 取此刻——select_workspace
-    // 对全空白会话列表本身也会新建一只,属预期)
-    let before = cx.update(|app| store.read(app).state.sessions.len());
-    cx.update(|app| {
-        store.update(app, |st, cx| st.create_session_in(&default, cx));
-    });
-    cx.run_until_parked();
-    let after = cx.update(|app| store.read(app).state.sessions.len());
-    assert_eq!(after, before + 1, "组头新建未增加会话");
-    let current = cx
-        .update(|app| store.read(app).state.current_id.clone())
-        .expect("当前会话");
-    assert!(
-        !current.contains('/'),
-        "默认工作区新建应为无前缀形态:{current}"
-    );
     let _ = std::fs::remove_dir_all(root);
 }
 
 /// 侧栏组 = 工作区清单驱动:无会话的工作区仍渲染组头
-/// (删除会话后组不可消失;组头保留「+」入口)
+/// (删除会话后组不可消失)
 #[gpui_kit::test]
 fn sidebar_keeps_empty_workspace_group(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "ws-empty-group");
@@ -5682,6 +5743,558 @@ fn sidebar_header_search_toggle(cx: &mut TestAppContext) {
         cx.update(|app| store.read(app).search.search_hits.is_none()),
         "命中未清"
     );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 信息卡悬停全链:移入组头行右段空区 → 卡开(锚 = 进入点指针位,
+/// 同帧渲染);跨空隙移到卡上 → 卡保持(300ms 延迟关被卡悬停取消);
+/// 移到内容区 → 300ms 后卡关(回归 2026-09-24「行 hover 不出卡/
+/// 卡秒关」)
+#[gpui_kit::test]
+fn ws_info_card_opens_on_row_spacer_hover(cx: &mut TestAppContext) {
+    let (_store, mut wcx, root) = menu_harness(cx, "ws-info");
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    // 先把指针放在行外(内容区),再移入空区 → 产生 hover 翻转
+    wcx.simulate_mouse_move(
+        gpui_kit::Point {
+            x: gpui_kit::px(600.),
+            y: gpui_kit::px(400.),
+        },
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    wcx.refresh().expect("刷新失败");
+    let head = wcx.debug_bounds("ws-head-ws").expect("组头缺失");
+    let pos = gpui_kit::Point {
+        x: head.origin.x + head.size.width - gpui_kit::px(60.),
+        y: head.origin.y + head.size.height / 2.,
+    };
+    wcx.simulate_mouse_move(
+        pos,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    // 卡应同帧在场(锚在事件分发期捕获,无渲染期捕获的一帧延迟)
+    let card = wcx
+        .debug_bounds("ws-info-card")
+        .expect("悬停行空区应弹出信息卡");
+    assert!(
+        card.origin.x >= head.origin.x + head.size.width,
+        "卡应贴侧栏右缘伸出,不遮行内动作钮"
+    );
+    // 移到卡本体上:空区 hover 失效 → 延迟关被卡悬停取消,卡保持
+    let mid = gpui_kit::Point {
+        x: card.origin.x + card.size.width / 2.,
+        y: card.origin.y + card.size.height / 2.,
+    };
+    wcx.simulate_mouse_move(
+        mid,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("ws-info-card").is_some(),
+        "移到卡上后卡应保持打开"
+    );
+    // 移回内容区(离开行与卡):300ms 延迟后卡关
+    wcx.simulate_mouse_move(
+        gpui_kit::Point {
+            x: gpui_kit::px(600.),
+            y: gpui_kit::px(400.),
+        },
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(400));
+    cx.run_until_parked();
+    cx.update(|_: &mut gpui_kit::App| {});
+    assert!(
+        wcx.debug_bounds("ws-info-card").is_none(),
+        "行与卡双离开后卡应关闭"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 置顶工作区信息卡:置顶后该组只在置顶节渲染(两节互斥),置顶行
+/// 悬停照常开卡(回归「置顶行 hover 不出卡」)
+#[gpui_kit::test]
+fn ws_info_card_opens_from_pinned_row(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "ws-info-pin");
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    let default = cx.update(|app| store.read(app).default_workspace());
+    cx.update(|app| {
+        store.update(app, |s, cx| s.toggle_pinned_workspace(&default, cx));
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    let pin_sel = Box::leak(format!("pinned-ws-{default}").into_boxed_str());
+    let head_sel = Box::leak(format!("ws-head-{default}").into_boxed_str());
+    let pin = wcx.debug_bounds(pin_sel).expect("置顶行缺失");
+    assert!(
+        wcx.debug_bounds(head_sel).is_none(),
+        "置顶工作区不应在项目节重复渲染"
+    );
+    // 置顶节行右段悬停 → 卡开(pinned-ws 选择器 = 行+预览清单整块:
+    // 工作区行在块顶 34px,y 取块顶下半行;行内名与空区各占 flex_1
+    // 一半,x 取块中心才落空区,-60 会落进 ⋯/铅笔与空区的夹缝)
+    wcx.simulate_mouse_move(
+        gpui_kit::Point {
+            x: pin.origin.x + pin.size.width / 2.,
+            y: pin.origin.y + gpui_kit::px(17.),
+        },
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("ws-info-card").is_some(),
+        "置顶行悬停应弹出信息卡"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 置顶会话单处渲染:仅置顶会话(工作区未置顶)时,气泡行是唯一
+/// 显示——项目节组清单剔除该会话;组头保留,组体空时显「暂无聊天」
+/// 空状态;取消置顶后空状态消失、会话行恢复(回归「会话置顶同时
+/// 出现 2 个」)
+#[gpui_kit::test]
+fn pinned_session_renders_once(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "pinned-sess-once");
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    let default = cx.update(|app| store.read(app).default_workspace());
+    let current = cx
+        .update(|app| store.read(app).state.current_id.clone())
+        .expect("当前会话");
+    let sess_sel = Box::leak(format!("pinned-session-{current}").into_boxed_str());
+    let row_sel = Box::leak(format!("session-row-{current}").into_boxed_str());
+    let head_sel = Box::leak(format!("ws-head-{default}").into_boxed_str());
+    let empty_sel = Box::leak(format!("ws-empty-{default}").into_boxed_str());
+    // 前置:未置顶时会话在项目节组清单,无空状态
+    assert!(wcx.debug_bounds(row_sel).is_some(), "组清单应有会话行");
+    assert!(wcx.debug_bounds(empty_sel).is_none(), "有会话不应显空状态");
+    cx.update(|app| {
+        store.update(app, |s, cx| s.toggle_pinned_session(&current, cx));
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(wcx.debug_bounds(sess_sel).is_some(), "置顶节应有会话气泡行");
+    assert!(
+        wcx.debug_bounds(row_sel).is_none(),
+        "置顶会话不应再出现在组清单"
+    );
+    assert!(wcx.debug_bounds(head_sel).is_some(), "组头应保留");
+    assert!(
+        wcx.debug_bounds(empty_sel).is_some(),
+        "组体空时应显「暂无聊天」空状态"
+    );
+    // 取消置顶:空状态消失,会话行回组清单
+    cx.update(|app| {
+        store.update(app, |s, cx| s.toggle_pinned_session(&current, cx));
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds(sess_sel).is_none(),
+        "取消置顶后气泡行应消失"
+    );
+    assert!(wcx.debug_bounds(row_sel).is_some(), "会话行应回组清单");
+    assert!(wcx.debug_bounds(head_sel).is_some(), "组头应保留");
+    assert!(wcx.debug_bounds(empty_sel).is_none(), "空状态应消失");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 置顶工作区块空状态:块内会话全上提为气泡行后,清单位显「暂无聊天」
+/// (与项目节组空状态同款);取消会话置顶后清单恢复
+#[gpui_kit::test]
+fn pinned_ws_block_empty_state(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "pin-ws-empty");
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    let default = cx.update(|app| store.read(app).default_workspace());
+    let current = cx
+        .update(|app| store.read(app).state.current_id.clone())
+        .expect("当前会话");
+    let sess_sel = Box::leak(format!("pinned-session-{current}").into_boxed_str());
+    let row_sel = Box::leak(format!("session-row-{current}").into_boxed_str());
+    let empty_sel = Box::leak(format!("ws-empty-{default}").into_boxed_str());
+    // 置顶工作区:块清单在(会话未置顶)
+    cx.update(|app| {
+        store.update(app, |s, cx| s.toggle_pinned_workspace(&default, cx));
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(wcx.debug_bounds(row_sel).is_some(), "块清单应有会话行");
+    assert!(wcx.debug_bounds(empty_sel).is_none(), "有会话不应显空状态");
+    // 再置顶会话:上提为气泡行,块清单空 → 空状态在场
+    cx.update(|app| {
+        store.update(app, |s, cx| s.toggle_pinned_session(&current, cx));
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(wcx.debug_bounds(sess_sel).is_some(), "置顶节应有会话气泡行");
+    assert!(
+        wcx.debug_bounds(row_sel).is_none(),
+        "上提后块清单不应再有会话行"
+    );
+    assert!(
+        wcx.debug_bounds(empty_sel).is_some(),
+        "块清单空应显「暂无聊天」"
+    );
+    // 取消会话置顶:清单恢复
+    cx.update(|app| {
+        store.update(app, |s, cx| s.toggle_pinned_session(&current, cx));
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(wcx.debug_bounds(row_sel).is_some(), "会话行应回块清单");
+    assert!(wcx.debug_bounds(empty_sel).is_none(), "空状态应消失");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 点击工作区组头 = 仅选中工作区(active_workspace 设置;会话选中
+/// 清空、右栏切 hero,不连带激活任何会话——含置顶气泡)。回归
+/// 「点击工作区自动开/建会话」「选工作区点亮置顶会话」
+#[gpui_kit::test]
+fn click_ws_header_selects_only(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "ws-click-select");
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    let default = cx.update(|app| store.read(app).default_workspace());
+    let current = cx
+        .update(|app| store.read(app).state.current_id.clone())
+        .expect("当前会话");
+    let head_sel = Box::leak(format!("ws-head-{default}").into_boxed_str());
+    let count = cx.update(|app| store.read(app).state.sessions.len());
+    // 场景 A:会话在组清单,点组头 → 仅选中(会话选中清空,右栏 hero)
+    click_sel(&mut wcx, head_sel);
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|app| store.read(app).state.active_workspace.clone()),
+        Some(default.clone()),
+        "组头点击应选中工作区"
+    );
+    assert_eq!(
+        cx.update(|app| store.read(app).state.current_id.clone()),
+        None,
+        "选中工作区应清空会话选中"
+    );
+    assert!(
+        cx.update(|app| store.read(app).hero()),
+        "工作区选中态右栏应为 hero 空态"
+    );
+    assert_eq!(
+        cx.update(|app| store.read(app).state.sessions.len()),
+        count,
+        "选中工作区不应新建会话"
+    );
+    // 场景 B:置顶气泡在场,点组头 → 仍仅选中(气泡激活态不变 = None,
+    // 置顶气泡不亮)
+    cx.update(|app| {
+        store.update(app, |s, cx| s.toggle_pinned_session(&current, cx));
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    // 先清空选中再点回,验证点击本身写入选中态
+    cx.update(|app| {
+        store.update(app, |s, _| s.state.active_workspace = None);
+    });
+    click_sel(&mut wcx, head_sel);
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|app| store.read(app).state.active_workspace.clone()),
+        Some(default),
+        "组头点击应选中工作区"
+    );
+    assert_eq!(
+        cx.update(|app| store.read(app).state.current_id.clone()),
+        None,
+        "选中工作区不应激活置顶会话"
+    );
+    assert_eq!(
+        cx.update(|app| store.read(app).state.sessions.len()),
+        count,
+        "选中工作区不应新建会话"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 点会话行 = 仅激活会话:工作区选中清空(工作区行熄灭)。与
+/// click_ws_header_selects_only 合起来锁「侧栏整树单选互斥」
+#[gpui_kit::test]
+fn click_session_clears_workspace_selection(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "sess-clears-ws");
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    let default = cx.update(|app| store.read(app).default_workspace());
+    let current = cx
+        .update(|app| store.read(app).state.current_id.clone())
+        .expect("当前会话");
+    // 前置:选中工作区(current 被清空)
+    cx.update(|app| {
+        store.update(app, |s, cx| s.select_workspace(&default, cx));
+    });
+    assert_eq!(
+        cx.update(|app| store.read(app).state.current_id.clone()),
+        None,
+        "前置失败:选工作区应清会话选中"
+    );
+    // 点会话行 → 会话激活,工作区选中清空
+    let row_sel = Box::leak(format!("session-row-{current}").into_boxed_str());
+    click_sel(&mut wcx, row_sel);
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|app| store.read(app).state.current_id.clone()),
+        Some(current),
+        "点会话行应激活会话"
+    );
+    assert_eq!(
+        cx.update(|app| store.read(app).state.active_workspace.clone()),
+        None,
+        "激活会话应清空工作区选中"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 启动选中态 = 仅会话(active_workspace None,无工作区行高亮;
+/// 读侧上下文走 effective_workspace)
+#[gpui_kit::test]
+fn startup_selection_is_session_only(cx: &mut TestAppContext) {
+    let (store, _wcx, root) = menu_harness(cx, "startup-selection");
+    let (current, active, effective, default) = cx.update(|app| {
+        let st = store.read(app);
+        (
+            st.state.current_id.clone(),
+            st.state.active_workspace.clone(),
+            st.effective_workspace(),
+            st.default_workspace(),
+        )
+    });
+    assert!(current.is_some(), "启动应打开首个会话");
+    assert_eq!(active, None, "启动不应有工作区选中");
+    assert_eq!(effective, default, "会话选中态下生效工作区应跟随当前会话");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 删除工作区单选收口:① 会话态下删其所属工作区 → 悬空 current 清空
+/// 回 hero;② 工区选中态下删所选区(非默认区,默认区拒删)→ 选首余
+/// 工作区,不强开/新建会话
+#[gpui_kit::test]
+fn remove_workspace_clears_dangling_current(cx: &mut TestAppContext) {
+    let (store, _wcx, root) = menu_harness(cx, "rm-ws-selection");
+    let host = cx.update(|app| store.read(app).bridge.host().clone());
+    let mk_dir = |tag: &str| {
+        let d = std::env::temp_dir().join(format!(
+            "liuma-rm-ws-{tag}-{}-{}",
+            std::process::id(),
+            root.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&d).expect("ws 目录");
+        d
+    };
+    let ws2_dir = mk_dir("ws2");
+    let ws3_dir = mk_dir("ws3");
+    let (ws2, ws3) = cx.update(|_| {
+        let ws2 = host
+            .add_workspace(ws2_dir.to_str().expect("路径 utf-8"))
+            .expect("添加工作区 2");
+        let ws3 = host
+            .add_workspace(ws3_dir.to_str().expect("路径 utf-8"))
+            .expect("添加工作区 3");
+        (ws2, ws3)
+    });
+    cx.run_until_parked();
+    // 场景 ①:开 ws2 会话(会话选中,active None)→ 删 ws2 → 回 hero
+    let ws2_session = cx.update(|_| host.create_session(None, None, Some(ws2.clone())));
+    cx.update(|app| {
+        store.update(app, |s, cx| s.open_session(&ws2_session, cx));
+    });
+    assert_eq!(
+        cx.update(|app| store.read(app).state.current_id.clone()),
+        Some(ws2_session),
+        "前置:ws2 会话应打开"
+    );
+    cx.update(|app| {
+        store.update(app, |s, cx| s.remove_workspace(&ws2, cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|app| store.read(app).state.current_id.clone()),
+        None,
+        "删所属工作区应清空悬空会话选中"
+    );
+    assert!(
+        cx.update(|app| store.read(app).hero()),
+        "删所属工作区后右栏应为 hero"
+    );
+    // 场景 ②:选中 ws3 后删它 → 选首余工作区(默认区),不建会话
+    cx.update(|app| {
+        store.update(app, |s, cx| s.select_workspace(&ws3, cx));
+    });
+    cx.update(|app| {
+        store.update(app, |s, cx| s.remove_workspace(&ws3, cx));
+    });
+    cx.run_until_parked();
+    let (active, current, count) = cx.update(|app| {
+        let st = store.read(app);
+        (
+            st.state.active_workspace.clone(),
+            st.state.current_id.clone(),
+            st.state.sessions.len(),
+        )
+    });
+    assert_ne!(active.as_deref(), Some(ws3.as_str()), "被删区不应仍选中");
+    assert!(active.is_some(), "应选中首余工作区");
+    assert_eq!(current, None, "不应强开/新建会话");
+    assert!(count > 0, "剩余工作区会话保留");
+    std::fs::remove_dir_all(ws2_dir).ok();
+    std::fs::remove_dir_all(ws3_dir).ok();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 组头动作钮贴右缘回归锁:⋯/编辑钮的右缘距侧栏内容右缘 ≤ 12px
+/// (悬空在中部 = trigger 收缩,行 hover 信息卡重构的回归)
+#[gpui_kit::test]
+fn group_header_actions_hug_right_edge(cx: &mut TestAppContext) {
+    let (_store, mut wcx, root) = menu_harness(cx, "ws-hug");
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    let sb = wcx.debug_bounds("sidebar-card").expect("侧栏卡缺失");
+    // 最右钮(铅笔)贴行右缘:侧栏卡 px(12) 内边距 + 行 pr(4) →
+    // 距卡右缘 ≤ 20px;⋯ 在铅笔左侧,与铅笔右缘间距 ≤ 28px
+    let menu = wcx.debug_bounds("ws-menu-btn").expect("⋯ 钮缺失");
+    let edit = wcx.debug_bounds("ws-edit-0").expect("编辑钮缺失");
+    let sb_right = f32::from(sb.origin.x + sb.size.width);
+    let edit_gap = sb_right - f32::from(edit.origin.x + edit.size.width);
+    assert!(
+        (0. ..=20.).contains(&edit_gap),
+        "铅笔钮应贴行右缘:距侧栏卡右缘 {edit_gap:.1}px(应在 0..20)"
+    );
+    let btn_gap = f32::from(edit.origin.x - (menu.origin.x + menu.size.width));
+    assert!(
+        (0. ..=8.).contains(&btn_gap),
+        "⋯ 应紧邻铅笔左侧:间距 {btn_gap:.1}px(行 gap 4)"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 侧栏置顶 + 组内 5 条预览:置顶工作区/会话 → 「置顶」节在场且
+/// 原组提出;再 toggle 回退;>5 会话的组截断为「展开显示」行,点击
+/// 展开全量(行文案换「收起显示」)
+#[gpui_kit::test]
+fn sidebar_pinned_section_and_group_preview(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "pinned");
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    let default = cx.update(|app| store.read(app).default_workspace());
+    let current = cx
+        .update(|app| store.read(app).state.current_id.clone())
+        .expect("当前会话");
+    // 种 11 个会话进默认工作区(加当前 = 12;>5 触发预览截断,且
+    // 12 条可验分页步进:5 → 10 → 12 全显)
+    let mut extra = Vec::new();
+    for _ in 0..11 {
+        extra.push(cx.update(|app| {
+            store
+                .read(app)
+                .bridge
+                .host()
+                .create_session(None, None, None)
+        }));
+    }
+    cx.update(|app| store.update(app, |s, cx| s.refresh_list(cx)));
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    let pinned_ws_sel = format!("pinned-ws-{default}");
+    // 置顶工作区:置顶节行在场;项目节组头不在场
+    cx.update(|app| {
+        store.update(app, |s, cx| s.toggle_pinned_workspace(&default, cx));
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    let ws_sel = Box::leak(pinned_ws_sel.clone().into_boxed_str());
+    let head_sel = Box::leak(format!("ws-head-{default}").into_boxed_str());
+    assert!(wcx.debug_bounds(ws_sel).is_some(), "置顶节应有工作区行");
+    assert!(
+        wcx.debug_bounds(head_sel).is_none(),
+        "两节互斥:置顶工作区不应再渲染项目节组头"
+    );
+    // 置顶当前会话:置顶节会话行在场;会话只渲染一处——工作区块的
+    // 清单已剔除置顶会话(气泡行即其唯一显示)
+    cx.update(|app| {
+        store.update(app, |s, cx| s.toggle_pinned_session(&current, cx));
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    let sess_sel = Box::leak(format!("pinned-session-{current}").into_boxed_str());
+    let row_sel = Box::leak(format!("session-row-{current}").into_boxed_str());
+    assert!(wcx.debug_bounds(sess_sel).is_some(), "置顶节应有会话行");
+    assert!(
+        wcx.debug_bounds(row_sel).is_none(),
+        "置顶会话不应再出现在工作区块清单"
+    );
+    // 取消置顶工作区:置顶节行消失(项目节组头恒在;组清单仍剔除该
+    // 置顶会话)
+    cx.update(|app| {
+        store.update(app, |s, cx| s.toggle_pinned_workspace(&default, cx));
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(wcx.debug_bounds(ws_sel).is_none(), "取消置顶后行应消失");
+    assert!(wcx.debug_bounds(head_sel).is_some(), "组头仍在项目节");
+    assert!(
+        wcx.debug_bounds(row_sel).is_none(),
+        "置顶会话不应再出现在项目节组清单"
+    );
+    // 预览截断:>5 条的组显「展开显示」行;点击展开后行文案换「收起显示」
+    let more_sel = Box::leak(format!("ws-show-more-{default}").into_boxed_str());
+    assert!(
+        wcx.debug_bounds(more_sel).is_some(),
+        "超 5 条应显展开显示行"
+    );
+    click_sel(&mut wcx, more_sel);
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(wcx.debug_bounds(more_sel).is_some(), "展开后应有收起行");
+    // 收起回预览态
+    click_sel(&mut wcx, more_sel);
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut gpui_kit::App| {});
+    cx.run_until_parked();
+    assert!(wcx.debug_bounds(more_sel).is_some());
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -6088,13 +6701,9 @@ fn hero_preset_select(cx: &mut TestAppContext) {
     let host = cx.update(|app| store.read(app).bridge.host().clone());
 
     click_sel(&mut wcx, "hero-preset");
-    wcx.refresh().expect("刷新失败");
-    cx.update(|_: &mut gpui_kit::App| {});
-    cx.run_until_parked();
-    assert!(
-        wcx.debug_bounds("preset-item-minimal").is_some(),
-        "preset 卡未弹出"
-    );
+    // Popover 首帧只量锚点、内容下一帧才挂(库 Popup captured 门),
+    // 满载下动画帧晚一拍——单帧断言会偶发抢跑,轮询等待
+    wait_bounds(cx, &mut wcx, "preset-item-minimal");
 
     // 回归锁:菜单卡锚定偏移随品牌块高度联动(hero.rs 顶部注释的
     // 字面 top = logo+gap+标题+gap+chips+6)——改 logo 尺寸漏同步
@@ -6115,13 +6724,22 @@ fn hero_preset_select(cx: &mut TestAppContext) {
         "minimal",
         "preset override 未生效"
     );
-    let cached = cx.update(|app| {
-        store
-            .read(app)
-            .session_cfg_by_id
-            .get(&id)
-            .map(|c| c.preset.clone())
-    });
+    // 缓存回写经 bridge.call 异步落地(refresh_session_cfg),满载下
+    // run_until_parked 单次等待与 tokio 回落竞速——轮询等待
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let cached = loop {
+        let v = cx.update(|app| {
+            store
+                .read(app)
+                .session_cfg_by_id
+                .get(&id)
+                .map(|c| c.preset.clone())
+        });
+        if v.as_deref() == Some("minimal") || std::time::Instant::now() > deadline {
+            break v;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
     assert_eq!(cached.as_deref(), Some("minimal"), "preset 缓存未回写");
     wcx.refresh().expect("刷新失败");
     assert!(

@@ -1421,12 +1421,8 @@ impl AppStore {
             return;
         }
         let snap = &self.settings.settings_snapshot;
-        let ws_pid = self
-            .state
-            .active_workspace
-            .as_deref()
-            .and_then(|ws| snap["workspaceProviders"][ws].as_str())
-            .map(str::to_string);
+        let ws = self.effective_workspace();
+        let ws_pid = snap["workspaceProviders"][&ws].as_str().map(str::to_string);
         let Some(pid) = ws_pid.or_else(|| snap["defaultProvider"].as_str().map(str::to_string))
         else {
             return;

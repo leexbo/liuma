@@ -43,4 +43,5 @@ entries! {
     add_workspace_ellipsis => ["添加工作区…", "Add workspace…"],
     /// 重命名会话模态标题
     rename_session => ["重命名会话", "Rename session"],
+    rename_workspace => ["重命名工作区", "Rename workspace"],
 }

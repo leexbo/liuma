@@ -70,7 +70,9 @@ pub struct StoreState {
     pub running_since_by_id: HashMap<String, std::time::Instant>,
     /// 宿主信息(describe 组装)
     pub host_info: DescribeValue,
-    /// 选中工作区(hero 态新建目标;会话态由 current_id 前缀推导)
+    /// 选中工作区(侧栏单选互斥:与 current_id 不同时在场,仅由显式
+    /// 点击工作区行/下拉设置;hero 态新建目标。读侧上下文走
+    /// AppStore::effective_workspace)
     pub active_workspace: Option<String>,
     /// 会话 → 消息流投影(session/event 与 history 折叠)
     pub chats: HashMap<String, ChatState>,

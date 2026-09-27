@@ -21,7 +21,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Bounds, Context, DispatchPhase, Element, ElementId, Entity, GlobalElementId,
     InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseMoveEvent, ParentElement,
-    Pixels, Render, Style, Styled, Window, div, px,
+    Pixels, Render, StatefulInteractiveElement as _, Style, Styled, Window, div, px,
 };
 
 use crate::features::ask;
@@ -31,6 +31,7 @@ use crate::features::sessions;
 use crate::features::settings;
 use crate::features::subagents;
 use crate::kits::theme;
+use crate::shell::reducer::workspace_of;
 use crate::shell::store::AppStore;
 
 /// 统一 tooltip 构造:字号 12px(组件库默认 text_sm = 14px,相对本
@@ -603,6 +604,65 @@ impl Render for WorkspaceView {
             // 重命名/删除确认/拉取模型/full-access 风险确认四模态已迁
             // 组件库 Dialog 层(store 经 with_window 桥开/关;Esc、遮罩
             // 点击与焦点陷阱由库托管),根级不再条件渲染
+            // 工作区信息卡(根级手绘浮层:库受控 Popover 的 set_open
+            // 抢窗口焦点,hover 驱动开合震荡,故此卡单独回归根级。锚 =
+            // 悬停进入时指针位置(store 于事件分发期捕获
+            // window.mouse_position(),当帧即有,无渲染期捕获的一帧
+            // 延迟):卡贴侧栏右缘伸出(不遮行内 ⋯/铅笔钮),纵向对齐
+            // 悬停行;卡本体 on_hover 续命,行/铅笔/卡三方悬停同步于
+            // store,双离开 300ms 关(ws_info_close_task 期间开态保持,
+            // 指针跨越行→卡空隙不掉卡))
+            .when_some(
+                self.store.read(cx).sessions.ws_info_card.clone(),
+                |el, (ws, at)| {
+                    let st = self.store.read(cx);
+                    let count = {
+                        let default = st.default_workspace().to_string();
+                        st.state
+                            .sessions
+                            .iter()
+                            .filter(|s| {
+                                s.origin.as_deref() != Some("subagent")
+                                    && workspace_of(&s.session_id, &default) == ws
+                            })
+                            .count()
+                    };
+                    let vw = f32::from(window.viewport_size().width);
+                    let vh = f32::from(window.viewport_size().height);
+                    let card_w = 280.;
+                    // 纵向对齐悬停行(锚 y 上移半行高 17),上下夹紧在
+                    // 视口内;卡高约 154(四行 34 + 分隔 + 内距),钳位
+                    // 留裕量
+                    let top = (f32::from(at.y) - 17.).clamp(8., (vh - 162.).max(8.));
+                    // 左贴侧栏右缘;窄窗右溢出时钳回
+                    let sidebar_w = f32::from(crate::shell::metrics::sidebar_width_for(
+                        st.sidebar_collapsed,
+                        st.sidebar_px,
+                    ));
+                    let left = (sidebar_w + 8.).min((vw - card_w - 8.).max(8.));
+                    let store = self.store.clone();
+                    el.child(
+                        div()
+                            .id("ws-info-card-root")
+                            .absolute()
+                            .left(px(left))
+                            .top(px(top))
+                            .occlude()
+                            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation()
+                            })
+                            .on_hover({
+                                let store = store.clone();
+                                move |hovering: &bool, _, cx| {
+                                    store.update(cx, |st, cx| {
+                                        st.set_ws_info_hover_card(*hovering, cx)
+                                    });
+                                }
+                            })
+                            .child(sessions::ws_info_card(&store, cx, &ws, count)),
+                    )
+                },
+            )
             // 首运行 onboarding(无任何可用凭据)
             .when(self.store.read(cx).settings.needs_onboarding, |el| {
                 el.child(settings::onboarding_modal(&self.store, cx))

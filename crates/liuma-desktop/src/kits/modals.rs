@@ -67,11 +67,7 @@ pub(crate) fn workspace_menu_rows(
     cx: &App,
 ) -> Vec<gpui_kit::AnyElement> {
     let st = store.read(cx);
-    let active = st
-        .state
-        .active_workspace
-        .clone()
-        .unwrap_or_else(|| st.default_workspace());
+    let active = st.effective_workspace();
     let mut rows: Vec<gpui_kit::AnyElement> = vec![];
     for (ix, ws) in st.state.host_info.workspaces.iter().enumerate() {
         let s = store.clone();

@@ -331,11 +331,9 @@ fn detail_row(label: &str, value: String) -> AnyElement {
 fn billing_badge(store: &Entity<AppStore>, cx: &App) -> Option<AnyElement> {
     let st = store.read(cx);
     let snap = &st.settings.settings_snapshot;
-    let pid = st
-        .state
-        .active_workspace
-        .as_deref()
-        .and_then(|ws| snap["workspaceProviders"][ws].as_str())
+    let ws = st.effective_workspace();
+    let pid = snap["workspaceProviders"][&ws]
+        .as_str()
         .unwrap_or_else(|| snap["defaultProvider"].as_str().unwrap_or_default());
     let provider = snap["providers"]
         .as_array()?
@@ -439,11 +437,9 @@ fn window_label(text: &str) -> AnyElement {
 pub(crate) fn billing_card(store: &Entity<AppStore>, cx: &App) -> AnyElement {
     let st = store.read(cx);
     let snap = &st.settings.settings_snapshot;
-    let pid = st
-        .state
-        .active_workspace
-        .as_deref()
-        .and_then(|ws| snap["workspaceProviders"][ws].as_str())
+    let ws = st.effective_workspace();
+    let pid = snap["workspaceProviders"][&ws]
+        .as_str()
         .unwrap_or_else(|| snap["defaultProvider"].as_str().unwrap_or_default());
     let cache = snap["providers"]
         .as_array()

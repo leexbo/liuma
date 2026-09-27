@@ -1880,6 +1880,51 @@ impl AppHost {
         Ok(())
     }
 
+    /// 侧栏置顶清单(会话 + 工作区;写入序即展示序)
+    pub fn pinned(&self) -> (Vec<String>, Vec<String>) {
+        let s = self.settings.read();
+        (s.pinned_sessions.clone(), s.pinned_workspaces.clone())
+    }
+
+    /// 置顶/取消置顶会话(id 已在列 = 取消)。写侧去重截断;存在性由
+    /// 渲染侧过滤(置顶节只显清单内会话),host 不做注册表校验——
+    /// 会话清单随工作区扫描漂移,严格校验会让「清掉日志后残留的
+    /// 置顶项」永远无法手工移除
+    pub fn toggle_pinned_session(&self, id: &str) -> Result<(), RpcError> {
+        let id = id.trim().chars().take(200).collect::<String>();
+        if id.is_empty() {
+            return Err(RpcError::bad_request("会话 id 为空"));
+        }
+        self.settings
+            .update(|s| {
+                if let Some(pos) = s.pinned_sessions.iter().position(|v| v == &id) {
+                    s.pinned_sessions.remove(pos);
+                } else {
+                    s.pinned_sessions.insert(0, id.clone());
+                    s.pinned_sessions.truncate(32);
+                }
+            })
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))?;
+        Ok(())
+    }
+
+    /// 置顶/取消置顶工作区(同上;工作区须在注册表)
+    pub fn toggle_pinned_workspace(&self, name: &str) -> Result<(), RpcError> {
+        self.workspace_of(name)
+            .ok_or_else(|| RpcError::bad_request("未知工作区"))?;
+        self.settings
+            .update(|s| {
+                if let Some(pos) = s.pinned_workspaces.iter().position(|v| v == name) {
+                    s.pinned_workspaces.remove(pos);
+                } else {
+                    s.pinned_workspaces.insert(0, name.to_string());
+                    s.pinned_workspaces.truncate(32);
+                }
+            })
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))?;
+        Ok(())
+    }
+
     /// 移除工作区(仅出清单;默认工作区不可移除)。该工作区的附着会话
     /// 随之卸载(槽移除,文件保留——重新添加即恢复);标题覆盖清理
     pub fn remove_workspace(&self, name: &str) -> Result<(), RpcError> {
@@ -2532,6 +2577,8 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             "busyEnter": file.busy_enter,
             "language": file.language,
             "appearance": file.appearance,
+            "pinnedSessions": file.pinned_sessions,
+            "pinnedWorkspaces": file.pinned_workspaces,
             "sessionsRoot": self.sessions_root.display().to_string(),
             // 通用区偏好行数据(preset / permission 选项与缺省)
             "presetOptions": self.presets(),
@@ -11359,6 +11406,39 @@ mod tests {
         );
         // 幂等:再查无变更
         assert!(host.sync_provider_transports().is_empty());
+    }
+
+    /// 侧栏置顶:会话/工作区 toggle 落盘 settings.yaml 且幂等(再
+    /// toggle = 取消);未知工作区拒绝
+    #[test]
+    fn pinned_toggle_roundtrip_and_persists() {
+        let host = temp_host("ws-pin");
+        assert_eq!(host.pinned(), (vec![], vec![]));
+        let sid = host.create_session(None, None, None);
+        let ws = host.workspace_names()[0].clone();
+        host.toggle_pinned_session(&sid).unwrap();
+        host.toggle_pinned_workspace(&ws).unwrap();
+        let (sessions, workspaces) = host.pinned();
+        assert_eq!(sessions, vec![sid.clone()]);
+        assert_eq!(workspaces, vec![ws.clone()]);
+        // 落盘可见(settings_view 直读宿主设置;跨重启即此文件)
+        let view = host.settings_view();
+        assert_eq!(
+            view["pinnedSessions"],
+            serde_json::json!([sid.clone()]),
+            "置顶会话应落盘"
+        );
+        assert_eq!(
+            view["pinnedWorkspaces"],
+            serde_json::json!([ws.clone()]),
+            "置顶工作区应落盘"
+        );
+        // 再 toggle = 取消
+        host.toggle_pinned_session(&sid).unwrap();
+        host.toggle_pinned_workspace(&ws).unwrap();
+        assert_eq!(host.pinned(), (vec![], vec![]));
+        // 未知工作区拒绝
+        assert!(host.toggle_pinned_workspace("no-such-ws").is_err());
     }
 
     /// 孤儿子代理清扫:父已亡(历史无级联时期遗留)的隐藏子代理在
