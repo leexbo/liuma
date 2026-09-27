@@ -137,8 +137,15 @@ crates/liuma-wit/           host bindgen + 组件契约测试
 crates/liuma-session/       事件日志组件(wasm32-wasip2 产物 + rlib)
 crates/liuma-agent-loop/    turn 引擎 + 端口 trait
 crates/liuma-compaction/    上下文压缩策略(阈值/选段/摘要指令,纯函数)
+crates/liuma-plan/          plan 模式协作状态(逐 agent 布尔态 + 阻塞评审)
 crates/liuma-prompt/        prompt 组装
+crates/liuma-attachment/    附件存储与准入(内容寻址/图片解码/粘贴与拖放准入链)
 crates/liuma-tools/         工具注册表与内置工具(含 BashTool)
+crates/liuma-hooks/         hooks 桥(Claude Code / Codex shell hooks)
+crates/liuma-mcp/           MCP client 桥(stdio + streamable-http)
+crates/liuma-skill/         Skill 子系统(.agents/skills 加载/渐进披露)
+crates/liuma-decision/      决策模型接入(System One 协议/四场景/decide 工具)
+crates/liuma-sandbox-winacl/ Windows 沙箱后端(受限令牌 + 能力 SID + Job Object)
 crates/liuma-example-tool/  示例工具组件(liuma:tools 参考实现,测试物料)
 presets/                  内置能力 preset manifest(standard / minimal,YAML,编译进二进制)
 scripts/                  verify-* 脚本
@@ -175,6 +182,12 @@ sequenceDiagram
 
 每个事件 append 后同步触发 sink(落盘 / 下行 / 渲染),再进入后续处理——「记录优先」。请求 messages 的唯一来源是 `derive_messages(日志)`;工具失败不中断循环。
 
+**工具参数形态**。`tool_calls[].arguments` 的形态**随来源而异**:OpenAI 兼容 wire 上是 JSON **编码字符串**(流式增量累积的产物),Anthropic 与本地夹具是对象。引擎原样透传——写回模型面必须是 provider 自己要的形态,故 `tool_call` 与 `tool/call` 事件都保留原值。
+
+于是 `ToolCallRequest.arguments` **不是稳定形状**,读参数一律经 `ToolCallRequest::parsed_arguments()`。直接索引 `arguments["k"]` 在字符串形态上恒得 `Null`,症状是「形状完全正确的参数被判成缺字段/类型错」——**不报错,只给错误结论**(实测两次:一个合法的 `questions` 数组被报成「必须是数组」,一个 `bash` 命令在 Codex 钩子载荷里恒为空串)。解析失败返回 `Err` 而**不降级成空对象**,否则把「模型输出坏了」伪装成「没有参数」,把排查方向带偏。
+
+跨协议边界的消费者在**各自边界处**归一到对象或文本:Claude Code 钩子载荷的 `tool_input`、Codex 的简化形 `{command}`、WASM 组件入参(组件给模型声明的 input-schema 是对象)、轨迹展示、全文检索索引。
+
 ### 6.2 场景:取消
 
 软取消(CancelToken)在三个安全点生效:step 边界、出网返回后、工具执行前;触发即 `turn/end {cancelled:"token"}`。工具执行中由 select 中止:杀子进程 → 失败 tool/result → 循环继续。硬取消兜底:epoch deadline 超时即销毁竞技场,fuel 防计算 DoS。
@@ -189,8 +202,13 @@ JSONL 日志逐事件重放:信封校验(§7.1)通过即重建 EventLog,`derive_
 
 ### 6.5 场景:桌面会话(liuma-desktop)
 
-`liuma-desktop` 在自身进程内直接构造 `liuma-core` 的 `AppHost`(专任 tokio runtime):同步方法直调、异步方法经 runtime 派发,mux/host 广播帧经 futures channel 桥入 GPUI 事件循环——无 loopback HTTP/WS,无序列化往返。UI = 事件投影:GPUI reducer 与 Rust 翻译表(`liuma-core/src/translate.rs`)同仓同源;历史回填与直播共用 `session.history` 分页重放 + `session/subscribed` 基线;计划审批 = `question/requested` 帧接管 composer → `respond` → `question/resolved`。队列/steer:提交 mode=queue|steer,队列瞬态经 `session/queue` 帧整表下发(queued + steering 两种 placement,基线随 subscribed 重推),steer 认领落 `agent/inbox/spliced`(inserted+removed 双 splice,id 与 user/message 同源),`session.updateQueue` 变更 edit/remove/steer;`session.export` 返回原始会话 JSONL。轨迹台账(`trajectory_page` 读取面)与直播(`trajectory/delta` 帧)同源:宿主槽位驻留增量折叠器(`TrajectoryFolder`,逐事件 feed,驱动 turn sink 单写,attach 暖机 + RPC 读前兜底补喂,seq 连续性自愈),批量折叠即其包装——`trajectory/delta` 载荷 = 变更缓冲(records 按 index、requests 按 number 的 upsert 全量对象 + total + lastSeq),桌面不管面板可见与否直接应用;基线拉取与增量的竞态以「拉取发起时记录增量计数、回包落库时已前进即重拉」收敛。
+**进程内直连**:`liuma-desktop` 在自身进程内直接构造 `liuma-core` 的 `AppHost`(专任 tokio runtime)——同步方法直调、异步方法经 runtime 派发,mux/host 广播帧经 futures channel 桥入 GPUI 事件循环。**无 loopback HTTP/WS,无序列化往返**。
 
+**UI = 事件投影**:GPUI reducer 与 Rust 翻译表(`liuma-core/src/translate.rs`)同仓同源。历史回填与直播共用 `session.history` 分页重放 + `session/subscribed` 基线。计划审批 = `question/requested` 帧接管 composer → `respond` → `question/resolved`。
+
+**队列 / steer**:提交 mode=queue|steer,队列瞬态经 `session/queue` 帧整表下发(queued + steering 两种 placement,基线随 subscribed 重推);steer 认领落 `agent/inbox/spliced`(inserted + removed 双 splice,id 与 user/message 同源);`session.updateQueue` 变更 edit/remove/steer;`session.export` 返回原始会话 JSONL。
+
+**轨迹台账**:读取面(`trajectory_page`)与直播(`trajectory/delta` 帧)同源。宿主槽位驻留增量折叠器(`TrajectoryFolder`,逐事件 feed,驱动 turn sink 单写,attach 暖机 + RPC 读前兜底补喂,seq 连续性自愈),批量折叠即其包装。`trajectory/delta` 载荷 = 变更缓冲(records 按 index、requests 按 number 的 upsert 全量对象 + total + lastSeq),桌面不管面板可见与否直接应用。基线拉取与增量的竞态以「拉取发起时记录增量计数、回包落库时已前进即重拉」收敛。
 
 ## 7. 横切概念
 
@@ -227,6 +245,8 @@ JSONL 日志逐事件重放:信封校验(§7.1)通过即重建 EventLog,`derive_
 | plan/cancelled | 簿记 | `plan`;评审被关闭/中断(等待用户在聊天中说话) |
 | goal/state | 簿记 | `goals` 全量快照(id/text/done);恢复 = 读最近一条 |
 | approval/asked · approval/decided | 簿记 | 沙箱升级审计对:`id` 配对;asked 带 `toolName`/`reason`,decided 带 `outcome`(allowed-once / rejected / cancelled / unavailable) |
+| decision/asked · decision/answered | 簿记 | 决策模型审计对:`id` 配对;asked 带 `scenario`(guard / stop / context / tool)、`model`、`questions`(id 清单)、`stateDigest`(state **原文不落档**),answered 带 `ok`、`durationMs` 与二者之一的 `answers` / `error` |
+| decision/pruned | 簿记 | 上下文裁判的实际效果(`pruned` 条数清单);仅 enforce 分支落档,shadow 只留 receipt 供观察误裁率 |
 
 归因集 = surface 三类 + audit/call。
 
@@ -270,7 +290,16 @@ JSONL 为事实流主格式(append-only,一行一事件);SQLite(turso)为派生�
 
 本层实现位于 `liuma-llm`;端口在 liuma-agent-loop,宿主侧契约不变。
 
-连接语义与方言差异分离:HttpTransport 管连接池、endpoint、鉴权头、SSE 帧提取(`SseFramer`);方言差异封闭在 `ProviderAdapter` 之后的两层——**通用引擎**(`GenericChatAdapter` / `GenericResponsesAdapter` / `GenericAnthropicAdapter`:各 wire 形态的兼容 provider 共有部分——body 骨架、消息翻译、流解析——只写一次)+ **Ext 差异点 trait**(`ChatExt` / `ResponsesExt` / `AnthropicExt`:声明式常量 + 序列化钩子;分层形态吸收 rig-core 的 Generic<Ext> 设计,不引库)。每个 adapter 提供 `build_request`(内部方言 → wire)与 `FrameMapper`(帧 → 流事件,每请求一个、可带跨帧状态)。
+**职责分离**:连接语义与方言差异分离——`HttpTransport` 管连接池、endpoint、鉴权头、SSE 帧提取(`SseFramer`)。
+
+**方言差异封闭在 `ProviderAdapter` 之后的两层**:
+
+| 层 | 内容 |
+|---|---|
+| 通用引擎 | `GenericChatAdapter` / `GenericResponsesAdapter` / `GenericAnthropicAdapter`——各 wire 形态的兼容 provider 共有部分(body 骨架、消息翻译、流解析)只写一次 |
+| Ext 差异点 trait | `ChatExt` / `ResponsesExt` / `AnthropicExt`——声明式常量 + 序列化钩子 |
+
+分层形态吸收 rig-core 的 `Generic<Ext>` 设计,不引库。每个 adapter 提供 `build_request`(内部方言 → wire)与 `FrameMapper`(帧 → 流事件,每请求一个、可带跨帧状态)。
 
 五个方言,按 wire 形态归入三个通用引擎:
 
@@ -331,7 +360,17 @@ around 续体:waterfall listener 收 `(payload, Next)`;`Next.invoke` 继续链,�
 
 本子系统位于 `liuma-sandbox`。执行侧语义组织:策略形状(3 态 mode)、根推导单源、功能式探测与缓存、enforcement / 拒绝方言 / runner 失败分类、stderr 收集。
 
-**策略形状(mode 3 态 + 根推导单源)**:`SandboxMode{ ReadOnly, WorkspaceWrite, FullAccess }`(与 liuma-core permission.rs 字符串命名一致);可写根经 `SandboxPolicy::writable_roots()` 单源推导——ReadOnly → 无;WorkspaceWrite → {workspace 根, `/tmp`, 平台 temp_dir}(canonicalize + 去重;bwrap 下临时区以隔离 `--tmpfs` 挂载,workspace 根 `--bind`);FullAccess → `/`。装配语义:read-only 下 bash 工具不装配;workspace-write 为默认;full-access 由权限切换触发(可写根 `/` 但**仍要求可用 rung**——不做绕过沙箱的语义)。
+**策略形状**:`SandboxMode{ ReadOnly, WorkspaceWrite, FullAccess }`,与 liuma-core permission.rs 的字符串命名一致。
+
+**可写根**(经 `SandboxPolicy::writable_roots()` 单源推导):
+
+| mode | 可写根 |
+|---|---|
+| ReadOnly | 无 |
+| WorkspaceWrite | {workspace 根, `/tmp`, 平台 temp_dir}——canonicalize + 去重;bwrap 下临时区以隔离 `--tmpfs` 挂载、workspace 根 `--bind` |
+| FullAccess | `/` |
+
+**装配语义**:read-only 下 bash 工具不装配;workspace-write 为默认;full-access 由权限切换触发——可写根 `/`,但**仍要求可用 rung**,不做绕过沙箱的语义。
 
 **沙箱链探测(功能式 + 缓存)**:
 
@@ -342,13 +381,31 @@ around 续体:waterfall listener 收 `(payload, Next)`;`Next.invoke` 继续链,�
 | macOS | seatbelt | argv 包装 | 功能式(read-only SBPL 真跑 `true`;subpath 需 canonicalize) |
 | Windows | windows-acl | 受限令牌 + 能力 SID 授权 + Job,经 runner 包装 argv | 功能式(read-only 真跑一次,载荷用平台 shell) |
 
-**Windows 边界(如实声明,enforcement 恒为 `partial`)**:写入与删除受 ACL 约束;**读、网络与进程可见性不受限**。另有三处环境与形态约束:受限令牌下 PowerShell 进 `ConstrainedLanguage`(改输出编码的 .NET 属性因此失效,输出落在系统代码页,由宿主按平台代码页解码,见 `liuma-sandbox::text`);Microsoft Store 安装的 PowerShell 只提供应用执行别名,别名是 reparse point,`CreateProcessAsUser` 打不开、其目标又在 ACL 收紧的 WindowsApps 下,故 shell 候选链跳过该目录;可写根的安全描述符是**常驻改动**(能力 SID 的授权 ACE 按设计不撤销)。
+**Windows 边界**(如实声明,enforcement 恒为 `partial`):写入与删除受 ACL 约束,**读、网络与进程可见性不受限**。
+
+另有三处环境与形态约束:
+
+| 约束 | 内容 |
+|---|---|
+| 受限令牌下的 PowerShell | 进 `ConstrainedLanguage`——改输出编码的 .NET 属性因此失效,输出落在系统代码页,由宿主按平台代码页解码(见 `liuma-sandbox::text`) |
+| Microsoft Store 版 PowerShell | 只提供应用执行别名,别名是 reparse point,`CreateProcessAsUser` 打不开、其目标又在 ACL 收紧的 WindowsApps 下,故 shell 候选链跳过该目录 |
+| 可写根的安全描述符 | **常驻改动**——能力 SID 的授权 ACE 按设计不撤销 |
 
 探测一次缓存为 rung(仅成功才缓存,`set_disabled_for_tests` 测试缝保留);探测失败且策略要求沙箱 → 拒绝执行(fail-closed,绝不静默降级为无沙箱)。
 
 **Seatbelt 拒绝面(macOS)**:profile 语义对齐源(`allow default` + `deny file-write*`)——**文件写是唯一拒绝面**:workspace 可写根与 `/dev/null` 以显式 `file-write*` 放行压过拒绝,mach-lookup / network / IPC 不进拒绝面(Directory Services、DNS 与联网工具在沙箱内照常可用;拒绝它们曾致沙箱内 `ssh`/`git push` 与 cargo 联网全断,属实现缺陷已修正)。文件写边界承诺不变:workspace/临时区外写仍被内核拦,拒绝方言(`operation not permitted`)与升级闸门不受影响。
 
-**Confined 元数据与退出分类**:argv 包装返回 `Confined{program, argv, enforcement, denial_dialect, runner_failure_rules}`——enforcement(full / partial 完整性声明)、拒绝方言(bwrap `read-only file system` / landlock `permission denied` / seatbelt `operation not permitted`)、runner 失败规则(命令未执行的判别:bwrap / seatbelt fatal 签名)。spawn 后 stderr 经 drain 任务读至 EOF(修复「stderr piped 无人读 → 子进程大 stderr 堵塞」;`stderr_text` await 收尾,分类/落盘无缺尾);退出分类序 = runner 失败(命令从未执行)→ 拒绝(执行了但被内核拦)→ 常规退出(退出码是结果数据、非执行失败)。工具结果呈现:RunnerFailed → 「sandbox runner 失败(命令未执行)」+ 命中行;Denied → `[sandbox: file access denied under <mode> mode]`+ stderr 原文——均走既有 `tool/result` 字段,不加新事件(single boundary rule)。
+**Confined 元数据**:argv 包装返回 `Confined{program, argv, enforcement, denial_dialect, runner_failure_rules}`——enforcement(full / partial 完整性声明)、拒绝方言(bwrap `read-only file system` / landlock `permission denied` / seatbelt `operation not permitted`)、runner 失败规则(命令未执行的判别:bwrap / seatbelt fatal 签名)。
+
+**stderr 与退出分类**:spawn 后 stderr 经 drain 任务读至 EOF——修复「stderr piped 无人读 → 子进程大 stderr 堵塞」;`stderr_text` await 收尾,分类 / 落盘无缺尾。退出分类序:
+
+| 序 | 分类 | 含义 |
+|---|---|---|
+| 1 | runner 失败 | 命令从未执行 |
+| 2 | 拒绝 | 执行了,但被内核拦 |
+| 3 | 常规退出 | 退出码是结果数据、非执行失败 |
+
+**工具结果呈现**:RunnerFailed → 「sandbox runner 失败(命令未执行)」+ 命中行;Denied → `[sandbox: file access denied under <mode> mode]` + stderr 原文。两者均走既有 `tool/result` 字段,不加新事件(single boundary rule)。
 
 **进程**:独立进程组,SIGTERM → grace → SIGKILL;PTY(portable-pty)不暴露 pre_exec,沙箱仅经 argv 包装,landlock-only 系统拒绝 PTY 执行(fail-closed)。
 
@@ -369,36 +426,196 @@ span 为日志投影:turn/step → 区间 span(span_id = 起始事件 seq);audit
 | 传输 | `LlmTransport` | 闸门包裹装配 | HTTP ⇄ 假 provider ⇄ 总线传输 |
 | prompt 策略 | `assemble(ctx)` 纯函数 | 装配期组装(AGENTS.md ≤64KB 注入;plan 态/active-plan 自日志折叠,段文本由 liuma-plan 产出、引擎每 step 重建 header——turn 中途落档的状态事件立即生效于下一步;persona mount 行可覆盖 identity/追加段) | 计划模式 / compaction 策略 |
 | preset 组合 | `PresetManifest`(k8s 形态 YAML) | 装配期加载(内置 include_str + workspace `presets/` 覆盖;mount 行 = 在树组件 / wasm 路径 / OCI 引用) | 复制改一份 manifest 即增删能力,零代码 |
+| 决策模型 | `DecisionPort`(ask) | 装配期注入(设置页开关;端口缺席 ⇒ `decide` 工具不挂载、四场景不接线) | 兼容 endpoint ⇄ 假端口;策略 WASM 组件化留作路线图 |
 
 ### 7.11 配置
 
-两级装配输入 + 运行时设置层:**CLI > `liuma.toml`(工作区,只读装配输入)> `~/.liuma/settings.yaml`(用户级设置存储,setter 落盘目标)> 内置默认**;会话内存覆盖最高(重启即回工作区默认)。`liuma.toml` 字段 model / base_url / session / workspace / dialect / preset;dialect 未知值装配期拒绝。CLI 开关:`--pty` / `--no-tools` / `--fake` / `--preset <id>`。设置层承载:onboarding 完成态、provider 注册表(id/base_url/dialect/凭据/默认模型)、工作区级默认(provider/model/permission/preset/effort,projectKey 键控);启动时损坏文件旁置备份后回落内置默认(不拒启)。外部编辑实时感知:运行中的外部改动即被吸收(编辑器半途保存的坏内容不致配置清空;应用内保存不覆盖外部编辑),变更即同步 MCP 端口池与 provider 传输面(凭据/URL/方言变更 → 受影响空闲会话 detach,下次 prompt 重装配)。凭据链:显式注入 > 设置条目 `api_key`(明文,文件 0600)> 引用(`env:`)> 默认环境变量名(`{PROVIDER}_API_KEY`);无 `.env` 文件加载、无钥匙串(授权弹窗烦扰与明文外置均不可取)。
+**分层链**:CLI > `liuma.toml`(工作区,只读装配输入)> `~/.liuma/settings.yaml`(用户级设置存储,setter 落盘目标)> 内置默认;会话内存覆盖最高(重启即回工作区默认)。
 
-**Provider 目录**:内置目录常量五家(deepseek / glm / kimi / minimax / qwen,官方文档核到的 base_url/方言/模型/计费端点预设)。两入口:「添加提供方」= 提供方下拉(目录五家)+ API 密钥 + 「自定义设置」折叠(URL/适配器只读 + 可编辑模型清单(目录预填,「从端点获取」更新)+ 计费预设展示;适配器与目录绑定);「添加自定义提供方」= 自由表单(名称/Base URL/API Key/API 格式/模型列表,Provider ID 查重)。**API 格式三种**:`openai-completions` / `openai-responses` / `anthropic-messages`(下拉选择);GLM 的专用适配器(dialect `glm-responses`)绑定目录项,不进自定义选项。内置卡保存 = 目录条目为基底落盘(URL/方言/显示名/计费预设/默认模型按厂商派生,仅密钥与模型清单取输入)。**计费预设默认生效**:条目未显式配置时按 id 回落目录内置端点(拉取与自动刷新同源判定);徽标与自动刷新的数据源 = **当前工作区生效 provider**(快照 `workspaceProviders`,绑定 > 宿主默认),跨 provider 切模型即拉新账、徽标跟切,不等防抖节拍;用量窗以进度条呈现:状态栏徽标 = 「5小时/1周」迷你条 + 百分比,点击弹小卡片(每窗百分比 + 恢复时刻,5h 窗显示 HH:MM、周窗显示日期;根级渲染外点关闭);GLM 用量路径按 unit 级过滤取第一命中(窗数编号随套餐漂移,快照含两窗各自的 `resets`/`resets_7d`)。计费路径 = 标准 JSONPath(RFC 9535,jsonpath-rust),GLM 用量端点以裸 token 鉴权(`BillingConfig.auth_style = "raw"`)。模型菜单按 provider 分组 = 条目清单 > 探测缓存;挂窗对「有凭据但清单缺席」的 provider 静默探测 `/models` 兜底(探测缓存不持久,重启即失)。settings 并发锁序:loaded_mtime 恒先于 inner(update 的 mtime 戳记在 inner 释放后打)。
+`liuma.toml` 字段:model / base_url / session / workspace / dialect / preset——dialect 未知值装配期拒绝。CLI 开关:`--pty` / `--no-tools` / `--fake` / `--preset <id>`。
+
+**设置层承载**:onboarding 完成态、provider 注册表(id/base_url/dialect/凭据/默认模型)、工作区级默认(provider/model/permission/preset/effort,projectKey 键控)、决策模型条目(见 7.16——端点与凭据与工作区无关,**唯一配置面是设置文件**,不走 `liuma.toml`)。启动时损坏文件旁置备份后回落内置默认(不拒启)。
+
+**外部编辑实时感知**:运行中的外部改动即被吸收(编辑器半途保存的坏内容不致配置清空;应用内保存不覆盖外部编辑)。变更即同步 MCP 端口池与 provider 传输面——凭据 / URL / 方言变更 ⇒ 受影响**空闲**会话 detach,下次 prompt 重装配。
+
+**凭据链**:显式注入 > 设置条目 `api_key`(明文,文件 0600)> 引用(`env:`)> 默认环境变量名(`{PROVIDER}_API_KEY`)。无 `.env` 文件加载、无钥匙串——授权弹窗烦扰与明文外置均不可取。
+
+**Provider 目录**:内置目录常量五家(deepseek / glm / kimi / minimax / qwen),含官方文档核到的 base_url / 方言 / 模型 / 计费端点预设。两个入口:
+
+| 入口 | 表单 |
+|---|---|
+| 「添加提供方」 | 提供方下拉(目录五家)+ API 密钥 + 「自定义设置」折叠(URL / 适配器只读、可编辑模型清单(目录预填,「从端点获取」更新)、计费预设展示;适配器与目录绑定) |
+| 「添加自定义提供方」 | 自由表单(名称 / Base URL / API Key / API 格式 / 模型列表,Provider ID 查重) |
+
+**API 格式三种**:`openai-completions` / `openai-responses` / `anthropic-messages`(下拉选择);GLM 的专用适配器(dialect `glm-responses`)绑定目录项,不进自定义选项。内置卡保存 = 以目录条目为基底落盘(URL / 方言 / 显示名 / 计费预设 / 默认模型按厂商派生,仅密钥与模型清单取输入)。
+
+**计费预设默认生效**:条目未显式配置时按 id 回落目录内置端点(拉取与自动刷新同源判定)。徽标与自动刷新的数据源 = **当前工作区生效 provider**(快照 `workspaceProviders`,绑定 > 宿主默认)——跨 provider 切模型即拉新账、徽标跟切,不等防抖节拍。用量窗以进度条呈现:状态栏徽标 = 「5小时/1周」迷你条 + 百分比,点击弹小卡片(每窗百分比 + 恢复时刻;5h 窗显示 HH:MM、周窗显示日期;根级渲染外点关闭)。GLM 用量路径按 unit 级过滤取第一命中(窗数编号随套餐漂移,快照含两窗各自的 `resets`/`resets_7d`)。计费路径 = 标准 JSONPath(RFC 9535,jsonpath-rust);GLM 用量端点以裸 token 鉴权(`BillingConfig.auth_style = "raw"`)。
+
+模型菜单按 provider 分组 = 条目清单 > 探测缓存;挂窗对「有凭据但清单缺席」的 provider 静默探测 `/models` 兜底(探测缓存不持久,重启即失)。settings 并发锁序:loaded_mtime 恒先于 inner(update 的 mtime 戳记在 inner 释放后打)。
+
+**preset manifest** = k8s 形态 YAML:`presets/<id>.yaml`,字段 apiVersion: liuma/v1 / kind: Preset / metadata{name, displayName, description} / spec.mounts 装配清单。`---` 多文档流按 kind 路由、空文档跳过;deny_unknown_fields;metadata.name 必须与文件名 stem 一致。内置 standard / minimal 经 `include_str!` 随二进制,workspace 同名文件覆盖内置。
+
+mount 行 source 三态:
+
+| source | 形态 |
+|---|---|
+| 在树组件注册名 | 直接装载 |
+| 本地 wasm 路径 | 相对 workspace;`liuma:tools` 组件经 `WasmTool` 装载 |
+| OCI 引用 | 格式容纳,拉取随分发面启用 |
+
+config 按组件 config-schema 校验后透传。**分界**:preset 只选模型面——沙箱、持久化、provider 路由、registry 永远留在宿主面。
 
 ### 7.11a LLM 用量归一
 
-三家官方 usage 键名互不相同,归一在方言映射器边界完成:`Usage` 事件载荷契约 = 规范五键(`input_tokens` / `output_tokens` / `cached_tokens` 缓存读 / `cache_write_tokens` 缓存写 / `reasoning_tokens`;缺席指标不产键),引擎透传与全部消费端(统计条、回合尾 tok/s、轨迹 Usage 面板)只认规范形。各方言 wire 键映射与官方文档出处见 `liuma-llm::usage` 模块文档。
-
-preset = k8s 形态 YAML manifest:`presets/<id>.yaml`(apiVersion: liuma/v1 / kind: Preset / metadata{name, displayName, description} / spec.mounts 装配清单;`---` 多文档流按 kind 路由、空文档跳过;deny_unknown_fields;metadata.name 必须与文件名 stem 一致)。内置 standard / minimal 经 `include_str!` 随二进制;workspace 同名文件覆盖内置。mount 行 source 三态:在树组件注册名 / 本地 wasm 路径(相对 workspace,`liuma:tools` 组件经 `WasmTool` 装载)/ OCI 引用(格式容纳,拉取随分发面启用);config 按组件 config-schema 校验后透传。分界:preset 只选模型面——沙箱、持久化、provider 路由、registry 永远留在宿主面。
+三家官方 usage 键名互不相同,归一在**方言映射器边界**完成:`Usage` 事件载荷契约 = 规范五键(`input_tokens` / `output_tokens` / `cached_tokens` 缓存读 / `cache_write_tokens` 缓存写 / `reasoning_tokens`;缺席指标不产键)。引擎透传与全部消费端(统计条、回合尾 tok/s、轨迹 Usage 面板)只认规范形。各方言 wire 键映射与官方文档出处见 `liuma-llm::usage` 模块文档。
 
 ### 7.12 权限与审批
 
-沙箱访问模式三态(read-only / workspace-write / full-access),会话值 = 日志中最后一条 `sandbox/mode` 的 fold;审批策略 ask / never 同构(`approval/policy` fold)。两者都是 log-only 旋钮:执行侧工具每次执行实时 fold 同一日志(落档即生效,无需重装配),模型经 runtime-context 快照文本得知策略。
+**两个 log-only 旋钮**:沙箱访问模式三态(read-only / workspace-write / full-access),会话值 = 日志中最后一条 `sandbox/mode` 的 fold;审批策略 ask / never 同构(`approval/policy` fold)。执行侧工具每次执行实时 fold 同一日志——落档即生效,无需重装配;模型经 runtime-context 快照文本得知策略。
 
-**一次性升级**(bash,拒绝后的重试通道):参数 `sandbox_permissions`(目标档位)+ `justification`(必填一句话),必须成对、仅前台命令。闸门次序 fail-closed:严格加宽检查(目标必须严格更宽,非加宽请求从不问人)→ 审批口在场 → 问询;任一步失败抛逐字错误且零执行。批准 = `allowed-once`:目标模式**只盖本次调用的 policy**,不落 `sandbox/mode` 事件;拒绝/取消对该命令终局。审计对 `approval/asked`/`decided` 在工具执行内直写日志(时序先于其所批准的执行),必须被 open turn 包住;`approval=never` 在问询分发前直接拒绝,不可绕过,仍落审计对。拒绝提示链:Denied 输出 = 拒绝标记 + stderr + 升级提示(审批口在场且存在更宽档位时)。子代理:继承父显式 `sandbox/mode` 覆盖,approval 钉 never——升级确定性被拒。
+**一次性升级**(bash,拒绝后的重试通道):参数 `sandbox_permissions`(目标档位)+ `justification`(必填一句话),必须成对、仅前台命令。闸门次序 fail-closed,任一步失败抛逐字错误且**零执行**:
+
+1. 严格加宽检查——目标必须严格更宽,非加宽请求从不问人
+2. 审批口在场
+3. 问询
+
+批准 = `allowed-once`:目标模式**只盖本次调用的 policy**,不落 `sandbox/mode` 事件;拒绝 / 取消对该命令终局。
+
+**审计**:`approval/asked` / `decided` 在工具执行内直写日志,时序先于其所批准的执行,必须被 open turn 包住;`approval=never` 在问询分发前直接拒绝,不可绕过,仍落审计对。
+
+**拒绝提示链**:Denied 输出 = 拒绝标记 + stderr + 升级提示(审批口在场且存在更宽档位时)。
+
+**子代理**:继承父显式 `sandbox/mode` 覆盖;approval 钉 never——升级确定性被拒。
 
 ### 7.13 MCP 桥
 
-`liuma-mcp`(rmcp 官方 Rust SDK)把外部 MCP server 的工具桥接进工具面,双传输:`stdio`(command/args/env/cwd 子进程)与 `streamable-http`(url + headers 原样透传——reqwest 层注入、连接池不驻留空闲连接)。**命名**:公共名 `mcp__<server>__<tool>`(非法字符归一、64 上限,有损追加 sha256 前 12hex 消歧);**raw name 只上 tools/call 线路,公共名永不反解**。**生命周期**:端口池锚宿主(非会话)——设置保存/启停/导入即对照 enabled 清单同步(新增/变更启动或重启,禁用/卸载停机,rmcp `RunningService::cancel` 干净关闭,stdio transport drop 杀子进程);所有会话共享一个 server 一条连接,池以单个聚合 `ToolPort` 装进工具面,`specs` 聚合与按名路由都是动态的(工具清单连上后下一 turn 出现,会话无需重装配)。**断线自动重连**:配置型错误(url 非法/头非法/子进程起不来)立即终态 `Failed` 不重试;其余断线与握手失败进监督循环——500ms × 2ⁿ 封顶 30s,每轮 outage 预算 10 次,上一代连接存活 ≥ 30s(封顶值)在**下次断线时**清零预算(短暂成功的 crash-loop 不重置);重连期间旧代工具保留(调用挂起到超时或就绪,不摘除),重连成功整代换带;预算耗尽注销该 server 全部工具并落 `Failed` 通告(恢复 = 设置页改配置/开关重启),重连过程以 `Reconnecting`(第 n/N 次)呈现在设置页状态表,不刷通告。**投影**:text 合并、audio/embedded 降级占位、resource_link 转文本、空内容固定占位;`isError` → 工具失败结果。**图片 → 附件链接线**:image content 经准入链(mime 白名单 PNG/JPEG/WebP/GIF → canonical base64 双查:字符集+填充校验+roundtrip)→ `AttachmentStore` 批量原子落盘,任一无效整批降级(其余块理由 `another image in the same result was invalid`),降级文本 `[image unavailable: {mediaType}; {reason}; raw image data remains available to programmatic callers]` 就地占位;通过的以引用挂 `tool/result` 的 `images` 数组(base64 不进模型面),三方言翻译照用户图片既有形状(chat = image_url data-URL、anthropic = base64 image 块、responses 维持全图降级),请求期 20MB offload 预算覆盖工具图;`read_attachment` 授权扫描认 tool/result 的 images。**边界**:只桥 tools(resources/prompts 不桥);MCP 工具不经沙箱与审批闸门(server 由用户配置接入,审批泛化随 hooks 桥);`tools/list_changed` → 整代原子换带(同名 raw 重复整代无效,保留上一代)。
+`liuma-mcp`(rmcp 官方 Rust SDK)把外部 MCP server 的工具桥接进工具面,双传输:`stdio`(command/args/env/cwd 子进程)与 `streamable-http`(url + headers 原样透传——reqwest 层注入、连接池不驻留空闲连接)。
+
+**命名**:公共名 `mcp__<server>__<tool>`(非法字符归一、64 上限,有损追加 sha256 前 12hex 消歧)。**raw name 只上 tools/call 线路,公共名永不反解**。
+
+**生命周期**:端口池锚宿主(非会话)——设置保存 / 启停 / 导入即对照 enabled 清单同步(新增或变更则启动或重启,禁用或卸载则停机;rmcp `RunningService::cancel` 干净关闭,stdio transport drop 杀子进程)。所有会话共享一个 server 一条连接,池以单个聚合 `ToolPort` 装进工具面;`specs` 聚合与按名路由都是动态的——工具清单连上后下一 turn 出现,会话无需重装配。
+
+**断线自动重连**:
+
+| 情况 | 处置 |
+|---|---|
+| 配置型错误(url 非法 / 头非法 / 子进程起不来) | 立即终态 `Failed`,不重试 |
+| 其余断线与握手失败 | 进监督循环:500ms × 2ⁿ 封顶 30s,每轮 outage 预算 10 次 |
+| 预算计数 | 上一代连接存活 ≥ 30s(封顶值)在**下次断线时**清零,短暂成功的 crash-loop 不重置 |
+| 重连期间 | 旧代工具保留(调用挂起到超时或就绪,不摘除);重连成功整代换带 |
+| 预算耗尽 | 注销该 server 全部工具并落 `Failed` 通告;恢复 = 设置页改配置 / 开关重启 |
+
+重连过程以 `Reconnecting`(第 n/N 次)呈现在设置页状态表,不刷通告。
+
+**投影**:text 合并、audio/embedded 降级占位、resource_link 转文本、空内容固定占位;`isError` → 工具失败结果。
+
+**图片 → 附件链接线**:image content 经准入链(mime 白名单 PNG/JPEG/WebP/GIF → canonical base64 双查:字符集 + 填充校验 + roundtrip)→ `AttachmentStore` 批量原子落盘。任一无效则**整批降级**,其余块理由 `another image in the same result was invalid`,降级文本 `[image unavailable: {mediaType}; {reason}; raw image data remains available to programmatic callers]` 就地占位。
+
+通过的以引用挂 `tool/result` 的 `images` 数组(base64 不进模型面);三方言翻译照用户图片既有形状(chat = image_url data-URL、anthropic = base64 image 块、responses 维持全图降级),请求期 20MB offload 预算覆盖工具图;`read_attachment` 授权扫描认 tool/result 的 images。
+
+**边界**:只桥 tools(resources / prompts 不桥);MCP 工具**不经沙箱与审批闸门**(server 由用户配置接入,审批泛化随 hooks 桥);`tools/list_changed` → 整代原子换带(同名 raw 重复则整代无效,保留上一代)。
 
 ### 7.14 Skill 子系统
 
-`liuma-skill` 加载 `.agents/skills` 标准位置的 SKILL.md 技能:项目根(向上找 `.git` 锚,回退 cwd)与用户 home 两根,rank 100/200 近层同名遮蔽,一层扫描,目录 `<name>/SKILL.md` 与扁平 `<name>.md` 两形态。frontmatter 手写栅栏扫描 + serde_norway:name(kebab 必填)/description(必填)/`disable-model-invocation`/`user-invocable` 双面调用策略(无工具白名单),坏文件 warn-and-skip;正文仅 trim 不截断,正文永不缓存(每次 `get` 重读),摘要缓存按 mtime/size 校验。**模型面**:`skill` 工具(按名加载,结果 = `<skill_content>`,含基目录资源提示)+ 持久 user 消息目录(`source.kind=skill-catalog`,渐进披露——目录只有 name + 500 字符归一化 description,变化整条替换,digest 幂等不重发,冷恢复从日志倒序重算);「模型恒只见一份目录」由 `derive_visible_messages` 的「skill-catalog 保留最新一条」纯派生规则达成(源在 pre-step 决策里物理移除旧目录,日志只追加,派生层同一语义)。**用户手势**:消息文本中的空白界定 `/name` 词元(仅真实用户消息可触发,路径/分数不误伤)注入同构 `<skill_content>`(`source.kind=skill-invocation`),排在全部注入最后(材料最贴近回答);args 留在用户气泡不进注入体。**边界**:子代理会话不挂工具不注入(照源 child preset);`/` 前缀文本只有内置四命令短路,其余按普通消息放行由手势识别接管(命令赢同名,plain-text 决策);桌面 `/` 菜单「技能」节(user-invocable only,`session_skills` RPC)点击落草稿 chip,skill 工具卡 = Instructions 展开体 + Inspect。
+`liuma-skill` 加载 `.agents/skills` 标准位置的 SKILL.md 技能,两根:项目根(向上找 `.git` 锚,回退 cwd)与用户 home。rank 100/200 近层同名遮蔽;一层扫描;目录 `<name>/SKILL.md` 与扁平 `<name>.md` 两形态。
+
+**解析**:frontmatter 手写栅栏扫描 + serde_norway——`name`(kebab 必填)/ `description`(必填)/ `disable-model-invocation` / `user-invocable` 双面调用策略,无工具白名单;坏文件 warn-and-skip。正文仅 trim 不截断,且**永不缓存**(每次 `get` 重读);摘要缓存按 mtime/size 校验。
+
+**模型面**:`skill` 工具按名加载,结果 = `<skill_content>`,含基目录资源提示。
+
+另有持久 user 消息目录(`source.kind=skill-catalog`,渐进披露):目录只有 name + 500 字符归一化 description,变化整条替换,digest 幂等不重发,冷恢复从日志倒序重算。「模型恒只见一份目录」由 `derive_visible_messages` 的「skill-catalog 保留最新一条」纯派生规则达成——源在 pre-step 决策里物理移除旧目录,日志只追加,派生层同一语义。
+
+**用户手势**:消息文本中的空白界定 `/name` 词元(仅真实用户消息可触发,路径 / 分数不误伤)注入同构 `<skill_content>`(`source.kind=skill-invocation`),排在全部注入最后——材料最贴近回答;args 留在用户气泡不进注入体。
+
+**边界**:子代理会话不挂工具不注入(照源 child preset);`/` 前缀文本只有内置四命令短路,其余按普通消息放行由手势识别接管(命令赢同名,plain-text 决策);桌面 `/` 菜单「技能」节(user-invocable only,`session_skills` RPC)点击落草稿 chip,skill 工具卡 = Instructions 展开体 + Inspect。
 
 ### 7.15 Hooks 桥
 
-`liuma-hooks` 运行既有 Claude Code / Codex `hooks.json` 的 command 钩子(源 packages/hooks 逐字对齐移植):两方言桥共享一个纯函数内核——matcher(claude-code 纯 `[A-Za-z0-9_|]+` = 字面量 alternation,其余无锚定 regex;codex 恒 regex;缺省/`''`/`'*'` = match-all;无效正则运行时不命中、解析期整份拒绝)、codec(exit 2 = 阻塞且 stderr 为因;exit 0 且 stdout 以 `{` 开头才解析 JSON;顶层 `decision` 只认 approve/block,`hookSpecificOutput.permissionDecision` 认 allow/deny/ask 且覆盖;判别名缺失/不符丢弃块内事件级字段)、merge(最严格:deny > ask > allow;reason 只从获胜 rank 收集 `\n\n` 连接;stop 粘滞;上下文保序累积)、events(`hook/invoked` + `hook/result` log-only、turn 封闭;decision 派生 `decision ?? continue:false ? stop : pass`;stderr 摘要 500 字符 + `…`)。**引擎拦截点**:`liuma-agent-loop::HookPort` 四调用点——UserPromptSubmit(turn/start 后;Reject ⇒ turn 以 blocked 收尾无 step,事件序 `turn/start → hook 对 → turn/end`)、PreToolUse(tool/call 落档后;Deny ⇒ 工具不执行、`Error: {reason}` isError 回灌;被拒调用不再触发 PostToolUse)、PostToolUse(执行后;Block ⇒ 结果改写 isError+feedback;Inject ⇒ 结果后追加 kind=plugin 染色行)、Stop(turn 收尾前;Continue ⇒ reason 压入引擎 steer 通道续跑,loop guard 照源不做)。**执行**:`bash -c` 经沙箱链 workspace-write(与模型命令同一信任面,fail-closed;`SpawnOptions.stdin` 新原语喂序列化载荷,CC 带尾换行/Codex 不带),env 擦洗(KEY/PASSWORD/SECRET/TOKEN/LIUMA_*)后合并方言 env(CC 的 `CLAUDE_PROJECT_DIR`),per-hook timeout(秒)覆盖缺省 600s,取消/超时杀进程组按信号死解码。**ask 通道**:PreToolUse `permissionDecision: ask` 走通用工具级审批面 `request_tool_approval`(审计对 `approval/asked` kind=tool + 问询骑问答卡「允许一次/拒绝」+ never 入口即拒 + 闲时拒绝不落档);无审批面 = fail-closed deny("needs approval")。**配置**:settings `hookBridges`(dialect/configPath/pluginRoot/projectDir/timeout/summary 上限),设置页 Hooks 分区卡片列表;CC 的 `${CLAUDE_PLUGIN_ROOT}`/`${CLAUDE_PROJECT_DIR}` 解析期替换;配置读不到/解析不了 ⇒ warn 不注册,agent 照常。**上下文染色**:全部注入消息 `source.kind=plugin`(mislabel guard);SessionStart detached(可能错过首请求,照源 TODO)。**边界**:Codex 五点无 ask/子代理点;`tool_input` Codex 简化形 `{command}`;plain-stdout-as-context 仅 Codex SessionStart/UserPromptSubmit;`continue:false` 仅记 decision=stop 不停运行(照源 TODO);updatedInput/systemMessage 解析 + warn + 忽略。
+`liuma-hooks` 运行既有 Claude Code / Codex `hooks.json` 的 command 钩子(源 packages/hooks 逐字对齐移植)。两方言桥共享一个纯函数内核:
+
+| 环节 | 语义 |
+|---|---|
+| matcher | claude-code 纯 `[A-Za-z0-9_\|]+` = 字面量 alternation,其余无锚定 regex;codex 恒 regex;缺省 / `''` / `'*'` = match-all;无效正则运行时不命中、解析期整份拒绝 |
+| codec | exit 2 = 阻塞且 stderr 为因;exit 0 且 stdout 以 `{` 开头才解析 JSON;顶层 `decision` 只认 approve/block,`hookSpecificOutput.permissionDecision` 认 allow/deny/ask 且覆盖;判别名缺失 / 不符丢弃块内事件级字段 |
+| merge | 最严格:`deny > ask > allow`;reason 只从获胜 rank 收集、`\n\n` 连接;stop 粘滞;上下文保序累积 |
+| events | `hook/invoked` + `hook/result` log-only、turn 封闭;decision 派生 `decision ?? continue:false ? stop : pass`;stderr 摘要 500 字符 + `…` |
+
+**引擎拦截点**:`liuma-agent-loop::HookPort` 四个调用点。
+
+| 调用点 | 时机 | 判定与后果 |
+|---|---|---|
+| UserPromptSubmit | turn/start 后 | Reject ⇒ turn 以 blocked 收尾、无 step(事件序 `turn/start → hook 对 → turn/end`) |
+| PreToolUse | tool/call 落档后 | Deny ⇒ 工具不执行、`Error: {reason}` isError 回灌;被拒调用不再触发 PostToolUse |
+| PostToolUse | 执行后 | Block ⇒ 结果改写 isError + feedback;Inject ⇒ 结果后追加 kind=plugin 染色行 |
+| Stop | turn 收尾前 | Continue ⇒ reason 压入引擎 steer 通道续跑(loop guard 照源不做) |
+
+**执行**:钩子以 `bash -c` 经沙箱链 workspace-write 运行——与模型命令**同一信任面**,fail-closed;`SpawnOptions.stdin` 新原语喂序列化载荷(CC 带尾换行 / Codex 不带)。env 先擦洗(`KEY` / `PASSWORD` / `SECRET` / `TOKEN` / `LIUMA_*`)再合并方言 env(CC 的 `CLAUDE_PROJECT_DIR`);per-hook timeout(秒)覆盖缺省 600s;取消 / 超时杀进程组并按信号死解码。
+
+**ask 通道**:PreToolUse 的 `permissionDecision: ask` 走通用工具级审批面 `request_tool_approval`——审计对 `approval/asked`(kind=tool)、问询骑问答卡「允许一次 / 拒绝」、`never` 入口即拒、闲时拒绝不落档。无审批面 = fail-closed deny("needs approval")。
+
+**配置**:settings 的 `hookBridges`(dialect / configPath / pluginRoot / projectDir / timeout / summary 上限),设置页 Hooks 分区以卡片列表呈现。CC 的 `${CLAUDE_PLUGIN_ROOT}` / `${CLAUDE_PROJECT_DIR}` 解析期替换。配置读不到或解析不了 ⇒ warn 不注册,agent 照常。
+
+**上下文染色**:全部注入消息 `source.kind=plugin`(mislabel guard);SessionStart detached(可能错过首请求,照源 TODO)。
+
+**边界**:
+
+| 边界 | 内容 |
+|---|---|
+| Codex 方言 | 五点无 ask / 子代理点;`tool_input` 为简化形 `{command}` |
+| plain-stdout-as-context | 仅 Codex 的 SessionStart / UserPromptSubmit |
+| `continue:false` | 仅记 decision=stop,不停运行(照源 TODO) |
+| updatedInput / systemMessage | 解析 + warn + 忽略 |
+
+### 7.16 决策模型
+
+`liuma-decision` 按**开放品类**接入 System One 决策模型(首批 TypeSafe Jev;阿里云百炼上线兼容同一协议的决策模型),crate 名、配置节名、端点与模型名全部厂商中立。
+
+**协议**:`POST {base_url}/v1/systemone`,请求 `{state, model, questions}`,响应 `{model, answers, usage}`。答案形态收敛在三类问题里,**没有自由文本可解析**——这正是它能高频使用的根据(约 $0.042/百万输入 token、输出免费,每个工具调用前问一次也不心疼)。
+
+| 问题类型 | 应答 |
+|---|---|
+| `noul` | 是 / 非判断,返回「是」的概率 |
+| `choice` | ≤255 个预声明选项,返回各选项概率 + confidence |
+| `score` | 按 `legend` 声明的等级打分,返回加权期望值 + confidence |
+
+厂商差异经类型默认值容忍(百炼返回无 `output_tokens`、多 `request_id`),两家真实返回样例会进单元测试做编解码回归。
+
+**为什么客户端在宿主侧**:`wit/tools/tools.wit` 开头写明「world 即授权面」——组件世界零导入、网络不可达,一个要出网的组件恰恰违反该约束;历史决策 D5 也已裁定「wasi-http 不进组件,连接池与 SSE 解码集中于宿主」。所以决策客户端落成宿主侧 Rust 模块。
+
+但**挂载方式完全按插件来**:`decide` 工具像 bash / todo 一样注册进在树组件表,在 `presets/standard.yaml` 占一行 mount 配置,走同一套「配置校验 → 初始化 → 描述工具」生命周期;宿主端口未装配即跳过,不影响他人。
+
+**四场景 + 一工具**。共同的边界是一致的:决策模型只提建议,**最终拦不拦由 liuma 的规则代码决定**;阈值与问题文案集中在 `thresholds.rs` 一处以便集中评审。
+
+| 场景 | 时机 | 做什么 | 默认与失败 |
+|---|---|---|---|
+| 审批评审员 | 审批卡弹出前 | 评一次风险,标注进 `approval/asked` 载荷与问询卡 | 挂在 `approval=never` 短路**之后**——零调用零延迟,原有语义不可能被绕过 |
+| Stop 哨兵 | 回合收尾前 | 核对「模型的结论有证据支撑吗」;高概率缺证据就给一次继续机会,注明请补证据 | 同回合最多放行 2 次,防死循环 |
+| 工具守卫 | 每次工具执行前 | 评「该继续还是该拦下」 | 默认 shadow 只记录;enforce 需显式配置,且仅在高置信时拦 |
+| 上下文裁判 | 会话变长时 | 对离当前较远、篇幅较大、已过时的工具输出批量问「还有引用价值吗」,无价值的换占位符 | 默认 shadow 只记录;enforce 才真修剪 |
+| `decide` 工具 | 模型主动调用 | 就模型给出的 context 与问题问一次 | 只发模型显式给出的内容,不自动带整个对话 |
+
+**审计**:`decision/asked` + `decision/answered` 一对事件(`id` 配对,失败也收口);state 原文不落档(隐私 + 日志膨胀),只留摘要。
+
+**轨迹呈现**:receipt 折叠进轨迹台账(事件类型见 §7.1)。落位由引擎时序决定,分三种:
+
+| 谁的 receipt | 落位 | 依据 |
+|---|---|---|
+| 守卫 | 挂在**它所裁决的那条工具行**上 | 引擎契约「pre_tool 在 tool/call 落档后、执行前」,且工具调用顺序执行——receipt 到达时 `pending_calls` 里正开着的那条就是它裁决的调用:**顺序即绑定**,无需任何身份字段 |
+| stop / context | 独立成 `decision` 行 | 回合级 / 会话级事件,没有调用可挂 |
+| `decide` | 同上,独立成行 | 它的 receipt 由引擎在 step 收尾经 `take_state_events` 统一落档,到得比它那条调用**晚**——不回头挂已闭合的调用 |
+
+**默认与回退**:总开关 + 各场景开关双重默认关闭,整节不写 = 功能完全不存在。任何异常(超时 / 429 / 529 退避耗尽 / 解析失败)一律 fail-open 放回原有行为,绝不阻塞主流程。
+
+**边界**:
+
+| 面 | 内容 |
+|---|---|
+| 数据出境 | state 含命令与代码片段,是该功能的固有代价——base_url 可指向本地或私有部署的兼容实现,文档须明示这条出境面 |
+| 置信度语义 | 目前只有厂商自证,故阈值做成可配置、可观察、可回退 |
+| 语言 | 问题文案统一英文(两家通用);中文场景建议配百炼 |
+| 起步姿态 | 一律只建议——守卫与裁判的 enforce(真正拦截 / 真正修剪)必须显式配置且阈值保守;默认 shadow 只记录,误裁率数据取自 `answered` 的答案值 |
+
+**留作路线图**:把问题构造与阈值策略搬进 WASM 组件(实现 host.wit 既定的「传输在宿主、策略在组件」分工),前提是宿主先实现 `liuma:host/registry` 与 `llm-transport`(目前只有 WIT 契约、没有实现)。
 
 ## 8. 质量场景
 
@@ -411,6 +628,7 @@ preset = k8s 形态 YAML manifest:`presets/<id>.yaml`(apiVersion: liuma/v1 / kin
 | 取消长工具 | 子进程被杀,turn 温和收尾,REPL 存活 | verify-e2e(cancel) |
 | 方言往返 | 三方言请求形状与流映射符合各自 wire 规范 | adapters 契约测试 |
 | 未知事件类型 | 读取方拒绝重建 | verify-component-contracts |
+| 决策服务不可用 | 各场景 fail-open 放行(守卫不拦 / 哨兵不续 / 裁判不裁),工具软失败、回合照常收尾,审计对仍收口 | liuma-app `decision_flow`(端口恒错:`failing_port_soft_fails_and_closes_pair` / `context_judge_fails_open`) |
 
 ## 9. 风险与技术债
 
@@ -441,3 +659,6 @@ preset = k8s 形态 YAML manifest:`presets/<id>.yaml`(apiVersion: liuma/v1 / kin
 | 方言 | provider 的 wire 协议差异,封闭于 ProviderAdapter |
 | 下行通道 | 网关中事件通知与响应的有序输出通道,与传输无关 |
 | 续体 | waterfall listener 持有的 Next;调用继续链,不调用即替换/否决 |
+| System One 模型 | 不生成文本的决策模型品类:输入 state + 类型化问题,返回约束在预声明选项集内的结构化答案(概率 + 校准 confidence) |
+| 决策 receipt | 一次决策询问的审计对(`decision/asked` + `decision/answered`)折叠成的一条记录;轨迹台账里它是工具行的附属 chip,或独立成一 `decision` 行 |
+| fail-open | 决策服务不可用/超时/解析失败时放回原有行为,绝不因它卡死流程(与 C4 的 fail-closed 分属两侧:校验失败拒绝执行,建议面失败照常执行) |

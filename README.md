@@ -15,6 +15,7 @@
 - **结构性不变式**:「模型可见 ⟺ 已记录」由不变式闸门在唯一出网点强制,不依赖调用方自律;沙箱不可用即拒绝执行。
 - **WASM 组件工具**:接口以 WIT 契约定义(`wit/`),wasmtime 运行;组件权限由能力束显式界定,时钟与随机源显式注入保证重放确定性。
 - **沙箱执行**:macOS Seatbelt / Linux Landlock / bubblewrap / Windows 受限令牌 + 能力 SID 授权沙箱链(fail-closed);权限三态 + 审批门(ask / never)。
+- **决策模型接入**:按开放品类接入 System One 决策模型(`noul` / `choice` / `score` 三类问题,返回约束在预声明选项内的结构化答案),覆盖审批评审员 / Stop 哨兵 / 工具守卫 / 上下文裁判四个场景,外加一个 `decide` 工具供模型主动咨询。阈值与问题文案集中一处便于人审;默认全关、只建议不自动执行、服务不可用即回退原有行为,每次询问留审计记录(设置页「决策模型」区唯一配置面)。
 - **原生桌面客户端**:GPUI 桌面端(聊天 / 计划审批 / 问答卡 / 轨迹检查器 / 全文检索 / 会话导出),另有 `liuma` CLI(REPL / JSON-RPC stdio 网关)。
 
 ## 快速开始
@@ -38,7 +39,7 @@ just desktop-run        # 参数透传,如 just desktop-run --fake
 ## 验证
 
 ```bash
-just verify    # 格式 / clippy / 测试 / WIT / 组件契约 / e2e / 链接检查
+just verify    # 格式 / clippy / 测试 / WIT / 组件契约 / e2e / 链接检查 / 桌面文案
 ```
 
 ## 仓库布局
@@ -53,12 +54,16 @@ just verify    # 格式 / clippy / 测试 / WIT / 组件契约 / e2e / 链接检
 | `crates/liuma-host` | 组件宿主(wasmtime 组件管理器 / 事件总线 / 持久化 / 网关) |
 | `crates/liuma-llm` | LLM 接入(方言引擎 / HTTP+SSE transport / 不变式闸门) |
 | `crates/liuma-sandbox` | 执行原语(沙箱链 / 受控 spawn / PTY) |
+| `crates/liuma-sandbox-winacl` | Windows 沙箱后端(受限令牌 + 能力 SID 授权 + Job Object) |
 | `crates/liuma-agent-loop` | turn/step 状态机与端口 trait |
+| `crates/liuma-compaction` | 上下文压缩策略(纯函数:阈值 / 保留尾 / 切点不拆 tool 配对) |
+| `crates/liuma-plan` | plan 模式协作状态(逐 agent 布尔态 + `exit_plan_mode` 阻塞评审) |
 | `crates/liuma-session` | 事件日志(信封 / seq / 消息派生,wasm32-wasip2 产物 + rlib) |
 | `crates/liuma-attachment` | 附件存储与准入(内容寻址存储 / 图片解码 / 粘贴与拖放准入链) |
 | `crates/liuma-prompt` | system prompt 组装(纯函数) |
 | `crates/liuma-hooks` | hooks 桥(Claude Code / Codex shell hooks 接入) |
 | `crates/liuma-mcp` | MCP client 桥(rmcp;stdio + streamable-http 双传输 / 断线重连 / 工具桥接) |
+| `crates/liuma-decision` | 决策模型接入(System One 协议 / 四场景策略 / `decide` 工具) |
 | `crates/liuma-skill` | Skill 子系统(`.agents/skills` 目录加载 / 渐进披露 / skill 工具) |
 | `crates/liuma-tools` | 工具注册表与内置工具 |
 | `crates/liuma-wit` | host 侧 bindgen 与组件契约测试 |
