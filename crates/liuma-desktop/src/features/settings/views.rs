@@ -77,6 +77,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         SettingsNav::Models => models_section(store, cx).into_any_element(),
                         SettingsNav::Mcp => mcp_section(store, cx).into_any_element(),
                         SettingsNav::Hooks => hooks_section(store, cx).into_any_element(),
+                        SettingsNav::Decision => decision_section(store, cx).into_any_element(),
                         SettingsNav::General => general_section(store, cx).into_any_element(),
                         SettingsNav::About => about_section(store, cx).into_any_element(),
                     },
@@ -3144,7 +3145,7 @@ pub(crate) fn menu(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let back = store.clone();
     // 「基础设置」组:常规 / 模型设置(模型行名为「模型」);
     // 「Agent 能力」「数据与统计」无已实装项,不渲染空组头
-    let basic: [(SettingsNav, &str, gpui_kit::component::Icon); 4] = [
+    let basic: [(SettingsNav, &str, gpui_kit::component::Icon); 5] = [
         (
             SettingsNav::General,
             dict::settings::general(),
@@ -3157,6 +3158,11 @@ pub(crate) fn menu(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         ),
         (SettingsNav::Mcp, "MCP", fixed(LiumaIcon::Infinity, 15.)),
         (SettingsNav::Hooks, "Hooks", fixed(LiumaIcon::Wrench, 15.)),
+        (
+            SettingsNav::Decision,
+            "Decision",
+            fixed(LiumaIcon::Gauge, 15.),
+        ),
     ];
     let mut list = div().v_flex().gap(px(4.));
     list = list.child(nav_group_header(dict::settings::nav_basics()));
@@ -3288,6 +3294,190 @@ pub(crate) fn settings_row(store: &Entity<AppStore>) -> impl IntoElement {
         .on_click(move |_, _, cx| {
             s.update(cx, |st, cx| st.toggle_settings(cx));
         })
+}
+
+/// 决策模型区(System One 协议):总开关 + 四场景开关(+ guard/context
+/// 的 enforce 位)。端点/模型只读展示——编辑设置文件(下次会话附着生效)。
+fn decision_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
+    let st = store.read(cx);
+    let entry = serde_json::from_value::<liuma_core::settings::DecisionEntry>(
+        st.settings.settings_snapshot["decision"].clone(),
+    )
+    .unwrap_or_default();
+    // 明文 key 不出快照(与 providers 同惯例):「已设置」读 apiKeySet
+    // 布尔,不读 api_key——后者在快照里恒缺席,读它等于恒报「未设置」
+    let key_state = if st.settings.settings_snapshot["decision"]["apiKeySet"]
+        .as_bool()
+        .unwrap_or(false)
+    {
+        dict::settings::decision_key_set()
+    } else {
+        dict::settings::decision_key_missing()
+    };
+    let endpoint_line = format!(
+        "{} · {}",
+        dict::settings::decision_endpoint(entry.base_url.as_str(), entry.model.as_str()),
+        key_state
+    );
+    let mut col = div()
+        .v_flex()
+        .gap(px(12.))
+        .child(section_title("Decision"))
+        .child(intro_line(dict::settings::decision_intro()))
+        .child(caption_line(endpoint_line));
+
+    // 开关行通用形态(标题 + 说明 + Switch;主开关独立置顶)
+    let scenario_row = |store: &Entity<AppStore>,
+                        id: &'static str,
+                        label: String,
+                        desc: &str,
+                        on: bool,
+                        enforce: Option<(&'static str, bool)>|
+     -> gpui_kit::AnyElement {
+        let st_row = store.clone();
+        let st_enf = store.clone();
+        let mut row = div()
+            .id(gpui_kit::SharedString::from(format!("decision-row-{id}")))
+            .debug_selector(move || format!("decision-row-{id}"))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .child(
+                div()
+                    .min_w(px(0.))
+                    .flex_1()
+                    .v_flex()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(theme::LABEL())
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(theme::CAPTION())
+                            .child(desc.to_string()),
+                    ),
+            )
+            .child(
+                div()
+                    .id(gpui_kit::SharedString::from(format!(
+                        "decision-switch-{id}"
+                    )))
+                    .debug_selector(move || format!("decision-switch-{id}"))
+                    .child(
+                        Switch::new(gpui_kit::SharedString::from(format!(
+                            "decision-toggle-{id}"
+                        )))
+                        .checked(on)
+                        .color(theme::BRAND())
+                        .on_click({
+                            let st_click = st_row.clone();
+                            let kind = id;
+                            move |_, _, cx| {
+                                st_click.update(cx, |st, cx| st.toggle_decision_scenario(kind, cx));
+                            }
+                        }),
+                    ),
+            );
+        if let Some((enf_kind, enf_on)) = enforce {
+            let label = dict::settings::decision_enforce();
+            row = row.child(
+                div()
+                    .id(gpui_kit::SharedString::from(format!(
+                        "decision-enforce-{enf_kind}"
+                    )))
+                    .debug_selector(move || format!("decision-enforce-{enf_kind}"))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(theme::CAPTION())
+                            .child(label),
+                    )
+                    .child(
+                        Switch::new(gpui_kit::SharedString::from(format!(
+                            "decision-enforce-toggle-{enf_kind}"
+                        )))
+                        .checked(enf_on)
+                        .color(theme::WARN())
+                        .on_click({
+                            move |_, _, cx| {
+                                st_enf
+                                    .update(cx, |st, cx| st.toggle_decision_enforce(enf_kind, cx));
+                            }
+                        }),
+                    ),
+            );
+        }
+        row.into_any_element()
+    };
+
+    let st_master = store.clone();
+    col = col.child(
+        div()
+            .id("decision-master")
+            .debug_selector(|| "decision-master".to_string())
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(13.))
+                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                    .text_color(theme::LABEL())
+                    .child(dict::settings::decision_master()),
+            )
+            .child(
+                Switch::new("decision-master-toggle")
+                    .checked(entry.enabled)
+                    .color(theme::BRAND())
+                    .on_click(move |_, _, cx| {
+                        st_master.update(cx, |st, cx| st.toggle_decision_enabled(cx));
+                    }),
+            ),
+    );
+    // 主开关关闭时场景行整体退灰(仍可查看,不可交互的语义由 Switch 态承担)
+    let _ = &entry;
+    col = col
+        .child(scenario_row(
+            store,
+            "approvals",
+            dict::settings::decision_approvals().to_string(),
+            dict::settings::decision_approvals_desc(),
+            entry.approvals,
+            None,
+        ))
+        .child(scenario_row(
+            store,
+            "stop",
+            dict::settings::decision_stop().to_string(),
+            dict::settings::decision_stop_desc(),
+            entry.stop,
+            None,
+        ))
+        .child(scenario_row(
+            store,
+            "guard",
+            dict::settings::decision_guard().to_string(),
+            dict::settings::decision_guard_desc(),
+            entry.guard,
+            Some(("guard", entry.guard_enforce)),
+        ))
+        .child(scenario_row(
+            store,
+            "context",
+            dict::settings::decision_context().to_string(),
+            dict::settings::decision_context_desc(),
+            entry.context,
+            Some(("context", entry.context_enforce)),
+        ));
+    col
 }
 
 /// Hooks 区(Claude Code / Codex 桥;M4.2):行卡(id/方言/路径/启停/

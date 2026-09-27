@@ -172,6 +172,78 @@ pub struct ApprovalDecided {
     pub outcome: String,
 }
 
+/// decision/asked 的问题引用(id + 类型;instructions 本体不落档)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionQuestionRef {
+    /// 问题 id(调用方自定义;与请求/答案表键一致)
+    pub id: String,
+    /// 问题类型:noul / choice / score
+    pub kind: String,
+}
+
+/// decision/asked 载荷:决策模型询问的发起记录(receipt 审计对)。
+///
+/// 与 decision/answered 以 id 配对;log-only,不进模型 transcript。
+/// **不落 state 本体**(隐私 + 日志膨胀),只记 sha256 前 16 hex 摘要。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionAsked {
+    /// 询问 id(每次新生成,与 answered 配对)
+    pub id: String,
+    /// 场景标识:approvals / stop / guard / context / tool
+    pub scenario: String,
+    /// 决策模型名(请求携带)
+    pub model: String,
+    /// 问题清单(id + 类型)
+    pub questions: Vec<DecisionQuestionRef>,
+    /// state 摘要(sha256 前 16 hex;原文不落档)
+    pub state_digest: String,
+}
+
+/// decision/answered 载荷:决策模型应答(与 asked 以 id 配对收口;
+/// 失败也收口,仿 turn/error 语义)。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionAnswered {
+    /// 与 asked 配对的询问 id
+    pub id: String,
+    /// 是否成功拿到答案
+    pub ok: bool,
+    /// 完整 answers(含 probabilities/confidence;失败 = 缺席)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answers: Option<serde_json::Value>,
+    /// 失败原因(成功 = 缺席)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// 端到端耗时(毫秒,含重试等待)
+    pub duration_ms: i64,
+    /// token 用量(百炼无 output_tokens,整体可缺席)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<serde_json::Value>,
+}
+
+/// decision/pruned 的单条修剪引用
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DecisionPrunedItem {
+    /// 被修剪的 tool/result 事件 seq
+    pub seq: u64,
+    /// 决策评分(「已无引用价值」概率,越高越无价值)
+    pub score: f64,
+}
+
+/// decision/pruned 载荷:上下文裁判的修剪裁决记录。
+///
+/// 效果发生在派生层(策略④):被引用的 tool/result 输出以常量占位符
+/// 呈现,**日志本体不动**(「模型可见 ⟺ 已记录」不变)。多份 pruned
+/// 事件取并集;折叠优先(seq ≤ throughSeq 的事件不参与派生,引用自然失效)。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionPruned {
+    /// 修剪清单(引用的 tool/result seq)
+    pub pruned: Vec<DecisionPrunedItem>,
+}
+
 /// 会话分叉记录(非 surface)。分叉 = 复制父日志后追加本事件,
 /// 血缘(source session_query)由此链重建
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -348,6 +420,15 @@ pub enum SessionEventData {
     /// 审批裁决(非 surface;审计对收口)
     #[serde(rename = "approval/decided", rename_all = "camelCase")]
     ApprovalDecided(ApprovalDecided),
+    /// 决策模型询问发起(非 surface;receipt 审计对,与 answered 以 id 配对)
+    #[serde(rename = "decision/asked", rename_all = "camelCase")]
+    DecisionAsked(DecisionAsked),
+    /// 决策模型应答(非 surface;审计对收口)
+    #[serde(rename = "decision/answered", rename_all = "camelCase")]
+    DecisionAnswered(DecisionAnswered),
+    /// 上下文裁判修剪记录(非 surface;派生策略④消费)
+    #[serde(rename = "decision/pruned", rename_all = "camelCase")]
+    DecisionPruned(DecisionPruned),
     /// 模型提交的计划(非 surface)
     #[serde(rename = "plan/submitted", rename_all = "camelCase")]
     PlanSubmitted(PlanSubmitted),
@@ -414,6 +495,12 @@ pub const KNOWN_EVENT_TYPES: &[&str] = &[
     // 沙箱升级审批对(闸门审计;新增类型对旧日志安全)
     "approval/asked",
     "approval/decided",
+    // 决策模型询问/应答对(System One receipt 审计;state 不落本体只记
+    // 摘要;新增类型对旧日志安全——守卫只拒「未登记且非 ignorable」)
+    "decision/asked",
+    "decision/answered",
+    // 上下文裁判修剪记录(派生策略④消费;新增类型对旧日志安全)
+    "decision/pruned",
     // hooks 桥事件对(hook 钩子调用与裁决;log-only、turn 封闭;
     // 新增类型对旧日志安全——旧日志无此类型,守卫只拒「未登记且非
     // ignorable」。漏登记会导致含 hook 对的会话日志整体拒读 +
@@ -465,6 +552,9 @@ impl SessionEventData {
             Self::ApprovalPolicy(_) => "approval/policy",
             Self::ApprovalAsked(_) => "approval/asked",
             Self::ApprovalDecided(_) => "approval/decided",
+            Self::DecisionAsked(_) => "decision/asked",
+            Self::DecisionAnswered(_) => "decision/answered",
+            Self::DecisionPruned(_) => "decision/pruned",
             Self::PlanSubmitted(_) => "plan/submitted",
             Self::PlanApproved(_) => "plan/approved",
             Self::PlanCancelled(_) => "plan/cancelled",
@@ -574,19 +664,33 @@ pub fn frame_checkpoint(summary: &str) -> String {
     format!("{CHECKPOINT_PREAMBLE}\n\n<compacted-summary>\n{summary}\n</compacted-summary>")
 }
 
+/// 决策修剪占位(策略④;decision/pruned 引用的 tool/result 输出替换)。
+/// 消息本体保留(assistant{tool_calls} 配对不破,provider 协议安全),
+/// 原文只在日志(重放/审计可见),模型可见面替换为此常量。
+pub const PRUNED_TOOL_PLACEHOLDER: &str =
+    "(older tool result pruned by the decision model; the full output remains in the session log)";
+
 /// 模型可见消息 = 日志投影 + 显式策略栈。
 ///
 /// 策略栈:① tool/result 输出裁剪(常量,确定性);② 历史折叠——最近一条
 /// compaction/summary 之前的事件折叠为单条摘要消息,其后照常派生;
 /// ③ skill 目录替换——`source.kind=skill-catalog` 的 user/message 只保留
 /// 最新一条(旧目录物理移除,模型恒只见一份;日志只追加,
-/// 折叠在派生层以纯规则达成同一可见语义,重放稳定)。
+/// 折叠在派生层以纯规则达成同一可见语义,重放稳定);
+/// ④ 决策修剪——`decision/pruned` 引用的 tool/result 输出替换为
+/// [`PRUNED_TOOL_PLACEHOLDER`](多份取并集;被折叠事件不参与派生,引用自然失效)。
 /// engine 的请求构造与闸门的期望比对**共用本函数**(唯一实现);
 /// derive_messages 保留为无策略的裸映射(审计/测试用)。
 pub fn derive_visible_messages<'a>(
     events: impl Iterator<Item = &'a crate::EventEnvelope>,
 ) -> serde_json::Value {
     let events: Vec<&crate::EventEnvelope> = events.collect();
+    let pruned_seqs: std::collections::HashSet<u64> = events
+        .iter()
+        .filter(|e| e.r#type == "decision/pruned")
+        .flat_map(|e| e.data["pruned"].as_array().cloned().unwrap_or_default())
+        .filter_map(|p| p["seq"].as_u64())
+        .collect();
     let last_catalog_seq = events
         .iter()
         .rev()
@@ -618,11 +722,11 @@ pub fn derive_visible_messages<'a>(
             .iter()
             .filter(|e| e.seq > through && !superseded_catalog(e))
         {
-            push_visible(&mut msgs, ev);
+            push_visible(&mut msgs, ev, &pruned_seqs);
         }
     } else {
         for ev in events.into_iter().filter(|e| !superseded_catalog(e)) {
-            push_visible(&mut msgs, ev);
+            push_visible(&mut msgs, ev, &pruned_seqs);
         }
     }
     pair_dangling_tool_calls(&mut msgs);
@@ -696,15 +800,24 @@ fn pair_dangling_tool_calls(msgs: &mut Vec<serde_json::Value>) {
     }
 }
 
-/// 单事件 → 可见消息(含 tool/result 裁剪)
-fn push_visible(msgs: &mut Vec<serde_json::Value>, ev: &crate::EventEnvelope) {
+/// 单事件 → 可见消息(含 tool/result 裁剪与决策修剪占位)
+fn push_visible(
+    msgs: &mut Vec<serde_json::Value>,
+    ev: &crate::EventEnvelope,
+    pruned_seqs: &std::collections::HashSet<u64>,
+) {
     let Some(mut m) = message_from_event(&ev.r#type, &ev.data) else {
         return;
     };
     if ev.r#type == "tool/result"
         && let serde_json::Value::String(output) = &mut m["output"]
     {
-        *output = prune_output(output);
+        // 策略④优先于常量裁剪:被裁判修剪的输出整段替换为占位符
+        *output = if pruned_seqs.contains(&ev.seq) {
+            PRUNED_TOOL_PLACEHOLDER.to_string()
+        } else {
+            prune_output(output)
+        };
     }
     msgs.push(m);
 }
@@ -821,6 +934,127 @@ mod tests {
         let sandbox_bare = json!({ "type": "sandbox/mode", "data": { "mode": "read-only" } });
         let back: SessionEventData = serde_json::from_value(sandbox_bare).expect("bare sandbox");
         assert_eq!(back.type_name(), "sandbox/mode");
+    }
+
+    /// 决策模型询问/应答对:①tagged roundtrip(含可选字段省略);
+    /// ②登记 KNOWN;③log-only;④非消息面;⑤失败也应答收口。
+    #[test]
+    fn decision_pair_roundtrip_registration_and_log_only() {
+        let asked = SessionEventData::DecisionAsked(DecisionAsked {
+            id: "d-1".into(),
+            scenario: "approvals".into(),
+            model: "jev-1.13.0".into(),
+            questions: vec![DecisionQuestionRef {
+                id: "is_low_risk".into(),
+                kind: "noul".into(),
+            }],
+            state_digest: "3f2a9c1d8e7b4a60".into(),
+        });
+        let v = serde_json::to_value(&asked).expect("serialize");
+        assert_eq!(v["type"], "decision/asked");
+        assert_eq!(v["data"]["scenario"], "approvals");
+        assert_eq!(
+            v["data"]["stateDigest"], "3f2a9c1d8e7b4a60",
+            "载荷 camelCase"
+        );
+        assert_eq!(v["data"]["questions"][0]["kind"], "noul");
+        let back: SessionEventData = serde_json::from_value(v).expect("deserialize");
+        assert_eq!(back, asked);
+        assert_eq!(back.type_name(), "decision/asked");
+        assert!(KNOWN_EVENT_TYPES.contains(&back.type_name()));
+        assert!(!back.is_surface());
+        assert!(!back.is_attributed());
+        let plain = serde_json::to_value(&back).unwrap();
+        assert!(message_from_event("decision/asked", &plain["data"]).is_none());
+
+        // 应答(成功):answers/usage 在场
+        let answered = SessionEventData::DecisionAnswered(DecisionAnswered {
+            id: "d-1".into(),
+            ok: true,
+            answers: Some(json!({ "is_low_risk": { "type": "noul", "noul": 0.02 } })),
+            error: None,
+            duration_ms: 182,
+            usage: Some(json!({ "input_tokens": 296, "output_tokens": 20 })),
+        });
+        let v = serde_json::to_value(&answered).expect("serialize");
+        assert_eq!(v["type"], "decision/answered");
+        assert_eq!(v["data"]["durationMs"], 182, "载荷 camelCase");
+        assert!(v["data"].get("error").is_none(), "成功应答省略 error");
+        let back: SessionEventData = serde_json::from_value(v).expect("deserialize");
+        assert_eq!(back, answered);
+        assert!(KNOWN_EVENT_TYPES.contains(&back.type_name()));
+        assert!(!back.is_surface() && !back.is_attributed());
+
+        // 应答(失败):error 在场、answers 缺席;旧读取方语义等价
+        let failed = SessionEventData::DecisionAnswered(DecisionAnswered {
+            id: "d-2".into(),
+            ok: false,
+            answers: None,
+            error: Some("decision timeout".into()),
+            duration_ms: 2001,
+            usage: None,
+        });
+        let v = serde_json::to_value(&failed).expect("serialize");
+        assert!(v["data"].get("answers").is_none(), "失败应答省略 answers");
+        assert!(v["data"].get("usage").is_none(), "失败应答省略 usage");
+        let back: SessionEventData = serde_json::from_value(v).expect("deserialize");
+        assert_eq!(back, failed);
+    }
+
+    /// decision/pruned:①tagged roundtrip;②登记 KNOWN;③log-only;
+    /// ④派生策略④——被引用的 tool/result 输出替换为占位符、消息本体
+    /// 保留、无 pruned 事件派生结果不变。
+    #[test]
+    fn decision_pruned_roundtrip_and_derivation() {
+        let pruned = SessionEventData::DecisionPruned(DecisionPruned {
+            pruned: vec![DecisionPrunedItem {
+                seq: 2,
+                score: 0.93,
+            }],
+        });
+        let v = serde_json::to_value(&pruned).expect("serialize");
+        assert_eq!(v["type"], "decision/pruned");
+        assert_eq!(v["data"]["pruned"][0]["seq"], 2);
+        let back: SessionEventData = serde_json::from_value(v).expect("deserialize");
+        assert_eq!(back, pruned);
+        assert!(KNOWN_EVENT_TYPES.contains(&back.type_name()));
+        assert!(!back.is_surface() && !back.is_attributed());
+
+        // 策略④:seq=2 的 tool/result 被修剪(长输出);seq=4 不受影响
+        let long = "z".repeat(PRUNE_THRESHOLD_CHARS + 100);
+        let events = [
+            envelope("user/message", 1, json!({ "content": "q" })),
+            envelope("tool/result", 2, json!({ "call": 1, "output": long })),
+            envelope("assistant/message", 3, json!({ "content": "a" })),
+            envelope("tool/result", 4, json!({ "call": 2, "output": "keep me" })),
+            envelope(
+                "decision/pruned",
+                5,
+                json!({ "pruned": [{ "seq": 2, "score": 0.93 }] }),
+            ),
+        ];
+        let derived = derive_visible_messages(events.iter());
+        let tool_msgs: Vec<&serde_json::Value> = derived
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["role"] == "tool")
+            .collect();
+        assert_eq!(tool_msgs.len(), 2, "消息本体保留(配对不破)");
+        assert_eq!(
+            tool_msgs[0]["output"], PRUNED_TOOL_PLACEHOLDER,
+            "被修剪 → 占位符"
+        );
+        assert_eq!(tool_msgs[1]["output"], "keep me", "未引用 → 原样");
+
+        // 回归锁:无 pruned 事件 → tool/result 走原裁剪路径,派生不变
+        let without: Vec<&crate::EventEnvelope> = events.iter().take(4).collect();
+        let derived_without = derive_visible_messages(without.into_iter());
+        let first_tool = &derived_without.as_array().unwrap()[1];
+        assert!(
+            first_tool["output"].as_str().unwrap().contains("z"),
+            "原样保留长输出"
+        );
     }
 
     #[test]

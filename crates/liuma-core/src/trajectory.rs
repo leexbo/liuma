@@ -144,6 +144,42 @@ pub struct TrajectoryRecord {
     /// CONTEXT 详情:注入染色对象(ev.data.source;Summary 的
     /// Source 行与 Source tab 的数据面)
     pub source: Option<Value>,
+    /// 决策 receipt(decision/asked·answered 折叠)。
+    ///
+    /// **落位规则**:守卫裁决是**某一次工具调用**的附属记录——引擎的
+    /// 契约是「pre_tool 在 tool/call 落档后、执行前」,且工具调用顺序
+    /// 执行(engine.rs 的 `for call in &tool_calls`),故 receipt 到达时
+    /// `pending_calls` 里正开着的那条**就是**它裁决的调用:直接挂在
+    /// 那条记录上,不另立行(顺序即绑定,无需任何身份字段)。
+    /// stop/context 是回合级/会话级事件,没有调用可挂 → `kind =
+    /// "decision"` 独立成行,此字段即该行本体。
+    pub decision: Option<DecisionRecord>,
+}
+
+/// 决策 receipt 摘要(decision/asked + decision/answered 折叠一体)。
+/// state 原文不落档(隐私 + 日志膨胀),只留摘要,故此处无 state 字段。
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionRecord {
+    /// 审计配对 id(asked/answered 同源)
+    pub id: String,
+    /// 场景:guard / stop / context / tool
+    pub scenario: String,
+    /// 被询问的模型名
+    pub model: String,
+    /// 问题 id 列表(保序;条数即「N 问」)
+    pub questions: Vec<String>,
+    /// state 摘要(不落原文)
+    pub state_digest: Option<String>,
+    /// 应答原值(answers;None = 未收口)
+    pub answers: Option<Value>,
+    /// 失败原因(ok=false;None = 成功或未收口)
+    pub error: Option<String>,
+    /// 耗时毫秒(0 = 缺席)
+    pub duration_ms: i64,
+    /// 实际修剪条数(仅 context 场景且 enforce 生效时在场;
+    /// shadow 只落 receipt 观察,不修剪)
+    pub pruned: Option<u64>,
 }
 
 /// 单行摘要:首行 + 压缩空白 + 截断
@@ -470,6 +506,109 @@ impl TrajectoryFolder {
         }
     }
 
+    /// 决策记录落位:当前开着调用(守卫裁决)→ 挂到那条记录上,不另
+    /// 立行;否则(stop/context 等无调用可挂的)→ 按事件序独立成行。
+    fn place_decision(&mut self, ev: &EventEnvelope, rec: DecisionRecord) {
+        // 顺序即绑定:引擎契约「pre_tool 在 tool/call 落档后、执行前」
+        // + 工具调用顺序执行 ⇒ pending_calls 里至多一条,且就是它裁决的
+        if let Some((_, call)) = self.pending_calls.last_mut() {
+            call.decision = Some(rec);
+            return;
+        }
+        self.insert_record_ordered(TrajectoryRecord {
+            index: 0,
+            seq: ev.seq,
+            kind: "decision".into(),
+            turn: if self.turn == 0 {
+                None
+            } else {
+                Some(self.turn)
+            },
+            group: "Message".into(),
+            // 裁决行不顶 Turn 标签:它是过程记录,不是轮次起点
+            turn_start: false,
+            text: rec.scenario.clone(),
+            result: None,
+            is_error: rec.error.is_some(),
+            time_seconds: (rec.duration_ms > 0).then(|| rec.duration_ms as f64 / 1000.0),
+            started_at: Some(ev.time),
+            request_number: None,
+            input: None,
+            output: None,
+            think: None,
+            ttft_ms: None,
+            payload: None,
+            output_detail: None,
+            thinking_detail: None,
+            system_prompt: None,
+            tools_catalog: None,
+            schema_detail: None,
+            source: None,
+            decision: Some(rec),
+        });
+    }
+
+    /// 决策收口(answered 以 id 配对):两处找——还挂着的调用,或已入
+    /// 表的独立裁决行。收口即上报(独立行就地重发自身;挂着的那条等
+    /// result 配对时随记录一起出账)。
+    fn settle_decision(
+        &mut self,
+        id: &str,
+        answers: Option<Value>,
+        error: Option<String>,
+        duration_ms: i64,
+    ) {
+        let attach = |d: &mut DecisionRecord| {
+            d.answers = answers;
+            d.error = error;
+            d.duration_ms = duration_ms;
+        };
+        let matches = |r: &TrajectoryRecord| r.decision.as_ref().is_some_and(|d| d.id == id);
+        if let Some((_, call)) = self
+            .pending_calls
+            .iter_mut()
+            .rev()
+            .find(|(_, c)| matches(c))
+        {
+            if let Some(d) = call.decision.as_mut() {
+                attach(d);
+            }
+            return;
+        }
+        let Some(pos) = self.records.iter().position(matches) else {
+            return;
+        };
+        let rec = &mut self.records[pos];
+        if let Some(d) = rec.decision.as_mut() {
+            attach(d);
+            rec.is_error = d.error.is_some();
+            rec.time_seconds = (d.duration_ms > 0).then(|| d.duration_ms as f64 / 1000.0);
+        }
+        // 就地上报:index 不变 → 只重发自身(去掉先前那次未收口的副本)
+        let updated = rec.clone();
+        self.dirty.records.retain(|r| r.index != updated.index);
+        self.dirty.records.push(updated);
+    }
+
+    /// 修剪生效量补记:最近一条 context 裁决(该场景恒独立成行——裁判
+    /// 在 turn 间隙跑,pending_calls 必空)。就地重发自身以便前端收敛。
+    fn settle_pruned(&mut self, n: u64) {
+        let Some(pos) = self.records.iter().rposition(|r| {
+            r.decision
+                .as_ref()
+                .is_some_and(|d| d.scenario == "context" && d.pruned.is_none())
+        }) else {
+            return;
+        };
+        let rec = &mut self.records[pos];
+        if let Some(d) = rec.decision.as_mut() {
+            d.pruned = Some(n);
+        }
+        let updated = rec.clone();
+        self.dirty.records.retain(|r| r.index != updated.index);
+        self.dirty.records.push(updated);
+    }
+
     /// 冲刷等待结果的调用(取消/中断;无结果列)。时长从审计表补读
     /// (完成事件已到的取消场景)
     fn flush_pending_calls(&mut self) {
@@ -536,6 +675,7 @@ impl TrajectoryFolder {
                     schema_detail: None,
                     // 注入行带 source 染色(真用户消息无)
                     source: inject.then(|| ev.data["source"].clone()),
+                    decision: None,
                 });
                 if !inject {
                     self.turn_has_record = true;
@@ -632,6 +772,7 @@ impl TrajectoryFolder {
                             tools_catalog: full_tools.clone(),
                             schema_detail: None,
                             source: None,
+                            decision: None,
                         };
                         if label == "Initial System Prompt" {
                             // 置顶(Initial System Prompt 事件时序上
@@ -761,6 +902,7 @@ impl TrajectoryFolder {
                     tools_catalog: None,
                     schema_detail: None,
                     source: None,
+                    decision: None,
                 });
                 if self.turn > 0 {
                     self.turn_has_record = true;
@@ -799,6 +941,9 @@ impl TrajectoryFolder {
                     tools_catalog: None,
                     schema_detail: tool_schema(self, &name),
                     source: None,
+                    // 守卫 receipt 在 result 之前到达,此时本记录还在
+                    // pending_calls 里 → 就地附着(见 decision 字段文档)
+                    decision: None,
                 };
                 *self
                     .tools_by_step
@@ -848,6 +993,55 @@ impl TrajectoryFolder {
                     self.insert_record_ordered(record);
                 }
             }
+            // 决策 receipt:asked 开记录、answered 以 id 配对收口
+            // (与 tool/call·tool/result 同款配对)。落位见
+            // [`TrajectoryRecord::decision`] 的规则说明。
+            "decision/asked" => {
+                let rec = DecisionRecord {
+                    id: ev.data["id"].as_str().unwrap_or_default().to_string(),
+                    scenario: ev.data["scenario"].as_str().unwrap_or_default().to_string(),
+                    model: ev.data["model"].as_str().unwrap_or_default().to_string(),
+                    questions: ev.data["questions"]
+                        .as_array()
+                        .map(|qs| {
+                            qs.iter()
+                                .filter_map(|q| q["id"].as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    state_digest: ev.data["stateDigest"].as_str().map(String::from),
+                    answers: None,
+                    error: None,
+                    duration_ms: 0,
+                    pruned: None,
+                };
+                self.place_decision(ev, rec);
+            }
+            // 上下文裁判的实际效果(仅 enforce 分支落档):修剪条数补进
+            // 刚才那条 context 裁决——它是本场景的收尾量,单看 receipt
+            // 无从知道 shadow 观察与 enforce 生效的区别
+            "decision/pruned" => {
+                let n = ev.data["pruned"]
+                    .as_array()
+                    .map(|p| p.len() as u64)
+                    .unwrap_or(0);
+                self.settle_pruned(n);
+            }
+            "decision/answered" => {
+                let id = ev.data["id"].as_str().unwrap_or_default();
+                let ok = ev.data["ok"].as_bool().unwrap_or(false);
+                let answers = ok
+                    .then(|| ev.data.get("answers").filter(|a| !a.is_null()).cloned())
+                    .flatten();
+                let error = (!ok).then(|| {
+                    ev.data["error"]
+                        .as_str()
+                        .unwrap_or("decision failed")
+                        .to_string()
+                });
+                let duration_ms = ev.data["durationMs"].as_i64().unwrap_or(0);
+                self.settle_decision(id, answers, error, duration_ms);
+            }
             "compaction/summary" => {
                 let summary = ev.data["summary"].as_str().unwrap_or_default();
                 self.stage_record(TrajectoryRecord {
@@ -886,6 +1080,7 @@ impl TrajectoryFolder {
                     tools_catalog: None,
                     schema_detail: None,
                     source: None,
+                    decision: None,
                 });
                 if self.turn > 0 {
                     self.turn_has_record = true;
@@ -910,6 +1105,255 @@ mod tests {
         e.seq = seq;
         e.time = ts;
         e
+    }
+
+    /// 回归锁:守卫裁决**贴在它裁决的那次调用上**,不另立行。
+    ///
+    /// 引擎契约「pre_tool 在 tool/call 落档后、执行前」+ 工具调用顺序
+    /// 执行 ⇒ receipt 到达时 `pending_calls` 里正开着的那条就是它裁决的
+    /// 调用。顺序即绑定,不需要任何身份字段;绑定错了会表现为台账里
+    /// 凭空多出一行「决策」,且那次调用看不出被裁决过。
+    #[test]
+    fn guard_receipt_attaches_to_its_pending_call_not_a_new_row() {
+        let mut f = TrajectoryFolder::new();
+        for e in [
+            ev_seq("turn/start", 1, 1000, json!({})),
+            ev_seq(
+                "user/message",
+                2,
+                1010,
+                json!({ "content": "clean up", "source": { "kind": "user" } }),
+            ),
+            ev_seq(
+                "tool/call",
+                3,
+                1020,
+                json!({ "name": "bash", "arguments": { "command": "rm -rf /tmp/x" } }),
+            ),
+            // 守卫:ask 已落、答已落,都在 tool/result 之前(引擎时序)
+            ev_seq(
+                "decision/asked",
+                4,
+                1021,
+                json!({ "id": "d1", "scenario": "guard", "model": "jev-latest",
+                        "tool": "bash", "questions": [ { "id": "verdict", "kind": "choice" } ],
+                        "stateDigest": "abc" }),
+            ),
+            ev_seq(
+                "decision/answered",
+                5,
+                1022,
+                json!({ "id": "d1", "ok": true, "durationMs": 232,
+                        "answers": { "verdict": { "type": "choice", "choice": "proceed",
+                                                  "probabilities": { "proceed": 0.94 },
+                                                  "confidence": 0.94 } } }),
+            ),
+            ev_seq(
+                "tool/result",
+                6,
+                1030,
+                json!({ "call": 3, "output": "ok", "success": true }),
+            ),
+        ] {
+            f.feed(&e);
+        }
+        let data = f.data();
+        let decision_rows: Vec<_> = data
+            .records
+            .iter()
+            .filter(|r| r.kind == "decision")
+            .collect();
+        assert!(
+            decision_rows.is_empty(),
+            "守卫裁决不独立成行:{decision_rows:?}"
+        );
+        let tool = data
+            .records
+            .iter()
+            .find(|r| r.kind == "tool")
+            .expect("工具记录在场");
+        let d = tool.decision.as_ref().expect("裁决挂在它裁决的调用上");
+        assert_eq!(d.scenario, "guard");
+        assert_eq!(d.id, "d1");
+        assert_eq!(d.duration_ms, 232, "answered 收口");
+        assert_eq!(d.answers.as_ref().unwrap()["verdict"]["choice"], "proceed");
+        assert_eq!(d.questions, vec!["verdict".to_string()]);
+    }
+
+    /// 裁判的实际效果:`decision/pruned` 补进刚才那条 context 裁决。
+    /// 单看 receipt 分不出 shadow 观察与 enforce 生效,修剪量是收尾量。
+    #[test]
+    fn prune_effect_lands_on_the_context_decision_row() {
+        let mut f = TrajectoryFolder::new();
+        for e in [
+            ev_seq("turn/start", 1, 1000, json!({})),
+            ev_seq(
+                "decision/asked",
+                2,
+                1010,
+                json!({ "id": "d3", "scenario": "context", "model": "jev-latest",
+                        "questions": [ { "id": "no_value", "kind": "noul" } ] }),
+            ),
+            ev_seq(
+                "decision/answered",
+                3,
+                1011,
+                json!({ "id": "d3", "ok": true, "durationMs": 180,
+                        "answers": { "no_value": { "type": "noul", "noul": 0.91 } } }),
+            ),
+            ev_seq(
+                "decision/pruned",
+                4,
+                1012,
+                json!({ "pruned": [ { "seq": 7, "score": 0.91 }, { "seq": 9, "score": 0.88 } ] }),
+            ),
+        ] {
+            f.feed(&e);
+        }
+        let data = f.data();
+        let row = data
+            .records
+            .iter()
+            .find(|r| r.kind == "decision")
+            .expect("裁判裁决独立成行");
+        let d = row.decision.as_ref().unwrap();
+        assert_eq!(d.scenario, "context");
+        assert_eq!(d.pruned, Some(2), "修剪量补进本条裁决");
+        // 收口后仍只有一行(pruned 是补记,不新开记录)
+        assert_eq!(
+            data.records.iter().filter(|r| r.kind == "decision").count(),
+            1
+        );
+    }
+
+    /// `decide` 工具的真实时序:receipt 与别的工具**不同**——它不是
+    /// pre_tool 面产出的,而是工具自己缓冲、由引擎在**整个 step 的工具
+    /// 循环之后**经 `take_state_events` 统一落档(engine.rs 的
+    /// `for (state_type, state_data) in tools.take_state_events()`)。所以
+    /// receipt 到达时那条 `decide` 调用早已 `tool/result` 收口、
+    /// `pending_calls` 里没有它了——落在**独立咨询行**上,不回头挂已闭
+    /// 合的调用(挂上去等于让台账假装 receipt 是执行期的产物)。
+    #[test]
+    fn decide_tool_receipt_lands_after_the_call_closes_as_its_own_row() {
+        let mut f = TrajectoryFolder::new();
+        for e in [
+            ev_seq("turn/start", 1, 1000, json!({})),
+            ev_seq(
+                "user/message",
+                2,
+                1010,
+                json!({ "content": "这个报错是瞬时的吗", "source": { "kind": "user" } }),
+            ),
+            ev_seq(
+                "tool/call",
+                3,
+                1020,
+                json!({ "name": "decide", "arguments": { "context": "reset by peer",
+                        "questions": [ { "id": "is_transient", "kind": "noul" } ] } }),
+            ),
+            ev_seq(
+                "tool/result",
+                4,
+                1030,
+                json!({ "call": 3, "output": "transient noul=0.63", "success": true }),
+            ),
+            // step 收尾时统一落档(引擎 take_state_events)
+            ev_seq(
+                "decision/asked",
+                5,
+                1400,
+                json!({ "id": "d3", "scenario": "tool", "model": "jev-latest",
+                        "questions": [ { "id": "is_transient", "kind": "noul" } ] }),
+            ),
+            ev_seq(
+                "decision/answered",
+                6,
+                1401,
+                json!({ "id": "d3", "ok": true, "durationMs": 240,
+                        "answers": { "is_transient": { "type": "noul", "noul": 0.63 } } }),
+            ),
+        ] {
+            f.feed(&e);
+        }
+        let data = f.data();
+        // decide 调用行不被挂 receipt(它的 receipt 到得比它晚)
+        let call = data
+            .records
+            .iter()
+            .find(|r| r.kind == "tool")
+            .expect("decide 调用成行");
+        assert!(call.decision.is_none(), "已闭合的调用不回头挂 receipt");
+        // 独立咨询行,落位取 asked 的 seq
+        let row = data
+            .records
+            .iter()
+            .find(|r| r.kind == "decision")
+            .expect("咨询裁决独立成行");
+        assert_eq!(row.seq, 5);
+        let d = row.decision.as_ref().expect("行本体即裁决");
+        assert_eq!(d.scenario, "tool");
+        assert_eq!(d.duration_ms, 240, "answered 就地收口");
+        // 无裁决维度的 receipt(noul 单问)不伪造裁决——渲染层据此
+        // 退到摘要态(见 liuma-desktop 的 decision_verdict)
+        assert!(
+            d.answers
+                .as_ref()
+                .is_some_and(|a| a.get("verdict").is_none())
+        );
+    }
+
+    /// 反向守护:没有调用可挂的裁决(stop/context)独立成行,且不带
+    /// Turn 标签——它是过程记录,不是轮次起点。
+    ///
+    /// 若不独立成行,哨兵/裁判的裁决就没有任何落点(静默丢失)。
+    #[test]
+    fn round_level_receipt_becomes_its_own_row() {
+        let mut f = TrajectoryFolder::new();
+        for e in [
+            ev_seq("turn/start", 1, 1000, json!({})),
+            ev_seq(
+                "user/message",
+                2,
+                1010,
+                json!({ "content": "hi", "source": { "kind": "user" } }),
+            ),
+            ev_seq("assistant/message", 3, 1020, json!({ "content": "done" })),
+            ev_seq(
+                "decision/asked",
+                4,
+                1030,
+                json!({ "id": "d2", "scenario": "stop", "model": "jev-latest",
+                        "questions": [ { "id": "lacks_evidence", "kind": "noul" } ] }),
+            ),
+            ev_seq(
+                "decision/answered",
+                5,
+                1031,
+                json!({ "id": "d2", "ok": true, "durationMs": 107,
+                        "answers": { "lacks_evidence": { "type": "noul", "noul": 0.02 } } }),
+            ),
+        ] {
+            f.feed(&e);
+        }
+        let data = f.data();
+        let row = data
+            .records
+            .iter()
+            .find(|r| r.kind == "decision")
+            .expect("无调用可挂的裁决独立成行");
+        assert_eq!(row.seq, 4, "落位取 asked 的 seq");
+        assert!(!row.turn_start, "裁决行不顶 Turn 标签");
+        assert!(!row.is_error);
+        let d = row.decision.as_ref().expect("行本体即裁决");
+        assert_eq!(d.scenario, "stop");
+        assert_eq!(d.duration_ms, 107, "answered 就地收口");
+        assert!(
+            data.records
+                .iter()
+                .find(|r| r.kind == "message")
+                .is_some_and(|m| m.decision.is_none()),
+            "裁决不得误挂到相邻的助手行上"
+        );
     }
 
     fn audit_request(ts: i64, model: &str, system: u64, tools: u64) -> EventEnvelope {

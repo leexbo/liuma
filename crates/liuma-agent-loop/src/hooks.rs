@@ -150,10 +150,85 @@ pub fn hook_context_source(dialect: &str) -> Value {
     serde_json::json!({ "kind": "plugin", "plugin": dialect })
 }
 
+/// 多钩子组合器:按序运行四点,取「最严格者胜」。
+///
+/// 引擎单槽(`Option<Arc<dyn HookPortObj>>`)持有钩子;多来源
+/// (hooks 桥 + 决策场景哨兵/守卫)并存时经此合并下发。合并语义:
+/// prompt **首个 Reject 胜**;pre_tool **首个 Deny 胜**(其后实现点
+/// 不再执行——与引擎 deny 短路 post_tool 的语义一致);post_tool
+/// **首个 Block 胜**,多个 Inject 拼接为一条;on_stop **首个 Continue 胜**。
+/// 全部 Pass 时直通默认裁决。
+pub struct HookChain {
+    ports: Vec<std::sync::Arc<dyn HookPortObj>>,
+}
+
+impl HookChain {
+    /// 按优先序组装(先到先裁决)
+    pub fn new(ports: Vec<std::sync::Arc<dyn HookPortObj>>) -> Self {
+        Self { ports }
+    }
+}
+
+impl HookPort for HookChain {
+    async fn on_prompt_submit(&self, prompt: &str, turn: u64) -> PreStepVerdict {
+        for port in &self.ports {
+            if let PreStepVerdict::Reject = port.on_prompt_submit(prompt, turn).await {
+                return PreStepVerdict::Reject;
+            }
+        }
+        PreStepVerdict::Proceed
+    }
+
+    async fn pre_tool(&self, call: &ToolCallRequest, turn: u64) -> PreToolVerdict {
+        for port in &self.ports {
+            if let PreToolVerdict::Deny { reason } = port.pre_tool(call, turn).await {
+                return PreToolVerdict::Deny { reason };
+            }
+        }
+        PreToolVerdict::Proceed
+    }
+
+    async fn post_tool(
+        &self,
+        call: &ToolCallRequest,
+        output: &crate::tools::ToolOutput,
+        turn: u64,
+    ) -> PostToolVerdict {
+        let mut injects: Vec<String> = Vec::new();
+        for port in &self.ports {
+            match port.post_tool(call, output, turn).await {
+                PostToolVerdict::Block { feedback } => {
+                    return PostToolVerdict::Block { feedback };
+                }
+                PostToolVerdict::Inject { text } => injects.push(text),
+                PostToolVerdict::Pass => {}
+            }
+        }
+        if injects.is_empty() {
+            PostToolVerdict::Pass
+        } else {
+            PostToolVerdict::Inject {
+                text: injects.join("\n\n"),
+            }
+        }
+    }
+
+    async fn on_stop(&self, turn: u64) -> StopVerdict {
+        for port in &self.ports {
+            if let StopVerdict::Continue { reason } = port.on_stop(turn).await {
+                return StopVerdict::Continue { reason };
+            }
+        }
+        StopVerdict::Pass
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::hooks::HookPortObj;
-    use crate::hooks::{HookPort, PostToolVerdict, PreStepVerdict, PreToolVerdict, StopVerdict};
+    use crate::hooks::{
+        HookChain, HookPort, PostToolVerdict, PreStepVerdict, PreToolVerdict, StopVerdict,
+    };
     use crate::tools::{ToolCallRequest, ToolOutput};
     use std::sync::{Arc, Mutex};
 
@@ -285,5 +360,153 @@ mod tests {
         let v = crate::hooks::hook_context_source("hooks-claude-code");
         assert_eq!(v["kind"], "plugin");
         assert_eq!(v["plugin"], "hooks-claude-code");
+    }
+
+    /// HookChain 合并语义:strict 胜出后 lenient 不再执行;
+    /// post_tool 多 Inject 拼接、Block 优先;全 Pass 直通。
+    #[tokio::test]
+    async fn chain_merges_strictest_verdict() {
+        use std::sync::Arc as StdArc;
+        struct Strict {
+            calls: Mutex<Vec<String>>,
+            deny: bool,
+            continue_stop: bool,
+            inject: Option<&'static str>,
+        }
+        struct Lenient {
+            calls: Mutex<Vec<String>>,
+            inject: Option<&'static str>,
+        }
+        impl HookPort for Strict {
+            async fn on_prompt_submit(&self, _p: &str, t: u64) -> PreStepVerdict {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(format!("strict-prompt:{t}"));
+                PreStepVerdict::Proceed
+            }
+            async fn pre_tool(&self, _c: &ToolCallRequest, t: u64) -> PreToolVerdict {
+                self.calls.lock().unwrap().push(format!("strict-pre:{t}"));
+                if self.deny {
+                    PreToolVerdict::Deny {
+                        reason: "strict denies".into(),
+                    }
+                } else {
+                    PreToolVerdict::Proceed
+                }
+            }
+            async fn post_tool(
+                &self,
+                _c: &ToolCallRequest,
+                _o: &ToolOutput,
+                t: u64,
+            ) -> PostToolVerdict {
+                self.calls.lock().unwrap().push(format!("strict-post:{t}"));
+                match self.inject {
+                    Some(text) => PostToolVerdict::Inject { text: text.into() },
+                    None => PostToolVerdict::Pass,
+                }
+            }
+            async fn on_stop(&self, t: u64) -> StopVerdict {
+                self.calls.lock().unwrap().push(format!("strict-stop:{t}"));
+                if self.continue_stop {
+                    StopVerdict::Continue {
+                        reason: "strict continues".into(),
+                    }
+                } else {
+                    StopVerdict::Pass
+                }
+            }
+        }
+        impl HookPort for Lenient {
+            async fn on_prompt_submit(&self, _p: &str, _t: u64) -> PreStepVerdict {
+                self.calls.lock().unwrap().push("lenient-prompt".into());
+                PreStepVerdict::Proceed
+            }
+            async fn pre_tool(&self, _c: &ToolCallRequest, _t: u64) -> PreToolVerdict {
+                self.calls.lock().unwrap().push("lenient-pre".into());
+                PreToolVerdict::Proceed
+            }
+            async fn post_tool(
+                &self,
+                _c: &ToolCallRequest,
+                _o: &ToolOutput,
+                _t: u64,
+            ) -> PostToolVerdict {
+                match self.inject {
+                    Some(text) => PostToolVerdict::Inject { text: text.into() },
+                    None => PostToolVerdict::Pass,
+                }
+            }
+            async fn on_stop(&self, _t: u64) -> StopVerdict {
+                StopVerdict::Pass
+            }
+        }
+
+        let strict = StdArc::new(Strict {
+            calls: Mutex::new(Vec::new()),
+            deny: true,
+            continue_stop: true,
+            inject: Some("strict note"),
+        });
+        let lenient = StdArc::new(Lenient {
+            calls: Mutex::new(Vec::new()),
+            inject: Some("lenient note"),
+        });
+        let ports: Vec<StdArc<dyn HookPortObj>> = vec![strict.clone(), lenient.clone()];
+        let chain = HookChain::new(ports);
+        let call = ToolCallRequest {
+            name: "bash".into(),
+            arguments: serde_json::json!({}),
+        };
+        let out = ToolOutput::default();
+
+        // pre_tool:首个 Deny 胜,lenient 不再执行
+        assert_eq!(
+            HookPort::pre_tool(&chain, &call, 1).await,
+            PreToolVerdict::Deny {
+                reason: "strict denies".into()
+            }
+        );
+        assert_eq!(
+            *lenient.calls.lock().unwrap(),
+            Vec::<String>::new(),
+            "deny 后续点短路"
+        );
+
+        // post_tool:多 Inject 拼接为一条
+        assert_eq!(
+            HookPort::post_tool(&chain, &call, &out, 1).await,
+            PostToolVerdict::Inject {
+                text: "strict note\n\nlenient note".into()
+            }
+        );
+
+        // on_stop:首个 Continue 胜
+        assert_eq!(
+            HookPort::on_stop(&chain, 1).await,
+            StopVerdict::Continue {
+                reason: "strict continues".into()
+            }
+        );
+
+        // 全 Pass:prompt 两点都执行,直通 Proceed
+        assert_eq!(
+            HookPort::on_prompt_submit(&chain, "x", 1).await,
+            PreStepVerdict::Proceed
+        );
+        assert_eq!(
+            *strict.calls.lock().unwrap(),
+            vec![
+                "strict-pre:1".to_string(),
+                "strict-post:1".to_string(),
+                "strict-stop:1".to_string(),
+                "strict-prompt:1".to_string(),
+            ]
+        );
+        assert_eq!(
+            *lenient.calls.lock().unwrap(),
+            vec!["lenient-prompt".to_string()]
+        );
     }
 }

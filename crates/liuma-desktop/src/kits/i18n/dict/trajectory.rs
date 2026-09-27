@@ -25,6 +25,8 @@ entries! {
     kind_assistant => ["助手", "ASSISTANT"],
     /// 徽章:工具
     kind_tool => ["工具", "TOOL"],
+    /// 徽章:决策(无调用可挂的回合级/会话级裁决独立成行)
+    kind_decision => ["决策", "DECISION"],
     /// 助手行占位(无文本仅有工具调用的轮;liuma-core 自产展示文案)
     tool_call_only => ["(仅工具调用)", "(tool call only)"],
     /// 请求标(Request #N;时间线头与层级行)
@@ -92,6 +94,40 @@ entries! {
     tab_schema => ["Schema", "Schema"],
     /// 页签:摘要(兜底)
     tab_summary => ["摘要", "Summary"],
+    /// 页签:决策(守卫裁决挂在其裁决的工具调用上)
+    tab_decision => ["决策", "Decision"],
+
+    // ── 决策记录 ──
+    /// 场景名:守卫(工具执行前拦截)
+    scenario_guard => ["守卫", "Guard"],
+    /// 场景名:哨兵(回合收尾前核对证据)
+    scenario_stop => ["哨兵", "Stop"],
+    /// 场景名:裁判(上下文修剪)
+    scenario_context => ["裁判", "Context"],
+    /// 场景名:咨询(模型主动调用 decide 工具)
+    scenario_tool => ["咨询", "Ask"],
+    /// 守卫裁决:放行
+    verdict_proceed => ["放行", "Proceed"],
+    /// 守卫裁决:拦下
+    verdict_block => ["拦下", "Block"],
+    /// 裁决失败(fail-open 放行)
+    verdict_failed => ["已失败", "Failed"],
+    /// 信息行:场景
+    row_scenario => ["场景", "Scenario"],
+    /// 信息行:裁决
+    row_verdict => ["裁决", "Verdict"],
+    /// 信息行:问题
+    row_questions => ["问题", "Questions"],
+    /// 信息行:应答
+    row_answers => ["应答", "Answers"],
+    /// 信息行:状态摘要
+    row_state_digest => ["状态摘要", "State digest"],
+    /// 信息行:实际修剪(仅裁判 enforce 生效时在场)
+    row_pruned => ["已修剪", "Pruned"],
+    /// 修剪条数
+    pruned_count(n) => ["{n} 条工具输出", "{n} tool outputs"],
+    /// 决策页缺省(记录无裁决数据)
+    no_decision => ["No decision recorded", "No decision recorded"],
 
     // ── 检查器信息行 ──
     /// 信息行:来源

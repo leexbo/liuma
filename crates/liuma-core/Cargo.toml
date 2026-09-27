@@ -20,6 +20,7 @@ liuma-agent-loop.workspace = true
 liuma-app.workspace = true
 liuma-attachment.workspace = true
 liuma-compaction.workspace = true
+liuma-decision.workspace = true
 liuma-host.workspace = true
 liuma-llm.workspace = true
 liuma-plan.workspace = true

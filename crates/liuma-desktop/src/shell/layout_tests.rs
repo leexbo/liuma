@@ -332,6 +332,7 @@ fn tool_read_expanded_keeps_collapse_and_inspect_jumps(cx: &mut TestAppContext) 
         tools_catalog: None,
         schema_detail: None,
         source: None,
+        decision: None,
     };
     cx.update(|app| {
         store.update(app, |st, _| {
@@ -2601,6 +2602,7 @@ fn trajectory_ledger_rows_inspector_and_tabs(cx: &mut TestAppContext) {
             }),
             source: (kind == "context")
                 .then(|| serde_json::json!({ "kind": "agent-instructions" })),
+            decision: None,
         }
     };
     let request = TrajectoryRequest {
@@ -2640,12 +2642,52 @@ fn trajectory_ledger_rows_inspector_and_tabs(cx: &mut TestAppContext) {
                     rec(1, "system", None, "Message"),
                     rec(2, "user", Some(1), "Message"),
                     rec(3, "message", Some(1), "Step 1"),
-                    rec(4, "tool", Some(1), "Step 1"),
+                    // 工具行带守卫裁决(方案甲:裁决贴调用,行尾一个标记)
+                    {
+                        let mut r = rec(4, "tool", Some(1), "Step 1");
+                        r.decision = Some(liuma_core::trajectory::DecisionRecord {
+                            id: "d1".into(),
+                            scenario: "guard".into(),
+                            model: "jev-latest".into(),
+                            questions: vec!["verdict".into(), "risk".into()],
+                            state_digest: Some("abc123".into()),
+                            answers: Some(serde_json::json!({
+                                "verdict": { "type": "choice", "choice": "proceed",
+                                             "probabilities": { "proceed": 0.94 },
+                                             "confidence": 0.94 },
+                            })),
+                            error: None,
+                            duration_ms: 232,
+                            pruned: None,
+                        });
+                        r
+                    },
                     rec(5, "context", Some(1), "Message"),
+                    // 无调用可挂的裁决独立成行(stop/context)
+                    {
+                        let mut r = rec(6, "decision", Some(1), "Message");
+                        r.decision = Some(liuma_core::trajectory::DecisionRecord {
+                            id: "d2".into(),
+                            scenario: "stop".into(),
+                            model: "jev-latest".into(),
+                            questions: vec!["lacks_evidence".into()],
+                            state_digest: None,
+                            answers: Some(serde_json::json!({
+                                "lacks_evidence": { "type": "noul", "noul": 0.02 },
+                            })),
+                            error: None,
+                            duration_ms: 107,
+                            pruned: None,
+                        });
+                        r
+                    },
+                    // 反向:另一次调用没被裁决过(守卫关/未触发)→
+                    // 无标记、无决策页(页签与标记都按数据在场裁剪)
+                    rec(7, "tool", Some(1), "Step 1"),
                 ],
                 requests: vec![request],
                 has_older: false,
-                total: 5,
+                total: 7,
                 loading: false,
                 loading_older: false,
             };
@@ -2750,6 +2792,45 @@ fn trajectory_ledger_rows_inspector_and_tabs(cx: &mut TestAppContext) {
     assert!(
         wcx.debug_bounds("inspector-tab-schema").is_some(),
         "工具行应含 Schema 页"
+    );
+    // 回归锁(方案甲):守卫裁决贴在**它裁决的那次调用**上——台账里
+    // 一次调用仍只有一行,行尾一个裁决标记;检查器多一页「决策」。
+    // 裁决若另立行,会同一次调用出现两行且顺序读起来因果颠倒。
+    assert!(
+        wcx.debug_bounds("traj-decision-chip-4").is_some(),
+        "守卫裁决应作为标记挂在工具行上"
+    );
+    assert!(
+        wcx.debug_bounds("inspector-tab-decision").is_some(),
+        "被裁决过的工具行应含决策页"
+    );
+    // 反向:另一次**没被裁决过**的调用不得有标记或决策页
+    // (页签与标记都按数据在场裁剪,不是恒在的信口)
+    assert!(
+        wcx.debug_bounds("traj-decision-chip-7").is_none(),
+        "未被裁决的调用不应有裁决标记"
+    );
+    cx.update(|app| {
+        store.update(app, |st, cx| st.select_trajectory_record(7, cx));
+    });
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("inspector-tab-decision").is_none(),
+        "未被裁决的调用不应有决策页"
+    );
+
+    // 无调用可挂的裁决(stop/context)独立成行,本体即决策页
+    assert!(
+        wcx.debug_bounds("trajectory-row-6").is_some(),
+        "回合级裁决应独立成行"
+    );
+    cx.update(|app| {
+        store.update(app, |st, cx| st.select_trajectory_record(6, cx));
+    });
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("inspector-tab-decision").is_some(),
+        "独立裁决行的本体即决策页"
     );
 
     // SYSTEM 行(System Prompt / Tools 两页,
@@ -2898,6 +2979,7 @@ fn trajectory_delta_applies_upsert_and_drops_foreign_session(cx: &mut TestAppCon
         tools_catalog: None,
         schema_detail: None,
         source: None,
+        decision: None,
     };
     let req = |number: u64, tool_calls: u64| TrajectoryRequest {
         number,
@@ -3085,6 +3167,7 @@ fn trajectory_drag_state_renders_in_paint_phase(cx: &mut TestAppContext) {
         tools_catalog: None,
         schema_detail: None,
         source: None,
+        decision: None,
     };
 
     cx.update(|app| {
@@ -5206,6 +5289,7 @@ fn trajectory_empty_load_earlier_and_turn_collapse(cx: &mut TestAppContext) {
         tools_catalog: None,
         schema_detail: None,
         source: None,
+        decision: None,
     };
     cx.update(|app| {
         store.update(app, |st, _| {
@@ -9138,6 +9222,126 @@ fn model_menu_root_card_anchors_above_trigger(cx: &mut TestAppContext) {
     assert!(
         wcx.debug_bounds("composer-model-menu").is_none(),
         "外点应关闭模型菜单"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 回归锁:模型下拉的级联子卡行可点选——点一行必须真的换掉会话模型
+/// 并收起弹层(用户报告「对话框中的模型选择无法切换」)。
+///
+/// 既有 `model_menu_root_card_anchors_above_trigger` 只断言子卡**渲染**
+/// 出来,点选路径全程无覆盖,故该缺陷此前可以静默存在。
+#[gpui_kit::test]
+fn model_submenu_row_click_switches_model(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "model-pick");
+    // 模型切换作用在会话上(current_cfg 读会话态):先建一个会话,
+    // hero 态(无 current_id)不是本用例要覆盖的路径
+    cx.update(|app| store.update(app, |s, cx| s.create_session(cx)));
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+
+    let (before, models) = cx.update(|app| {
+        let st = store.read(app);
+        (
+            st.current_cfg_or_default().model.clone(),
+            st.bridge.host().models_for("deepseek"),
+        )
+    });
+    let target = models
+        .iter()
+        .find(|m| **m != before)
+        .cloned()
+        .unwrap_or_else(|| panic!("需要第二个模型才能验切换;当前清单 {models:?}"));
+    // 行 selector = 行文案(menu_row 按 label 注册 debug selector)
+    let sel: &'static str = Box::leak(target.clone().into_boxed_str());
+
+    // 真实用户路径:开模型弹层 → 展开「模型」级联子卡 → 点子卡某行
+    click_sel(&mut wcx, "chip-model");
+    cx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    click_sel(&mut wcx, "model-entry");
+    cx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("model-submenu").is_some(),
+        "级联子卡应展开"
+    );
+    assert!(wcx.debug_bounds(sel).is_some(), "级联子卡行应渲染:{sel}");
+    click_sel(&mut wcx, sel);
+    cx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+
+    // 缺陷形态:按下先被库 popover 判成外点 → 弹层当场收起,而行的
+    // on_click(上抬才触发)永不响 = 模型纹丝不动。故这里同时钉住
+    // 「换掉了」与「正常收起」两条,先收起后换的旧序会两断言皆挂。
+    let after = cx.update(|app| store.read(app).current_cfg_or_default().model.clone());
+    assert_eq!(after, target, "点子卡行应换掉会话模型(原 {before})");
+    assert!(
+        wcx.debug_bounds("composer-model-menu").is_none(),
+        "选完应收起弹层"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 回归锁:hero 态(选中工作区、未开会话)的模型选择必须落工作区默认,
+/// 不得静默吞掉。
+///
+/// hero 态渲染的是同一个 composer,模型下拉照样能点;旧实现经
+/// `mutate_session_cfg` 在 `current_id` 缺席时直接 return,且连失败通告
+/// (`push_local_notice`)也因同一前提缺席——点了毫无反应也毫无提示。
+#[gpui_kit::test]
+fn hero_mode_model_pick_persists_workspace_default(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "model-hero");
+    // 进 hero 态:选中工作区即清会话选中
+    let ws = cx.update(|app| store.read(app).effective_workspace());
+    cx.update(|app| store.update(app, |s, cx| s.select_workspace(&ws, cx)));
+    wcx.run_until_parked();
+    assert!(
+        cx.update(|app| store.read(app).state.current_id.is_none()),
+        "选中工作区后应无当前会话(hero 态)"
+    );
+
+    let (before, models) = cx.update(|app| {
+        let st = store.read(app);
+        (
+            st.current_cfg_or_default().model.clone(),
+            st.bridge.host().models_for("deepseek"),
+        )
+    });
+    let target = models
+        .iter()
+        .find(|m| **m != before)
+        .cloned()
+        .unwrap_or_else(|| panic!("需要第二个模型才能验切换;当前清单 {models:?}"));
+    let sel: &'static str = Box::leak(target.clone().into_boxed_str());
+
+    click_sel(&mut wcx, "chip-model");
+    cx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    click_sel(&mut wcx, "model-entry");
+    cx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    click_sel(&mut wcx, sel);
+    cx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+
+    let stored = cx.update(|app| {
+        store.read(app).settings.settings_snapshot["workspaces"]
+            .as_object()
+            .and_then(|m| m.values().next())
+            .and_then(|w| w["model"].as_str().map(str::to_string))
+    });
+    assert_eq!(
+        stored.as_deref(),
+        Some(target.as_str()),
+        "hero 态选型应落工作区默认模型"
     );
     let _ = std::fs::remove_dir_all(root);
 }

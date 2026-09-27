@@ -6,6 +6,7 @@
 
 use gpui_kit::component::IconName;
 use gpui_kit::component::StyledExt;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
     Styled, div, px,
@@ -33,6 +34,28 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
         .unwrap_or(liuma_sandbox::shell::tool_name())
         .to_string();
     let justification = approval.question.question.clone();
+    // 决策模型风险标注(advisory;设置里审批场景关或评审失败时缺席)
+    let risk = data.get("risk").filter(|r| r.is_object());
+    let risk_label = risk.and_then(|r| r["label"].as_str());
+    let (risk_text, risk_color) = match risk_label {
+        Some("low-risk") => (dict::ask::risk_low(), theme::SUCCESS()),
+        Some("risky") => (dict::ask::risk_risky(), theme::DANGER()),
+        Some(_) => (dict::ask::risk_uncertain(), theme::WARN()),
+        None => ("", theme::CAPTION()),
+    };
+    // 理由行就地组句(不直接渲染载荷里的 detail):载荷是审计面的英文
+    // 单句,卡面是中文界面——同一份判定在两边各说各的语言。
+    // 概率照实带上:标注是建议,用户仍要自己拍板,数字不该藏
+    let probability = risk
+        .and_then(|r| r["level"].as_f64())
+        .map(|l| format!("{l:.2}"))
+        .unwrap_or_default();
+    let risk_reason = match risk_label {
+        Some("low-risk") => dict::ask::risk_reason_low(&probability),
+        Some("risky") => dict::ask::risk_reason_risky(&probability),
+        Some(_) => dict::ask::risk_reason_uncertain(&probability),
+        None => String::new(),
+    };
     let (approve, reject, dismiss) = (store.clone(), store.clone(), store.clone());
     Some(
         div()
@@ -92,6 +115,43 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
                     .text_color(theme::LABEL())
                     .child(command),
             )
+            // 决策模型风险标注(advisory;建议性,裁决仍在此卡)
+            .when_some(risk, |row, _risk| {
+                row.child(
+                    div()
+                        .id("approval-risk")
+                        .debug_selector(|| "approval-risk".to_string())
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .child(div().size(px(6.)).rounded_full().bg(risk_color))
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                                        .text_color(risk_color)
+                                        .child(risk_text),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(theme::CAPTION())
+                                .child(dict::ask::risk_title()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(theme::CAPTION())
+                                .child(risk_reason),
+                        ),
+                )
+            })
             .child(
                 div()
                     .text_size(px(12.))

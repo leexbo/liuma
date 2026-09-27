@@ -5181,6 +5181,7 @@ dependencies = [
  "liuma-agent-loop",
  "liuma-attachment",
  "liuma-compaction",
+ "liuma-decision",
  "liuma-host",
  "liuma-llm",
  "liuma-plan",
@@ -5188,8 +5189,11 @@ dependencies = [
  "liuma-sandbox",
  "liuma-session",
  "liuma-tools",
+ "serde",
  "serde_json",
+ "serde_norway",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -5223,6 +5227,7 @@ dependencies = [
  "liuma-app",
  "liuma-attachment",
  "liuma-compaction",
+ "liuma-decision",
  "liuma-hooks",
  "liuma-host",
  "liuma-llm",
@@ -5239,6 +5244,22 @@ dependencies = [
  "tokio",
  "uuid",
  "zip",
+]
+
+[[package]]
+name = "liuma-decision"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "liuma-agent-loop",
+ "liuma-session",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

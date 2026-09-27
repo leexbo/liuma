@@ -112,6 +112,7 @@ fn kind_label(kind: &str) -> &'static str {
         "context" => dict::trajectory::kind_context(),
         "compacted" => dict::trajectory::kind_compacted(),
         "message" => dict::trajectory::kind_assistant(),
+        "decision" => dict::trajectory::kind_decision(),
         _ => dict::trajectory::kind_tool(),
     }
 }
@@ -133,6 +134,8 @@ fn kind_colors(kind: &str) -> (Rgba, Rgba) {
             mix(theme::SUCCESS(), theme::CAPTION(), 0.32),
             mix(theme::SUCCESS(), theme::BASE(), 0.15),
         ),
+        // DECISION:warn 前景 + warn 15% 底(建议面:读得到,不抢眼)
+        "decision" => (theme::WARN(), mix(theme::WARN(), theme::BASE(), 0.15)),
         // SYSTEM / COMPACTED:中性
         _ => (theme::LABEL_2(), theme::DOCK()),
     }
@@ -143,6 +146,7 @@ fn lane_of(kind: &str) -> u8 {
     match kind {
         "system" | "user" | "context" => 0,
         "message" | "compacted" => 1,
+        // 决策与工具同轨:守卫裁决就发生在调用执行那一刻
         _ => 2,
     }
 }
@@ -1473,6 +1477,40 @@ fn record_row(
                         ),
                 )
             })
+            // 守卫裁决**(本次调用的一个阶段)**:不另立行,行尾一句话
+            // 交代结论;细节进检查器「决策」页
+            .when_some(rec.decision.clone(), |el, d| {
+                el.child(decision_chip(rec.index, &d))
+            })
+            .into_any_element()
+    } else if rec.kind == "decision" {
+        // 独立成行的裁决(stop/context,以及 decide 工具——它的 receipt
+        // 由引擎在 step 收尾统一落档,到得比它那条调用晚):场景名 +
+        // 答案摘要;细节进决策页
+        div()
+            .min_w(px(0.))
+            .flex()
+            .flex_1()
+            .items_center()
+            .gap(px(7.))
+            .px(px(8.))
+            .child(div().text_size(px(12.)).text_color(theme::LABEL_2()).child(
+                decision_scenario_label(rec.decision.as_ref().map(|d| d.scenario.as_str())),
+            ))
+            .child(
+                div()
+                    .min_w(px(0.))
+                    .flex_1()
+                    .truncate()
+                    .text_size(px(12.))
+                    .text_color(theme::LABEL_3())
+                    .child(
+                        rec.decision
+                            .as_ref()
+                            .map(decision_summary)
+                            .unwrap_or_default(),
+                    ),
+            )
             .into_any_element()
     } else {
         let color = match rec.kind.as_str() {
@@ -1532,8 +1570,9 @@ fn inspector_tabs_for(rec: Option<&TrajectoryRecord>, diff_available: bool) -> V
     };
     match r.kind.as_str() {
         "tool" => {
-            // tab 集:Summary / Payload?/ Result?/ Schema / Timing
-            // —— Schema、Timing 恒在(数据缺席由页内缺省文案兜底)
+            // tab 集:Summary / Payload?/ Result?/ Decision?/ Schema / Timing
+            // —— Schema、Timing 恒在(数据缺席由页内缺省文案兜底);
+            // Decision 仅在本次调用被裁决过时在场(守卫另一次调用前问过)
             let mut tabs = vec!["summary"];
             if r.payload.is_some() {
                 tabs.push("payload");
@@ -1541,10 +1580,15 @@ fn inspector_tabs_for(rec: Option<&TrajectoryRecord>, diff_available: bool) -> V
             if r.result.is_some() || r.output_detail.is_some() {
                 tabs.push("result");
             }
+            if r.decision.is_some() {
+                tabs.push("decision");
+            }
             tabs.push("schema");
             tabs.push("timing");
             tabs
         }
+        // 无调用可挂的裁决(stop/context)独立成行,本体即决策页
+        "decision" => vec!["decision"],
         "message" => {
             // message 恒三页:[Summary, Preview, Raw]
             // (内容缺席由页内缺省文案兜底)
@@ -1714,6 +1758,7 @@ fn inspector(
         (Some(r), _, "tools") => tools_body(store, s, r).into_any_element(),
         (Some(r), _, "diff") => diff_body(s, r).into_any_element(),
         (Some(r), _, "schema") => schema_body(store, s, r).into_any_element(),
+        (Some(r), _, "decision") => decision_tab_body(r).into_any_element(),
         (Some(r), _, "timing") => timing_body(r).into_any_element(),
         (Some(r), _, _) => summary_body(store, s, r).into_any_element(),
         // 目标数据已不在窗口(翻页/直播后):占位
@@ -1843,6 +1888,7 @@ fn tab_label(name: &str) -> &'static str {
         "tools" => dict::trajectory::tab_tools(),
         "diff" => dict::trajectory::tab_diff(),
         "schema" => dict::trajectory::tab_schema(),
+        "decision" => dict::trajectory::tab_decision(),
         _ => dict::trajectory::tab_summary(),
     }
 }
@@ -2932,6 +2978,240 @@ fn empty_text(text: &str) -> Div {
         .child(text.to_string())
 }
 
+// ── 决策记录(decision/* 折叠面)────────────────────
+
+/// 场景名:守卫/哨兵/裁判/咨询四个既定义场景词典化;协议外场景逐字
+/// 跟随(不猜也不翻)。
+fn decision_scenario_label(scenario: Option<&str>) -> String {
+    match scenario {
+        Some("guard") => dict::trajectory::scenario_guard().to_string(),
+        Some("stop") => dict::trajectory::scenario_stop().to_string(),
+        Some("context") => dict::trajectory::scenario_context().to_string(),
+        Some("tool") => dict::trajectory::scenario_tool().to_string(),
+        Some(other) => other.to_string(),
+        None => String::new(),
+    }
+}
+
+/// 裁决词 + 配色(守卫行尾标记与决策页共用);**无裁决维度时 None**。
+///
+/// 取 `verdict` 问的选项;无该问则退回 choice 型应答里 id 最小的那条
+/// (显式排序,不依赖 JSON map 的迭代序——该序随 serde_json 的
+/// preserve_order 特性而变,拿它当选择依据会静默漂移)。`proceed`/`block`
+/// 是守卫问题的既定义项(见 liuma-decision 的 guard 场景),其余选项名逐字
+/// 跟随——选项名是**问题定义的一部分**,不是界面文案,翻译它等于篡改量纲。
+///
+/// None = 这份 receipt 本就没有「裁决」这一维:`decide` 工具(scenario=tool)
+/// 的答案是模型自拟的问题,常是 noul,拿它当裁决会显示成「未决」——把一次
+/// 正常应答说成没结论。调用方见 None 改显答案摘要。
+fn decision_verdict(d: &liuma_core::trajectory::DecisionRecord) -> Option<(String, Rgba)> {
+    if d.error.is_some() {
+        return Some((
+            dict::trajectory::verdict_failed().to_string(),
+            theme::DANGER(),
+        ));
+    }
+    let choice = d.answers.as_ref().and_then(|a| {
+        let by_id = &a["verdict"]["choice"];
+        if by_id.is_string() {
+            return by_id.as_str().map(String::from);
+        }
+        let choices = a.as_object()?;
+        let mut ids: Vec<&String> = choices
+            .iter()
+            .filter(|(_, ans)| ans["type"].as_str() == Some("choice"))
+            .map(|(id, _)| id)
+            .collect();
+        ids.sort();
+        let first = choices.get(*ids.first()?)?;
+        first["choice"].as_str().map(String::from)
+    })?;
+    Some(match choice.as_str() {
+        "proceed" => (
+            dict::trajectory::verdict_proceed().to_string(),
+            theme::SUCCESS(),
+        ),
+        "block" => (
+            dict::trajectory::verdict_block().to_string(),
+            theme::DANGER(),
+        ),
+        other => (other.to_string(), theme::LABEL_2()),
+    })
+}
+
+/// score 答案的档位名:取**最接近的等级索引**的档名(见
+/// `liuma_core::trajectory::DecisionRecord` 的 answers——score 是等级
+/// 索引的概率加权期望,可落两级之间,如 1.43)。
+///
+/// 为什么翻档名而不是照数显示:0–3 的**档位分**混进 0–1 的**概率**里
+/// 当数字看是错的量纲(noul/confidence 是概率,score 是档位)。
+///
+/// 就近取最接近的**键**而非「四舍五入后查表」:后者遇档位索引不连续
+/// (如 0/10/20)或分值越界就查空。等距时取**更高**档——风险/情绪量表
+/// 上这是偏保守的一侧,宁可把中间态说得重一点。
+///
+/// legend 键非整数(协议外形状)、全不可解析、或 score 非有限值 → None:
+/// 调用方退回显示原数字,不猜也不伪造档名。
+fn score_legend_label(answer: &serde_json::Value, score: f64) -> Option<String> {
+    // 非有限值先挡掉:NaN 与任何数比较恒假,不挡则「更优」判据对首个候选
+    // 恒真(空 best 直接收),结果凭空认领字典序第一档——那是编的档名
+    if !score.is_finite() {
+        return None;
+    }
+    let legend = answer["legend"].as_object()?;
+    let mut best: Option<(i64, f64, &str)> = None;
+    for (key, level) in legend {
+        let (Ok(index), Some(level)) = (key.parse::<i64>(), level.as_str()) else {
+            continue;
+        };
+        let distance = (score - index as f64).abs();
+        // 显式比较而非依赖迭代序(BTreeMap 按**字典序**出键,"10" 在 "2"
+        // 前,同距时靠「后见者胜」会挑中较低的档)
+        let better = match best {
+            None => true,
+            Some((best_index, best_distance, _)) => {
+                distance < best_distance || (distance == best_distance && index > best_index)
+            }
+        };
+        if better {
+            best = Some((index, distance, level));
+        }
+    }
+    best.map(|(_, _, level)| level.to_string())
+}
+
+/// 答案摘要:id=值(按应答书写序)。三类量纲各说各话,不混:
+///   noul   = 0..1 概率 → 照数显示
+///   choice = 选项 + confidence(0..1)
+///   score  = **等级索引**(同 types.rs 口径),不是概率 → 翻成档位名
+///            (legend 由应答携带;缺 legend 才退回数字,免得伪造档名)
+fn decision_summary(d: &liuma_core::trajectory::DecisionRecord) -> String {
+    let Some(answers) = d.answers.as_ref().and_then(|a| a.as_object()) else {
+        return d.error.clone().unwrap_or_default();
+    };
+    answers
+        .iter()
+        .filter_map(|(id, a)| match a["type"].as_str() {
+            Some("noul") => Some(format!("{id}={:.2}", a["noul"].as_f64().unwrap_or(0.))),
+            Some("choice") => Some(format!(
+                "{id}={}·{:.2}",
+                a["choice"].as_str().unwrap_or("?"),
+                a["confidence"].as_f64().unwrap_or(0.)
+            )),
+            Some("score") => {
+                let score = a["score"].as_f64().unwrap_or(0.);
+                Some(match score_legend_label(a, score) {
+                    Some(level) => format!("{id}={level}"),
+                    None => format!("{id}={score:.2}"),
+                })
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// 工具行尾的裁决标记(方案甲:守卫裁决是**本次调用的一个阶段**,不
+/// 另立行——见 `liuma_core::trajectory::TrajectoryRecord::decision`)。
+/// `ix` = 记录行号(调试选择器用,与台账行同号)。
+fn decision_chip(ix: u64, d: &liuma_core::trajectory::DecisionRecord) -> Div {
+    // 无裁决维度(decide 工具一类)→ 显答案摘要,颜色与字重退到次级:
+    // 那份 receipt 没有「放行/拦下」这回事,不该借守卫的词说话
+    let (text, color, weight) = match decision_verdict(d) {
+        Some((verdict, color)) => (verdict, color, gpui_kit::FontWeight::SEMIBOLD),
+        None => (
+            decision_summary(d),
+            theme::CAPTION(),
+            gpui_kit::FontWeight::NORMAL,
+        ),
+    };
+    div()
+        .debug_selector(move || format!("traj-decision-chip-{ix}"))
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(4.))
+        .pl(px(2.))
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(theme::CAPTION())
+                .child(decision_scenario_label(Some(&d.scenario))),
+        )
+        .child(
+            div()
+                .text_size(px(11.))
+                .font_weight(weight)
+                .text_color(color)
+                .child(text),
+        )
+}
+
+/// 决策页正文:场景 / 模型 / 裁决 / 应答 / 问题 / 耗时 / 状态摘要;
+/// 失败给原因(裁决词已由 decision_verdict 置为「已失败」)。
+fn decision_tab_body(r: &TrajectoryRecord) -> Div {
+    let mut col = div().v_flex().gap(px(2.));
+    let Some(d) = &r.decision else {
+        return col.child(empty_text(dict::trajectory::no_decision()));
+    };
+    col = col.child(dl_row(
+        dict::trajectory::row_scenario(),
+        decision_scenario_label(Some(&d.scenario)),
+    ));
+    col = col.child(dl_row(dict::trajectory::row_model(), d.model.clone()));
+    if let Some((verdict, color)) = decision_verdict(d) {
+        col = col.child(dl_row(
+            dict::trajectory::row_verdict(),
+            div().text_color(color).child(verdict),
+        ));
+    }
+    let summary = decision_summary(d);
+    if !summary.is_empty() {
+        col = col.child(dl_row(dict::trajectory::row_answers(), summary));
+    }
+    if !d.questions.is_empty() {
+        col = col.child(dl_row(
+            dict::trajectory::row_questions(),
+            d.questions.join(", "),
+        ));
+    }
+    col = col.child(dl_row(
+        dict::trajectory::row_duration(),
+        if d.duration_ms > 0 {
+            fmt_ms(d.duration_ms)
+        } else {
+            "—".into()
+        },
+    ));
+    if let Some(n) = d.pruned {
+        col = col.child(dl_row(
+            dict::trajectory::row_pruned(),
+            dict::trajectory::pruned_count(n),
+        ));
+    }
+    if let Some(digest) = &d.state_digest {
+        col = col.child(dl_row(
+            dict::trajectory::row_state_digest(),
+            div()
+                .font_family("Menlo")
+                .text_size(px(11.))
+                .truncate()
+                .child(digest.clone()),
+        ));
+    }
+    match &d.error {
+        Some(reason) => col.child(
+            div().pt(px(6.)).child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(theme::DANGER())
+                    .child(reason.clone()),
+            ),
+        ),
+        None => col,
+    }
+}
+
 /// 记录总时长 ms
 fn rec_total_ms(r: &TrajectoryRecord) -> Option<i64> {
     r.time_seconds.map(|s| (s * 1000.) as i64)
@@ -3567,6 +3847,132 @@ fn schema_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use liuma_core::trajectory::DecisionRecord;
+
+    /// 决策记录构造(仅填断言用到的字段)
+    fn decision(scenario: &str, answers: Option<serde_json::Value>) -> DecisionRecord {
+        DecisionRecord {
+            id: "d".into(),
+            scenario: scenario.into(),
+            model: "jev-latest".into(),
+            questions: vec!["q".into()],
+            state_digest: None,
+            answers,
+            error: None,
+            duration_ms: 10,
+            pruned: None,
+        }
+    }
+
+    /// 回归锁:裁决词**只在该 receipt 真有「裁决」这一维时**出现。
+    ///
+    /// decide 工具(scenario=tool)的答案是模型自拟的问题,常是 noul;
+    /// 拿它当裁决会显示成「未决」——把一次正常应答说成没结论。
+    #[test]
+    fn verdict_only_for_receipts_that_have_one() {
+        // 守卫:proceed/block 是既定义项
+        let proceed = decision(
+            "guard",
+            Some(serde_json::json!({
+                "verdict": { "type": "choice", "choice": "proceed", "confidence": 0.94 },
+            })),
+        );
+        assert_eq!(
+            decision_verdict(&proceed).map(|(v, _)| v).as_deref(),
+            Some("放行")
+        );
+        let block = decision(
+            "guard",
+            Some(serde_json::json!({
+                "verdict": { "type": "choice", "choice": "block", "confidence": 0.97 },
+            })),
+        );
+        assert_eq!(
+            decision_verdict(&block).map(|(v, _)| v).as_deref(),
+            Some("拦下")
+        );
+
+        // 无裁决维度:noul 应答 → None(调用方改显答案摘要)
+        let advisory = decision(
+            "tool",
+            Some(serde_json::json!({
+                "is_transient": { "type": "noul", "noul": 0.93 },
+            })),
+        );
+        assert!(decision_verdict(&advisory).is_none(), "noul 应答没有裁决词");
+        assert_eq!(decision_summary(&advisory), "is_transient=0.93");
+
+        // 无 verdict 问但有 choice 应答:退回该选项(逐字,不翻)
+        let other = decision(
+            "tool",
+            Some(serde_json::json!({
+                "which": { "type": "choice", "choice": "retry", "confidence": 0.8 },
+            })),
+        );
+        assert_eq!(
+            decision_verdict(&other).map(|(v, _)| v).as_deref(),
+            Some("retry")
+        );
+
+        // 未收口/失败
+        assert!(decision_verdict(&decision("guard", None)).is_none());
+        let mut failed = decision("guard", None);
+        failed.error = Some("decision timeout".into());
+        assert_eq!(
+            decision_verdict(&failed).map(|(v, _)| v).as_deref(),
+            Some("已失败")
+        );
+    }
+
+    /// 回归锁:score 答案翻档位名(0–3 的档位分不得冒充 0–1 的概率)
+    #[test]
+    fn score_answer_renders_as_level_name_not_a_probability_number() {
+        let risk = serde_json::json!({
+            "type": "score", "score": 2.5,
+            "legend": { "0": "Harmless", "1": "Low risk", "2": "Risky", "3": "Severe" },
+        });
+        // 落在两级之间:等距取更高档(风险量表上偏保守)
+        assert_eq!(score_legend_label(&risk, 2.5).as_deref(), Some("Severe"));
+        assert_eq!(score_legend_label(&risk, 2.4).as_deref(), Some("Risky"));
+        // 加权期望的小数(如 1.43)就近落档
+        assert_eq!(score_legend_label(&risk, 1.43).as_deref(), Some("Low risk"));
+        // 越界分值夹到端点档,不虚报也不退回数字
+        assert_eq!(score_legend_label(&risk, 9.0).as_deref(), Some("Severe"));
+
+        // 档位索引不连续(协议允许任意索引):就近取键,不查空
+        let sparse =
+            serde_json::json!({ "legend": { "0": "Calm", "10": "Frustrated", "20": "Angry" } });
+        assert_eq!(
+            score_legend_label(&sparse, 12.0).as_deref(),
+            Some("Frustrated")
+        );
+        assert_eq!(score_legend_label(&sparse, 19.0).as_deref(), Some("Angry"));
+
+        // 无从下判:显式 None,由调用方退回原数字(不伪造档名)
+        assert_eq!(
+            score_legend_label(&serde_json::json!({ "legend": {} }), 1.0),
+            None
+        );
+        assert_eq!(score_legend_label(&serde_json::json!({}), 1.0), None);
+        assert_eq!(
+            score_legend_label(&serde_json::json!({ "legend": { "a": "甲" } }), 1.0),
+            None,
+            "键非整数 = 协议外形状,不猜"
+        );
+        assert_eq!(score_legend_label(&risk, f64::NAN), None, "NaN 不 panic");
+
+        // 摘要行:三类量纲各说各话
+        let d = decision(
+            "guard",
+            Some(serde_json::json!({
+                "verdict": { "type": "choice", "choice": "proceed", "confidence": 0.94 },
+                "risk": { "type": "score", "score": 2.5,
+                          "legend": { "0": "Harmless", "1": "Low risk", "2": "Risky", "3": "Severe" } },
+            })),
+        );
+        // 摘要按应答书写序(展示用,不承载语义)
+        assert_eq!(decision_summary(&d), "verdict=proceed·0.94 · risk=Severe");
+    }
 
     fn rec(index: u64, kind: &str, turn: Option<u64>, group: &str) -> TrajectoryRecord {
         TrajectoryRecord {
@@ -3593,6 +3999,7 @@ mod tests {
             tools_catalog: None,
             schema_detail: None,
             source: None,
+            decision: None,
         }
     }
 

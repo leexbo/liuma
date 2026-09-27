@@ -339,7 +339,14 @@ pub struct SettingsFile {
     /// hooks 桥注册表(enabled 才会在 attach 时挂 HookPort;缺失 = 空)
     #[serde(default)]
     pub hook_bridges: Vec<HookBridgeEntry>,
+    /// 决策模型(System One 协议;设置页「决策模型」区,唯一配置面。
+    /// 工作区 liuma.toml 不参与决策模型配置)
+    #[serde(default)]
+    pub decision: DecisionEntry,
 }
+
+#[allow(unused_imports)]
+pub use liuma_app::DecisionEntry;
 
 /// hooks 桥注册表条目(claude-code / codex 两桥 config 的 RS 注册表面)。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -597,6 +604,7 @@ impl Default for SettingsFile {
             appearance: default_appearance(),
             mcp_servers: Vec::new(),
             hook_bridges: Vec::new(),
+            decision: DecisionEntry::default(),
         }
     }
 }

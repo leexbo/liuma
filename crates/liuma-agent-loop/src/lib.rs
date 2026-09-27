@@ -26,7 +26,7 @@ pub use engine::{
     SkillCatalogProvider, SkillGestureProvider, SteerInput, TurnOutcome,
 };
 pub use hooks::{
-    HookPort, HookPortObj, PostToolVerdict, PreStepVerdict, PreToolVerdict, StopVerdict,
+    HookChain, HookPort, HookPortObj, PostToolVerdict, PreStepVerdict, PreToolVerdict, StopVerdict,
 };
 pub use presentation::{FileDiff, FileMatches, ToolView, ViewLine};
 pub use retry::RetryPolicy;

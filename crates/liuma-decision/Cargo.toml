@@ -1,0 +1,24 @@
+[package]
+name = "liuma-decision"
+description = "决策模型接入(System One 协议,TypeSafe Jev / 阿里百炼兼容):类型化问题/答案、HTTP 客户端、阈值常量、decide 工具与场景适配"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+liuma-agent-loop.workspace = true
+liuma-session.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+sha2.workspace = true
+hex.workspace = true
+uuid.workspace = true

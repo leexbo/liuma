@@ -306,11 +306,24 @@ struct SlotInner {
     cancel: CancelToken,
     log: Arc<Mutex<EventLog>>,
     /// 轨迹增量折叠(驻留台账;驱动单写,RPC 只读快照。恢复式锁:
-    /// 后台 panic 不连坐,连续性由 seq 补喂守卫)
-    traj: Mutex<crate::trajectory::TrajectoryFolder>,
+    /// 后台 panic 不连坐,连续性由 seq 补喂守卫)。
+    /// `Arc` 而非裸 `Mutex`:宿主事件汇([`hook_event_sink`])要让带外
+    /// 落档的事件也推出轨迹增量,而该闭包需 `'static` 捕获
+    traj: Arc<Mutex<crate::trajectory::TrajectoryFolder>>,
     /// 槽已摘除(detach):旧泵/驱动任务对后续 Job/命令弃处理,防以
     /// 冻结高水位的旧 log 追加(重挂后双写)
     closed: std::sync::atomic::AtomicBool,
+    /// 决策模型运行面(设置文件 decision 区 enabled 才有;哨兵/守卫/评审员
+    /// 的端口与场景配置来源;fake 会话 None)
+    decision: Option<DecisionRuntime>,
+}
+
+/// 决策模型每会话运行面(attach 装配;端口/端点随 attach,场景开关
+/// 可热替换——设置页保存即经 [`AppHost::upsert_decision_settings`] 更新)
+struct DecisionRuntime {
+    port: Arc<dyn liuma_decision::DecisionPort>,
+    /// 场景配置快照(Mutex:设置保存热替换;读侧 clone 快照不跨 await)
+    settings: Mutex<liuma_app::DecisionSettings>,
 }
 
 /// 会话槽:冷(仅文件)→ 附着(worker 驱动)
@@ -2565,12 +2578,25 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 (name, Value::String(self.provider_for(p).id))
             })
             .collect();
+        // 决策模型条目:明文不出视图(api_key 以「已设置」布尔呈现,
+        // 与 providers 同惯例)
+        let mut decision = serde_json::to_value(&file.decision).unwrap_or(Value::Null);
+        let decision_key_set = file
+            .decision
+            .api_key
+            .as_ref()
+            .is_some_and(|k| !k.is_empty());
+        if let Some(o) = decision.as_object_mut() {
+            o.remove("apiKey");
+            o.insert("apiKeySet".into(), Value::Bool(decision_key_set));
+        }
         json!({
             "onboarded": file.onboarded,
             "providers": providers,
             "mcpServers": serde_json::to_value(&file.mcp_servers).unwrap_or(Value::Null),
             "mcpStatus": self.mcp_server_status(),
             "hookBridges": serde_json::to_value(&file.hook_bridges).unwrap_or(Value::Null),
+            "decision": decision,
             "workspaces": serde_json::to_value(&file.workspaces).unwrap_or(Value::Null),
             "defaultProvider": self.default_provider().id,
             "workspaceProviders": Value::Object(workspace_providers),
@@ -2762,6 +2788,37 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         self.settings.read().hook_bridges.clone()
     }
 
+    /// 审批风险评审(advisory;fail-open):`[decision.approvals].enabled`
+    /// 且会话已装配决策端口才有。返回 None = 无标注(功能关/评审失败/
+    /// 应答形状不符)。挂接点在 approval=never 短路之后——never 零调用,
+    /// 评审只发生在真人会被问到的路径。
+    async fn review_approval_risk(
+        self: &Arc<Self>,
+        session_id: &str,
+        input: liuma_decision::scenarios::approvals::ReviewInput,
+    ) -> Option<serde_json::Value> {
+        let (port, model) = {
+            let slots = self.sessions.read_recover();
+            let slot = slots.get(session_id)?;
+            let inner = slot.inner().ok()?;
+            let runtime = inner.decision.as_ref()?;
+            let settings = runtime.settings.lock_recover().clone();
+            if !settings.approvals.enabled {
+                return None;
+            }
+            (Arc::clone(&runtime.port), settings.model.clone())
+        };
+        let reviewer = liuma_decision::scenarios::approvals::JevApprovalReviewer::new(port, model);
+        let note =
+            liuma_decision::scenarios::approvals::ApprovalReviewer::review(&reviewer, &input)
+                .await?;
+        Some(json!({
+            "level": note.level,
+            "label": note.label,
+            "detail": note.detail,
+        }))
+    }
+
     /// hooks ask 的宿主审批面闭包(拍板 3;调用 HookPortImpl 侧经
     /// ToolApprovalFn 三参形态)。无会话/闲时 = Unavailable(fail-closed)。
     pub(crate) fn hook_tool_approval(
@@ -2817,27 +2874,63 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         };
         let audit_id = Uuid::now_v7().to_string();
         let splice = |ev: EventEnvelope| splice_event(&log, ev);
+
+        // approval=never:入口即拒(不可绕过)——审计对仍落,评审员零调用
+        if self.session_approval(session_id) == "never" {
+            let asked = splice(EventEnvelope::new(
+                "approval/asked",
+                now_ms() as i64,
+                json!({
+                    "id": audit_id,
+                    "kind": "tool",
+                    "toolName": tool_name,
+                    "reason": if reason.is_empty() { format!("approval required for {tool_name}") } else { reason.to_string() },
+                    "argsSummary": args_summary,
+                }),
+            ));
+            if asked.is_none() {
+                return ToolApprovalOutcome::Unavailable;
+            }
+            splice(decided_envelope(&audit_id, "rejected"));
+            return ToolApprovalOutcome::Rejected;
+        }
+
+        // 风险评审(advisory,fail-open):标注进 asked 载荷与问询卡两处
+        let risk = self
+            .review_approval_risk(
+                session_id,
+                liuma_decision::scenarios::approvals::ReviewInput {
+                    tool_name: tool_name.to_string(),
+                    command: args_summary.to_string(),
+                    target_mode: String::new(),
+                    justification: reason.to_string(),
+                },
+            )
+            .await;
+        let mut asked_data = json!({
+            "id": audit_id,
+            "kind": "tool",
+            "toolName": tool_name,
+            "reason": if reason.is_empty() { format!("approval required for {tool_name}") } else { reason.to_string() },
+            "argsSummary": args_summary,
+        });
+        if let Some(risk) = &risk {
+            asked_data["risk"] = risk.clone();
+        }
         let asked = splice(EventEnvelope::new(
             "approval/asked",
             now_ms() as i64,
-            json!({
-                "id": audit_id,
-                "kind": "tool",
-                "toolName": tool_name,
-                "reason": if reason.is_empty() { format!("approval required for {tool_name}") } else { reason.to_string() },
-                "argsSummary": args_summary,
-            }),
+            asked_data,
         ));
         if asked.is_none() {
             // 落账失败绝不返回决定(审计原子性)
             return ToolApprovalOutcome::Unavailable;
         }
-        // approval=never:入口即拒(不可绕过),仍落 decided 收口
-        if self.session_approval(session_id) == "never" {
-            splice(decided_envelope(&audit_id, "rejected"));
-            return ToolApprovalOutcome::Rejected;
-        }
         // 问询(骑问答通道;通用问答卡两选项;rpc_id 由 ask_questions 分配)
+        let mut question_data = json!({ "toolName": tool_name, "argsSummary": args_summary });
+        if let Some(risk) = &risk {
+            question_data["risk"] = risk.clone();
+        }
         let question = crate::proto::Question {
             id: audit_id.clone(),
             question: if reason.is_empty() {
@@ -2859,7 +2952,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             ]),
             multi_select: Some(false),
             intent: Some(json!({ "kind": "tool-approval" })),
-            data: Some(json!({ "toolName": tool_name, "argsSummary": args_summary })),
+            data: Some(question_data),
         };
         match self
             .ask_questions(
@@ -3011,27 +3104,10 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             let Some(inner) = slot.inner.get() else {
                 continue;
             };
-            let port: Option<std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>> =
+            let bridge_port: Option<std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>> =
                 service.as_ref().map(|svc| {
-                    let sink: liuma_hooks::HookSink = {
-                        let log = Arc::clone(&inner.log);
-                        Arc::new(move |ty, data| {
-                            if let Ok(mut l) = log.lock() {
-                                let ev = liuma_session::EventEnvelope::new(
-                                    ty,
-                                    std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .map(|d| d.as_millis() as i64)
-                                        .unwrap_or(0),
-                                    data,
-                                );
-                                // 持久化归日志的 durability sink(单写权威);
-                                // 手动 backend.append 会把同一 seq 落两行,
-                                // 会话重载即被连续性守卫拒收
-                                let _ = l.append(ev);
-                            }
-                        })
-                    };
+                    let sink: liuma_hooks::HookSink =
+                        hook_event_sink(&sid, &inner.log, &inner.traj, &self.mux);
                     let ws_root = self.resolve_session(&sid).0;
                     std::sync::Arc::new(liuma_hooks::service::HookPortImpl {
                         service: Arc::clone(svc),
@@ -3046,6 +3122,11 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                     })
                         as std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>
                 });
+            // 决策场景钩子并入(HookChain 最严格者胜;无桥时哨兵单独在场)
+            let port = compose_hook_chain(
+                bridge_port,
+                decision_hooks(&inner.decision, &sid, &inner.log, &inner.traj, &self.mux),
+            );
             let _ = inner.driver_cmd.send(DriverCmd::SetHooks(port));
         }
     }
@@ -3094,20 +3175,74 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         Ok(())
     }
 
+    /// 决策模型设置保存(设置页「决策模型」区,唯一配置面)。附着会话
+    /// 的场景开关 **热生效**(端口/端点不变——端点变更下次 attach
+    /// 生效),换装经既有 `DriverCmd::SetHooks` 路径。
+    pub fn upsert_decision_settings(
+        self: &Arc<Self>,
+        mut entry: crate::settings::DecisionEntry,
+    ) -> Result<(), RpcError> {
+        // 明文不出视图 ⇒ 视图来的 entry 无 key:原值保留(与 provider
+        // upsert 同惯例);设置文件/手填 key 不被 UI 开关翻转抹掉
+        if entry.api_key.is_none() {
+            entry.api_key = self.settings.read().decision.api_key.clone();
+        }
+        self.settings
+            .update(|s| s.decision = entry.clone())
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))?;
+        self.apply_decision_settings_live(&entry.to_settings());
+        Ok(())
+    }
+
+    /// 决策设置热生效(附着会话):场景开关与钩子链立即换装,端口/
+    /// 端点不变(变更下次 attach 生效)。设置页保存与设置文件外部编辑
+    /// 两条路共用——两条路都经 settings 落地,行为对称
+    fn apply_decision_settings_live(self: &Arc<Self>, settings: &liuma_app::DecisionSettings) {
+        {
+            let slots = self.sessions.read_recover();
+            for slot in slots.values() {
+                let Some(inner) = slot.inner.get() else {
+                    continue;
+                };
+                if let Some(runtime) = &inner.decision {
+                    *runtime.settings.lock_recover() = settings.clone();
+                }
+            }
+        }
+        self.broadcast_hook_ports();
+    }
+
+    /// 决策模型设置(设置页读取面)
+    pub fn decision_settings(&self) -> crate::settings::DecisionEntry {
+        self.settings.read().decision.clone()
+    }
+
     /// 设置文件监视(外部编辑实时感知)。轮询 mtime
     /// (单文件 1s 间隔,零依赖);变更时吸收进内存并同步 MCP 端口池
     /// (mcp/status 帧自动广播;provider/模型等其余项各消费点读取即最新)。
+    /// 决策区另发 `settings/changed` 帧(前端刷新快照)+ 热生效(与设置页
+    /// 保存同路——手改文件与点开关行为一致)。
     /// Weak 引用:宿主全体释放即自停,不阻进程退出
     pub fn start_settings_watcher(self: &Arc<Self>) {
         let host = Arc::downgrade(self);
         let spawned = std::thread::Builder::new()
             .name("settings-watch".into())
             .spawn(move || {
+                let mut seen_decision = None;
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(1));
                     let Some(host) = host.upgrade() else { break };
                     if host.settings.reload_if_changed() {
                         host.sync_mcp_ports();
+                        // 决策区:外部编辑热生效(场景开关即换钩子链;
+                        // 与设置页保存同路——手改文件与点开关行为一致)
+                        let entry = host.settings.read().decision.clone();
+                        if seen_decision.as_ref() != Some(&entry) {
+                            seen_decision = Some(entry.clone());
+                            host.apply_decision_settings_live(&entry.to_settings());
+                        }
+                        // 前端重取快照(设置页开着也能即时反映外部编辑)
+                        let _ = host.mux.send(frame("settings/changed", json!({})));
                     }
                     // 传输面热生效独立于 reload:UI 保存与外部编辑两条路
                     // 都经 settings 落地,指纹 diff 幂等且零成本
@@ -3308,6 +3443,62 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))?;
         // 生效 provider 变了:该工作区的空闲附着会话 detach,下次
         // prompt 以新 provider 重装配(与 key 热生效同一收口语义)
+        let ids: Vec<String> = self.sessions.read_recover().keys().cloned().collect();
+        for id in ids {
+            if self.resolve_session(&id).0 == ws {
+                let _ = self.detach_if_idle(&id);
+            }
+        }
+        Ok(())
+    }
+
+    /// 工作区默认选型落盘(hero 态:选中工作区但未开会话,模型/等级/
+    /// 模式下拉没有会话可写,落这里——新会话冷装配读同一键)。
+    ///
+    /// 三个公开面各自的校验口径与对应会话级 setter 同源
+    /// ([`Self::set_model`] / [`Self::set_effort`] / [`Self::set_preset`])。
+    pub fn set_workspace_model(&self, ws_name: &str, model: &str) -> Result<(), RpcError> {
+        let ws = self
+            .workspace_of(ws_name)
+            .ok_or_else(|| RpcError::bad_request("未知工作区"))?;
+        let provider = self.provider_for(&ws);
+        if !self.models_for(&provider.id).iter().any(|m| m == model) {
+            return Err(RpcError::bad_request("未知模型"));
+        }
+        self.set_workspace_default(ws_name, |d| d.model = Some(model.into()))
+    }
+
+    /// 工作区默认推理等级落盘(hero 态选型面;语义同 [`Self::set_effort`])
+    pub fn set_workspace_effort(&self, ws_name: &str, effort: &str) -> Result<(), RpcError> {
+        if !self.efforts().iter().any(|e| e == effort) {
+            return Err(RpcError::bad_request("未知推理等级"));
+        }
+        self.set_workspace_default(ws_name, |d| d.effort = Some(effort.into()))
+    }
+
+    /// 工作区默认 preset 落盘(hero 态选型面;语义同 [`Self::set_preset`])
+    pub fn set_workspace_preset(&self, ws_name: &str, preset: &str) -> Result<(), RpcError> {
+        if !self.presets().iter().any(|p| p["id"] == preset) {
+            return Err(RpcError::bad_request("未知 preset"));
+        }
+        self.set_workspace_default(ws_name, |d| d.preset = Some(preset.into()))
+    }
+
+    /// 工作区默认项落盘共用体:定位工作区 → 落 `WorkspaceDefaults` →
+    /// 该工作区空闲附着会话 detach(下次 prompt 以新配置重装配,与
+    /// [`Self::set_workspace_provider`] 同一收口语义)
+    fn set_workspace_default(
+        &self,
+        ws_name: &str,
+        f: impl FnOnce(&mut crate::settings::WorkspaceDefaults),
+    ) -> Result<(), RpcError> {
+        let ws = self
+            .workspace_of(ws_name)
+            .ok_or_else(|| RpcError::bad_request("未知工作区"))?;
+        let key = project_key(&ws.display().to_string());
+        self.settings
+            .update(|s| f(s.workspaces.entry(key).or_default()))
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))?;
         let ids: Vec<String> = self.sessions.read_recover().keys().cloned().collect();
         for id in ids {
             if self.resolve_session(&id).0 == ws {
@@ -4041,6 +4232,14 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         // isError result + turn/end,桌面投影/轨迹/模型三层自然一致
         repair_dangling_calls(&log);
         let cancel = CancelToken::new();
+        // 决策模型运行面(设置文件 decision 区启用才有;唯一配置面):
+        // decide 工具挂载 + 哨兵/守卫/评审员场景共用一份端口与配置
+        let decision_settings = self.settings.read().decision.to_settings();
+        let decision_runtime =
+            liuma_app::build_decision_port(&decision_settings).map(|port| DecisionRuntime {
+                port,
+                settings: Mutex::new(decision_settings),
+            });
         let provider_info = self.provider_info();
         // 会话血缘(slot.path = session.jsonl 文件;header 在其所在目录):
         // 子代理不挂 skill 工具、不注入目录/手势(child 装配不含
@@ -4161,6 +4360,11 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 }),
                 Some(Arc::new(SessionQueryPortImpl(self_arc.clone()))),
                 Some(Arc::new(AskQuestionPortImpl(self_arc.clone()))),
+                // 决策模型挂载面(设置文件启用才有;decide 挂载依据)
+                decision_runtime.as_ref().map(|r| liuma_app::DecisionMount {
+                    port: Arc::clone(&r.port),
+                    model: r.settings.lock_recover().model.clone(),
+                }),
                 Some(Arc::new(PlanReviewPortImpl(self_arc.clone()))),
                 Some(Arc::new(SessionFactoryImpl(self_arc.clone()))),
                 Some(Arc::new(SettlementNoticeImpl(self_arc.clone()))),
@@ -4224,8 +4428,9 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             qs,
             cancel: cancel.clone(),
             log: session_log,
-            traj: Mutex::new(crate::trajectory::TrajectoryFolder::new()),
+            traj: Arc::new(Mutex::new(crate::trajectory::TrajectoryFolder::new())),
             closed: std::sync::atomic::AtomicBool::new(false),
+            decision: decision_runtime,
         };
         let assembly_won = slot.inner.set(inner).is_ok();
         // 装配窗关闭:守卫先于 slot 的移动放闸(此后 broadcast/spawn
@@ -5105,37 +5310,73 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             req.justification
         );
         let audit_id = Uuid::now_v7().to_string();
-        eprintln!("P3a: splice asked 前");
         // 守卫持独立克隆(闭包借用原值;守卫的生命周期覆盖 await)
         let guard_log = Arc::clone(&log);
         let splice = |ev: EventEnvelope| splice_event(&log, ev);
+
+        // approval=never:入口即拒(不可绕过)——审计对仍落(asked 无 risk
+        // + decided rejected),评审员零调用(never 语义不被 advisory 触碰)
+        if self.session_approval(session_id) == "never" {
+            let asked = splice(EventEnvelope::new(
+                "approval/asked",
+                now_ms() as i64,
+                json!({
+                    "id": audit_id,
+                    "toolName": req.tool_name,
+                    "reason": reason,
+                }),
+            ));
+            if asked.is_none() {
+                // 落账失败绝不返回决定(审计原子性)
+                return ApprovalOutcome::Unavailable;
+            }
+            splice(decided_envelope(&audit_id, "rejected"));
+            return ApprovalOutcome::Rejected;
+        }
+
+        // 风险评审(advisory,fail-open):只发生在真人会被问到的路径;
+        // 标注进 asked 载荷与问询卡 data.risk 两处
+        let risk = self
+            .review_approval_risk(
+                session_id,
+                liuma_decision::scenarios::approvals::ReviewInput {
+                    tool_name: req.tool_name.clone(),
+                    command: req.command.clone(),
+                    target_mode: crate::permission::sandbox_mode_name(req.target_mode).into(),
+                    justification: req.justification.clone(),
+                },
+            )
+            .await;
+        let mut asked_data = json!({
+            "id": audit_id,
+            "toolName": req.tool_name,
+            "reason": reason,
+        });
+        if let Some(risk) = &risk {
+            asked_data["risk"] = risk.clone();
+        }
         let asked = splice(EventEnvelope::new(
             "approval/asked",
             now_ms() as i64,
-            json!({
-                "id": audit_id,
-                "toolName": req.tool_name,
-                "reason": reason,
-            }),
+            asked_data,
         ));
-        eprintln!("P3b: asked={:?}", asked);
         if asked.is_none() {
             // 落账失败绝不返回决定(审计原子性)
             return ApprovalOutcome::Unavailable;
         }
 
-        // approval=never:入口即拒(不可绕过),仍落 decided 收口
-        let policy_now = self.session_approval(session_id);
-        eprintln!("P3c: policy={policy_now}");
-        if policy_now == "never" {
-            splice(decided_envelope(&audit_id, "rejected"));
-            eprintln!("P3d: decided 落档,返回 Rejected");
-            return ApprovalOutcome::Rejected;
-        }
-
         // 问询(骑问答通道;intent 分流桌面审批卡,data = 结构化载荷)
         let current_mode = self.session_sandbox_mode(session_id);
         let rpc_id = Uuid::now_v7().to_string();
+        let mut question_data = json!({
+            "toolName": req.tool_name,
+            "command": req.command,
+            "currentMode": current_mode,
+            "targetMode": crate::permission::sandbox_mode_name(req.target_mode),
+        });
+        if let Some(risk) = &risk {
+            question_data["risk"] = risk.clone();
+        }
         let question = crate::proto::Question {
             id: audit_id.clone(),
             question: req.justification.clone(),
@@ -5144,12 +5385,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             options: None,
             multi_select: Some(false),
             intent: Some(json!({ "kind": "sandbox-escalation" })),
-            data: Some(json!({
-                "toolName": req.tool_name,
-                "command": req.command,
-                "currentMode": current_mode,
-                "targetMode": crate::permission::sandbox_mode_name(req.target_mode),
-            })),
+            data: Some(question_data),
         };
         let request = crate::proto::QuestionRequestedFrame {
             session_id: session_id.into(),
@@ -6969,6 +7205,91 @@ fn decided_envelope(audit_id: &str, outcome: &str) -> EventEnvelope {
     )
 }
 
+/// hook/decision receipt 事件落档口(锁内 append 赋 seq;持久化由日志的
+/// durability sink 独占——手动 backend.append 会双写,重载即被拒)
+fn hook_event_sink(
+    session_id: &str,
+    log: &Arc<Mutex<EventLog>>,
+    traj: &Arc<Mutex<crate::trajectory::TrajectoryFolder>>,
+    mux: &broadcast::Sender<ServerRequest>,
+) -> liuma_hooks::HookSink {
+    let (sid, log, traj, mux) = (
+        session_id.to_string(),
+        Arc::clone(log),
+        Arc::clone(traj),
+        mux.clone(),
+    );
+    Arc::new(move |ty, data| {
+        // 锁内 append 定 seq(持久化由日志 durability sink 独占);取出
+        // 刚落的这一条(带 seq)再去推增量,不嵌套持锁。落档失败容忍
+        // (receipt 非阻断面)——失败即无 seq,也就无从发布
+        let Some(ev) = ({
+            let mut l = log.lock_recover();
+            l.append(liuma_session::EventEnvelope::new(ty, now_ms() as i64, data))
+                .ok()
+                .and_then(|seq| l.get(seq).cloned())
+        }) else {
+            return;
+        };
+        // 落档即推轨迹增量:本汇承载**带外**事件(钩子桥 hook/* 与决策
+        // 场景 receipt),它们在引擎的事件回调之外产生,而直播的轨迹增量
+        // 挂在那个回调上。只落档不推增量 = 轨迹永远看不见它们:折叠器的
+        // 追平按 seq 缺口扫,而 `feed` 每喂一个事件就把水位推到该事件
+        // seq,带外事件的 seq 会被随后的引擎事件跨过去,缺口再也补不回来。
+        //
+        // 会话流不在此列:决策事件已不经会话流展示,`hook/*` 本就不在
+        // 翻译表内(未命中即丢弃)。
+        feed_trajectory_delta(&sid, &traj, &ev, &mux);
+    })
+}
+
+/// 决策场景钩子(哨兵 + 守卫;各自场景开关门控)。
+/// 审批评审员不经此处(走 ApprovalPortImpl 旁路)。
+///
+/// receipt 走与钩子桥**同一个**宿主事件汇:落档之外还要推轨迹增量,
+/// 否则带外 receipt 对轨迹永久不可见。
+fn decision_hooks(
+    decision: &Option<DecisionRuntime>,
+    session_id: &str,
+    log: &Arc<Mutex<EventLog>>,
+    traj: &Arc<Mutex<crate::trajectory::TrajectoryFolder>>,
+    mux: &broadcast::Sender<ServerRequest>,
+) -> Vec<std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>> {
+    let Some(runtime) = decision.as_ref() else {
+        return Vec::new();
+    };
+    let settings = runtime.settings.lock_recover().clone();
+    liuma_app::decision_hook_ports(
+        &runtime.port,
+        &settings,
+        log,
+        hook_event_sink(session_id, log, traj, mux),
+    )
+}
+
+/// 桥钩子 + 决策钩子合成单槽下发(HookChain 最严格者胜;全空 = 直通)
+fn compose_hook_chain(
+    bridge: Option<std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>>,
+    decision: Vec<std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>>,
+) -> Option<std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>> {
+    match (bridge, decision.is_empty()) {
+        (Some(bridge), false) => {
+            let mut ports = vec![bridge];
+            ports.extend(decision);
+            Some(
+                std::sync::Arc::new(liuma_agent_loop::hooks::HookChain::new(ports))
+                    as std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>,
+            )
+        }
+        (Some(bridge), true) => Some(bridge),
+        (None, false) => Some(
+            std::sync::Arc::new(liuma_agent_loop::hooks::HookChain::new(decision))
+                as std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>,
+        ),
+        (None, true) => None,
+    }
+}
+
 fn outcome_name(outcome: liuma_tools::ApprovalOutcome) -> &'static str {
     match outcome {
         liuma_tools::ApprovalOutcome::AllowedOnce => "allowed-once",
@@ -7376,51 +7697,47 @@ async fn driver_loop(
         }
     }
 
-    // hooks 桥(M4.2):enabled 桥读配置挂 HookPort(引擎四调用点);
-    // SessionStart detached 由宿主在装配后立即跑(上下文染色落档,
-    // 不落 hook 对——turn 外)。无配置/全部解析失败 = 不挂。
+    // hooks 桥(M4.2)+ 决策场景钩子([decision.stop].enabled):经
+    // HookChain 合成单槽(最严格者胜);SessionStart detached 由宿主在
+    // 装配后立即跑(上下文染色落档,不落 hook 对——turn 外)。
+    // 无桥且无决策场景 = 不挂(引擎直通)。
     {
         let ws_root = host0.resolve_session(&session_id).0;
-        if let Some(service) = host0.build_hook_service() {
-            let sink: liuma_hooks::HookSink = {
-                let log = Arc::clone(&inner.log);
-                Arc::new(move |ty, data| {
-                    // hook/* 落档照 engine commit 模式:锁内 append 赋 seq,
-                    // 持久化由日志的 durability sink 独占——手动
-                    // backend.append 会把同一 seq 落两行,会话重载即被
-                    // 连续性守卫拒收。锁竞争由短临界区收敛(hook 串行)
-                    if let Ok(mut l) = log.lock() {
-                        let ev = liuma_session::EventEnvelope::new(
-                            ty,
-                            {
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_millis() as i64)
-                                    .unwrap_or(0)
-                            },
-                            data,
-                        );
-                        let _ = l.append(ev);
-                    }
-                })
-            };
-            let port = std::sync::Arc::new(liuma_hooks::service::HookPortImpl {
-                service: Arc::clone(&service),
-                session_id: session_id.clone(),
-                workspace: ws_root.clone(),
-                sink,
-                model: String::new(),
-                // 拍板 3:工具级审批面(无 = ask fail-closed;宿主面
-                // 在包 7 接线后经 request_tool_approval 注入)
-                approval: Some(host0.hook_tool_approval(&session_id)),
-                // 拍板 2:钩子与模型命令同一信任面(workspace-write)
-                sandbox: Some(liuma_sandbox::SandboxPolicy::workspace_write(
-                    ws_root.clone(),
-                )),
+        let service = host0.build_hook_service();
+        let bridge_port: Option<std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>> =
+            service.as_ref().map(|svc| {
+                let sink: liuma_hooks::HookSink =
+                    hook_event_sink(&session_id, &inner.log, &inner.traj, &host0.mux);
+                std::sync::Arc::new(liuma_hooks::service::HookPortImpl {
+                    service: Arc::clone(svc),
+                    session_id: session_id.clone(),
+                    workspace: ws_root.clone(),
+                    sink,
+                    model: String::new(),
+                    // 拍板 3:工具级审批面(无 = ask fail-closed;宿主面
+                    // 在包 7 接线后经 request_tool_approval 注入)
+                    approval: Some(host0.hook_tool_approval(&session_id)),
+                    // 拍板 2:钩子与模型命令同一信任面(workspace-write)
+                    sandbox: Some(liuma_sandbox::SandboxPolicy::workspace_write(
+                        ws_root.clone(),
+                    )),
+                }) as std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>
             });
-            session.set_hook_port(port);
-            // SessionStart detached(上下文可能错过首请求)
-            let ss_service = Arc::clone(&service);
+        if let Some(hook) = compose_hook_chain(
+            bridge_port,
+            decision_hooks(
+                &inner.decision,
+                &session_id,
+                &inner.log,
+                &inner.traj,
+                &host0.mux,
+            ),
+        ) {
+            session.set_hook_port(hook);
+        }
+        // SessionStart detached(上下文可能错过首请求)
+        if let Some(service) = &service {
+            let ss_service = Arc::clone(service);
             let ss_session_id = session_id.clone();
             let ss_ws = ws_root.clone();
             let ss_log = Arc::clone(&inner.log);
@@ -7726,6 +8043,24 @@ async fn driver_loop(
         // → review_plan 阻塞完成(批准/拒绝/取消的结果即工具结果,模型
         // 同 turn 继续);此处若仍见待审计划,属崩溃残留,由驱动启动时的
         // re-ask 路径覆盖。
+
+        // 决策上下文裁判(turn 间隙维护;[decision.context].enabled 才有):
+        // 压力达标才出网;裁决先落档,效果在派生层(「模型可见 ⟺ 已记录」
+        // 不变式不受影响)。失败静默(fail-open,压力不足即 None)。
+        if let Some(runtime) = &inner.decision {
+            let settings = runtime.settings.lock_recover().clone();
+            if settings.context.enabled {
+                let window = host0.session_context_window(&session_id);
+                match liuma_app::judge_context(&inner.log, &runtime.port, &settings, window).await {
+                    Ok(Some(n)) if n > 0 => {
+                        eprintln!(
+                            "[liuma-core] decision context prune {session_id}: {n} outputs pruned"
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 }
 
@@ -8132,6 +8467,113 @@ mod tests {
             "glm",
             "工作区绑定生效"
         );
+    }
+
+    /// 决策模型设置进快照(设置页数据源):apiKey 明文不出视图,
+    /// 以「已设置」布尔呈现;upsert 无 key 时原值保留(UI 开关翻转
+    /// 不抹手填 key)
+    #[test]
+    fn decision_settings_snapshot_and_upsert_preserve_key() {
+        let host = temp_host("ws-decision-view");
+        let entry = crate::settings::DecisionEntry {
+            enabled: true,
+            stop: true,
+            api_key: Some("sk-secret".into()),
+            ..Default::default()
+        };
+        host.upsert_decision_settings(entry).unwrap();
+
+        let view = host.settings_view()["decision"].clone();
+        assert_eq!(view["enabled"], true);
+        assert_eq!(view["stop"], true);
+        assert_eq!(view["apiKeySet"], true);
+        assert!(
+            view.get("apiKey").is_none(),
+            "明文 key 不得出现在设置视图:{view}"
+        );
+
+        // 视图来的 entry(无 key)再保存:key 原值保留
+        let from_view = serde_json::from_value::<crate::settings::DecisionEntry>(view).unwrap();
+        assert!(from_view.api_key.is_none());
+        host.upsert_decision_settings(from_view).unwrap();
+        assert_eq!(
+            host.decision_settings().api_key.as_deref(),
+            Some("sk-secret"),
+            "UI 开关翻转不抹 key"
+        );
+    }
+
+    /// 回归锁:hero 态(选中工作区、未开会话)的选型落**工作区默认**。
+    /// 用户报告「对话框中的模型选择无法切换」:hero 态的 composer 照样
+    /// 能点模型/等级行,但会话级 setter 因无 current_id 静默返回。
+    /// 三个工作区默认 setter 的落盘 + 校验口径一并钉住
+    #[test]
+    fn workspace_defaults_accept_hero_selection() {
+        let host = temp_host("ws-hero-defaults");
+        let ws = host.workspace_names()[0].clone();
+        // 探测缓存要 describe 才灌(fake 演示清单亦然):本测试只验落盘
+        // 与校验口径,直接给 provider 一个显式清单(优先级最高的那一层)
+        let mut provider = host.settings.read().provider(Some("deepseek"));
+        let model = "hero-pick-1".to_string();
+        provider.models = vec![model.clone()];
+        host.upsert_provider(provider).unwrap();
+        host.set_workspace_model(&ws, &model).unwrap();
+        host.set_workspace_effort(&ws, "low").unwrap();
+        host.set_workspace_preset(&ws, "minimal").unwrap();
+
+        let defaults = host.settings_view()["workspaces"]
+            .as_object()
+            .and_then(|m| m.values().next())
+            .cloned()
+            .expect("工作区默认条目已落盘");
+        assert_eq!(defaults["model"].as_str(), Some(model.as_str()));
+        assert_eq!(defaults["effort"].as_str(), Some("low"));
+        assert_eq!(defaults["preset"].as_str(), Some("minimal"));
+
+        // 校验口径与会话级 setter 同源:未知值一律拒
+        assert!(host.set_workspace_model(&ws, "__no_such_model__").is_err());
+        assert!(
+            host.set_workspace_effort(&ws, "__no_such_effort__")
+                .is_err()
+        );
+        assert!(
+            host.set_workspace_preset(&ws, "__no_such_preset__")
+                .is_err()
+        );
+        assert!(host.set_workspace_model("__no_such_ws__", &model).is_err());
+    }
+
+    /// 回归锁:手改设置文件 decision 区(用户报告「YAML 填全了设置页
+    /// 仍灰」——旧快照无 decision 键,前端恒读 Null ⇒ 恒默认关)。
+    /// 外部编辑经 mtime 吸收后,快照必须如实反映文件内容
+    #[test]
+    fn external_settings_edit_reaches_decision_snapshot() {
+        let host = temp_host("ws-decision-reload");
+        // 先落一份合法设置文件(未启用决策)
+        host.upsert_decision_settings(crate::settings::DecisionEntry {
+            api_key: Some("sk-hand".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(
+            !host.settings_view()["decision"]["enabled"]
+                .as_bool()
+                .unwrap_or(true),
+            "初始未启用"
+        );
+
+        // 手改文件(模拟外部编辑器):开关打开
+        let path = host.settings.path().to_path_buf();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("enabled: false"), "决策区应在文件里:{text}");
+        // mtime 精度为毫秒:睡过一拍保证外部改动可被检出
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&path, text.replacen("enabled: false", "enabled: true", 1)).unwrap();
+
+        let view = host.settings_view()["decision"].clone();
+        assert_eq!(view["enabled"], true, "外部编辑须进快照:{view}");
+        assert_eq!(view["apiKeySet"], true, "手填 key 仍在:{view}");
+        assert!(host.decision_settings().enabled);
     }
 
     /// 目录各计费预设对官方/实测示例响应可提取(路径与响应形态逐字对应)
@@ -9035,6 +9477,124 @@ mod tests {
         let head = host.trajectory_page(&id, 2000, Some(1)).expect("首页");
         assert!(!head.has_older);
         assert!(head.records.iter().all(|r| r.index < 1));
+    }
+
+    /// 回归锁:宿主事件汇落档的**带外**事件必须立即推轨迹增量。
+    ///
+    /// 用户报告「实时的都挂在会话尾」与轨迹区看不见决策,同一个根因:
+    /// 钩子 receipt 经 `log.append` 出带落档,绕开了引擎的事件回调,而
+    /// 直播的轨迹增量挂在那个回调上。折叠器的追平按 seq 缺口扫,而
+    /// `feed` 每喂一个事件就把水位推到该事件 seq——带外 receipt 的 seq
+    /// 会被随后的引擎事件跨过去,缺口再也补不回来(冷读的全量折叠同样
+    /// 丢:那时折叠器还没有 decision 分支,这种事件直接被忽略)。
+    ///
+    /// 故锁在**发布面**:receipt 落档即出 `trajectory/delta`,且该裁决
+    /// 在驻留折叠器的末态快照里可见(与日志同源,不是凭空发帧)。
+    #[tokio::test]
+    async fn out_of_band_receipts_reach_trajectory_delta() {
+        let host = temp_host("decision-delta");
+        // 端口指向死地址:ask 必失败,但 receipt 对照落(fail-open 语义),
+        // 本测试只验「发布面走通没有」,不依赖真实决策服务
+        host.upsert_decision_settings(crate::settings::DecisionEntry {
+            enabled: true,
+            stop: true,
+            base_url: "http://127.0.0.1:1".into(),
+            timeout_ms: 200,
+            ..Default::default()
+        })
+        .unwrap();
+        host.set_fake_script(vec![vec![LlmEvent::AssistantMessage(
+            json!({ "content": "改完了,已验证" }),
+        )]]);
+        let mut mux = host.mux_subscribe();
+        let id = host.create_session(None, None, None);
+        host.prompt(&id, &[json!({ "type": "text", "text": "hi" })], "queue")
+            .await
+            .unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut streamed: Option<Value> = None;
+        let mut leaked_to_chat = false;
+        loop {
+            assert!(std::time::Instant::now() < deadline, "turn 未在预算内结束");
+            match mux.try_recv() {
+                Ok(f) => {
+                    let mine = f.payload["sessionId"].as_str() == Some(id.as_str());
+                    if f.method == "trajectory/delta"
+                        && mine
+                        && let Some(recs) = f.payload["records"].as_array()
+                    {
+                        for r in recs {
+                            if r["decision"]["scenario"] == "stop" {
+                                streamed = Some(r.clone());
+                            }
+                        }
+                    }
+                    // 方案甲:裁决不进会话流(翻译表未登记的带外事件一律丢弃),
+                    // 会话流只留人看得懂的内容——此断言锁的是这个设计决定
+                    if f.method == "session/event"
+                        && mine
+                        && f.payload["event"]["type"]
+                            .as_str()
+                            .is_some_and(|t| t.starts_with("decision/"))
+                    {
+                        leaked_to_chat = true;
+                    }
+                    if f.method == "session/event"
+                        && mine
+                        && f.payload["event"]["type"] == "turn/end"
+                    {
+                        // turn/end 帧之后仍有增量帧同流,排空一拍再定论
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        while let Ok(f) = mux.try_recv() {
+                            if f.method == "trajectory/delta"
+                                && f.payload["sessionId"].as_str() == Some(id.as_str())
+                                && let Some(recs) = f.payload["records"].as_array()
+                            {
+                                for r in recs {
+                                    if r["decision"]["scenario"] == "stop" {
+                                        streamed = Some(r.clone());
+                                    }
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await
+                }
+                Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(broadcast::error::TryRecvError::Closed) => panic!("mux 关闭"),
+            }
+        }
+        let rec = streamed.expect("裁决必须直播进轨迹增量(不得等重启)");
+        assert_eq!(rec["kind"], "decision", "无调用可挂 → 独立成行:{rec}");
+        assert!(
+            rec["decision"]["error"]
+                .as_str()
+                .is_some_and(|e| !e.is_empty()),
+            "死端口必失败,fail-open 也要留痕:{rec}"
+        );
+        assert!(!leaked_to_chat, "裁决不进会话流(方案甲)");
+        // 线上回环:帧里的记录必须能反序列化回 TrajectoryRecord
+        // (桌面 `apply_trajectory_delta` 解码失败是**静默跳过**,不解码
+        // 一遍这条线就没人守)
+        let decoded: crate::trajectory::TrajectoryRecord =
+            serde_json::from_value(rec.clone()).expect("增量帧记录须能解码回 typed");
+        let d = decoded.decision.as_ref().expect("决策数据随帧过线");
+        assert_eq!(d.scenario, "stop");
+        assert_eq!(d.questions, vec!["lacks_evidence".to_string()]);
+
+        // 同源:驻留折叠器末态快照里同样在场(帧不是凭空造的)
+        let page = host.trajectory_page(&id, 2000, None).expect("轨迹页");
+        assert!(
+            page.records
+                .iter()
+                .any(|r| r.decision.as_ref().is_some_and(|d| d.scenario == "stop")),
+            "裁决必须在台账里:{:?}",
+            page.records.iter().map(|r| &r.kind).collect::<Vec<_>>()
+        );
     }
 
     /// 轨迹 delta 直播:turn 内工具调用落档即出账(亚回合粒度;tool

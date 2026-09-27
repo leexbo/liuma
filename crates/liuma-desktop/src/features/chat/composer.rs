@@ -976,10 +976,16 @@ fn model_card(
             .into_any_element(),
         );
     }
-    // ── 级联子卡(模型选择;挂主卡左侧,右缘窗口放不下右侧)──
+    // ── 级联子卡(模型选择;并排主卡左侧)──
+    //
+    // 子卡必须落在 popover 内容盒**之内**:库 popover 的内容根带
+    // `occlude()` + `on_mouse_down_out`,遮蔽区域 = 内容盒。子卡绝对
+    // 定位悬到盒外时,按下先被判成「外点」→ dismiss 卸载整棵子树 →
+    // 行的 on_click(上抬才触发)永远不响,表现为「模型选择无法切换」。
+    // 并排进盒内 = 根级渲染 + 锚定计算 + 遮蔽打断三项同时成立。
     let sub = st.chat.model_submenu_open;
     let main = menu_card(rows, None);
-    let mut wrap = div().relative().child(main);
+    let mut wrap = div().flex().items_end().gap(px(8.));
     if sub {
         let mut sub_rows: Vec<gpui_kit::AnyElement> = vec![];
         sub_rows.push(
@@ -1046,33 +1052,32 @@ fn model_card(
                     .into_any_element(),
             );
         }
-        wrap = wrap.child(
-            div()
-                .id("model-submenu")
-                .debug_selector(|| "model-submenu".to_string())
-                .absolute()
-                .right(px(228.))
-                .bottom(px(0.))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(
-                    div()
-                        .id("model-submenu-list")
-                        .min_w(px(200.))
-                        .max_h(px(300.))
-                        .overflow_y_scroll()
-                        .rounded(px(12.))
-                        .border_1()
-                        .border_color(theme::BORDER())
-                        .bg(if theme::is_dark() {
-                            theme::LAYER()
-                        } else {
-                            theme::CARD()
-                        })
-                        .shadow_md()
-                        .p(px(4.))
-                        .children(sub_rows),
-                ),
-        );
+        let submenu = div()
+            .id("model-submenu")
+            .debug_selector(|| "model-submenu".to_string())
+            .flex_shrink_0()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .id("model-submenu-list")
+                    .min_w(px(200.))
+                    .max_h(px(300.))
+                    .overflow_y_scroll()
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(theme::BORDER())
+                    .bg(if theme::is_dark() {
+                        theme::LAYER()
+                    } else {
+                        theme::CARD()
+                    })
+                    .shadow_md()
+                    .p(px(4.))
+                    .children(sub_rows),
+            );
+        wrap = wrap.child(submenu).child(main);
+    } else {
+        wrap = wrap.child(main);
     }
     wrap.into_any_element()
 }

@@ -17,6 +17,7 @@ members = [
     "crates/liuma-attachment",
     "crates/liuma-plan",
     "crates/liuma-agent-loop",
+    "crates/liuma-decision",
     "crates/liuma-prompt",
     "crates/liuma-tools",
     "crates/liuma-example-tool",
@@ -67,6 +68,7 @@ liuma-compaction = { path = "crates/liuma-compaction" }
 liuma-plan = { path = "crates/liuma-plan" }
 liuma-wit = { path = "crates/liuma-wit" }
 liuma-agent-loop = { path = "crates/liuma-agent-loop" }
+liuma-decision = { path = "crates/liuma-decision" }
 liuma-prompt = { path = "crates/liuma-prompt" }
 liuma-tools = { path = "crates/liuma-tools" }
 liuma-llm = { path = "crates/liuma-llm" }

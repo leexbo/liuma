@@ -248,10 +248,11 @@ mod tests {
             "workflow",
             "session_query",
             "ask_user_question",
+            "decide",
         ] {
             assert!(std_manifest.mounts(source), "{source} 应装载");
         }
-        assert_eq!(std_manifest.spec.mounts.len(), 11, "standard 共 11 行");
+        assert_eq!(std_manifest.spec.mounts.len(), 12, "standard 共 12 行");
 
         let minimal = PresetManifest::parse(BUILTIN_MINIMAL, "<test>").unwrap();
         assert!(minimal.mounts("persona"));

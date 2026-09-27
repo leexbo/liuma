@@ -57,6 +57,8 @@ pub struct MountContext<'a> {
     pub query_port: Option<Arc<dyn liuma_tools::session_query::SessionQueryPort>>,
     /// ask_user_question 宿主 port(缺 = 该组件跳过)
     pub ask_port: Option<Arc<dyn liuma_tools::AskQuestionPort>>,
+    /// 决策模型挂载面(端口 + 模型名;缺 = decide 组件跳过)
+    pub decision: Option<crate::DecisionMount>,
     /// 计划评审 port(缺 = 工具仍装配——目录跨模式/宿主稳定,执行期报
     /// 「无评审通道」;有 = turn 内阻塞评审)
     pub plan_review_port: Option<Arc<dyn liuma_plan::PlanReviewPort>>,
@@ -139,6 +141,7 @@ pub fn in_tree_registry() -> &'static HashMap<&'static str, InTreeComponent> {
             ("workflow", object_schema()),
             ("session_query", object_schema()),
             ("ask_user_question", object_schema()),
+            ("decide", object_schema()),
         ] {
             let mount = match name {
                 "persona" => mount_persona,
@@ -152,6 +155,7 @@ pub fn in_tree_registry() -> &'static HashMap<&'static str, InTreeComponent> {
                 "workflow" => mount_workflow,
                 "session_query" => mount_session_query,
                 "ask_user_question" => mount_ask,
+                "decide" => mount_decide,
                 _ => unreachable!("注册表名与装配函数一一对应"),
             };
             m.insert(
@@ -207,6 +211,9 @@ fn component_prompt(name: &str) -> &'static str {
         }
         "session_query" => {
             "Use session_search to find relevant work from prior sessions, or session_event_search to search earlier events in one session. Search results are cursor-free and workspace-scoped. Follow a useful hit with session_trace, session_event_trace, or session_event_read when you need lineage, relationships, or exact data."
+        }
+        "decide" => {
+            "Use the decide tool for a fast bounded judgment — a yes/no probability, a choice from a fixed option list, or a rating on a scale — about the exact text you pass in `context`. Only `context` is sent to the configured decision endpoint; never reference session contents indirectly. Batch several independent questions into one call instead of making several calls."
         }
         _ => "",
     }
@@ -434,6 +441,18 @@ fn mount_ask(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPortObj
     ))])
 }
 
+/// decide:决策模型咨询工具(需决策端口,缺 = 跳过;
+/// 设置文件 decision 区 enabled 即装配,场景开关另行门控场景逻辑)
+fn mount_decide(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPortObj>>> {
+    let Some(mount) = ctx.decision.as_ref() else {
+        return Ok(vec![]);
+    };
+    Ok(vec![Box::new(liuma_decision::DecideTool::new(
+        Arc::clone(&mount.port),
+        mount.model.clone(),
+    ))])
+}
+
 // ---- source 三态判别 ----
 
 /// source 引用形态(在树注册表未命中时)
@@ -480,6 +499,7 @@ pub fn assemble(
     approval_port: Option<Arc<dyn liuma_tools::ApprovalPort>>,
     query_port: Option<Arc<dyn liuma_tools::session_query::SessionQueryPort>>,
     ask_port: Option<Arc<dyn liuma_tools::AskQuestionPort>>,
+    decision: Option<crate::DecisionMount>,
     plan_review_port: Option<Arc<dyn liuma_plan::PlanReviewPort>>,
     session_factory: Option<Arc<dyn liuma_tools::subagent::SessionFactory>>,
     notify_port: Option<Arc<dyn liuma_tools::subagent::SettlementNotificationPort>>,
@@ -504,6 +524,7 @@ pub fn assemble(
         approval: approval_port,
         query_port,
         ask_port,
+        decision,
         plan_review_port,
         session_factory,
         notify_port,
@@ -571,7 +592,7 @@ mod tests {
         let cancel = CancelToken::new();
         let tools = assemble(
             resolved, "key", &log, &cancel, false, permission, None, None, None, None, None, None,
-            None, None, None,
+            None, None, None, None,
         )
         .unwrap();
         tools
@@ -670,19 +691,83 @@ mod tests {
     }
 
     #[test]
+    fn decide_mounts_only_with_decision_port() {
+        // 无决策端口(决策模型关):decide 行跳过(mount_ask 同先例)
+        let resolved = resolved_with("    - source: decide\n");
+        let log = crate::fresh_log();
+        let none_port: Option<crate::DecisionMount> = None;
+        let tools = assemble(
+            &resolved,
+            "key",
+            &log,
+            &CancelToken::new(),
+            false,
+            "workspace-write",
+            None,
+            None,
+            None,
+            None,
+            none_port,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(tools.is_empty(), "port 缺 = 组件跳过");
+
+        // 有端口:decide 声明,model 取装配设置
+        let port: Arc<dyn liuma_decision::DecisionPort> =
+            Arc::new(liuma_decision::FakeDecisionPort::new());
+        let tools = assemble(
+            &resolved,
+            "key",
+            &log,
+            &CancelToken::new(),
+            false,
+            "workspace-write",
+            None,
+            None,
+            None,
+            None,
+            Some(crate::DecisionMount {
+                port,
+                model: "jev-latest".into(),
+            }),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let names: Vec<String> = tools
+            .iter()
+            .flat_map(|t| t.specs())
+            .map(|s| s["function"]["name"].as_str().unwrap_or("?").to_string())
+            .collect();
+        assert_eq!(names, vec!["decide".to_string()], "{names:?}");
+    }
+
+    #[test]
     fn tool_prompt_sections_follow_manifest_order() {
-        // standard 内置:bash/files/jobs/goal/workflow/session_query 六节
+        // standard 内置:bash/files/jobs/goal/workflow/session_query/decide 七节
         // (todo_write/plan/ask_user_question 无使用指南节;subagent 后台节
         // 需结算通知 port 才挂)
         let preset =
             liuma_host::PresetManifest::load(std::path::Path::new("/nonexistent"), "standard")
                 .unwrap();
         let secs = tool_prompt_sections(&preset);
-        assert_eq!(secs.len(), 6, "standard 应有六节");
+        assert_eq!(secs.len(), 7, "standard 应有七节");
         assert!(secs[0].contains("[exit code: N]"), "bash 节按行序在首");
         assert!(secs[1].contains("file_read"), "files 节次之");
         assert!(secs.iter().any(|s| s.contains("Use session_search")));
         assert!(secs.iter().any(|s| s.contains("workflow tool ONLY")));
+        assert!(
+            secs.iter().any(|s| s.contains("decide tool")),
+            "decide 节在场(manifest 尾行)"
+        );
         // minimal = persona+bash+files → 两节(persona 无节)
         let minimal =
             liuma_host::PresetManifest::load(std::path::Path::new("/nonexistent"), "minimal")
@@ -722,6 +807,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         ) else {
             panic!("未知组件源应拒绝");
         };
@@ -739,6 +825,7 @@ mod tests {
             &CancelToken::new(),
             false,
             "workspace-write",
+            None,
             None,
             None,
             None,

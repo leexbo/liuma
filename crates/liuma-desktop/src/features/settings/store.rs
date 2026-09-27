@@ -75,6 +75,8 @@ pub enum SettingsNav {
     Mcp,
     /// Hooks(Claude Code / Codex 桥)
     Hooks,
+    /// 决策模型(System One 协议)
+    Decision,
     /// 关于
     About,
 }
@@ -2390,6 +2392,58 @@ impl AppStore {
             self.settings_refresh(cx);
         }
         cx.notify();
+    }
+
+    // ---- 决策模型(System One)----
+
+    /// 设置快照里的决策条目(缺失 = 默认)
+    fn decision_entry(&self) -> liuma_core::settings::DecisionEntry {
+        serde_json::from_value::<liuma_core::settings::DecisionEntry>(
+            self.settings.settings_snapshot["decision"].clone(),
+        )
+        .unwrap_or_default()
+    }
+
+    fn save_decision(
+        &mut self,
+        mutate: impl FnOnce(&mut liuma_core::settings::DecisionEntry),
+        cx: &mut Context<Self>,
+    ) {
+        let mut entry = self.decision_entry();
+        mutate(&mut entry);
+        if self.bridge.host().upsert_decision_settings(entry).is_ok() {
+            self.settings_refresh(cx);
+        }
+        cx.notify();
+    }
+
+    /// 决策总开关
+    pub fn toggle_decision_enabled(&mut self, cx: &mut Context<Self>) {
+        self.save_decision(|e| e.enabled = !e.enabled, cx);
+    }
+
+    /// 场景开关(kind: approvals / stop / guard / context)
+    pub fn toggle_decision_scenario(&mut self, kind: &'static str, cx: &mut Context<Self>) {
+        self.save_decision(
+            |e| match kind {
+                "approvals" => e.approvals = !e.approvals,
+                "stop" => e.stop = !e.stop,
+                "guard" => e.guard = !e.guard,
+                _ => e.context = !e.context,
+            },
+            cx,
+        );
+    }
+
+    /// enforce 模式(kind: guard / context;默认 shadow)
+    pub fn toggle_decision_enforce(&mut self, kind: &'static str, cx: &mut Context<Self>) {
+        self.save_decision(
+            |e| match kind {
+                "guard" => e.guard_enforce = !e.guard_enforce,
+                _ => e.context_enforce = !e.context_enforce,
+            },
+            cx,
+        );
     }
 
     /// 启停 MCP server(enabled 翻转,upsert 落盘)

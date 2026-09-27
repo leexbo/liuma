@@ -16,6 +16,30 @@ entries! {
     /// 用户取消(回落对话)
     user_cancelled => ["用户取消,回到对话", "Cancelled by user — back to the chat"],
 
+    /// 决策模型风险标注标题(审批卡;advisory)
+    risk_title => ["决策模型风险评估", "Decision model risk"],
+    /// 风险标注:低风险档
+    risk_low => ["低风险", "Low risk"],
+    /// 风险标注:不确定档
+    risk_uncertain => ["不确定", "Uncertain"],
+    /// 风险标注:有风险档
+    risk_risky => ["有风险", "Risky"],
+    /// 风险理由:低风险档(概率为「低风险」的模型给值,照实展示)
+    risk_reason_low(p) => [
+        "模型判为常规、可逆的操作(低风险概率 {p})",
+        "Model reads this as routine and reversible (low-risk probability {p})"
+    ],
+    /// 风险理由:不确定档
+    risk_reason_uncertain(p) => [
+        "模型对这一手的把握不足(低风险概率 {p}),建议自己看一眼",
+        "Model is not confident about this call (low-risk probability {p}) — worth a look"
+    ],
+    /// 风险理由:有风险档
+    risk_reason_risky(p) => [
+        "模型判为破坏性、不可逆,或越出工作区/扩权的操作(低风险概率 {p})",
+        "Model reads this as destructive, irreversible, or beyond the workspace (low-risk probability {p})"
+    ],
+
     /// 问答卡:其他(自定义输入选项)
     other_option => ["其他", "Other"],
     /// 问答卡:上一题

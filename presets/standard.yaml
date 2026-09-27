@@ -23,3 +23,6 @@ spec:
     - source: workflow
     - source: session_query
     - source: ask_user_question
+    # decide:决策模型咨询(System One 协议;设置文件决策模型开启才装配,
+    # 端口缺 = 组件跳过)
+    - source: decide

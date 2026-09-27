@@ -287,6 +287,35 @@ entries! {
     hooks_intro => ["把既有 Claude Code / Codex hooks.json 的 command 钩子接进会话:阻塞工具与提示、附加上下文、强制续跑;变更在下次会话附着时生效。", "Bridge command hooks from existing Claude Code / Codex hooks.json into sessions: block tools and prompts, attach context, force continuation. Changes take effect when the next session attaches."],
     /// hooks 空态
     hooks_none => ["尚未配置 hooks 桥。", "No hooks bridges configured."],
+
+    /// 决策模型主开关行
+    decision_master => ["启用决策模型", "Enable decision model"],
+    /// 决策模型区介绍
+    decision_intro => ["决策模型(System One 协议):审批风险标注、完成证据核对、高危工具拦截与上下文修剪的快速判断层。默认关闭;端点与模型经设置文件配置(下次会话附着生效)。", "Decision model (System One protocol): a fast judgment layer for approval risk labels, completion evidence checks, risky-tool blocking and context pruning. Off by default; configure the endpoint and model in the settings file (takes effect when the next session attaches)."],
+    /// 决策场景行:审批评审员
+    decision_approvals => ["审批评审员", "Approval reviewer"],
+    /// 决策场景行:Stop 哨兵
+    decision_stop => ["Stop 哨兵", "Stop sentinel"],
+    /// 决策场景行:工具守卫
+    decision_guard => ["工具守卫", "Tool guard"],
+    /// 决策场景行:上下文裁判
+    decision_context => ["上下文裁判", "Context judge"],
+    /// enforce 模式后缀(默认 shadow)
+    decision_enforce => ["enforce(高置信才自动动作)", "enforce (act automatically at high confidence)"],
+    /// 决策场景说明:评审员
+    decision_approvals_desc => ["审批卡附带风险标注(建议,不自动批)", "Risk label on approval cards (advisory, never auto-approves)"],
+    /// 决策场景说明:哨兵
+    decision_stop_desc => ["完成陈述缺证据时允许模型继续(每回合至多 2 次)", "Lets the model continue when the final statement lacks evidence (max 2 per turn)"],
+    /// 决策场景说明:守卫
+    decision_guard_desc => ["工具执行前风险评估;shadow 只记录,enforce 高置信才拦", "Risk check before each tool call; shadow records only, enforce blocks at high confidence"],
+    /// 决策场景说明:裁判
+    decision_context_desc => ["上下文吃紧时修剪旧工具输出;shadow 只记录,enforce 才生效", "Prunes stale tool outputs under context pressure; shadow records only, enforce applies"],
+    /// 决策端点信息行
+    decision_endpoint(base, model) => ["端点 {base} · 模型 {model}", "Endpoint {base} · model {model}"],
+    /// 决策 key 已配置
+    decision_key_set => ["key 已配置", "key configured"],
+    /// 决策 key 未配置
+    decision_key_missing => ["key 未配置", "key not configured"],
     /// Hooks 编辑卡标题
     hooks_edit_card => ["编辑 Hooks 桥", "Edit hooks bridge"],
     /// Hooks 新建卡标题

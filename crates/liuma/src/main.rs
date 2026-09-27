@@ -153,6 +153,7 @@ async fn chat(message: Option<String>, common: CommonOpts) -> anyhow::Result<()>
         let gate = InvariantGate::new(provider, app::fresh_log());
         let log = gate.log();
         let review = CliReview::new(Arc::clone(&log), cancel.clone(), message.is_none());
+        let decision = CliDecision::from_settings(&log, resolved.context_window).map(Arc::new);
         let mut session = Session::new(
             parts,
             gate,
@@ -163,7 +164,10 @@ async fn chat(message: Option<String>, common: CommonOpts) -> anyhow::Result<()>
             cancel,
         );
         session.set_context_window(resolved.context_window);
-        dispatch(session, message, review).await?;
+        if let Some(decision) = &decision {
+            decision.attach(&mut session);
+        }
+        dispatch(session, message, review, decision).await?;
     } else if common.no_tools {
         let api_key = Resolved::resolve_api_key(common.api_key.clone())?;
         let gate = InvariantGate::new(
@@ -172,6 +176,7 @@ async fn chat(message: Option<String>, common: CommonOpts) -> anyhow::Result<()>
         );
         let log = gate.log();
         let review = CliReview::new(Arc::clone(&log), cancel.clone(), message.is_none());
+        let decision = CliDecision::from_settings(&log, resolved.context_window).map(Arc::new);
         let mut session = Session::new(
             parts,
             gate,
@@ -182,7 +187,10 @@ async fn chat(message: Option<String>, common: CommonOpts) -> anyhow::Result<()>
             cancel,
         );
         session.set_context_window(resolved.context_window);
-        dispatch(session, message, review).await?;
+        if let Some(decision) = &decision {
+            decision.attach(&mut session);
+        }
+        dispatch(session, message, review, decision).await?;
     } else {
         // 工具集按 preset 声明式组装(liuma-app):preset 决定模型面,
         // 宿主面(沙箱/持久化/路由)不受影响
@@ -192,6 +200,9 @@ async fn chat(message: Option<String>, common: CommonOpts) -> anyhow::Result<()>
             app::fresh_log(),
         );
         let log = gate.log();
+        // 决策模型设置(唯一配置面:~/.liuma/settings.yaml decision 区):
+        // decide 工具挂载 + 场景钩子(哨兵/守卫)+ turn 间隙裁判
+        let decision = CliDecision::from_settings(&log, resolved.context_window).map(Arc::new);
         // 评审面:turn 内阻塞评审(REPL 行路由;单发读 stdin)
         let review = CliReview::new(Arc::clone(&log), cancel.clone(), message.is_none());
         let tools = app::build_tools(
@@ -209,6 +220,12 @@ async fn chat(message: Option<String>, common: CommonOpts) -> anyhow::Result<()>
             None,
             None,
             None,
+            // 决策模型端口(设置文件 decision 区启用才有;decide 工具
+            // 挂载依据)
+            decision.as_ref().map(|d| liuma_app::DecisionMount {
+                port: Arc::clone(&d.port),
+                model: d.settings.model.clone(),
+            }),
             Some(review.clone()),
             None,
             None,
@@ -218,7 +235,10 @@ async fn chat(message: Option<String>, common: CommonOpts) -> anyhow::Result<()>
         )?;
         let mut session = Session::new(parts, gate, log, tools, backend, session_path, cancel);
         session.set_context_window(resolved.context_window);
-        dispatch(session, message, review).await?;
+        if let Some(decision) = &decision {
+            decision.attach(&mut session);
+        }
+        dispatch(session, message, review, decision).await?;
     }
     Ok(())
 }
@@ -227,6 +247,7 @@ async fn dispatch<T, TOOLS>(
     session: Session<T, TOOLS>,
     message: Option<String>,
     review: Arc<CliReview>,
+    decision: Option<Arc<CliDecision>>,
 ) -> anyhow::Result<()>
 where
     T: liuma_agent_loop::LlmTransport + liuma_agent_loop::Summarizer + Send + 'static,
@@ -235,17 +256,69 @@ where
     match message {
         Some(m) => {
             let mut session = session;
-            turn_with_report(&mut session, &m).await?;
+            turn_with_report(&mut session, &m, decision.as_deref()).await?;
         }
-        None => repl(session, review).await?,
+        None => repl(session, review, decision).await?,
     }
     Ok(())
+}
+
+/// CLI 决策运行面(端口 + 场景设置 + 共享日志;与 liuma-core 的
+/// `DecisionRuntime` 同义——CLI 是单会话静态装配,不持 AppHost)。
+///
+/// 装配:`attach` 把哨兵/守卫钩子挂进 Session(场景开关门控);
+/// `after_turn` 跑上下文裁判(turn 间隙,压力达标才出网)。
+struct CliDecision {
+    port: Arc<dyn app::DecisionPort>,
+    settings: liuma_app::DecisionSettings,
+    log: Arc<Mutex<EventLog>>,
+    context_window: u64,
+}
+
+impl CliDecision {
+    /// 从设置文件装配(未启用/构建失败 = None,功能完全不存在)
+    fn from_settings(log: &Arc<Mutex<EventLog>>, context_window: u64) -> Option<Self> {
+        let entry = liuma_app::load_decision_entry(&liuma_app::default_settings_path());
+        let settings = entry.to_settings();
+        let port = liuma_app::build_decision_port(&settings)?;
+        Some(Self {
+            port,
+            settings,
+            log: Arc::clone(log),
+            context_window,
+        })
+    }
+
+    /// 挂钩子(哨兵/守卫;无场景开启 = 不挂,引擎直通)
+    fn attach<T, TOOLS>(&self, session: &mut Session<T, TOOLS>)
+    where
+        T: liuma_agent_loop::LlmTransport + liuma_agent_loop::Summarizer + Send,
+        TOOLS: ToolPort + Send,
+    {
+        let sink = liuma_app::log_only_receipt_sink(&self.log);
+        if let Some(hook) =
+            liuma_app::decision_hook_port(&self.port, &self.settings, &self.log, sink)
+        {
+            session.set_hook_port(hook);
+        }
+    }
+
+    /// turn 间隙上下文裁判(裁决先落档,效果在派生层;失败静默)
+    async fn after_turn(&self) {
+        if !self.settings.context.enabled {
+            return;
+        }
+        let _ =
+            liuma_app::judge_context(&self.log, &self.port, &self.settings, self.context_window)
+                .await;
+    }
 }
 
 /// 驱动一个 turn:记录优先(落盘 + 终端流式渲染)+ TTFT 度量
 async fn turn_with_report<T, TOOLS>(
     session: &mut Session<T, TOOLS>,
     input: &str,
+    decision: Option<&CliDecision>,
 ) -> anyhow::Result<TurnOutcome>
 where
     T: liuma_agent_loop::LlmTransport + liuma_agent_loop::Summarizer + Send,
@@ -272,6 +345,9 @@ where
         reporter.ttft_label(),
         session.session_path()
     );
+    if let Some(decision) = decision {
+        decision.after_turn().await;
+    }
     Ok(outcome)
 }
 
@@ -432,7 +508,11 @@ async fn run_review(inner: Arc<CliReviewInner>, plan: &str) -> Result<PlanReview
 /// turn 后台执行 + 会话锁共享——计划评审(turn 内阻塞)打开期间,
 /// 输入行路由到评审(/approve 批准、其余文本=反馈),未评审行暂存为
 /// 后续输入。
-async fn repl<T, TOOLS>(session: Session<T, TOOLS>, review: Arc<CliReview>) -> anyhow::Result<()>
+async fn repl<T, TOOLS>(
+    session: Session<T, TOOLS>,
+    review: Arc<CliReview>,
+    decision: Option<Arc<CliDecision>>,
+) -> anyhow::Result<()>
 where
     T: liuma_agent_loop::LlmTransport + liuma_agent_loop::Summarizer + Send + 'static,
     TOOLS: ToolPort + Send + 'static,
@@ -516,9 +596,10 @@ where
         // 为后续输入(turn 结束后按序处理,等价旧的顺序消费)
         let session_for_turn = Arc::clone(&session);
         let input = trimmed.clone();
+        let decision_for_turn = decision.clone();
         let mut handle = tokio::spawn(async move {
             let mut s = session_for_turn.lock().await;
-            turn_with_report(&mut s, &input).await
+            turn_with_report(&mut s, &input, decision_for_turn.as_deref()).await
         });
         loop {
             tokio::select! {
@@ -665,6 +746,8 @@ async fn serve(common: CommonOpts) -> anyhow::Result<()> {
     }
 
     let api_key = Resolved::resolve_api_key(common.api_key.clone())?;
+    // 决策模型设置(唯一配置面:~/.liuma/settings.yaml decision 区)
+    let decision_entry = liuma_app::load_decision_entry(&liuma_app::default_settings_path());
     let transport = app::build_raw_transport(&resolved, &api_key, None)?;
 
     if common.no_tools {
@@ -693,6 +776,13 @@ async fn serve(common: CommonOpts) -> anyhow::Result<()> {
         None,
         None,
         None,
+        // 决策模型端口([decision].enabled 才有;decide 工具挂载依据)
+        liuma_app::build_decision_port(&decision_entry.to_settings()).map(|port| {
+            liuma_app::DecisionMount {
+                port,
+                model: decision_entry.model.clone(),
+            }
+        }),
         Some(std::sync::Arc::new(plan_review.clone())
             as std::sync::Arc<dyn liuma_plan::PlanReviewPort>),
         None,

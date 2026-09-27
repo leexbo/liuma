@@ -418,6 +418,12 @@ impl AppStore {
             }
             return;
         }
+        // 设置文件外部编辑(宿主监视线程吸收):重取快照,设置页开着
+        // 也即时反映(手改 settings.yaml 与点开关同效)
+        if frame.method.as_str() == "settings/changed" {
+            self.settings_refresh(cx);
+            return;
+        }
         // 轨迹增量帧:直接应用 upsert(不论面板是否可见,切回即见新;
         // 会话失配在 apply_trajectory_delta 内丢弃)
         if frame.method.as_str() == "trajectory/delta" {
@@ -911,7 +917,12 @@ impl AppStore {
     /// 切模型(校验宿主模型表;失败落通告)
     pub fn set_session_model(&mut self, model: &str, cx: &mut Context<Self>) {
         let v = model.to_string();
-        self.mutate_session_cfg(cx, move |host, id| host.set_model(id, &v));
+        let w = v.clone();
+        self.mutate_session_cfg(
+            cx,
+            move |host, id| host.set_model(id, &v),
+            move |host, ws| host.set_workspace_model(ws, &w),
+        );
     }
 
     /// 模型二级菜单选型:先切工作区默认 provider(跨 provider 时;幂等),
@@ -970,23 +981,49 @@ impl AppStore {
     /// 切思考等级(low / high / max)
     pub fn set_session_effort(&mut self, effort: &str, cx: &mut Context<Self>) {
         let v = effort.to_string();
-        self.mutate_session_cfg(cx, move |host, id| host.set_effort(id, &v));
+        let w = v.clone();
+        self.mutate_session_cfg(
+            cx,
+            move |host, id| host.set_effort(id, &v),
+            move |host, ws| host.set_workspace_effort(ws, &w),
+        );
     }
 
     /// 切模式/preset(standard / minimal / 工作区自定义;空闲时生效)
     pub fn set_session_preset(&mut self, preset: &str, cx: &mut Context<Self>) {
         let v = preset.to_string();
-        self.mutate_session_cfg(cx, move |host, id| host.set_preset(id, &v));
+        let w = v.clone();
+        self.mutate_session_cfg(
+            cx,
+            move |host, id| host.set_preset(id, &v),
+            move |host, ws| host.set_workspace_preset(ws, &w),
+        );
     }
 
     /// hero chip 下拉开关(互斥;同菜单再点 = 关)
-    /// 会话设置公共路径:成功回写缓存,失败本地通告;一律关菜单
+    /// 会话设置公共路径:成功回写缓存,失败本地通告;一律关菜单。
+    ///
+    /// hero 态(选中工作区、未开会话)没有会话可写,旧实现对 `current_id`
+    /// 缺席**静默返回**——composer 的模型/等级行与 hero 的模式 chip 照常
+    /// 可点,点了却纹丝不动也无提示(且失败通告 `push_local_notice` 同样
+    /// 以 current_id 为前提,连报错都被吞)。现改落 `ws_fallback` = 工作区
+    /// 默认项(新会话冷装配读同一键),与同路径的 `set_workspace_provider`
+    /// 对称。
     fn mutate_session_cfg(
         &mut self,
         cx: &mut Context<Self>,
         f: impl FnOnce(&liuma_core::registry::AppHost, &str) -> Result<(), liuma_core::proto::RpcError>,
+        ws_fallback: impl FnOnce(
+            &liuma_core::registry::AppHost,
+            &str,
+        ) -> Result<(), liuma_core::proto::RpcError>,
     ) {
         let Some(id) = self.state.current_id.clone() else {
+            let ws = self.effective_workspace();
+            if ws_fallback(self.bridge.host(), &ws).is_ok() {
+                self.settings_refresh(cx);
+            }
+            cx.notify();
             return;
         };
         if let Err(e) = f(self.bridge.host(), &id) {

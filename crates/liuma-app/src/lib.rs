@@ -31,6 +31,274 @@ use serde_json::Value;
 pub mod mount;
 use mount::assemble;
 
+/// 决策模型场景开关(合并后;默认关)。
+///
+/// `enforce` 仅对 guard/context 有意义(显式配置才开);approvals/stop
+/// 恒 advisory,合并时该位恒 false。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DecisionScenario {
+    /// 场景开关(总开关也要开)
+    pub enabled: bool,
+    /// enforce 模式(自动动作;默认 shadow 只记录)
+    pub enforce: bool,
+    /// 高置信线覆盖(None = liuma-decision thresholds 内置默认)
+    pub high: Option<f64>,
+    /// 低置信下限覆盖(None = 内置默认)
+    pub low: Option<f64>,
+}
+
+/// 决策模型装配设置(唯一配置面 = 设置文件 decision 区;厂商中立:
+/// base_url/model/api_key 全可配,TypeSafe 官方与阿里百炼同协议)。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecisionSettings {
+    /// 总开关(默认 false;不配置 = 功能不存在)
+    pub enabled: bool,
+    /// API key(明文直存,同 provider api_key 字段策略)
+    pub api_key: Option<String>,
+    /// 服务地址(endpoint = base_url + /v1/systemone)
+    pub base_url: String,
+    /// 模型名(jev-latest / decision-model-preview)
+    pub model: String,
+    /// 每次询问硬截止毫秒(含重试等待)
+    pub timeout_ms: u64,
+    /// 场景1:审批评审员
+    pub approvals: DecisionScenario,
+    /// 场景2:Stop 哨兵
+    pub stop: DecisionScenario,
+    /// 场景3:工具守卫
+    pub guard: DecisionScenario,
+    /// 场景4:上下文裁判
+    pub context: DecisionScenario,
+}
+
+impl Default for DecisionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key: None,
+            base_url: "https://api.typesafe.ai".into(),
+            model: "jev-latest".into(),
+            timeout_ms: liuma_decision::thresholds::DEFAULT_TIMEOUT_MS,
+            approvals: DecisionScenario::default(),
+            stop: DecisionScenario::default(),
+            guard: DecisionScenario::default(),
+            context: DecisionScenario::default(),
+        }
+    }
+}
+
+/// 决策模型设置条目(设置文件/设置页形态;扁平开关,阈值走代码内置
+/// 默认)。决策模型是账号级/偏好级配置,**唯一配置面是设置文件**
+/// (`~/.liuma/settings.yaml` 的 `decision` 键,设置页读写)——不走
+/// 工作区 liuma.toml(端点与 key 与工作区无关,双配置面徒生歧义)。
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DecisionEntry {
+    /// 总开关
+    pub enabled: bool,
+    /// API key(明文直存,同 provider api_key 字段策略;设置页录入即写此处)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// 服务地址(TypeSafe 官方 / 百炼 compatible-mode / 本地兼容实现)
+    pub base_url: String,
+    /// 模型名(jev-latest / decision-model-preview)
+    pub model: String,
+    /// 每次询问硬截止毫秒
+    pub timeout_ms: u64,
+    /// 场景开关:审批评审员
+    pub approvals: bool,
+    /// Stop 哨兵开关
+    pub stop: bool,
+    /// 工具守卫开关
+    pub guard: bool,
+    /// 上下文裁判开关
+    pub context: bool,
+    /// 工具守卫 enforce(默认 shadow 只记录)
+    pub guard_enforce: bool,
+    /// 上下文裁判 enforce(默认 shadow 只记录)
+    pub context_enforce: bool,
+}
+
+impl Default for DecisionEntry {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key: None,
+            base_url: "https://api.typesafe.ai".into(),
+            model: "jev-latest".into(),
+            timeout_ms: liuma_decision::thresholds::DEFAULT_TIMEOUT_MS,
+            approvals: false,
+            stop: false,
+            guard: false,
+            context: false,
+            guard_enforce: false,
+            context_enforce: false,
+        }
+    }
+}
+
+impl DecisionEntry {
+    /// 转装配层设置(enforce 位仅 guard/context 有意义)
+    pub fn to_settings(&self) -> DecisionSettings {
+        let scenario = |enabled: bool, enforce: bool| DecisionScenario {
+            enabled,
+            enforce,
+            high: None,
+            low: None,
+        };
+        DecisionSettings {
+            enabled: self.enabled,
+            api_key: self.api_key.clone(),
+            base_url: self.base_url.clone(),
+            model: self.model.clone(),
+            timeout_ms: self.timeout_ms,
+            approvals: scenario(self.approvals, false),
+            stop: scenario(self.stop, false),
+            guard: scenario(self.guard, self.guard_enforce),
+            context: scenario(self.context, self.context_enforce),
+        }
+    }
+}
+
+pub use liuma_decision::DecisionPort;
+
+/// 决策模型挂载面(端口 + 模型名;decide 工具装配物料,presets 行命中
+/// 且 entry.enabled 才有)
+pub struct DecisionMount {
+    /// 决策端口(查询/审计共用)
+    pub port: Arc<dyn liuma_decision::DecisionPort>,
+    /// 模型名(请求 model 字段与审计记录)
+    pub model: String,
+}
+
+/// 用户设置文件路径(`LIUMA_HOME|~/.liuma` + settings.yaml;与
+/// liuma-core 的会话根约定同源,该处解析为本函数的复制品——两 crate
+/// 无依赖边)
+pub fn default_settings_path() -> std::path::PathBuf {
+    let root = std::env::var_os("LIUMA_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .unwrap_or_default();
+            std::path::PathBuf::from(home).join(".liuma")
+        });
+    root.join("settings.yaml")
+}
+
+/// 从用户设置文件读决策条目(文件缺失/解析失败/键缺席 = 全默认关;
+/// 决策是旁路面,任何读取失败都不值得拒启)。
+pub fn load_decision_entry(path: &std::path::Path) -> DecisionEntry {
+    #[derive(serde::Deserialize)]
+    struct Slice {
+        #[serde(default)]
+        decision: DecisionEntry,
+    }
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_norway::from_str::<Slice>(&text).ok())
+        .map(|s| s.decision)
+        .unwrap_or_default()
+}
+
+/// 决策端口装配:设置文件 decision 区 enabled 时构建 System One 客户端;
+/// 关闭 / 构建失败 = `None`(mount 层「port 缺 = 组件跳过」,与
+/// session_query/ask_user_question 同先例;消费方按 fail-open 消费)
+pub fn build_decision_port(
+    decision: &DecisionSettings,
+) -> Option<Arc<dyn liuma_decision::DecisionPort>> {
+    if !decision.enabled {
+        return None;
+    }
+    liuma_decision::SystemOneClient::new(
+        &decision.base_url,
+        decision.api_key.clone(),
+        decision.timeout_ms,
+    )
+    .ok()
+    .map(|client| Arc::new(client) as Arc<dyn liuma_decision::DecisionPort>)
+}
+
+/// 仅落档的 receipt 汇:**没有直播下游**的装配面专用(当前只有
+/// headless CLI——它没有轨迹面板,也没有帧通道)。
+///
+/// 有直播下游的装配面(宿主 [`crate::…`] 那条路)**必须**用宿主事件汇:
+/// 那里的 receipt 还要推轨迹增量,用本汇会让带外事件对轨迹永久不可见
+/// (追平按 seq 缺口扫,而水位会被随后的引擎事件跨过去)。用错不报错,
+/// 只是轨迹里静默少几行——故此处写明适用面。
+pub fn log_only_receipt_sink(log: &Arc<Mutex<EventLog>>) -> liuma_decision::scenarios::ReceiptSink {
+    let log = Arc::clone(log);
+    Arc::new(move |ty: &str, data: Value| {
+        // 锁内 append 定 seq(持久化归日志 durability sink 单写权威);
+        // 落档失败容忍(决策属旁路面,非阻断)
+        if let Ok(mut l) = log.lock() {
+            let _ = l.append(EventEnvelope::new(ty, now_ms(), data));
+        }
+    })
+}
+
+/// 决策场景钩子(哨兵 + 守卫;各自场景开关门控;审批评审员走
+/// ApprovalPort 旁路,不在此处)。
+///
+/// receipt 落档口由**调用方注入**(宿主事件汇 `hook_event_sink`):落档
+/// 之外还要推轨迹增量,故不能在此自造一个只顾 `append` 的闭包——带外
+/// 事件若只落档不推增量,轨迹永远看不见它们(见宿主侧该函数的说明)。
+///
+/// 空 vec = 无场景开启/未装配(调用方不挂 hook,引擎直通)。
+pub fn decision_hook_ports(
+    port: &Arc<dyn liuma_decision::DecisionPort>,
+    settings: &DecisionSettings,
+    log: &Arc<Mutex<EventLog>>,
+    sink: liuma_decision::scenarios::ReceiptSink,
+) -> Vec<Arc<dyn liuma_agent_loop::hooks::HookPortObj>> {
+    use liuma_agent_loop::hooks::HookPortObj;
+    let mut hooks: Vec<Arc<dyn HookPortObj>> = Vec::new();
+    if settings.stop.enabled {
+        hooks.push(Arc::new(
+            liuma_decision::scenarios::stop::StopSentinel::new(
+                Arc::clone(port),
+                settings.model.clone(),
+                Arc::clone(log),
+                Arc::clone(&sink),
+            ),
+        ));
+    }
+    if settings.guard.enabled {
+        hooks.push(Arc::new(liuma_decision::scenarios::guard::ToolGuard::new(
+            Arc::clone(port),
+            settings.model.clone(),
+            Arc::clone(log),
+            sink,
+            settings.guard.enforce,
+        )));
+    }
+    hooks
+}
+
+/// 决策场景钩子合成单槽([`HookChain`]:最严格者胜);无场景 = `None`
+/// (引擎直通,零开销)
+pub fn decision_hook_port(
+    port: &Arc<dyn liuma_decision::DecisionPort>,
+    settings: &DecisionSettings,
+    log: &Arc<Mutex<EventLog>>,
+    sink: liuma_decision::scenarios::ReceiptSink,
+) -> Option<Arc<dyn liuma_agent_loop::hooks::HookPortObj>> {
+    let hooks = decision_hook_ports(port, settings, log, sink);
+    if hooks.is_empty() {
+        None
+    } else {
+        Some(Arc::new(liuma_agent_loop::hooks::HookChain::new(hooks)))
+    }
+}
+
+/// 毫秒 Unix 时间戳(会话事件信封用;与 liuma-core 同式)
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// 配置合并的调用方原始输入(全部可缺省;与 clap 解耦,嵌入方同样可构造)
 #[derive(Debug, Clone, Default)]
 pub struct ResolveArgs {
@@ -335,6 +603,7 @@ pub fn build_tools(
     approval_port: Option<std::sync::Arc<dyn liuma_tools::ApprovalPort>>,
     query_port: Option<std::sync::Arc<dyn liuma_tools::session_query::SessionQueryPort>>,
     ask_port: Option<std::sync::Arc<dyn liuma_tools::AskQuestionPort>>,
+    decision: Option<DecisionMount>,
     plan_review_port: Option<std::sync::Arc<dyn liuma_plan::PlanReviewPort>>,
     session_factory: Option<std::sync::Arc<dyn liuma_tools::subagent::SessionFactory>>,
     notify_port: Option<std::sync::Arc<dyn liuma_tools::subagent::SettlementNotificationPort>>,
@@ -354,6 +623,7 @@ pub fn build_tools(
         approval_port,
         query_port,
         ask_port,
+        decision,
         plan_review_port,
         session_factory,
         notify_port,
@@ -599,6 +869,144 @@ pub fn header_rebuilder(parts: PromptParts) -> Box<dyn Fn(&EventLog) -> RequestH
     Box::new(move |log| build_header(&parts, log))
 }
 
+/// 上下文裁判(turn 间隙维护;P3):压力达标才出网,裁决先落档
+/// (`decision/pruned`),效果在派生层策略④——日志本体不动。
+///
+/// 返回 `Some(n)` = 落档 n 条修剪;`None` = 未触发(未启用/压力不足/
+/// 无候选/端口失败,fail-open 语义)。receipt 照落(decision 对)。
+pub async fn judge_context(
+    log: &Arc<Mutex<EventLog>>,
+    port: &Arc<dyn liuma_decision::DecisionPort>,
+    settings: &DecisionSettings,
+    context_window: u64,
+) -> Result<Option<usize>> {
+    use liuma_decision::scenarios::context as ctx;
+
+    if !settings.context.enabled || context_window == 0 {
+        return Ok(None);
+    }
+    // 锁卫兵不跨 await(作用域内收集;恢复式锁,后台 panic 不连坐)
+    let events: Vec<EventEnvelope> = {
+        let l = log.lock().unwrap_or_else(|p| p.into_inner());
+        l.iter().cloned().collect()
+    };
+    // 压力判定:上次真实用量(缺席则派生字符估算)≥ 0.6 × 窗口
+    let derived_chars = liuma_session::derive_visible_messages(events.iter())
+        .to_string()
+        .len() as u64;
+    let pressure = liuma_compaction::measure_tokens(&events, derived_chars);
+    if (pressure as f64) < liuma_decision::thresholds::PRUNE_TRIGGER_RATIO * context_window as f64 {
+        return Ok(None);
+    }
+    // 保留尾边界:自尾向前累计可见消息字符,超出保留预算(0.16×窗口
+    // tokens × chars/token)即停——保留尾内模型正在用的上下文不动。
+    // 全量可见内容都在保留预算内(日志尚小)⇒ 不裁,直接返回。
+    let retain_budget = (liuma_compaction::retain_tokens(context_window)
+        .saturating_mul(liuma_compaction::CHARS_PER_TOKEN)) as usize;
+    let visible_len = |ev: &EventEnvelope| -> usize {
+        match ev.r#type.as_str() {
+            "user/message" | "assistant/message" => {
+                ev.data["content"].as_str().map(str::len).unwrap_or(0)
+            }
+            "tool/result" => ev.data["output"].as_str().map(str::len).unwrap_or(0),
+            _ => 0,
+        }
+    };
+    let mut acc = 0usize;
+    let mut retain_from: Option<u64> = None;
+    for ev in events.iter().rev() {
+        if acc >= retain_budget {
+            // 累计已超预算:本事件已在保留尾之外,自身可裁
+            // (首个保留 seq = ev.seq + 1)
+            retain_from = Some(ev.seq + 1);
+            break;
+        }
+        acc += visible_len(ev);
+    }
+    let Some(retain_from) = retain_from else {
+        return Ok(None);
+    };
+    // 已修剪集合:历史 pruned 引用并集(裁决幂等)
+    let already: std::collections::HashSet<u64> = events
+        .iter()
+        .filter(|e| e.r#type == "decision/pruned")
+        .flat_map(|e| e.data["pruned"].as_array().cloned().unwrap_or_default())
+        .filter_map(|p| p["seq"].as_u64())
+        .collect();
+    let candidates = ctx::select_candidates(events.iter(), retain_from, &already);
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    let id = uuid::Uuid::now_v7().to_string();
+    let request = ctx::build_request(&candidates, &settings.model);
+    let asked = serde_json::json!({
+        "id": id,
+        "scenario": "context",
+        "model": settings.model,
+        "questions": request.questions.iter().map(|(qid, _)| serde_json::json!({ "id": qid, "kind": "noul" })).collect::<Vec<_>>(),
+        "stateDigest": request.state_digest(),
+    });
+    let started = std::time::Instant::now();
+    let append = |ty: &str, data: serde_json::Value| -> Result<()> {
+        log.lock()
+            .map_err(|_| anyhow::anyhow!("日志锁中毒"))?
+            .append(liuma_session::EventEnvelope::new(ty, wall_clock(), data))
+            .map_err(|e| anyhow::anyhow!("decision 事件落档失败:{e}"))?;
+        Ok(())
+    };
+    match port.ask(request).await {
+        Ok(answers) => {
+            let duration_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+            let lost = ctx::losing_seqs(
+                &candidates,
+                &answers.answers,
+                liuma_decision::thresholds::PRUNE_NO_VALUE_PROBABILITY,
+            );
+            append(
+                "decision/asked",
+                serde_json::json!({ "id": id, "scenario": "context", "model": settings.model,
+                    "questions": asked["questions"], "stateDigest": asked["stateDigest"] }),
+            )?;
+            append(
+                "decision/answered",
+                serde_json::json!({ "id": id, "ok": true,
+                    "answers": serde_json::to_value(&answers.answers).unwrap_or(serde_json::Value::Null),
+                    "durationMs": duration_ms }),
+            )?;
+            if lost.is_empty() {
+                return Ok(Some(0));
+            }
+            // shadow 只落 receipt 观察(误裁率数据来自 answered 的答案值);
+            // enforce 才落 pruned(派生层策略④生效 = 真正修剪)
+            if !settings.context.enforce {
+                return Ok(Some(0));
+            }
+            let pruned: Vec<serde_json::Value> = lost
+                .iter()
+                .map(|(seq, score)| serde_json::json!({ "seq": seq, "score": score }))
+                .collect();
+            let count = pruned.len();
+            append("decision/pruned", serde_json::json!({ "pruned": pruned }))?;
+            Ok(Some(count))
+        }
+        Err(err) => {
+            // fail-open:裁决失败不落 pruned,receipt 收口留痕
+            let duration_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+            append(
+                "decision/asked",
+                serde_json::json!({ "id": id, "scenario": "context", "model": settings.model,
+                    "questions": asked["questions"], "stateDigest": asked["stateDigest"] }),
+            )?;
+            append(
+                "decision/answered",
+                serde_json::json!({ "id": id, "ok": false, "error": err.to_string(),
+                    "durationMs": duration_ms }),
+            )?;
+            Ok(None)
+        }
+    }
+}
+
 /// 兼容入口:打开(或创建)会话日志后端——追加模式,不截断既有
 /// 事实流(重开会话:load_log 恢复历史后继续 append)
 pub fn open_backend(path: &str) -> Result<JsonlBackend> {
@@ -671,7 +1079,45 @@ impl liuma_session::EventStore for JsonlEventStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{JsonlEventStore, load_log, prompt_parts};
+    use super::{JsonlEventStore, load_decision_entry, load_log, prompt_parts};
+
+    /// 设置文件 decision 区解析(设置页与 CLI 的唯一配置面):用户手写
+    /// 的完整形态必须逐字段落值;文件缺失/键缺席 = 全默认关
+    #[test]
+    fn decision_entry_loads_from_settings_file() {
+        let dir = std::env::temp_dir().join(format!("liuma-app-decision-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.yaml");
+        std::fs::write(
+            &path,
+            "version: 1\ndecision:\n  enabled: true\n  apiKey: sk-hand\n  \
+             baseUrl: http://127.0.0.1:8917\n  model: decision-model-preview\n  \
+             timeoutMs: 2000\n  approvals: true\n  stop: true\n  guard: true\n  \
+             context: true\n  guardEnforce: true\n  contextEnforce: true\n",
+        )
+        .unwrap();
+        let entry = load_decision_entry(&path);
+        assert!(entry.enabled);
+        assert_eq!(entry.api_key.as_deref(), Some("sk-hand"));
+        assert_eq!(entry.base_url, "http://127.0.0.1:8917");
+        assert_eq!(entry.model, "decision-model-preview");
+        assert_eq!(entry.timeout_ms, 2000);
+        assert!(entry.approvals && entry.stop && entry.guard && entry.context);
+        assert!(entry.guard_enforce && entry.context_enforce);
+        // 装配层视图:enforce 位只对 guard/context 有意
+        let settings = entry.to_settings();
+        assert!(!settings.approvals.enforce && !settings.stop.enforce);
+        assert!(settings.guard.enforce && settings.context.enforce);
+
+        // 文件缺失 / 无 decision 键 = 全默认关(功能不存在)
+        assert_eq!(
+            load_decision_entry(&dir.join("absent.yaml")),
+            Default::default()
+        );
+        std::fs::write(&path, "version: 1\n").unwrap();
+        assert_eq!(load_decision_entry(&path), Default::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn prompt_parts_two_sentence_identity_with_interpolation() {
