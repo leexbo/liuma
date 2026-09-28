@@ -459,3 +459,243 @@ async fn second_compaction_prefix_covers_through_seq_message() {
         "前缀头部 = 上次 checkpoint(合并语义)"
     );
 }
+
+/// 压缩进度相位(真流量):开始(summarize,0)→ 节流增量 → commit →
+/// done;字符单调不减、恰好一条终局、序号夹在 audit 与 summary 之间。
+/// 回归锁:自动路径此前对桌面完全不可见(无开始信号),失败更是静默。
+#[tokio::test]
+async fn fold_emits_progress_phases_with_monotone_chars() {
+    let log = big_log();
+    let mut engine = LoopEngine::new(header(), Arc::clone(&log));
+    engine.set_fold_thresholds(1, 1);
+
+    let mut provider = FakeProvider::new();
+    // 长摘要:确保节流阈值(≥64 字符)被真实触发,而不只是首末两条
+    provider.summaries.push("s".repeat(300));
+    provider.then(vec![LlmEvent::AssistantMessage(json!({
+        "content": "ok"
+    }))]);
+    let mut gate = InvariantGate::new(provider, Arc::clone(&log));
+    let mut seen: Vec<EventEnvelope> = Vec::new();
+    {
+        let mut sink = |ev: &EventEnvelope| seen.push(ev.clone());
+        engine
+            .run_turn(
+                "continue",
+                None,
+                &[],
+                &[],
+                &[],
+                &mut gate,
+                &mut NoTools,
+                &|| 0_i64,
+                &mut sink,
+            )
+            .await
+            .expect("turn");
+    }
+
+    let progress: Vec<&EventEnvelope> = seen
+        .iter()
+        .filter(|e| e.r#type == "compaction/progress")
+        .collect();
+    assert!(progress.len() >= 4, "至少 开始 + 增量 + commit + done");
+    // 相位序:summarize* → commit → done
+    let phases: Vec<&str> = progress
+        .iter()
+        .map(|e| e.data["phase"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(phases[0], "summarize", "首条即开始信号");
+    assert_eq!(phases[phases.len() - 2], "commit");
+    assert_eq!(phases[phases.len() - 1], "done");
+    assert!(
+        phases
+            .iter()
+            .filter(|p| **p == "done" || **p == "failed")
+            .count()
+            == 1,
+        "恰好一条终局: {phases:?}"
+    );
+    // 字符数单调不减,且增量条真实推进(非只有 0)
+    let chars: Vec<u64> = progress
+        .iter()
+        .map(|e| e.data["generatedChars"].as_u64().unwrap_or(0))
+        .collect();
+    assert!(
+        chars.windows(2).all(|w| w[0] <= w[1]),
+        "单调不减: {chars:?}"
+    );
+    assert!(
+        chars[0] == 0 && chars.contains(&300),
+        "首条 0、终局带真实总量: {chars:?}"
+    );
+    // 载荷:自动路径 manual=false,带折中区间与条数
+    assert_eq!(progress[0].data["manual"], json!(false));
+    assert!(progress[0].data["throughSeq"].as_u64().unwrap_or(0) > 0);
+    assert!(progress[0].data["items"].as_u64().unwrap_or(0) > 0);
+    assert!(
+        progress[0].data["estimatedTokens"].as_u64().unwrap_or(0) > 0,
+        "进度分母(前缀估算)随首条进度到达,UI 不必等 summary"
+    );
+    // 事件序:audit 先于首条进度;summary 在 commit 与 done 之间
+    let seqs: Vec<u64> = {
+        let l = log.lock().unwrap();
+        vec![
+            l.iter()
+                .find(|e| e.r#type == "audit/call" && e.data["operation"] == "compaction")
+                .expect("压缩审计")
+                .seq,
+            progress[0].seq,
+            l.iter()
+                .find(|e| e.r#type == "compaction/summary")
+                .expect("compaction/summary")
+                .seq,
+            progress[progress.len() - 1].seq,
+        ]
+    };
+    assert!(
+        seqs[0] < seqs[1] && seqs[1] < seqs[2] && seqs[2] < seqs[3],
+        "audit < 进度 < summary < done: {seqs:?}"
+    );
+}
+
+/// 未达阈值 = 压根没开始:零进度事件(不打扰桌面)
+#[tokio::test]
+async fn fold_skipped_emits_no_progress() {
+    let log = Arc::new(Mutex::new(EventLog::new()));
+    {
+        let mut l = log.lock().unwrap();
+        l.append(EventEnvelope::new(
+            "user/message",
+            0,
+            json!({ "content": "hi" }),
+        ))
+        .unwrap();
+    }
+    let mut engine = LoopEngine::new(header(), Arc::clone(&log));
+    engine.set_fold_thresholds(u64::MAX, u64::MAX);
+    let mut provider = FakeProvider::new();
+    provider.then(vec![LlmEvent::AssistantMessage(json!({
+        "content": "ok"
+    }))]);
+    let mut gate = InvariantGate::new(provider, Arc::clone(&log));
+    let mut sink = |_ev: &EventEnvelope| {};
+    engine
+        .run_turn(
+            "continue",
+            None,
+            &[],
+            &[],
+            &[],
+            &mut gate,
+            &mut NoTools,
+            &|| 0_i64,
+            &mut sink,
+        )
+        .await
+        .expect("turn");
+    let l = log.lock().unwrap();
+    assert_eq!(
+        l.iter()
+            .filter(|e| e.r#type == "compaction/progress")
+            .count(),
+        0,
+        "未触发折叠不得落进度"
+    );
+}
+
+/// 自动路径摘要失败 = 静默 Skipped(不落 compaction/summary|error):
+/// failed 终局是 UI 唯一的清位信号(回归锁:缺它则「正在压缩…」悬死)
+#[tokio::test]
+async fn summarize_failure_emits_failed_terminal() {
+    let log = big_log();
+    let mut engine = LoopEngine::new(header(), Arc::clone(&log));
+    engine.set_fold_thresholds(1, 1);
+    let mut provider = FakeProvider::new();
+    provider.summary_errors.push("boom".into());
+    provider.then(vec![LlmEvent::AssistantMessage(json!({
+        "content": "ok"
+    }))]);
+    let mut gate = InvariantGate::new(provider, Arc::clone(&log));
+    let mut sink = |_ev: &EventEnvelope| {};
+    engine
+        .run_turn(
+            "continue",
+            None,
+            &[],
+            &[],
+            &[],
+            &mut gate,
+            &mut NoTools,
+            &|| 0_i64,
+            &mut sink,
+        )
+        .await
+        .expect("自动路径失败不上抛");
+
+    let l = log.lock().unwrap();
+    let phases: Vec<String> = l
+        .iter()
+        .filter(|e| e.r#type == "compaction/progress")
+        .map(|e| e.data["phase"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(phases.first().map(String::as_str), Some("summarize"));
+    assert_eq!(
+        phases.last().map(String::as_str),
+        Some("failed"),
+        "失败路径必须有终局: {phases:?}"
+    );
+    assert!(
+        !l.iter().any(|e| e.r#type == "compaction/summary"),
+        "失败不落摘要(历史保持完整)"
+    );
+}
+
+/// 手动路径:进度必须经 sink 实时出账(sink 即渲染广播位;曾传空闭包,
+/// 最久的维护任务反而最不可见)。manual 位随载荷标注。
+#[tokio::test]
+async fn manual_compact_streams_progress_to_sink() {
+    use liuma_agent_loop::FoldOutcome;
+
+    let log = big_log();
+    let mut engine = LoopEngine::new(header(), Arc::clone(&log));
+    engine.set_fold_thresholds(0, 1);
+    let mut provider = FakeProvider::new();
+    provider.summaries.push("m".repeat(200));
+    let mut gate = InvariantGate::new(provider, Arc::clone(&log));
+    let mut seen: Vec<EventEnvelope> = Vec::new();
+    {
+        let mut sink = |ev: &EventEnvelope| seen.push(ev.clone());
+        let outcome = engine
+            .compact_now(&mut gate, &|| 0_i64, &mut sink)
+            .await
+            .expect("compact");
+        assert!(matches!(outcome, FoldOutcome::Folded { .. }));
+    }
+    let progress: Vec<&EventEnvelope> = seen
+        .iter()
+        .filter(|e| e.r#type == "compaction/progress")
+        .collect();
+    assert!(
+        progress.len() >= 3,
+        "手动路径 sink 必须收到开始/落档/终局: {}",
+        progress.len()
+    );
+    assert_eq!(progress[0].data["phase"], json!("summarize"));
+    assert_eq!(progress[0].data["manual"], json!(true));
+    assert_eq!(
+        progress[progress.len() - 1].data["phase"],
+        json!("done"),
+        "终局 done"
+    );
+    // sink 与日志同源:落档的每条进度都在日志里(记录优先)
+    let l = log.lock().unwrap();
+    for e in &progress {
+        assert!(
+            l.iter()
+                .any(|x| x.seq == e.seq && x.r#type == "compaction/progress"),
+            "进度事件必在日志内(seq {})",
+            e.seq
+        );
+    }
+}

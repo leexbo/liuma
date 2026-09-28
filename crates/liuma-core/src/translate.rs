@@ -377,6 +377,9 @@ impl Translator {
             "compaction/summary" | "compaction/error" => {
                 session_event(ev, ev.data.clone(), None, None, None)
             }
+            // 压缩进度(相位 + 已生成字符数;频率已由引擎节流)——必须
+            // 透传:它是进度条的唯一实时数据源,落 _ 分支即静默丢失
+            "compaction/progress" => session_event(ev, ev.data.clone(), None, None, None),
             "session/mode" => {
                 let active = ev.data["mode"].as_str() == Some("plan");
                 let mut out = session_event(ev, json!({ "active": active }), None, None, None);

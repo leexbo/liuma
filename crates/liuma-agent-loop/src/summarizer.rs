@@ -22,4 +22,17 @@ pub trait Summarizer {
         header: &'a RequestHeader,
         messages: &'a Value,
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
+
+    /// 带进度的摘要:回调收到**累计已生成正文字符数**(单调不减,推理
+    /// 段不计)。默认实现忽略回调直通 [`Summarizer::summarize`]——非流式
+    /// 实现零改动即合法,引擎照常落开始/落档两相;HTTP 实现覆写为逐块
+    /// 回调(其 SSE 解码本就逐事件)。
+    fn summarize_stream<'a>(
+        &'a mut self,
+        header: &'a RequestHeader,
+        messages: &'a Value,
+        _on_progress: &'a mut (dyn FnMut(usize) + Send),
+    ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
+        self.summarize(header, messages)
+    }
 }

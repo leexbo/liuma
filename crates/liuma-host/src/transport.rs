@@ -82,7 +82,8 @@ impl<T: LlmTransport + Send + 'static> LlmTransport for BusTransport<T> {
     }
 }
 
-/// 总线传输转发一次性摘要调用(与 stream 同经内层传输)
+/// 总线传输转发一次性摘要调用(与 stream 同经内层传输;进度回调
+/// 一并转发,落默认实现会让压缩进度在此静默退化)
 impl<T: liuma_agent_loop::Summarizer + Send> liuma_agent_loop::Summarizer for BusTransport<T> {
     fn summarize<'a>(
         &'a mut self,
@@ -93,6 +94,19 @@ impl<T: liuma_agent_loop::Summarizer + Send> liuma_agent_loop::Summarizer for Bu
         Box::pin(async move {
             let mut guard = inner.lock().await;
             guard.summarize(header, messages).await
+        })
+    }
+
+    fn summarize_stream<'a>(
+        &'a mut self,
+        header: &'a RequestHeader,
+        messages: &'a Value,
+        on_progress: &'a mut (dyn FnMut(usize) + Send),
+    ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
+        let inner = Arc::clone(&self.inner);
+        Box::pin(async move {
+            let mut guard = inner.lock().await;
+            guard.summarize_stream(header, messages, on_progress).await
         })
     }
 }

@@ -406,6 +406,23 @@ impl liuma_agent_loop::Summarizer for HttpTransport {
         messages: &'a Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
     {
+        // 无进度入口 = 空回调;下面是唯一实现(行为一致,无第二份累积)。
+        // 回调在 future 内构造(future 借用它,不能在函数返回时当临时值)
+        Box::pin(async move {
+            let mut noop = |_chars: usize| {};
+            self.summarize_stream(header, messages, &mut noop).await
+        })
+    }
+
+    /// 逐块回调版:走 `stream_events` 的 SSE 通道,边收边累计正文长度
+    /// (压缩进度条的唯一真实数据源;推理段不计入)。
+    fn summarize_stream<'a>(
+        &'a mut self,
+        header: &'a RequestHeader,
+        messages: &'a Value,
+        on_progress: &'a mut (dyn FnMut(usize) + Send),
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
+    {
         Box::pin(async move {
             let one_shot = RequestHeader {
                 model: header.model.clone(),
@@ -414,31 +431,43 @@ impl liuma_agent_loop::Summarizer for HttpTransport {
                 reasoning_effort: header.reasoning_effort.clone(),
                 tools: header.tools.clone(),
             };
+            // 摘要 = 纯文本面(图块降级占位,不背 base64)
+            let payload =
+                strip_images_for_summary(&liuma_compaction::summarization_messages(messages));
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            // 生产者 = 既有 SSE 通道路径;消费者并行累积并回调(同一 task
+            // 内 join,无 spawn)——发送端随生产者结束而析构,recv 收敛
+            let producer = self.stream_events(&one_shot, &payload, tx);
+            let consumer = async {
+                let mut text = String::new();
+                let mut chars = 0usize;
+                while let Some(event) = rx.recv().await {
+                    match event {
+                        LlmEvent::Chunk(delta) => {
+                            chars += delta.chars().count();
+                            text.push_str(&delta);
+                        }
+                        LlmEvent::AssistantMessage(m) => {
+                            if let Some(c) = m["content"].as_str() {
+                                chars += c.chars().count();
+                                text.push_str(c);
+                            }
+                        }
+                        _ => {}
+                    }
+                    on_progress(chars);
+                }
+                text
+            };
             // 折叠请求上限 300s(手动 /compact 输入可达数百 KB,30s 不够);
             // 超时按折叠失败处理(自动路径降级跳过/手动路径报错)
-            // 摘要 = 纯文本面(图块降级占位,不背 base64)
-            let events = tokio::time::timeout(
-                std::time::Duration::from_secs(300),
-                self.stream(
-                    &one_shot,
-                    &strip_images_for_summary(&liuma_compaction::summarization_messages(messages)),
-                ),
-            )
+            let (result, text) = tokio::time::timeout(std::time::Duration::from_secs(300), async {
+                let (r, t) = tokio::join!(producer, consumer);
+                (r, t)
+            })
             .await
-            .map_err(|_| "summarize timeout after 300s".to_string())?
-            .map_err(|e| e.to_string())?;
-            let mut text = String::new();
-            for event in events {
-                match event {
-                    LlmEvent::Chunk(delta) => text.push_str(&delta),
-                    LlmEvent::AssistantMessage(m) => {
-                        if let Some(c) = m["content"].as_str() {
-                            text.push_str(c);
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            .map_err(|_| "summarize timeout after 300s".to_string())?;
+            result.map_err(|e| e.to_string())?;
             Ok(text)
         })
     }

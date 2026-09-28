@@ -476,6 +476,9 @@ pub const KNOWN_EVENT_TYPES: &[&str] = &[
     // 手动压缩失败(/compact;失败留在日志,桌面通告;非 surface;
     // 新增类型对旧日志安全)
     "compaction/error",
+    // 压缩进度(相位 + 已生成正文字符数;引擎节流后落档,桌面进度条
+    // 的唯一数据源;ignorable 双保险——新增类型对旧日志安全)
+    "compaction/progress",
     "session/mode",
     "plan/submitted",
     "plan/approved",

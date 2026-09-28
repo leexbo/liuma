@@ -22,6 +22,10 @@ use crate::RequestHeader;
 use crate::retry::RetryPolicy;
 use crate::transport::{LlmEvent, LlmTransport, TransportError};
 
+/// 压缩进度落档的最小时间间隔(毫秒;与字符增量阈值取或——逐 token
+/// 落档会灌爆日志与 durability sink)
+const PROGRESS_MIN_INTERVAL_MS: i64 = 200;
+
 /// 循环相位(对等 WIT `liuma:loop/driver` phase;最小集)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
@@ -439,6 +443,36 @@ impl LoopEngine {
     /// 共享日志(宿主闸门派生用)
     pub fn log(&self) -> Arc<Mutex<EventLog>> {
         Arc::clone(&self.log)
+    }
+
+    /// 压缩进度事件(ignorable;相位 = 真实边界 summarize→commit→
+    /// done/failed,字符数单调不减,耗时由注入时钟算得)。
+    /// UI 进度条的唯一数据源:分子 = 真实已生成正文字符数,分母由
+    /// 前端按前缀估算(永不到 100%,完成由 done 宣告)。
+    fn progress_event(
+        clock: &(dyn Fn() -> i64 + Send + Sync),
+        phase: &str,
+        chars: usize,
+        started_ms: i64,
+        range: &liuma_compaction::CompactRange,
+        manual: bool,
+    ) -> EventEnvelope {
+        let now = clock();
+        EventEnvelope::new_ignorable(
+            "compaction/progress",
+            now,
+            serde_json::json!({
+                "phase": phase,
+                "generatedChars": chars as u64,
+                "elapsedMs": (now - started_ms).max(0) as u64,
+                // 前缀 token 估算 = UI 进度条的分母(摘要长度与折叠前缀
+                // 同量级,条因此有真实刻度且永不到 100%)
+                "estimatedTokens": range.estimated_tokens,
+                "throughSeq": range.through_seq,
+                "items": range.fold_len,
+                "manual": manual,
+            }),
+        )
     }
 
     /// 追加事件:先记录(log + sink)再返回 seq——记录优先
@@ -1600,9 +1634,64 @@ impl LoopEngine {
         // 前缀 = 派生面头部到切点(含上次 checkpoint 占位;prefix_len
         // 已把该偏移算入——切 fold_len 会漏掉 through_seq 指向的尾条)
         let fold_messages = Value::Array(arr[..range.prefix_len].to_vec());
-        let summary = match transport.summarize(header, &fold_messages).await {
+        let manual = threshold.is_none();
+        let started_ms = clock();
+        // 进度相位(真实边界;UI 进度条的唯一数据源):
+        // summarize(本条即开始信号,自动路径此前对桌面完全不可见)
+        // → commit(摘要已返回,进入落档)→ done / failed(终局契约:
+        // 每条退出路径必发,否则自动路径的静默失败会让 UI 悬死)
+        Self::commit(
+            log,
+            Self::progress_event(clock, "summarize", 0, started_ms, &range, manual),
+            sink,
+        )?;
+        // observed = 最新真实值(终局相位带上它);emitted = 上次落档值
+        // (节流基准)——两者分开,收尾事件不因节流而丢最终字符数
+        let mut observed_chars = 0usize;
+        let mut emitted_chars = 0usize;
+        let mut last_emit_ms = started_ms;
+        let mut progress = |chars: usize| {
+            observed_chars = chars;
+            // 节流:字符增量 ≥ max(64, 2%) 或距上次 ≥ 200ms 才落一条
+            // (逐 token 落档会灌爆日志与 durability sink)
+            let step = 64.max(emitted_chars / 50);
+            let now = clock();
+            if chars < emitted_chars + step && now - last_emit_ms < PROGRESS_MIN_INTERVAL_MS {
+                return;
+            }
+            emitted_chars = chars;
+            last_emit_ms = now;
+            if let Err(e) = Self::commit(
+                log,
+                Self::progress_event(clock, "summarize", chars, started_ms, &range, manual),
+                sink,
+            ) {
+                // 回调不能上抛:后续落档失败会走 ? 传播,此处留痕即可
+                eprintln!("[liuma-agent-loop] 压缩进度落档失败: {e}");
+            }
+        };
+        let summary = match transport
+            .summarize_stream(header, &fold_messages, &mut progress)
+            .await
+        {
             Ok(s) => s,
             Err(e) => {
+                // 终局 failed 先落(自动路径失败是静默 Skipped,不落
+                // compaction/summary|error——UI 靠这条清位)
+                if let Err(ce) = Self::commit(
+                    log,
+                    Self::progress_event(
+                        clock,
+                        "failed",
+                        observed_chars,
+                        started_ms,
+                        &range,
+                        manual,
+                    ),
+                    sink,
+                ) {
+                    eprintln!("[liuma-agent-loop] 压缩终局落档失败: {ce}");
+                }
                 // 自动折叠失败(超时/拒绝):跳过折叠,历史保持完整,本次
                 // turn 不受阻(不落 compaction/summary → 后续可见面与日志
                 // 一致,不变式保持);手动失败上抛给调用方处置
@@ -1613,6 +1702,11 @@ impl LoopEngine {
                 return Err(LoopError::Log(format!("压缩失败:{e}")));
             }
         };
+        Self::commit(
+            log,
+            Self::progress_event(clock, "commit", observed_chars, started_ms, &range, manual),
+            sink,
+        )?;
         let seq = Self::commit(
             log,
             EventEnvelope::new(
@@ -1633,6 +1727,12 @@ impl LoopEngine {
                     "shadowedTokens": range.estimated_tokens,
                 }),
             ),
+            sink,
+        )?;
+        // 终局 done:落档完成(UI 据此补满进度条并沉降为标记行)
+        Self::commit(
+            log,
+            Self::progress_event(clock, "done", observed_chars, started_ms, &range, manual),
             sink,
         )?;
         // 压缩后上下文占用估算(字符÷4):摘要请求不经 stats 审计

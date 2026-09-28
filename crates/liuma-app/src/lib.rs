@@ -846,15 +846,21 @@ where
     /// 无压力阈值门槛,选段/摘要/落档与自动折叠同路径;失败上抛。
     /// 返回 `Some((seq, items, tokens))` = 落档的 compaction/summary
     /// 事件 seq 与压缩统计;`None` = 无可压缩历史。
-    pub async fn compact_now(&mut self) -> Result<Option<(u64, u64, u64)>> {
+    ///
+    /// `on_event` = 渲染广播位(帧/轨迹增量/stats;与 turn 同款):
+    /// 压缩期间引擎落的 `compaction/progress` 靠它实时到达桌面——
+    /// 空闭包会让进度一个字节都发不出去(手动路径曾如此)。
+    pub async fn compact_now(
+        &mut self,
+        on_event: &mut (dyn FnMut(&EventEnvelope) + Send),
+    ) -> Result<Option<(u64, u64, u64)>> {
         self.refresh_header();
         let Session { engine, gate, .. } = self;
         // 持久化由装配点的 durability sink 独占(单写权威);此 sink 只是
         // 渲染广播位——再写一次盘会把同一 seq 落两行,重载即被连续性
         // 守卫拒收
-        let mut sink = |_ev: &EventEnvelope| {};
         let clock = wall_clock;
-        match engine.compact_now(gate, &clock, &mut sink).await {
+        match engine.compact_now(gate, &clock, on_event).await {
             Ok(liuma_agent_loop::FoldOutcome::Folded { seq, items, tokens }) => {
                 Ok(Some((seq, items, tokens)))
             }
@@ -1346,7 +1352,10 @@ mod tests {
         // 保留尾压到 1:小会话也能压出前缀
         session.engine.set_fold_thresholds(0, 1);
 
-        let outcome = session.compact_now().await.unwrap();
+        let outcome = session
+            .compact_now(&mut |_ev: &liuma_session::EventEnvelope| {})
+            .await
+            .unwrap();
         assert!(outcome.is_some(), "可折叠历史应折叠落档");
 
         // 文件每 seq 恰一行且连续(重复 seq = 双写)

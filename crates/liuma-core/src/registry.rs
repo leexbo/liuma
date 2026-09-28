@@ -84,10 +84,14 @@ impl AnySession {
 
     /// 手动压缩(/compact):返回 `Some((seq, items, tokens))` =
     /// 落档 compaction/summary 的 seq 与统计;None = 无可压缩。
-    async fn compact_now(&mut self) -> anyhow::Result<Option<(u64, u64, u64)>> {
+    /// `on_event` 见 [`crate::Session::compact_now`](渲染广播位)。
+    async fn compact_now(
+        &mut self,
+        on_event: &mut (dyn FnMut(&liuma_session::EventEnvelope) + Send),
+    ) -> anyhow::Result<Option<(u64, u64, u64)>> {
         match self {
-            AnySession::Real(s) => s.compact_now().await,
-            AnySession::Fake(s) => s.compact_now().await,
+            AnySession::Real(s) => s.compact_now(on_event).await,
+            AnySession::Fake(s) => s.compact_now(on_event).await,
         }
     }
 
@@ -7556,13 +7560,32 @@ async fn handle_driver_cmd(
         DriverCmd::Compact => {
             // 手动压缩:摘要调用可达分钟级,await 阻塞的是驱动循环本身
             // (turn 间隙),新输入在队列排队、压完即处理(维护任务独占、
-            // 插话排队语义)。成功广播 summary(桌面标记行);
+            // 插话排队语义)。压缩期间的 compaction/progress 与收口的
+            // summary 经**与 turn 同款的渲染 sink** 实时下发(translate
+            // 帧 + 轨迹增量)——此前传空闭包,进度一个字节都到不了桌面
+            // (最久的维护任务反而最不可见);summary 随 sink 出帧,不再
+            // 额外 broadcast_event(同帧重复)。
             // 失败/空落 compaction/error(kind 区分:empty=无历史可压,
-            // 桌面渲染用中性文案而非英文原文;error=真实失败,红色告警)
-            match session.compact_now().await {
-                Ok(Some((seq, _, _))) => {
-                    broadcast_event(provider_info, &inner.log, session_id, mux, Some(seq));
+            // 桌面渲染期换词典;error=真实失败,红色告警)
+            let mut translator = Translator::new(provider_info.clone());
+            {
+                // 预热:translator 依全量事件演进(与 broadcast_event 同;
+                // 一次日志扫描,相对分钟级摘要是零成本)
+                let log = inner.log.lock_recover();
+                for ev in log.iter() {
+                    translator.translate(ev);
                 }
+            }
+            let mut sink = |ev: &EventEnvelope| {
+                if let Some(event) = translator.translate(ev)
+                    && let Some(f) = event_frame(session_id, event)
+                {
+                    let _ = mux.send(f);
+                }
+                feed_trajectory_delta(session_id, &inner.traj, ev, mux);
+            };
+            match session.compact_now(&mut sink).await {
+                Ok(Some(_)) => {}
                 Ok(None) => {
                     if let Ok(seq) = session.session_event(
                         "compaction/error",
