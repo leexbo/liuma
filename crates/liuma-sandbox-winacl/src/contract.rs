@@ -430,18 +430,21 @@ mod tests {
         );
     }
 
-    /// 程序解析:显式路径原样、裸名按 PATH × PATHEXT、找不到就原样交回
+    /// 程序解析:显式路径原样、裸名按 PATH × PATHEXT、找不到就原样交回。
+    /// 命中形状镜像生产的 `join` 构造:分隔符是宿主方言,不得写进断言
+    /// (写死反斜杠字面量会让本用例在非 Windows 上恒红)
     #[test]
     fn resolve_program_covers_path_forms() {
         let dirs = vec![PathBuf::from(r"C:\tools")];
         let exts = vec![".EXE".to_string(), ".CMD".to_string()];
+        let hit = dirs[0].join("thing.CMD");
         let exists = |p: &PathBuf| {
             p.to_string_lossy()
-                .eq_ignore_ascii_case(r"C:\tools\thing.CMD")
+                .eq_ignore_ascii_case(&hit.to_string_lossy())
         };
         assert_eq!(
             resolve_program("thing", &dirs, &exts, &exists),
-            r"C:\tools\thing.CMD"
+            hit.display().to_string()
         );
         // 显式路径与带分隔符的路径不查 PATH
         assert_eq!(
