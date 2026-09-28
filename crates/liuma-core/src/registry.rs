@@ -6148,11 +6148,15 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 let text = match result {
                     RpcResult::Ok(value) => {
                         // {sessionId, answer:{answers:[{id, selected[], custom?}]}}
-                        match encode_answers(value) {
+                        let flags = multi_select_flags(&p.frame);
+                        match encode_answers(value, &flags) {
                             Ok(t) => t,
                             Err(e) => {
-                                // 形状不符 = 拒答,不 resolve(保留 pending?已 remove。
-                                // 这里超纲——直接以错误回给模型,不重复挂起)
+                                // 形状不符 = 拒答,不重复挂起。裁决同时回给工具:
+                                // 只丢 tx 会让模型看到笼统的「未被应答」,把
+                                // 「哪一项形状不合法」这类可诊断的拒绝伪装成
+                                // 用户没答
+                                let _ = tx.send(Err(e.clone()));
                                 return RespondReceipt {
                                     accepted: false,
                                     reason: Some(e),
@@ -7299,10 +7303,32 @@ fn outcome_name(outcome: liuma_tools::ApprovalOutcome) -> &'static str {
     }
 }
 
+/// 未决问询帧里每题的「多选」标志(question id → multiSelect)。
+/// 帧载荷形状意外一律缺席,查不到按单选 —— 校验落在最严侧。
+fn multi_select_flags(frame: &ServerRequest) -> HashMap<String, bool> {
+    frame.payload["questions"]
+        .as_array()
+        .map(|questions| {
+            questions
+                .iter()
+                .filter_map(|q| {
+                    let id = q["id"].as_str()?;
+                    Some((id.to_string(), q["multiSelect"].as_bool().unwrap_or(false)))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// 问题应答编码(questionResponsePayloadSchema 校验 + 工具结果形状)。
-/// 校验:sessionId 匹配非空、answers 为数组、每项 id/selected 在场、单选 selected≤1、
-/// selected 与 custom 互斥;返回工具结果文本 JSON `{"answers":[{id,selected[],custom?}]}`。
-fn encode_answers(value: &Value) -> Result<String, String> {
+/// 校验:sessionId 匹配非空、answers 为数组、每项 id/selected 在场、**单选**
+/// selected≤1、selected 与 custom 互斥;返回工具结果文本 JSON
+/// `{"answers":[{id,selected[],custom?}]}`。
+///
+/// 「≤1」是单选题的形状约束,判据来自问询帧的 `multiSelect`(`flags`):多选
+/// 题选 N 项本就是合法答案,曾一律按单选拒 → 整份载荷被退、pending 连带清空,
+/// 模型只看到「未被应答」。
+fn encode_answers(value: &Value, flags: &HashMap<String, bool>) -> Result<String, String> {
     let answers = value["answer"]["answers"]
         .as_array()
         .ok_or_else(|| "缺少 answer.answers 数组".to_string())?;
@@ -7314,8 +7340,8 @@ fn encode_answers(value: &Value) -> Result<String, String> {
         let selected = a["selected"]
             .as_array()
             .ok_or_else(|| "answer 需要 selected 数组".to_string())?;
-        if selected.len() > 1 {
-            return Err("单选 selected 不能超过 1 项".to_string());
+        if selected.len() > 1 && !flags.get(id).copied().unwrap_or(false) {
+            return Err(format!("单选题 {id} 的 selected 不能超过 1 项"));
         }
         let selected: Vec<&str> = selected.iter().filter_map(|s| s.as_str()).collect();
         let custom = a.get("custom").and_then(|c| c.as_str());
@@ -11179,6 +11205,105 @@ mod tests {
         assert!(text.contains("是"));
     }
 
+    /// 多选题的 selected 可以有 N 项。回归锚:旧实现不区分单选/多选,一律按
+    /// 「selected 不能超过 1 项」退掉**整份**载荷,pending 连带清空 —— 用户
+    /// 逐题选完点提交,模型却只拿到「未被应答」。判据只能来自问询帧的
+    /// `multiSelect`,故这里把两道题(多选 + 单选)放同一份载荷里过一遍。
+    #[tokio::test]
+    async fn multi_select_answer_keeps_every_selection() {
+        let host = temp_host("ask-multi");
+        let id = host.create_session(None, None, None);
+        let mut mux = host.mux_subscribe();
+        let questions = vec![
+            liuma_tools::QuestionItem {
+                id: "q1".into(),
+                question: "选哪些?".into(),
+                header: None,
+                options: ["甲", "乙", "丙"]
+                    .iter()
+                    .map(|label| liuma_tools::QuestionOption {
+                        label: (*label).into(),
+                        description: None,
+                    })
+                    .collect(),
+                multi_select: true,
+            },
+            liuma_tools::QuestionItem {
+                id: "q2".into(),
+                question: "继续?".into(),
+                header: None,
+                options: vec![liuma_tools::QuestionOption {
+                    label: "是".into(),
+                    description: None,
+                }],
+                multi_select: false,
+            },
+        ];
+        let host2 = host.clone();
+        let sid = id.clone();
+        let ask_task = tokio::spawn(async move { host2.ask_questions(&sid, &questions).await });
+        let f = recv_until(&mut mux, |f| f.method == "question/requested")
+            .await
+            .expect("应收到 question/requested");
+        let receipt = host.respond(
+            &f.rpc_id,
+            &RpcResult::Ok(json!({
+                "sessionId": id,
+                "answer": { "answers": [
+                    { "id": "q1", "selected": ["甲", "丙"] },
+                    { "id": "q2", "selected": ["是"] },
+                ] },
+            })),
+        );
+        assert!(receipt.accepted, "多选两项应被接受:{:?}", receipt.reason);
+        let text = ask_task.await.unwrap().unwrap();
+        assert!(
+            text.contains("甲") && text.contains("丙"),
+            "多选的两项都应回填,不得只留第一项:{text}"
+        );
+    }
+
+    /// 单选题的「至多一项」不得随上一条一起被放宽;且裁决缘由要回给工具 ——
+    /// 只丢 tx 会让模型看到笼统的「未被应答」,把可诊断的形状拒绝伪装成
+    /// 用户没作答。
+    #[tokio::test]
+    async fn single_select_answer_rejects_two_selections() {
+        let host = temp_host("ask-single");
+        let id = host.create_session(None, None, None);
+        let mut mux = host.mux_subscribe();
+        let questions = vec![liuma_tools::QuestionItem {
+            id: "q1".into(),
+            question: "继续?".into(),
+            header: None,
+            options: ["甲", "乙"]
+                .iter()
+                .map(|label| liuma_tools::QuestionOption {
+                    label: (*label).into(),
+                    description: None,
+                })
+                .collect(),
+            multi_select: false,
+        }];
+        let host2 = host.clone();
+        let sid = id.clone();
+        let ask_task = tokio::spawn(async move { host2.ask_questions(&sid, &questions).await });
+        let f = recv_until(&mut mux, |f| f.method == "question/requested")
+            .await
+            .expect("应收到 question/requested");
+        let receipt = host.respond(
+            &f.rpc_id,
+            &RpcResult::Ok(json!({
+                "sessionId": id,
+                "answer": { "answers": [ { "id": "q1", "selected": ["甲", "乙"] } ] },
+            })),
+        );
+        assert!(!receipt.accepted, "单选题选两项应被拒");
+        let reason = receipt.reason.unwrap_or_default();
+        assert!(reason.contains("q1"), "裁决缘由应指名道姓:{reason}");
+        let err = ask_task.await.unwrap().unwrap_err();
+        assert_eq!(err, reason, "工具侧应拿到裁决缘由,而不是「未被应答」");
+    }
+
     /// 答题卡期间「停止」能真正中止:ask 阻塞在 rx 时会话软取消令牌触发
     /// → 清 pending、工具返回 Err、引擎下一安全点收尾 turn。
     /// 回归锚:工具执行是引擎里的裸 await,取消检查点在其后——不在此处
@@ -11230,26 +11355,61 @@ mod tests {
         assert_eq!(resolved.payload["questionRpcId"], rpc_id);
     }
 
-    /// encode_answers 校验(单选≤1/缺 id/非法形状)
+    /// encode_answers 校验(单选≤1/多选题放行/缺 id/非法形状)
     #[test]
     fn encode_answers_validates() {
-        let ok = encode_answers(&json!({
-            "answer": { "answers": [ { "id": "q1", "selected": ["是"] } ] },
-        }))
+        let picks = |pairs: &[(&str, bool)]| {
+            pairs
+                .iter()
+                .map(|(id, multi)| ((*id).to_string(), *multi))
+                .collect::<HashMap<_, _>>()
+        };
+        let ok = encode_answers(
+            &json!({
+                "answer": { "answers": [ { "id": "q1", "selected": ["是"] } ] },
+            }),
+            &picks(&[("q1", false)]),
+        )
         .unwrap();
         assert!(ok.contains("\"q1\""));
         // 单选超 1 → 拒
         assert!(
-            encode_answers(&json!({
-                "answer": { "answers": [ { "id": "q1", "selected": ["a", "b"] } ] },
-            }))
+            encode_answers(
+                &json!({
+                    "answer": { "answers": [ { "id": "q1", "selected": ["a", "b"] } ] },
+                }),
+                &picks(&[("q1", false)]),
+            )
+            .is_err()
+        );
+        // 多选超 1 → 放行(形状约束只对单选题成立)
+        assert!(
+            encode_answers(
+                &json!({
+                    "answer": { "answers": [ { "id": "q1", "selected": ["a", "b"] } ] },
+                }),
+                &picks(&[("q1", true)]),
+            )
+            .is_ok()
+        );
+        // 帧里查不到该题(标志缺席)→ 按单选,仍拒
+        assert!(
+            encode_answers(
+                &json!({
+                    "answer": { "answers": [ { "id": "q9", "selected": ["a", "b"] } ] },
+                }),
+                &picks(&[("q1", true)]),
+            )
             .is_err()
         );
         // 缺 id → 拒
         assert!(
-            encode_answers(&json!({
-                "answer": { "answers": [ { "selected": [] } ] },
-            }))
+            encode_answers(
+                &json!({
+                    "answer": { "answers": [ { "selected": [] } ] },
+                }),
+                &picks(&[]),
+            )
             .is_err()
         );
     }
