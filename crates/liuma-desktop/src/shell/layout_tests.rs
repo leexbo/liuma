@@ -2484,6 +2484,90 @@ fn chat_body_text_is_drag_selectable(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// mermaid 卡「代码」态的源码可拖选。手绘期这块是普通 div(不可选),
+/// 「点一下回图表」还会把拖选一起挡掉;现走库 Base `TextView`(自带选区
+/// participant),拖选即取得到源码文本。锁的是结果:选中文本非空且确为
+/// 图源(不是空白或别的元素)。
+#[gpui_kit::test]
+fn mermaid_code_view_is_drag_selectable(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "mermaid-sel");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.run_until_parked();
+    };
+    let bounds = wcx
+        .debug_bounds("composer-hit")
+        .expect("composer 输入区缺失");
+    wcx.simulate_click(
+        gpui_kit::Point {
+            x: bounds.origin.x + bounds.size.width / 2.,
+            y: bounds.origin.y + bounds.size.height / 2.,
+        },
+        gpui_kit::Modifiers::default(),
+    );
+    wcx.run_until_parked();
+    wcx.simulate_input("查看 mermaid 演示");
+    wcx.simulate_keystrokes("enter");
+    wcx.run_until_parked();
+    // 等卡片出现(演示首段含 mermaid 围栏)
+    let mut card_sel: Option<String> = None;
+    for _ in 0..80 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        redraw(cx, &mut wcx);
+        if let Some(src) = cx.update(|app| {
+            store
+                .read(app)
+                .current_nodes()
+                .iter()
+                .find_map(|n| match n {
+                    ChatNode::Assistant { text, .. } if !text.is_empty() => {
+                        first_mermaid_source(text)
+                    }
+                    _ => None,
+                })
+        }) {
+            let card_key = crate::features::chat::mermaid_plugin::mermaid_card_key(&src);
+            let sel: &'static str = Box::leak(format!("{card_key}-md-mermaid-0").into_boxed_str());
+            if wcx.debug_bounds(sel).is_some() {
+                card_sel = Some(sel.to_string());
+                break;
+            }
+        }
+    }
+    let card = card_sel.expect("mermaid 卡片未渲染");
+    // 切到代码态
+    let seg_code = Box::leak(format!("{card}-seg-code").into_boxed_str());
+    click_sel(&mut wcx, seg_code);
+    redraw(cx, &mut wcx);
+    let code_sel = Box::leak(format!("{card}-code").into_boxed_str());
+    let b = wcx.debug_bounds(code_sel).expect("代码态未渲染");
+    let y = b.origin.y + b.size.height / 2.;
+    wcx.simulate_mouse_down(
+        gpui_kit::Point {
+            x: b.origin.x + px(20.),
+            y,
+        },
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    wcx.simulate_mouse_move(
+        gpui_kit::Point {
+            x: b.right() - px(20.),
+            y,
+        },
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    let selected = wcx.update(gpui_kit::base::TextSelection::selected_text);
+    assert!(
+        selected.contains("flowchart") || selected.contains("-->") || selected.contains("graph"),
+        "代码态拖选应取到图源文本,实际 {selected:?}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 用户气泡文字可拖选(原「聊天区域文字都无法选择复制」含用户消息):
 /// 气泡文本经 SelectableText 参与窗口选择,拖选后可取到选中文本。
 #[gpui_kit::test]

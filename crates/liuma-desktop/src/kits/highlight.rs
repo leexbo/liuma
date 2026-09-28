@@ -46,16 +46,22 @@ struct Engine {
 /// syntect 默认语法集缺 TOML(find_syntax_by_token 实测为 None);
 /// 内嵌 Sublime 官方 TOML 语法定义,引擎构建时合并
 const TOML_SYNTAX: &str = include_str!("../../assets/syntaxes/TOML.sublime-syntax");
+/// mermaid 同样不在默认集:图源语法(无状态规则)随二进制分发
+const MERMAID_SYNTAX: &str = include_str!("../../assets/syntaxes/Mermaid.sublime-syntax");
 
 fn engine() -> &'static Engine {
     static ENGINE: OnceLock<Engine> = OnceLock::new();
     ENGINE.get_or_init(|| {
         let mut builder = SyntaxSet::load_defaults_newlines().into_builder();
         // 资产随二进制分发,损坏属分发级异常:降级纯文本不崩(高亮
-        // 完整性由测试锁兜底——toml 高亮用例失败即资产坏)
+        // 完整性由测试锁兜底——toml/mermaid 高亮用例失败即资产坏)
         match SyntaxDefinition::load_from_str(TOML_SYNTAX, true, Some("TOML")) {
             Ok(def) => builder.add(def),
             Err(err) => eprintln!("[liuma-desktop] TOML 语法装载失败,回退纯文本:{err}"),
+        }
+        match SyntaxDefinition::load_from_str(MERMAID_SYNTAX, true, Some("Mermaid")) {
+            Ok(def) => builder.add(def),
+            Err(err) => eprintln!("[liuma-desktop] Mermaid 语法装载失败,回退纯文本:{err}"),
         }
         Engine {
             set: builder.build(),
@@ -436,6 +442,49 @@ pub(crate) fn highlight_window(
     Some(spans)
 }
 
+/// 库 `TextView` 的代码块高亮回调:语言交本仓引擎(syntect + 内嵌语法),
+/// 返回**块内全局字节范围**。库自带那份只认它的 tree-sitter 语法表,
+/// mermaid 不在其中,故凡要染 mermaid 的 TextView 都要挂这一份。
+///
+/// 缓存键取内容哈希:`highlight_window` 的键必须对同一块稳定(否则每帧
+/// 未命中、白算一遍),而回调拿不到块身份,内容哈希即最稳的等价物。
+pub(crate) fn code_block_highlighter()
+-> impl Fn(&gpui_kit::base::text::CodeBlock) -> Vec<(std::ops::Range<usize>, gpui_kit::HighlightStyle)>
++ Send
++ Sync
++ 'static {
+    |block| {
+        let Some(lang) = block.lang() else {
+            return Vec::new();
+        };
+        let code = block.code();
+        let lines: Vec<&str> = code.split('\n').collect();
+        let mut hasher = DefaultHasher::new();
+        code.hash(&mut hasher);
+        let key = format!("md-code-{:x}", hasher.finish());
+        let Some(spans) = highlight_window(&key, Some(lang.as_ref()), &lines) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut line_start = 0;
+        for (line, line_spans) in lines.iter().zip(spans.iter()) {
+            for s in line_spans {
+                let start = line_start + s.offset;
+                out.push((
+                    start..start + s.text.len(),
+                    gpui_kit::HighlightStyle {
+                        color: Some(s.color.into()),
+                        ..Default::default()
+                    },
+                ));
+            }
+            // split('\n') 的还原步长含那个换行本身
+            line_start += line.len() + 1;
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -551,6 +600,106 @@ mod tests {
                 .map(|s| (s.color, s.text.clone()))
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// mermaid 高亮着色锁:语法资产 + 主题 scope 两环都在才有色。
+    /// 断言按**行内多色**给(关键词/箭头/形状/注释各一色),不比具体色值
+    /// —— 色板是 theme 的领地,换盘不该红。
+    #[test]
+    fn mermaid_highlight_colors() {
+        let lines = [
+            "flowchart TD",
+            "  A[用户输入] --> B{意图分类}",
+            "  B -->|失败| C[兜底]",
+            "  %% 注释",
+        ];
+        let spans = highlight("mermaid", &lines).expect("mermaid 高亮应可用");
+        let colors = |ix: usize| {
+            let mut c: Vec<Rgba> = spans[ix].iter().map(|s| s.color).collect();
+            c.dedup();
+            c
+        };
+        assert!(
+            colors(0).len() >= 2,
+            "图型行应有图型关键字与方向两种色:{:?}",
+            spans[0]
+                .iter()
+                .map(|s| (s.color, s.text.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            colors(1).len() >= 2,
+            "节点行应有形状与箭头两种色:{:?}",
+            spans[1]
+                .iter()
+                .map(|s| (s.color, s.text.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            spans[2]
+                .iter()
+                .any(|s| s.text.contains("失败") && s.color == palette::STRING),
+            "边标签应收 STRING 色:{:?}",
+            spans[2]
+                .iter()
+                .map(|s| (s.color, s.text.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            spans[3]
+                .iter()
+                .any(|s| s.text.contains("注释") && s.color == palette::COMMENT),
+            "%% 注释应收 COMMENT 色:{:?}",
+            spans[3]
+                .iter()
+                .map(|s| (s.color, s.text.clone()))
+                .collect::<Vec<_>>()
+        );
+        // 无状态规则:未闭合的字符串/形状不会把后文整段染色
+        let unterminated = highlight("mermaid", &["A[\"没闭合", "B --> C"]).expect("可用");
+        assert!(
+            unterminated[1].iter().all(|s| s.color != palette::STRING),
+            "未闭合字面量不得越行染色:{:?}",
+            unterminated[1]
+                .iter()
+                .map(|s| (s.color, s.text.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// 代码块回调的偏移换算:行内偏移 → **块内**全局偏移(逐行累加,
+    /// 步长含那个换行)。换算错位不会崩,只会把颜色涂到隔壁字符上,
+    /// 故按「切出来的文本 == 原块里那段」逐个验。
+    #[test]
+    fn code_block_highlighter_maps_ranges_to_block_offsets() {
+        let code = "flowchart TD\n  A --> B\n  %% 注\n";
+        let block = gpui_kit::base::text::CodeBlock::from_code(code, Some("mermaid"));
+        let out = code_block_highlighter()(&block);
+        assert!(!out.is_empty(), "mermaid 块应给出高亮范围");
+        for (range, style) in &out {
+            assert!(
+                range.start < range.end && range.end <= code.len(),
+                "范围越界:{range:?}(块长 {})",
+                code.len()
+            );
+            assert!(
+                code.is_char_boundary(range.start) && code.is_char_boundary(range.end),
+                "范围不在字符边界上:{range:?}"
+            );
+            assert!(style.color.is_some(), "范围应带颜色:{range:?}");
+        }
+        // 第二行(带缩进)的箭头必须落在原块里同一个字节位
+        let (arrow, _) = out
+            .iter()
+            .find(|(r, _)| &code[r.clone()] == "-->")
+            .expect("应有箭头范围");
+        assert_eq!(arrow.start, code.find("-->").expect("箭头在块内"));
+        // 第三行的注释同理(这里错位只可能来自行首累加)
+        let (comment, _) = out
+            .iter()
+            .find(|(r, _)| &code[r.clone()] == "%% 注")
+            .expect("应有注释范围");
+        assert_eq!(comment.start, code.find("%% 注").expect("注释在块内"));
     }
 
     /// Light+ 主题构造:浅盘字面值就位(浅色代码块的分发面)

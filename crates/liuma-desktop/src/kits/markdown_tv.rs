@@ -62,6 +62,48 @@ pub(crate) fn tv_static(id: impl Into<gpui_kit::ElementId>, text: &str) -> gpui_
     styled_view(TextView::markdown(id, text).style(view_style()))
 }
 
+/// 卡内代码块(单围栏)。走库 **Base** `TextView` 而非 component 门面,
+/// 门面给不了的两件都在这儿:① 代码块高亮回调只挂在 Base 上
+/// (`code_block_highlighter`);② 拖选 —— 手绘 `SelectableText` 的
+/// `document_order` 只能自定一个值,而聊天正文的 order 由 TextView 全局
+/// 自增,插不进那个序,跨域拖选会把整段会话圈进来;TextView 自带选区
+/// participant 身份,order 与正文同源。代价:围栏行随之不再显示(渲染
+/// 成代码块),复制的仍是纯源码。
+pub(crate) fn tv_code_block(
+    id: impl Into<gpui_kit::ElementId>,
+    lang: &str,
+    code: &str,
+) -> gpui_kit::AnyElement {
+    let text = format!("```{lang}\n{code}\n```");
+    div()
+        .w_full()
+        .min_w(px(0.))
+        .cursor_text()
+        .font_family("Menlo")
+        .text_size(px(13.))
+        .line_height(relative(1.5))
+        .child(
+            gpui_kit::base::text::TextView::markdown(id, text)
+                .style(code_view_style())
+                .code_block_highlighter(crate::kits::highlight::code_block_highlighter()),
+        )
+        .into_any_element()
+}
+
+/// 卡内代码块排版:标题/段落间距都不参与,要压的只有两件 —— 代码底色
+/// (卡片本身已是代码底,库默认再叠一层 `muted` = 双底)与代码字号行高。
+fn code_view_style() -> gpui_kit::base::text::TextViewStyle {
+    gpui_kit::base::text::TextViewStyle::default()
+        .with_foreground(crate::kits::theme::LABEL_2().into())
+        .with_code_background(crate::kits::theme::TRANSPARENT().into())
+        .with_code_block(
+            StyleRefinement::default()
+                .text_size(px(13.))
+                .line_height(relative(1.5)),
+        )
+        .with_dark(crate::kits::theme::is_dark())
+}
+
 /// 驱动结果
 pub(crate) enum DriveOutcome {
     /// 新建视图(>4KiB 历史的首轮解析是异步的,落地晚于挂载)

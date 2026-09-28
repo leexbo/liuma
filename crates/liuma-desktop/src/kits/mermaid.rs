@@ -323,26 +323,18 @@ pub(crate) fn diagram(
     let fallback_src = source.clone();
 
     // 图表体:闭合 + 白名单已过;显示态(图表/代码)经卡片工具条切换。
-    // `on_click` 只挂在 body 上——工具条按钮自处理点击,不冒泡到卡片。
+    // 图态 `on_click` = 放大(图没有可选中文本,手型说得通);代码态**不挂
+    // 点击** —— 那块是要拖选的源码,点一下跳回图表会把拖选一起挡掉,回
+    // 图表走顶部 segment。
     let body: AnyElement = if show_code {
+        let code_sel = format!("{key}-code");
         div()
-            .id(format!("{key}-code"))
-            .font_family("Menlo")
-            .text_size(px(13.))
-            .text_color(theme::LABEL_2())
-            .line_height(gpui_kit::relative(1.5))
-            .cursor_pointer()
-            .on_click({
-                let callbacks = callbacks.clone();
-                let key = key.clone();
-                move |_ev, w, cx| {
-                    if let Some(cb) = &callbacks {
-                        (cb.toggle_code)(&key, w, cx); // 代码态点击 → 回图表
-                    }
-                }
-            })
-            .child("```mermaid\n".to_string() + &source)
-            .child("```")
+            .debug_selector(move || code_sel.clone())
+            .child(crate::kits::markdown_tv::tv_code_block(
+                format!("{key}-code-view"),
+                "mermaid",
+                &source,
+            ))
             .into_any_element()
     } else {
         // 内嵌图沿用 max_w_full fit-width 自适应(天然按 render_size 逻辑

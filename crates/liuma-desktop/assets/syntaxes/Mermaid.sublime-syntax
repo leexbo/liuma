@@ -1,0 +1,73 @@
+%YAML 1.2
+---
+# Mermaid 图源语法定义(syntect 默认语法集不含 mermaid,内嵌补齐,
+# 同 TOML 先例)。**全部规则都是无状态 match**:不 push/set/pop,故不存在
+# 上下文栈泄漏(未闭合的字面量把后文整段染色)——图源是给人看的短片段,
+# 高亮宁可少一层嵌套,也不要有状态。
+name: Mermaid
+file_extensions:
+  - mermaid
+  - mmd
+scope: source.mermaid
+
+contexts:
+  main:
+    # %%{init: {...}}%% 指令(整段一个 scope,内部不再细分;刻意挂
+    # comment 色 —— 本仓主题没有 directive 选择器,而它是同一类旁注)
+    - match: '%%\{.*\}%%'
+      scope: comment.line.percentage.directive.mermaid
+    # %% 注释到行尾
+    - match: '%%.*$'
+      scope: comment.line.percentage.mermaid
+
+    # 节点形状:先于关键字 —— 形状内的文字不该被当成关键字染色
+    - match: '\[\[[^\[\]\n]*\]\]'
+      scope: entity.name.tag.subroutine.mermaid
+    - match: '\[\([^()\n]*\)\]'
+      scope: entity.name.tag.cylinder.mermaid
+    - match: '\[\/[^\/\n]*\/\]'
+      scope: entity.name.tag.lean.mermaid
+    - match: '\[\\[^\\\n]*\\\]'
+      scope: entity.name.tag.lean.mermaid
+    - match: '\(\([^()\n]*\)\)'
+      scope: entity.name.tag.circle.mermaid
+    - match: '\{\{[^{}\n]*\}\}'
+      scope: entity.name.tag.hexagon.mermaid
+    - match: '\[[^\[\]\n]*\]'
+      scope: entity.name.tag.mermaid
+    - match: '\([^()\n]*\)'
+      scope: entity.name.tag.round.mermaid
+    - match: '\{[^{}\n]*\}'
+      scope: entity.name.tag.rhombus.mermaid
+
+    # 边标签 |文字|
+    - match: '\|[^|\n]*\|'
+      scope: string.other.edge-label.mermaid
+
+    # 字符串
+    - match: '"[^"\n]*"'
+      scope: string.quoted.double.mermaid
+    - match: "'[^'\n]*'"
+      scope: string.quoted.single.mermaid
+
+    # 图型声明
+    - match: '\b(?:flowchart|graph|sequenceDiagram|classDiagram|stateDiagram-v2|stateDiagram|erDiagram|journey|gantt|pie|mindmap|timeline|quadrantChart|requirementDiagram|gitGraph|C4Context|C4Container|C4Component|C4Dynamic|C4Deployment|sankey-beta|xychart-beta|block-beta|packet-beta|architecture-beta|kanban)\b'
+      scope: keyword.control.diagram.mermaid
+
+    # 结构/语句关键字
+    - match: '\b(?:subgraph|end|direction|click|call|href|style|classDef|class|linkStyle|participant|actor|note|over|loop|alt|else|opt|par|and|critical|break|rect|activate|deactivate|autonumber|title|section|state|accTitle|accDescr|dateFormat|axisFormat|tickInterval|excludes|todayMarker|linkStyle)\b'
+      scope: keyword.other.mermaid
+
+    # 布局方向
+    - match: '\b(?:TB|TD|BT|LR|RL)\b'
+      scope: constant.language.direction.mermaid
+
+    # 箭头与连线(长形优先;错序会把 --x 拆成 -- 与 x)
+    - match: '(?:<-->|<==>|<-\.->|-->>|<<--|--x|--o|x--|o--|-->|---|==>|===|-\.->|-\.-|~~~|--\)|\(--|&&|\+)'
+      scope: keyword.operator.mermaid
+
+    # 数字与类名
+    - match: '\b\d+(?:\.\d+)?\b'
+      scope: constant.numeric.mermaid
+    - match: ':::[A-Za-z_][\w-]*'
+      scope: entity.name.type.class.mermaid
