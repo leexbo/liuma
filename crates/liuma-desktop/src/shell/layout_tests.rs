@@ -4872,6 +4872,63 @@ fn ask_card_header_states_never_fall_back_to_question(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 问答卡的尺寸档:库 `Questionnaire` 的排版走 token 基准(md = 16px),而
+/// 本仓正文是 11–13px —— 根节点不显式收档就按默认 Medium,题面 18px、选项
+/// 行 44px,整卡比同级卡片大一圈。
+///
+/// 锁在**绝对几何**上:同卡其余断言都是相对的(长文比短文高),对尺寸档
+/// 无感,档位回退时一律照绿。题面行高 20 = xs..sm 档的 14px 文本,28 = 选项
+/// 行最小高;Medium 分别是 28 与 44。
+#[gpui_kit::test]
+fn ask_card_stays_at_the_app_text_scale(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "ask-scale");
+    let sid = cx
+        .update(|app| store.read(app).state.current_id.clone())
+        .expect("自动新建会话应在场");
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().unwrap();
+            let chat = st.state.chats.entry(id).or_default();
+            chat.nodes.push(ChatNode::User {
+                key: "user:seed".into(),
+                text: "先聊着".into(),
+                images: vec![],
+                files: Vec::new(),
+                time: 0,
+            });
+        });
+    });
+    let questions: Vec<serde_json::Value> = serde_json::from_value(serde_json::json!([
+        { "id": "q1", "question": "继续吗?", "multi_select": false,
+          "options": [ { "label": "甲" }, { "label": "乙" } ] }
+    ]))
+    .unwrap();
+    cx.update(|app| store.update(app, |st, cx| st.ask_questions_json(&sid, questions, cx)));
+    let mut popped = false;
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        cx.run_until_parked();
+        if wcx.debug_bounds("ask-question").is_some() {
+            popped = true;
+            break;
+        }
+    }
+    assert!(popped, "问答卡应弹出");
+    let title = wcx.debug_bounds("ask-title").expect("题面在场");
+    assert!(
+        f32::from(title.size.height) <= 22.,
+        "题面行高 {} 超出本仓正文体量(14px 档 = 20;库默认 Medium 是 28)",
+        f32::from(title.size.height)
+    );
+    let opt = wcx.debug_bounds("ask-opt-0").expect("选项壳在场");
+    assert!(
+        f32::from(opt.size.height) <= 32.,
+        "选项行高 {} 超出本仓正文体量(xsmall 档 = 28;库默认 Medium 是 44)",
+        f32::from(opt.size.height)
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 问答卡「其他」输入:草稿不得被渲染期回写打掉(逐帧按值比对 set_value
 /// 会把光标拍回句首、与输入法组合冲突)。
 /// 收编库 `Questionnaire` 后该契约换了持有者:每题一个 `InputState` 归库,

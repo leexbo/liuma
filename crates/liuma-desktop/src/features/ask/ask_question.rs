@@ -10,6 +10,7 @@
 //! 「跳过」),故四处动作件一律挂上,由库决定可见性。
 
 use gpui_kit::component::IconName;
+use gpui_kit::component::Sizable as _;
 use gpui_kit::component::StyledExt;
 use gpui_kit::component::questionnaire::{
     Questionnaire, QuestionnaireActions, QuestionnaireChoice, QuestionnaireChoices,
@@ -108,7 +109,12 @@ pub fn render(
             .p(px(14.))
             .gap(px(10.))
             .child(
+                // xsmall 是全卡唯一的尺寸来源(根节点发布,各部按 state id
+                // 取回):库排版走 token 基准(md=16px),本仓正文是 11–13px,
+                // 取默认 Medium 会让题面 18px、选项 14px 地整体放大一档。
+                // xsmall 落到题面 14px / 选项与描述 12px,与卡壳同体量。
                 Questionnaire::new(&state)
+                    .xsmall()
                     .gap(px(10.))
                     .child(
                         QuestionnaireItem::new(&state, name.clone())
