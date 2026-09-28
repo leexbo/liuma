@@ -3,14 +3,18 @@
 //! 每行 = 状态点 + 任务名 + 副行(prompt 截断 · 结算 detail)+ 运行计时,
 //! 点击跳子会话。数据以 jobs 帧权威,子会话清单补位。
 //! (从 ui::topbar 切出;trigger 挂于顶栏标题右侧操作组。)
+//!
+//! 任务条的折叠头/行列表由库 `Accordion` 托管,外壳(容器 chrome /
+//! 头行几何 / 面板内边距)见 [`crate::kits::collapse_strip`];展开态
+//! 受控,真相源是 `subagents.task_bar_open`。
 
-use gpui_kit::component::{IconName, StyledExt};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
-    Styled, div, px,
+    App, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
+    StatefulInteractiveElement as _, Styled as _, div, px,
 };
 
+use crate::kits::collapse_strip;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -87,15 +91,12 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
     let running_n = chips.iter().filter(|r| r.running).count();
     let open = st.subagents.task_bar_open;
     let s = store.clone();
+    // 头行内容(尾部 chevron 由库 Accordion 追加,开合态自驱);
+    // 头行几何 / 容器 chrome 见 kits::collapse_strip
     let mut head = div()
-        .id("task-bar-head")
-        .debug_selector(|| "task-bar-head".to_string())
         .flex()
-        .h(px(30.))
         .items_center()
         .gap(px(8.))
-        .px(px(12.))
-        .cursor_pointer()
         .child(fixed(LiumaIcon::Workflow, 14.).text_color(theme::LABEL_2()))
         .child(
             div()
@@ -113,21 +114,7 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                 } else {
                     dict::misc::ended().to_string()
                 }),
-        )
-        .child(
-            fixed(
-                if open {
-                    IconName::ChevronUp
-                } else {
-                    IconName::ChevronDown
-                },
-                14.,
-            )
-            .text_color(theme::CAPTION()),
-        )
-        .on_click(move |_, _, cx| {
-            s.update(cx, |st, cx| st.toggle_task_bar(cx));
-        });
+        );
     // 子会话视图:标题行尾缀「主线」返回钮(不挤列表行)
     if viewing_child {
         let s_main = store.clone();
@@ -255,27 +242,14 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                 .into_any_element()
         })
         .collect();
-    let list = open.then(|| {
-        div()
-            .v_flex()
-            .gap(px(2.))
-            .px(px(8.))
-            .pb(px(8.))
-            .children(list_rows)
-    });
-    Some(
-        div()
-            .id("task-bar")
-            .debug_selector(|| "task-bar".to_string())
-            .w_full()
-            .v_flex()
-            .rounded(px(14.))
-            .border_1()
-            .border_color(theme::BORDER())
-            .bg(theme::LAYER())
-            .overflow_hidden()
-            .child(head)
-            .when_some(list, |el, list| el.child(list))
-            .into_any_element(),
-    )
+    Some(collapse_strip::strip(
+        "task-bar",
+        open,
+        head,
+        8.,
+        list_rows,
+        move |open, _, cx| {
+            s.update(cx, |st, cx| st.set_task_bar_open(open, cx));
+        },
+    ))
 }

@@ -51,9 +51,15 @@ impl AppStore {
             .unwrap_or_else(|| session_id.to_string())
     }
 
-    /// 任务条列表折叠/展开(标题行点击)
-    pub fn toggle_task_bar(&mut self, cx: &mut Context<Self>) {
-        self.subagents.task_bar_open = !self.subagents.task_bar_open;
+    /// 任务条展开态写入。开合请求源自 Accordion 触发器,给的是**结果态**
+    /// (点击后的开集)而非「切换」请求;同值不触发重渲——库根节点的点击
+    /// 回调对**面板内**的点击同样会触发(冒泡),靠这里的幂等挡住,否则点
+    /// 一行子代理切会话会顺带把条收起。
+    pub fn set_task_bar_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.subagents.task_bar_open == open {
+            return;
+        }
+        self.subagents.task_bar_open = open;
         cx.notify();
     }
 

@@ -1894,9 +1894,14 @@ impl AppStore {
         cx.notify();
     }
 
-    /// TodoDock 展开/折叠
-    pub fn toggle_todo(&mut self, cx: &mut Context<Self>) {
-        self.chat.todo_open = !self.chat.todo_open;
+    /// TodoDock 展开态写入。开合请求源自 Accordion 触发器,给的是**结果
+    /// 态**(点击后的开集)而非「切换」请求;同值不触发重渲——库根节点
+    /// 的点击回调对**面板内**的点击同样会触发(冒泡),靠这里的幂等挡住。
+    pub fn set_todo_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.chat.todo_open == open {
+            return;
+        }
+        self.chat.todo_open = open;
         cx.notify();
     }
 

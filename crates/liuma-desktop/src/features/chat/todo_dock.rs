@@ -1,15 +1,16 @@
 //! TodoDock:composer 上方的计划条,默认折叠一行
 //! (标题 + 计数);展开为条目列表。空列表不渲染。
+//!
+//! 开合行为归库 `Accordion`,外壳(容器 chrome / 头行几何 / 面板内边距)
+//! 见 [`crate::kits::collapse_strip`]。展开态受控:真相源仍是
+//! `chat.todo_open`,由 `on_toggle` 回传的结果态写回。
 
-use gpui_kit::component::IconName;
-use gpui_kit::component::StyledExt;
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
-    Styled, div, px,
+    App, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Styled as _, div, px,
 };
 
 use super::projection::TodoItem;
+use crate::kits::collapse_strip;
 use crate::kits::i18n::dict;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
@@ -25,67 +26,34 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
     let open = st.chat.todo_open;
     let counts = todo_counts(&chat.todos);
     let s = store.clone();
-    Some(
+    Some(collapse_strip::strip(
+        "todo-dock",
+        open,
         div()
-            .id("todo-dock")
-            // 测试钩子:tab 门控断言(release 空操作)
-            .debug_selector(|| "todo-dock".to_string())
-            .w_full()
-            .v_flex()
-            .rounded(px(14.))
-            .border_1()
-            .border_color(theme::BORDER())
-            .bg(theme::LAYER())
-            .overflow_hidden()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(fixed(LiumaIcon::ListChecks, 14.).text_color(theme::LABEL_2()))
             .child(
                 div()
-                    .id("todo-dock-head")
-                    .flex()
-                    .h(px(30.))
-                    .items_center()
-                    .gap(px(8.))
-                    .px(px(12.))
-                    .cursor_pointer()
-                    .child(fixed(LiumaIcon::ListChecks, 14.).text_color(theme::LABEL_2()))
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(theme::LABEL_2())
-                            .child(dict::shell::plan_tab()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(11.))
-                            .text_color(theme::CAPTION())
-                            .child(dict::chat::todo_counts(counts.0, counts.1, counts.2)),
-                    )
-                    .child(
-                        fixed(
-                            if open {
-                                IconName::ChevronUp
-                            } else {
-                                IconName::ChevronDown
-                            },
-                            14.,
-                        )
-                        .text_color(theme::CAPTION()),
-                    )
-                    .on_click(move |_, _, cx| {
-                        s.update(cx, |st, cx| st.toggle_todo(cx));
-                    }),
+                    .text_size(px(12.))
+                    .text_color(theme::LABEL_2())
+                    .child(dict::shell::plan_tab()),
             )
-            .when(open, |el| {
-                el.child(
-                    div()
-                        .v_flex()
-                        .gap(px(2.))
-                        .px(px(12.))
-                        .pb(px(8.))
-                        .children(chat.todos.iter().map(todo_row).collect::<Vec<_>>()),
-                )
-            }),
-    )
+            .child(
+                div()
+                    .debug_selector(|| "todo-dock-count".to_string())
+                    .flex_1()
+                    .text_size(px(11.))
+                    .text_color(theme::CAPTION())
+                    .child(dict::chat::todo_counts(counts.0, counts.1, counts.2)),
+            ),
+        12.,
+        chat.todos.iter().map(todo_row).collect::<Vec<_>>(),
+        move |open, _, cx| {
+            s.update(cx, |st, cx| st.set_todo_open(open, cx));
+        },
+    ))
 }
 
 /// 单条 todo(状态点 + 内容;todo_write 工具卡展开体复用同一视觉)

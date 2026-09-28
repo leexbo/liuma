@@ -9540,6 +9540,192 @@ fn task_bar_switches_between_main_and_subagent(cx: &mut gpui_kit::TestAppContext
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 点折叠条的头行。**不取条心**:展开时条心落在面板里,而库 Accordion
+/// 的根点击回调对面板内的点击同样会触发(`open_indices` 不变 → 结果是
+/// 幂等的空操作),取条心点不动它。头行高 30px,取条顶内侧一点。
+fn click_strip_head(wcx: &mut gpui_kit::VisualTestContext, sel: &'static str) {
+    let b = wcx
+        .debug_bounds(sel)
+        .unwrap_or_else(|| panic!("selector {sel} bounds 缺失"));
+    wcx.simulate_click(
+        gpui_kit::Point {
+            x: b.origin.x + px(40.),
+            y: b.origin.y + px(15.),
+        },
+        gpui_kit::Modifiers::default(),
+    );
+}
+
+/// 推进动画时钟 n 帧。库 Accordion 的进场与退场都走弹簧,**静置等不到**
+/// (只 `refresh` 不推时钟,`progress` 停在原地),必须显式 `advance_clock`。
+fn advance_spring(wcx: &mut gpui_kit::VisualTestContext, frames: usize) {
+    for _ in 0..frames {
+        wcx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
+        wcx.refresh().expect("刷新失败");
+    }
+}
+
+/// 推进动画时钟直到面板卸载。库 Accordion 关闭时面板**不立即**卸载
+/// (`keep_mounted(progress != 0.)`),要等弹簧收敛到 0。
+fn settle_panel_gone(wcx: &mut gpui_kit::VisualTestContext, sel: &'static str) {
+    for _ in 0..120 {
+        wcx.refresh().expect("刷新失败");
+        if wcx.debug_bounds(sel).is_none() {
+            return;
+        }
+        wcx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
+    }
+    panic!("面板 {sel} 未在 120 帧内卸载");
+}
+
+/// 折叠条的库 Accordion 收编端到端(计划条 + 子代理任务条,同一外壳):
+/// 点折叠头 → 受控态写回 → 面板进出场;收起后条本身仍在场;关闭动画
+/// 结束后面板才卸载。
+/// 锁:`kits::collapse_strip` 的「触发器 = 头行、面板 = 行列表」契约,
+/// 以及两处 store 的结果态写回(误用 toggle 会让面板内点击连带收起)。
+#[gpui_kit::test]
+fn collapse_strips_toggle_their_panels(cx: &mut TestAppContext) {
+    use crate::features::chat::projection::{ChatNode, ChatState, TodoItem};
+
+    let (store, mut wcx, root) = menu_harness(cx, "strips");
+
+    // 空会话处于 hero 态(聊天栈不渲染):注入一条用户消息进入对话视图;
+    // 顺带注入两条 todo 与一个运行中子代理,让两条折叠条都在场
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            let mut chat = ChatState::default();
+            chat.nodes.push(ChatNode::User {
+                key: "user:1".into(),
+                text: "先列个计划".into(),
+                images: vec![],
+                files: Vec::new(),
+                time: 0,
+            });
+            chat.todos = vec![
+                TodoItem {
+                    content: "第一步".into(),
+                    status: "completed".into(),
+                },
+                TodoItem {
+                    content: "第二步".into(),
+                    status: "in_progress".into(),
+                },
+            ];
+            st.state.chats.insert(id.clone(), chat);
+            st.state.jobs_by_id.insert(
+                id,
+                vec![serde_json::json!({
+                    "id": "sub-1", "kind": "subagent", "label": "统计仓库 TODO",
+                    "status": "running", "startedAt": 1_000, "prompt": "请统计",
+                })],
+            );
+            cx.notify();
+        })
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+
+    // ── 计划条:默认折叠(todo_open 初值 false),面板行不在场
+    // 两个 bounds 必须在同一次 refresh 之后连读:中间夹 `cx.update` 会让
+    // 测试上下文跑一帧,坐标系随之漂移(实测条 y 挪了 29px)
+    wcx.refresh().expect("刷新失败");
+    let dock = wcx.debug_bounds("todo-dock").expect("计划条未出现");
+    let count = wcx.debug_bounds("todo-dock-count").expect("计划条计数缺失");
+    let collapsed = dock.size.height;
+    // 头行是横排:图标 + 标题落在计数条左侧。若退化成竖排(库的触发器
+    // 默认 `h_flex`,内容自己再套一层方向就会翻),计数条会顶到头行左
+    // 内边距上,此时库追加的 chevron 也就没了右缘可落
+    assert!(
+        count.origin.x > dock.origin.x + px(40.),
+        "头行未横排(图标/标题应在计数条左侧): dock={dock:?} count={count:?}"
+    );
+    assert!(
+        !cx.update(|app| store.read(app).chat.todo_open),
+        "计划条应默认折叠"
+    );
+
+    // 点折叠头 → 展开:受控态写回 + 条被面板撑高
+    click_strip_head(&mut wcx, "todo-dock");
+    cx.run_until_parked();
+    assert!(
+        cx.update(|app| store.read(app).chat.todo_open),
+        "点折叠头未展开计划条"
+    );
+    advance_spring(&mut wcx, 60);
+    cx.run_until_parked();
+    let expanded = wcx
+        .debug_bounds("todo-dock")
+        .expect("计划条未出现")
+        .size
+        .height;
+    assert!(
+        expanded > collapsed,
+        "展开后计划条未变高(面板未进场): {collapsed:?} → {expanded:?}"
+    );
+
+    // 面板内的点击会冒泡到库根节点的回调,而那里给的开集**没变** ——
+    // 结果态写入在此是空操作。若把 store 的 set_* 退回 toggle,
+    // 点一下面板就会把条误收起。
+    let b = wcx.debug_bounds("todo-dock").expect("计划条未出现");
+    wcx.simulate_click(
+        gpui_kit::Point {
+            x: b.origin.x + px(20.),
+            y: b.origin.y + b.size.height - px(6.),
+        },
+        gpui_kit::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    assert!(
+        cx.update(|app| store.read(app).chat.todo_open),
+        "面板内点击把计划条误收起了(结果态写入退化成了 toggle)"
+    );
+
+    // 再点 → 收起
+    click_strip_head(&mut wcx, "todo-dock");
+    cx.run_until_parked();
+    assert!(
+        !cx.update(|app| store.read(app).chat.todo_open),
+        "再点未收起计划条"
+    );
+
+    // ── 任务条:默认展开(task_bar_open 初值 true),chip 在场
+    assert!(
+        wcx.debug_bounds("task-chip").is_some(),
+        "任务条 chip 未出现"
+    );
+
+    // 点折叠头 → 收起:条本身仍在场,面板待关闭动画结束后卸载
+    click_strip_head(&mut wcx, "task-bar");
+    cx.run_until_parked();
+    assert!(
+        !cx.update(|app| store.read(app).subagents.task_bar_open),
+        "点折叠头未收起任务条"
+    );
+    assert!(
+        wcx.debug_bounds("task-bar").is_some(),
+        "收起后条本身应仍在场"
+    );
+    settle_panel_gone(&mut wcx, "task-chip");
+
+    // 再点 → 面板回场
+    click_strip_head(&mut wcx, "task-bar");
+    cx.run_until_parked();
+    assert!(
+        cx.update(|app| store.read(app).subagents.task_bar_open),
+        "再点未展开任务条"
+    );
+    advance_spring(&mut wcx, 60);
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("task-chip").is_some(),
+        "重新展开后面板未回场"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 权限下拉锚在触发行上方、盖过输入卡体(模型/上下文已同迁根级,
 /// 分别见 model_menu_root_card_anchors_above_trigger /
 /// context_meter_renders_and_opens)。
