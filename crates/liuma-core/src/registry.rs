@@ -7329,6 +7329,27 @@ fn fold_judge_port(
     )
 }
 
+/// 上下文裁判接线(turn 间隙的一次裁定)。
+///
+/// receipt 汇走与钩子桥、折叠裁定**同一个**宿主事件汇:落档之外还要推
+/// 轨迹增量。抽成函数是为了让「用哪个汇」这条接线本身可被单测钉住
+/// ——`liuma-app` 的 `judge_context` 只认注入的汇,装配面给错(如给只
+/// 落档的 [`liuma_app::log_only_receipt_sink`])则轨迹里永远看不见裁判
+/// 记录,而日志里一切正常(见
+/// `context_judge_receipts_reach_the_live_trajectory`)。
+async fn run_context_judge(
+    log: &Arc<Mutex<EventLog>>,
+    traj: &Arc<Mutex<crate::trajectory::TrajectoryFolder>>,
+    mux: &broadcast::Sender<ServerRequest>,
+    session_id: &str,
+    port: &Arc<dyn liuma_decision::DecisionPort>,
+    settings: &liuma_app::DecisionSettings,
+    window: u64,
+) -> anyhow::Result<Option<usize>> {
+    let sink = hook_event_sink(session_id, log, traj, mux);
+    liuma_app::judge_context(log, port, settings, window, &sink).await
+}
+
 /// 桥钩子 + 决策钩子合成单槽下发(HookChain 最严格者胜;全空 = 直通)
 fn compose_hook_chain(
     bridge: Option<std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>>,
@@ -8167,7 +8188,17 @@ async fn driver_loop(
             let settings = runtime.settings.lock_recover().clone();
             if settings.context.enabled {
                 let window = host0.session_context_window(&session_id);
-                match liuma_app::judge_context(&inner.log, &runtime.port, &settings, window).await {
+                match run_context_judge(
+                    &inner.log,
+                    &inner.traj,
+                    &host0.mux,
+                    &session_id,
+                    &runtime.port,
+                    &settings,
+                    window,
+                )
+                .await
+                {
                     Ok(Some(n)) if n > 0 => {
                         eprintln!(
                             "[liuma-core] decision context prune {session_id}: {n} outputs pruned"
@@ -9710,6 +9741,119 @@ mod tests {
                 .any(|r| r.decision.as_ref().is_some_and(|d| d.scenario == "stop")),
             "裁决必须在台账里:{:?}",
             page.records.iter().map(|r| &r.kind).collect::<Vec<_>>()
+        );
+    }
+
+    /// 上下文裁判的 receipt 必须进直播轨迹。
+    ///
+    /// 缺陷原形:`judge_context` 自造一个只 `append` 的闭包落 receipt——
+    /// 绕开宿主事件汇,于是带外 receipt 一条都到不了轨迹:折叠器每喂一个
+    /// 事件就把水位推到该事件 seq,带外 receipt 的 seq 被随后的引擎事件
+    /// 跨过去,缺口再也补不回来(与上面 `stop` 哨兵同一个根因,两处各犯
+    /// 一次)。故锁在**接线**:`run_context_judge` 注入的必须是与钩子桥
+    /// 同一个宿主事件汇——换回 `log_only_receipt_sink` 本用例即红。
+    ///
+    /// 端口用假端口(不出网):本用例验的是发布面,不是决策质量。
+    #[tokio::test]
+    async fn context_judge_receipts_reach_the_live_trajectory() {
+        use liuma_decision::fake::FakeDecisionPort;
+
+        // 压力达标(真实用量 15000 tok ≥ 0.6×10000)+ 保留尾外有可裁大输出
+        let log = Arc::new(Mutex::new(EventLog::new()));
+        {
+            let mut l = log.lock_recover();
+            let mut push = |ty: &str, data: Value| {
+                let mut ev = EventEnvelope::new(ty, 0, data);
+                ev.seq = l.high_water() + 1;
+                l.append(ev).expect("预置落档");
+            };
+            push(
+                "user/message",
+                json!({ "content": "task", "source": { "kind": "user" } }),
+            );
+            // 三个大输出(5500/6000/6500 字符):靠尾的一两条落进保留尾,
+            // 尾外仍留得下可裁候选(脚本按 s2 回「无价值」)
+            for call in 1..=3 {
+                push(
+                    "tool/result",
+                    json!({ "call": call, "output": "z".repeat(5000 + call * 500) }),
+                );
+            }
+            push("assistant/message", json!({ "content": "done" }));
+            push(
+                "audit/call",
+                json!({ "boundary": "llm", "operation": "request-done",
+                        "detail": { "usage": { "input_tokens": 15000 } } }),
+            );
+        }
+        let traj = Arc::new(Mutex::new(crate::trajectory::TrajectoryFolder::new()));
+        let (mux, mut rx) = broadcast::channel(64);
+        let settings = liuma_app::DecisionSettings {
+            enabled: true,
+            context: liuma_app::DecisionScenario {
+                enabled: true,
+                enforce: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let port = Arc::new(FakeDecisionPort::scripted(vec![Ok({
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(
+                "s2".to_string(),
+                liuma_decision::Answer::Noul { noul: 0.95 },
+            );
+            liuma_decision::DecisionAnswers {
+                model: "fake".into(),
+                answers: m,
+                usage: Default::default(),
+                request_id: None,
+            }
+        })]));
+
+        let out = run_context_judge(
+            &log,
+            &traj,
+            &mux,
+            "s-ctx",
+            &(port as Arc<dyn liuma_decision::DecisionPort>),
+            &settings,
+            10_000,
+        )
+        .await
+        .expect("裁定不得上抛");
+        assert_eq!(out, Some(1), "压力达标 + 尾外候选 → 恰一条修剪");
+
+        // 发布面:增量帧流出(桌面直播靠它,不等重启)
+        let mut streamed: Option<Value> = None;
+        while let Ok(f) = rx.try_recv() {
+            if f.method != "trajectory/delta" {
+                continue;
+            }
+            for r in f.payload["records"].as_array().cloned().unwrap_or_default() {
+                if r["decision"]["scenario"] == "context" {
+                    streamed = Some(r);
+                }
+            }
+        }
+        let rec = streamed.expect("裁判裁决必须直播进轨迹增量");
+        assert_eq!(rec["kind"], "decision", "无调用可挂 → 独立成行:{rec}");
+        // 线上回环:帧里的记录必须能解码回 typed(桌面解码失败是静默跳过)
+        let decoded: crate::trajectory::TrajectoryRecord =
+            serde_json::from_value(rec.clone()).expect("增量帧记录须能解码回 typed");
+        assert_eq!(
+            decoded.decision.as_ref().map(|d| d.scenario.as_str()),
+            Some("context")
+        );
+
+        // 同源:驻留折叠器末态在场(帧不是凭空发的)
+        assert!(
+            traj.lock_recover()
+                .data()
+                .records
+                .iter()
+                .any(|r| r.decision.as_ref().is_some_and(|d| d.scenario == "context")),
+            "裁判裁决必须在台账里"
         );
     }
 

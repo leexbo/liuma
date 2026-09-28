@@ -925,11 +925,17 @@ pub fn header_rebuilder(parts: PromptParts) -> Box<dyn Fn(&EventLog) -> RequestH
 ///
 /// 返回 `Some(n)` = 落档 n 条修剪;`None` = 未触发(未启用/压力不足/
 /// 无候选/端口失败,fail-open 语义)。receipt 照落(decision 对)。
+///
+/// receipt 落档口由**调用方注入**(与 [`decision_hook_ports`] 同约定):
+/// 直播装配面传宿主事件汇 `hook_event_sink`——那里的 receipt 还要推轨迹
+/// 增量,自造一个只 `append` 的闭包会让带外事件对轨迹永久不可见;
+/// 无直播下游的装配面(headless CLI)传 [`log_only_receipt_sink`]。
 pub async fn judge_context(
     log: &Arc<Mutex<EventLog>>,
     port: &Arc<dyn liuma_decision::DecisionPort>,
     settings: &DecisionSettings,
     context_window: u64,
+    sink: &liuma_decision::scenarios::ReceiptSink,
 ) -> Result<Option<usize>> {
     use liuma_decision::scenarios::context as ctx;
 
@@ -998,13 +1004,6 @@ pub async fn judge_context(
         "stateDigest": request.state_digest(),
     });
     let started = std::time::Instant::now();
-    let append = |ty: &str, data: serde_json::Value| -> Result<()> {
-        log.lock()
-            .map_err(|_| anyhow::anyhow!("日志锁中毒"))?
-            .append(liuma_session::EventEnvelope::new(ty, wall_clock(), data))
-            .map_err(|e| anyhow::anyhow!("decision 事件落档失败:{e}"))?;
-        Ok(())
-    };
     match port.ask(request).await {
         Ok(answers) => {
             let duration_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
@@ -1013,17 +1012,17 @@ pub async fn judge_context(
                 &answers.answers,
                 liuma_decision::thresholds::PRUNE_NO_VALUE_PROBABILITY,
             );
-            append(
+            sink(
                 "decision/asked",
                 serde_json::json!({ "id": id, "scenario": "context", "model": settings.model,
                     "questions": asked["questions"], "stateDigest": asked["stateDigest"] }),
-            )?;
-            append(
+            );
+            sink(
                 "decision/answered",
                 serde_json::json!({ "id": id, "ok": true,
                     "answers": serde_json::to_value(&answers.answers).unwrap_or(serde_json::Value::Null),
                     "durationMs": duration_ms }),
-            )?;
+            );
             if lost.is_empty() {
                 return Ok(Some(0));
             }
@@ -1037,22 +1036,22 @@ pub async fn judge_context(
                 .map(|(seq, score)| serde_json::json!({ "seq": seq, "score": score }))
                 .collect();
             let count = pruned.len();
-            append("decision/pruned", serde_json::json!({ "pruned": pruned }))?;
+            sink("decision/pruned", serde_json::json!({ "pruned": pruned }));
             Ok(Some(count))
         }
         Err(err) => {
             // fail-open:裁决失败不落 pruned,receipt 收口留痕
             let duration_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
-            append(
+            sink(
                 "decision/asked",
                 serde_json::json!({ "id": id, "scenario": "context", "model": settings.model,
                     "questions": asked["questions"], "stateDigest": asked["stateDigest"] }),
-            )?;
-            append(
+            );
+            sink(
                 "decision/answered",
                 serde_json::json!({ "id": id, "ok": false, "error": err.to_string(),
                     "durationMs": duration_ms }),
-            )?;
+            );
             Ok(None)
         }
     }

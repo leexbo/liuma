@@ -323,6 +323,7 @@ async fn context_judge_prunes_and_derivation_replaces_output() {
             &(port.clone() as Arc<dyn liuma_decision::DecisionPort>),
             &disabled,
             10_000,
+            &liuma_app::log_only_receipt_sink(&log),
         )
         .await
         .unwrap();
@@ -353,6 +354,7 @@ async fn context_judge_prunes_and_derivation_replaces_output() {
         &(port.clone() as Arc<dyn liuma_decision::DecisionPort>),
         &settings,
         10_000,
+        &liuma_app::log_only_receipt_sink(&log),
     )
     .await
     .unwrap();
@@ -423,6 +425,7 @@ async fn context_judge_prunes_and_derivation_replaces_output() {
         &(port2.clone() as Arc<dyn liuma_decision::DecisionPort>),
         &settings,
         10_000,
+        &liuma_app::log_only_receipt_sink(&log),
     )
     .await
     .unwrap();
@@ -497,6 +500,7 @@ async fn context_judge_fails_open() {
         &(port.clone() as Arc<dyn liuma_decision::DecisionPort>),
         &settings,
         10_000,
+        &liuma_app::log_only_receipt_sink(&log),
     )
     .await
     .unwrap();

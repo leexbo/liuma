@@ -308,9 +308,16 @@ impl CliDecision {
         if !self.settings.context.enabled {
             return;
         }
-        let _ =
-            liuma_app::judge_context(&self.log, &self.port, &self.settings, self.context_window)
-                .await;
+        // 无直播下游(终端 CLI 没有轨迹面板/帧通道):receipt 只落档
+        let sink = liuma_app::log_only_receipt_sink(&self.log);
+        let _ = liuma_app::judge_context(
+            &self.log,
+            &self.port,
+            &self.settings,
+            self.context_window,
+            &sink,
+        )
+        .await;
     }
 }
 
