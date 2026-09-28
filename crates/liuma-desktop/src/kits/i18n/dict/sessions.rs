@@ -42,8 +42,8 @@ entries! {
     pinned_section => ["置顶", "Pinned"],
     /// 侧栏小节标签:项目(工作区分组列表)
     projects_section => ["项目", "Projects"],
-    /// 组内清单折叠:展开显示(N 条以上默认截断)
-    expand_show => ["展开显示", "Show more"],
+    /// 组内清单展开行(带剩余条数;整句成键——拼接碎片无法翻译)
+    expand_show_more(hidden) => ["展开显示 (剩余 {hidden} 条)", "Show more ({hidden} remaining)"],
     /// 组内清单展开态:收起显示
     collapse_show => ["收起显示", "Show less"],
     /// 组空状态:组内无可见会话(会话全上提置顶或本无会话)

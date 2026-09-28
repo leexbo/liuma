@@ -410,7 +410,7 @@ fn show_more_row(
         .child(if expanded {
             dict::sessions::collapse_show().to_string()
         } else {
-            format!("{} (剩余 {hidden} 条)", dict::sessions::expand_show())
+            dict::sessions::expand_show_more(hidden)
         })
         .on_click(move |_, _, cx| {
             let ws = ws.clone();
