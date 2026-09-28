@@ -859,23 +859,23 @@ impl AppStore {
     }
 
     pub fn title_for(&self, id: &str) -> String {
-        if let Some(t) = self.state.titles.get(id).filter(|t| !t.is_empty()) {
-            return t.clone();
-        }
-        if let Some(s) = self.state.sessions.iter().find(|s| s.session_id == id) {
-            if let Some(t) = s
+        let title = if let Some(t) = self.state.titles.get(id).filter(|t| !t.is_empty()) {
+            t.clone()
+        } else if let Some(s) = self.state.sessions.iter().find(|s| s.session_id == id) {
+            match s
                 .projections
                 .as_ref()
                 .and_then(|p| p.values.get("title"))
                 .and_then(|v| v.as_str())
             {
-                return t.to_string();
+                Some(t) => t.to_string(),
+                None if s.blank => dict::sessions::new_session().into(),
+                None => id.to_string(),
             }
-            if s.blank {
-                return dict::sessions::new_session().into();
-            }
-        }
-        id.to_string()
+        } else {
+            id.to_string()
+        };
+        single_line(&title)
     }
 
     /// 空白会话判定:清单 blank 且投影无**内容**节点(投影先行时以节点
@@ -953,6 +953,16 @@ fn basename(path: &str) -> String {
     path.rsplit('/').next().unwrap_or("").to_string()
 }
 
+/// 标题单行化:换行折成空格(其余字符原样,含全角空格)。
+///
+/// 标题的每个槽都按**单行**布局——侧栏行是 34px 定高的 `truncate()` 文本,
+/// 标题栏是绝对定位的居中区。而临时标题就是首条用户消息原文(模型生成的
+/// 标题落档前一直用它),原文里的 `\n` 会让文本元素长成多行:侧栏行被撑爆、
+/// 居中区溢出。`.truncate()` 挡不住它 —— nowrap 只禁软换行,硬换行照断。
+fn single_line(title: &str) -> String {
+    title.replace(['\n', '\r'], " ").trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -962,5 +972,14 @@ mod tests {
         assert_eq!(basename("/Volumes/DATA/proj"), "proj");
         assert_eq!(basename("proj"), "proj");
         assert_eq!(basename("/"), "");
+    }
+
+    #[test]
+    fn titles_collapse_to_a_single_line() {
+        assert_eq!(single_line("1. 单选\n2. 多选"), "1. 单选 2. 多选");
+        assert_eq!(single_line("甲\r\n乙"), "甲  乙");
+        assert_eq!(single_line("  首尾留白  "), "首尾留白");
+        // 其余空白(含全角)原样保留:只折硬换行
+        assert_eq!(single_line("甲　乙 丙"), "甲　乙 丙");
     }
 }

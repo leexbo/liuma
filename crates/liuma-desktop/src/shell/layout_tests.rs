@@ -2578,6 +2578,39 @@ fn first_message_titles_session(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 首条消息带换行时,标题仍须是**一行**。临时标题 = 首条用户消息原文
+/// (模型生成的标题落档前一直用它),而侧栏行是 34px 定高、标题栏是绝对
+/// 定位的居中区,都按单行布局 —— 原文的 `\n` 会让文本元素长成多行,撑出
+/// 侧栏行与居中区。`.truncate()` 挡不住:nowrap 只禁软换行,硬换行照断。
+/// 回归锚:去掉 title_for 的单行化,本用例即红。
+#[gpui_kit::test]
+fn first_message_title_collapses_newlines(cx: &mut TestAppContext) {
+    let (store, _wcx, root) = menu_harness(cx, "title-nl");
+    let id = cx
+        .update(|app| store.read(app).state.current_id.clone())
+        .expect("当前会话");
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.send("1. 单选，4 个选项\n2. 多选，3 个选项", cx)
+        });
+    });
+    let mut title = String::new();
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        cx.run_until_parked();
+        title = cx.update(|app| store.read(app).title_for(&id));
+        if title != "新会话" {
+            break;
+        }
+    }
+    assert!(
+        title.contains("单选") && title.contains("多选"),
+        "标题未随首条消息更新:{title:?}"
+    );
+    assert!(!title.contains('\n'), "标题必须单行化,实际:{title:?}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 设置失败落本地通告:非法模型名被宿主模型表确定性拒绝
 /// (无需伪造 running;Notice 尾插 + key 幂等)
 #[gpui_kit::test]
