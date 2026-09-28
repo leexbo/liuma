@@ -271,6 +271,43 @@ pub enum PlanStatus {
     Cancelled,
 }
 
+/// 摘要长度估算:分母 = 折叠前缀 token 的 1/4,夹在 [800, 6000] 字符。
+/// 摘要(八节 checkpoint)与折叠前缀同量级但远短于它,直接用前缀做
+/// 分母会让条几乎不动;这是**估算**,故百分比封顶 99% 由 done 宣告
+/// 完成,悬停明细另给真实字符数。
+const SUMMARY_CHARS_PER_PREFIX_TOKENS: f64 = 0.25;
+/// 分母下限(字符)
+const SUMMARY_TARGET_MIN_CHARS: f64 = 800.;
+/// 分母上限(字符)
+const SUMMARY_TARGET_MAX_CHARS: f64 = 6000.;
+
+/// 压缩进度快照(compaction/progress 载荷;UI 进度条的数据面)
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompactProgress {
+    /// 相位:judge | summarize | commit | done | failed
+    pub phase: String,
+    /// 真实已生成正文字符数(单调不减)
+    pub generated_chars: u64,
+    /// 已耗时(毫秒)
+    pub elapsed_ms: u64,
+    /// 折叠前缀 token 估算(进度分母的来源)
+    pub estimated_tokens: u64,
+}
+
+impl CompactProgress {
+    /// 是否终局相位(UI 据它清 / 收尾)
+    pub fn terminal(&self) -> bool {
+        matches!(self.phase.as_str(), "done" | "failed")
+    }
+
+    /// 进度百分比(0..=99;分子 = 真实字符数,分母 = 估算目标长度)
+    pub fn percent(&self) -> f32 {
+        let target = (self.estimated_tokens as f64 * SUMMARY_CHARS_PER_PREFIX_TOKENS)
+            .clamp(SUMMARY_TARGET_MIN_CHARS, SUMMARY_TARGET_MAX_CHARS);
+        ((self.generated_chars as f64 / target) * 100.0).clamp(0.0, 99.0) as f32
+    }
+}
+
 /// 单会话投影状态
 #[derive(Debug, Default)]
 pub struct ChatState {
@@ -290,6 +327,11 @@ pub struct ChatState {
     /// 手动压缩排队中(回合进行时受理;驱动仅在 turn 间隙取压缩任务,
     /// turn/end 事件晋升为进行态)
     pub compact_queued: bool,
+    /// 压缩进度(compaction/progress;瞬态:重放不重现,终局清位)
+    pub compact_progress: Option<CompactProgress>,
+    /// 刚完成压缩的标记行 key 与时刻(完成闪:标记行入场时条走满 +
+    /// SUCCESS 闪,年龄门控——虚拟化重挂不重放)。纯 UI 元数据。
+    pub compact_settled: Option<(String, std::time::Instant)>,
     /// 当前 turn 已产出的 diff/edit 路径(去重保序;turn/end 挂 TurnTail 产物行)
     pub turn_deliverables: Vec<String>,
     /// 当前 turn 起始时刻(信封毫秒;turn/end 求轮墙钟用时,瞬态不入相等性)
@@ -335,6 +377,10 @@ impl ChatState {
         self.running = false;
         self.compact_running = false;
         self.compact_queued = false;
+        // 重放不重现瞬态:进度行与完成闪都是直播态(事件序里有 progress,
+        // 但历史载入不该回放一条已经结束的进度条)
+        self.compact_progress = None;
+        self.compact_settled = None;
         // 清孤儿 born(被折叠掉的头窗节点;防跨会话累积)
         let live: std::collections::HashSet<&str> = self.nodes.iter().map(ChatNode::key).collect();
         self.node_born.retain(|k, _| live.contains(k.as_str()));
@@ -350,6 +396,11 @@ impl ChatState {
                 self.running = true;
                 self.todos.clear();
                 self.turn_started_ms = Some(ev.time);
+                // 新回合清掉上一个压缩的收尾态(失败行/完成闪不跨轮滞留)
+                if self.compact_progress.as_ref().is_some_and(|p| p.terminal()) {
+                    self.compact_progress = None;
+                }
+                self.compact_settled = None;
             }
             "turn/end" => {
                 self.running = false;
@@ -638,12 +689,47 @@ impl ChatState {
             "compaction/summary" => {
                 self.compact_running = false;
                 self.compact_queued = false;
+                if self.compact_progress.take().is_some() {
+                    // 完成闪:有进度会话收尾才闪(重放/无进度路径不闪)
+                    self.compact_settled =
+                        Some((format!("cpt:{}", ev.seq), std::time::Instant::now()));
+                }
                 self.push_indexed(ChatNode::Compaction {
                     key: format!("cpt:{}", ev.seq),
                     summary: ev.data["summary"].as_str().unwrap_or_default().to_string(),
                     items: ev.data["items"].as_u64(),
                     tokens: ev.data["shadowedTokens"].as_u64(),
                 });
+            }
+            // 压缩进度(相位 + 真实已生成字符数;引擎按 200ms/64 字符
+            // 节流)。进行相位置位并驱动进度行;done 只清进度(summary
+            // 先到,完成闪挂在标记行);failed 留一行「压缩未完成」——
+            // 自动路径的失败没有 compaction/error,这里是唯一信号
+            "compaction/progress" => {
+                let phase = ev.data["phase"].as_str().unwrap_or_default();
+                let progress = CompactProgress {
+                    phase: phase.to_string(),
+                    generated_chars: ev.data["generatedChars"].as_u64().unwrap_or(0),
+                    elapsed_ms: ev.data["elapsedMs"].as_u64().unwrap_or(0),
+                    estimated_tokens: ev.data["estimatedTokens"].as_u64().unwrap_or(0),
+                };
+                match phase {
+                    "done" => {
+                        self.compact_progress = None;
+                        self.compact_running = false;
+                        self.compact_queued = false;
+                    }
+                    "failed" => {
+                        self.compact_running = false;
+                        self.compact_queued = false;
+                        self.compact_progress = Some(progress);
+                    }
+                    _ => {
+                        self.compact_running = true;
+                        self.compact_queued = false;
+                        self.compact_progress = Some(progress);
+                    }
+                }
             }
             // 压缩终局失败/空(kind 区分:empty=无历史可压 → 中性状态行,
             // 文案渲染期换词典(宿主常量是英文;照 `(tool call only)` 先例,
@@ -1544,6 +1630,113 @@ mod tests {
             json!({ "kind": "empty", "message": "No compactable history yet." }),
         ));
         assert!(!st.compact_running, "终局事件应清进行位");
+    }
+
+    /// 进度直播态:置进行位 + 快照入状态;终局 done 清进度、summary
+    /// 收尾时挂完成闪(有进度会话才闪);failed 留「压缩未完成」行,
+    /// 下一轮 turn/start 清掉
+    #[test]
+    fn compaction_progress_streams_and_settles() {
+        let mut st = ChatState::default();
+        st.apply(&ev(
+            "compaction/progress",
+            1,
+            json!({ "phase": "summarize", "generatedChars": 0, "elapsedMs": 0,
+                    "estimatedTokens": 8000, "throughSeq": 42, "items": 9, "manual": false }),
+        ));
+        assert!(st.compact_running, "进度即进行态(自动路径此前没有开始信号)");
+        let p = st.compact_progress.clone().expect("进度快照");
+        assert_eq!(p.phase, "summarize");
+        assert_eq!(p.percent(), 0.0);
+
+        st.apply(&ev(
+            "compaction/progress",
+            2,
+            json!({ "phase": "summarize", "generatedChars": 1000, "elapsedMs": 900,
+                    "estimatedTokens": 8000, "throughSeq": 42, "items": 9, "manual": false }),
+        ));
+        let p = st.compact_progress.clone().expect("进度快照");
+        assert_eq!(p.percent(), 50.0, "分母 = 8000×0.25 = 2000 字符");
+        // 封顶 99:完成由 done 相位宣告,条不自己宣布完成
+        assert_eq!(
+            CompactProgress {
+                generated_chars: u64::MAX,
+                ..p.clone()
+            }
+            .percent(),
+            99.0
+        );
+        assert_eq!(p.elapsed_ms, 900);
+
+        // summary 先到:清进度 + 挂完成闪(键 = 该标记行)
+        st.apply(&ev(
+            "compaction/summary",
+            3,
+            json!({ "summary": "s", "throughSeq": 42, "items": 9, "shadowedTokens": 8000 }),
+        ));
+        assert!(st.compact_progress.is_none(), "落档即清进度");
+        assert!(!st.compact_running);
+        assert_eq!(
+            st.compact_settled.as_ref().map(|(k, _)| k.as_str()),
+            Some("cpt:3"),
+            "完成闪挂在刚落档的标记行上"
+        );
+        // done 相位只清进度(不覆盖完成闪)
+        st.apply(&ev(
+            "compaction/progress",
+            4,
+            json!({ "phase": "done", "generatedChars": 1000, "elapsedMs": 1200,
+                    "estimatedTokens": 8000, "throughSeq": 42, "items": 9, "manual": false }),
+        ));
+        assert!(st.compact_progress.is_none());
+        assert!(st.compact_settled.is_some());
+        // 下一轮开场清收尾态
+        st.apply(&ev("turn/start", 5, json!({ "turn": 2 })));
+        assert!(st.compact_settled.is_none(), "完成闪不跨轮滞留");
+    }
+
+    /// 失败终局:自动路径没有 compaction/error,这行是唯一信号;
+    /// 静态留行,下一轮清
+    #[test]
+    fn compaction_progress_failed_lingers_until_next_turn() {
+        let mut st = ChatState {
+            compact_running: true,
+            ..Default::default()
+        };
+        st.apply(&ev(
+            "compaction/progress",
+            1,
+            json!({ "phase": "failed", "generatedChars": 300, "elapsedMs": 1200,
+                    "estimatedTokens": 8000, "throughSeq": 7, "items": 3, "manual": false }),
+        ));
+        assert!(!st.compact_running, "终局即收进行位(不再呼吸)");
+        let p = st.compact_progress.as_ref().expect("失败行留驻");
+        assert!(p.terminal() && p.phase == "failed");
+        st.apply(&ev("turn/start", 2, json!({ "turn": 2 })));
+        assert!(st.compact_progress.is_none(), "新回合清失败行");
+    }
+
+    /// 进度与完成闪纯属 UI 瞬态:只有它们不同的两个状态必须相等
+    /// (否则每 tick 都判不等 → 触发全量重绘)
+    #[test]
+    fn progress_fields_stay_out_of_equality() {
+        let base = ChatState::default;
+        let mut a = base();
+        let mut b = base();
+        a.compact_progress = Some(CompactProgress {
+            phase: "summarize".into(),
+            generated_chars: 10,
+            elapsed_ms: 5,
+            estimated_tokens: 8000,
+        });
+        b.compact_progress = Some(CompactProgress {
+            phase: "summarize".into(),
+            generated_chars: 9999,
+            elapsed_ms: 900,
+            estimated_tokens: 8000,
+        });
+        b.compact_settled = Some(("cpt:1".into(), std::time::Instant::now()));
+        assert_eq!(a, b, "进度/完成闪不入相等性");
     }
 
     /// 错误终止的回合:Notice 通告替代收尾行,running 复位

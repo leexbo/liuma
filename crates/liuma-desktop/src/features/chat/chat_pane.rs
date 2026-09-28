@@ -18,7 +18,9 @@ use gpui_kit::{
     StatefulInteractiveElement, Styled, Window, actions, div, px,
 };
 
-use super::projection::{ChatNode, NavAnchor, PlanStatus, RetryState, RowSlot, ToolState};
+use super::projection::{
+    ChatNode, CompactProgress, NavAnchor, PlanStatus, RetryState, RowSlot, ToolState,
+};
 use crate::kits::icons::{self, LiumaIcon, fixed};
 use crate::kits::popup::PopTrigger;
 use crate::kits::theme;
@@ -135,7 +137,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
     // 手动压缩状态行(/compact 受理 → 终局事件清位;瞬态不入节点):
     // 排队(回合进行中受理,驱动等 turn 间隙)与进行两态
     let has_run_status = run_status.is_some();
-    let (compact_queued, compact_running) = {
+    let (compact_queued, compact_running, compact_progress) = {
         let st = store.read(cx);
         match st
             .state
@@ -143,8 +145,12 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
             .as_deref()
             .and_then(|id| st.state.chats.get(id))
         {
-            Some(c) => (c.compact_queued, c.compact_running),
-            None => (false, false),
+            Some(c) => (
+                c.compact_queued,
+                c.compact_running,
+                c.compact_progress.clone(),
+            ),
+            None => (false, false, None),
         }
     };
 
@@ -210,12 +216,14 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 if crate::features::chat::projection::invisible_node(node) {
                     return div().into_any_element();
                 }
+                let settled = st.current_chat().and_then(|c| c.compact_settled.clone());
                 let el = render_node(
                     &item_store,
                     cx,
                     &st.chat.open_reasoning,
                     &st.chat.open_context,
                     &st.chat.open_compactions,
+                    settled.as_ref(),
                     &st.chat.expanded_tools,
                     &st.chat.open_retries,
                     *n,
@@ -345,28 +353,31 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                     )
                 }),
         )
-        .when(compact_running || compact_queued, |el| {
-            // 槽位 padding 与 turn-status 同款(与列表容器同一中心线);
-            // 排队态静态,进行态 shimmer
-            let (message, selector) = if compact_running {
-                (dict::chat::compact_running(), "compact-running")
-            } else {
-                (dict::chat::compact_queued(), "compact-queued")
-            };
-            el.child(
-                div()
-                    .pl(px(H_PAD + NAV_GUTTER_W))
-                    .pr(px(H_PAD + SCROLLBAR_GUTTER_W))
-                    .child(
-                        div()
-                            .mx_auto()
-                            .w(col_w)
-                            .px(px(4.))
-                            .pb(px(8.))
-                            .child(compact_row(message, compact_running, selector)),
-                    ),
-            )
-        })
+        .when(
+            compact_running || compact_queued || compact_progress.is_some(),
+            |el| {
+                // 槽位 padding 与 turn-status 同款(与列表容器同一中心线)。
+                // 三态优先级:失败终局行(自动路径失败的唯一信号;静态,
+                // 下轮清)→ 直播进度行(真实字符数 + 行底推进条)→
+                // 排队(静态)/进行(呼吸;无进度通道的老日志)
+                let row: AnyElement = match compact_progress.as_ref() {
+                    Some(p) if p.phase == "failed" => {
+                        compact_row(dict::chat::compact_failed(), false, "compact-failed")
+                    }
+                    Some(p) if !p.terminal() => compact_progress_row(p),
+                    _ if compact_running => {
+                        compact_row(dict::chat::compact_running(), true, "compact-running")
+                    }
+                    _ => compact_row(dict::chat::compact_queued(), false, "compact-queued"),
+                };
+                el.child(
+                    div()
+                        .pl(px(H_PAD + NAV_GUTTER_W))
+                        .pr(px(H_PAD + SCROLLBAR_GUTTER_W))
+                        .child(div().mx_auto().w(col_w).px(px(4.)).pb(px(8.)).child(row)),
+                )
+            },
+        )
         .when_some(run_status, |el, (dur, _sid)| {
             el.child(
                 div()
@@ -471,6 +482,15 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
 
 /// 新节点入场窗口(140ms 淡入 + 6px 上移)
 const NODE_ENTER_MS: std::time::Duration = std::time::Duration::from_millis(140);
+
+/// 压缩完成闪窗口(条走满 + SUCCESS 淡出;年龄门控同上)
+const COMPACT_SETTLE_MS: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// 完成闪是否在窗内(年龄门控:虚拟化把标记行重挂时不重放闪;
+/// 与节点入场同一套做法)
+pub(crate) fn settle_active(at: std::time::Instant, now: std::time::Instant) -> bool {
+    now.duration_since(at) < COMPACT_SETTLE_MS
+}
 
 /// 新节点入场(桌面增量):140ms 淡入 + 轻微上移。**年龄门控**
 /// ——出生超窗直接原样返回:gpui list 虚拟化会把滚出 overdraw 的项重挂,
@@ -990,12 +1010,87 @@ fn compact_row(message: &str, running: bool, selector: &'static str) -> AnyEleme
     }
 }
 
+/// 压缩进度行(compaction/progress 直播)。行骨架与静默行一致(图标 +
+/// `compact` + 圆点 + 文本 + 右对齐百分比);行底一条 3px 整行宽推进条
+/// (库 `Progress`,BRAND 填充,绝对定位于行底——出现/消失不挤动布局)。
+/// 分子 = 真实已生成字符数,分母 = 前缀估算;百分比封顶 99%,完成由
+/// `done` 相位宣告(条不由自己宣布完成)。`judge` 相位没有字符流 →
+/// 不确定态(库的 loading 滑动,内建尊重 reduce-motion)。
+fn compact_progress_row(progress: &CompactProgress) -> AnyElement {
+    let phase = match progress.phase.as_str() {
+        "judge" => dict::chat::compact_phase_judge(),
+        "commit" => dict::chat::compact_phase_commit(),
+        _ => dict::chat::compact_phase_summarize(),
+    };
+    let indeterminate = progress.phase == "judge";
+    let pct = progress.percent();
+    let tip =
+        dict::chat::compact_progress_tip(progress.generated_chars, progress.elapsed_ms / 1000);
+    div()
+        .id("compact-progress")
+        .debug_selector(|| "compact-progress".to_string())
+        .relative()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .h(px(24.))
+        .child(fixed(IconName::SquareTerminal, 14.).text_color(theme::CAPTION()))
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_size(px(13.))
+                .text_color(theme::LABEL())
+                .child("compact"),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .size(px(2.))
+                .rounded_full()
+                .bg(theme::CAPTION()),
+        )
+        .child(
+            div()
+                .min_w(px(0.))
+                .flex_1()
+                .truncate()
+                .text_size(px(13.))
+                .text_color(theme::CAPTION())
+                .child(dict::chat::compact_running_phase(phase)),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_size(px(12.))
+                .text_color(theme::CAPTION())
+                .child(format!("{}%", pct.round() as u32)),
+        )
+        .child(
+            div().absolute().left_0().right_0().bottom_0().child(
+                gpui_kit::component::progress::Progress::new("compact-progress-bar")
+                    .value(pct)
+                    .loading(indeterminate)
+                    .color(theme::BRAND())
+                    .with_size(px(3.)),
+            ),
+        )
+        // 桌面独有:悬停看真实明细(字符数真值 + 已用时长;百分比是
+        // 估算,故不在此列)
+        .tooltip(move |window, cx| {
+            gpui_kit::component::tooltip::Tooltip::new(tip.clone())
+                .text_size(px(12.))
+                .build(window, cx)
+        })
+        .into_any_element()
+}
+
 /// 压缩标记行(compaction/summary;quiet 行样式):
 /// 折叠态 = 终端图标 + `compact` + 圆点分隔 + 统计消息(hover 才显
 /// chevron),点击展开渲染摘要全文(markdown);展开态 chevron 常显。
 /// 消息文案(zh locale):有统计 = 已压缩 N 条历史记录(约
 /// X tokens)(全角括号);有摘要无统计 = 点击查看压缩摘要;都无 =
 /// 压缩摘要不可用。
+#[allow(clippy::too_many_arguments)]
 fn compaction_block(
     store: &Entity<AppStore>,
     open_compactions: &std::collections::HashSet<String>,
@@ -1004,8 +1099,12 @@ fn compaction_block(
     summary: &str,
     items: Option<u64>,
     tokens: Option<u64>,
+    settle: Option<std::time::Instant>,
 ) -> impl IntoElement {
     let open = open_compactions.contains(key);
+    // 完成闪:进度会话刚收尾(年龄门控——虚拟化重挂不重放,照节点
+    // 入场的既有做法);条走满 + SUCCESS 色,400ms 淡出后即静默行
+    let settle = settle.filter(|at| settle_active(*at, std::time::Instant::now()));
     let s = store.clone();
     let key_owned = key.to_string();
     let click_key = key.to_string();
@@ -1024,6 +1123,7 @@ fn compaction_block(
         .cursor_pointer()
         .child(
             div()
+                .relative()
                 .flex()
                 .items_center()
                 .gap(px(6.))
@@ -1067,7 +1167,30 @@ fn compaction_block(
                                     fixed(IconName::ChevronRight, 12.).text_color(theme::CAPTION()),
                                 )
                         }),
-                ),
+                )
+                // 完成闪:条走满 + SUCCESS,400ms 淡出(绝对定位不占位)
+                .when_some(settle, |row, _| {
+                    row.child(
+                        div()
+                            .debug_selector(|| "compact-settle".to_string())
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .child(
+                                gpui_kit::component::progress::Progress::new("compact-settle")
+                                    .value(100.)
+                                    .color(theme::SUCCESS())
+                                    .with_size(px(3.)),
+                            )
+                            .with_animation(
+                                "liuma-compact-settle",
+                                Animation::new(COMPACT_SETTLE_MS)
+                                    .with_easing(gpui_kit::component::animation::ease_out_cubic),
+                                |bar, delta| bar.opacity(1.0 - delta),
+                            ),
+                    )
+                }),
         )
         .when(open, |el| {
             el.child(
@@ -1472,6 +1595,7 @@ fn render_node(
     open_reasoning: &std::collections::HashSet<String>,
     open_context: &std::collections::HashSet<String>,
     open_compactions: &std::collections::HashSet<String>,
+    compact_settled: Option<&(String, std::time::Instant)>,
     expanded_tools: &std::collections::HashSet<String>,
     open_retries: &std::collections::HashSet<String>,
     ix: usize,
@@ -1609,8 +1733,20 @@ fn render_node(
             summary,
             items,
             tokens,
-        } => compaction_block(store, open_compactions, ix, key, summary, *items, *tokens)
-            .into_any_element(),
+        } => {
+            let settle = compact_settled.filter(|(k, _)| k == key).map(|(_, at)| *at);
+            compaction_block(
+                store,
+                open_compactions,
+                ix,
+                key,
+                summary,
+                *items,
+                *tokens,
+                settle,
+            )
+            .into_any_element()
+        }
         ChatNode::CompactStatus { .. } => {
             compact_row(dict::chat::compact_empty(), false, "compact-row").into_any_element()
         }

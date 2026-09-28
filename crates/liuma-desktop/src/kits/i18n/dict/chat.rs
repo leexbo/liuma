@@ -103,6 +103,18 @@ entries! {
     compact_summary_na => ["压缩摘要不可用", "Compaction summary unavailable"],
     /// 压缩空反馈行(宿主 kind=empty 载荷为英文常量,渲染期换词典)
     compact_empty => ["暂无可压缩的历史", "No compactable history yet."],
+    /// 压缩相位:裁定价值(决策模型咨询;无字符流,走不确定态)
+    compact_phase_judge => ["裁定价值", "Judging value"],
+    /// 压缩相位:生成摘要(有真实字符流,走确定条)
+    compact_phase_summarize => ["生成摘要", "Summarizing"],
+    /// 压缩相位:写入检查点(摘要已返回,落档中)
+    compact_phase_commit => ["写入检查点", "Writing checkpoint"],
+    /// 压缩进度行(相位随真实阶段切换)
+    compact_running_phase(phase) => ["正在压缩 · {phase}", "Compacting · {phase}"],
+    /// 压缩失败终局(自动路径失败静默,仅此处可见)
+    compact_failed => ["压缩未完成", "Compaction did not finish"],
+    /// 压缩进度悬停明细(字符数真值 + 已用时长;百分比是估算故不在此列)
+    compact_progress_tip(chars, secs) => ["已生成 {chars} 字符 · 已用 {secs}s", "{chars} chars generated · {secs}s elapsed"],
     /// 已中断(回合被打断)
     interrupted => ["已中断", "Interrupted"],
     /// 队列计数头(多条待运行消息折叠态)

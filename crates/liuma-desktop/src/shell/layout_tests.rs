@@ -11781,3 +11781,107 @@ fn steering_bubble_hugs_right_edge(cx: &mut TestAppContext) {
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// 压缩进度行与完成闪:进行中 = compact-progress 行(行底推进条在场);
+/// 落档后标记行带 compact-settle 完成闪,超窗(400ms)即摘——年龄门控
+/// 保证虚拟化重挂不重放。
+#[gpui_kit::test]
+fn compaction_progress_row_and_settle(cx: &mut TestAppContext) {
+    use crate::features::chat::projection::CompactProgress;
+
+    let (store, mut wcx, root) = menu_harness(cx, "compact-progress");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.run_until_parked();
+    };
+    let poll =
+        |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext, sel: &'static str| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                redraw(cx, wcx);
+                if wcx.debug_bounds(sel).is_some() || std::time::Instant::now() > deadline {
+                    return wcx.debug_bounds(sel).is_some();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+
+    // 进行中:进度快照 + 进行位(生产路径由 compaction/progress 帧置位)
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            let mut chat = crate::features::chat::ChatState::default();
+            chat.nodes.push(ChatNode::User {
+                key: "user:0".into(),
+                text: "先聊着".into(),
+                images: vec![],
+                files: Vec::new(),
+                time: 0,
+            });
+            chat.compact_running = true;
+            chat.compact_progress = Some(CompactProgress {
+                phase: "summarize".into(),
+                generated_chars: 1000,
+                elapsed_ms: 2400,
+                estimated_tokens: 8000,
+            });
+            st.state.chats.insert(id, chat);
+            st.chat.chat_version += 1;
+            cx.notify();
+        });
+    });
+    assert!(poll(cx, &mut wcx, "compact-progress"), "进行中应渲染进度行");
+    assert!(
+        wcx.debug_bounds("compact-running").is_none(),
+        "有真实进度时不走旧的呼吸行"
+    );
+
+    // 落档:标记行 + 完成闪在场(键 = 刚落档的标记行)
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            let id = st.state.current_id.clone().unwrap();
+            let chat = st.state.chats.get_mut(&id).unwrap();
+            let key = "cpt:5".to_string();
+            chat.compact_running = false;
+            chat.compact_progress = None;
+            chat.compact_settled = Some((key.clone(), std::time::Instant::now()));
+            chat.nodes.push(ChatNode::Compaction {
+                key,
+                summary: "## 摘要\n正文".into(),
+                items: Some(3),
+                tokens: Some(1234),
+            });
+            st.chat.chat_version += 1;
+            cx.notify();
+        });
+    });
+    assert!(poll(cx, &mut wcx, "compact-settle"), "落档应带完成闪");
+    assert!(
+        wcx.debug_bounds("compact-progress").is_none(),
+        "落档后进度行即退场"
+    );
+
+    // 年龄门控:闪只在 400ms 窗内存在(超窗的渲染分支单测覆盖,
+    // 此处锁状态清掉即摘除 = 不常驻)
+    let t0 = std::time::Instant::now();
+    assert!(crate::features::chat::chat_pane::settle_active(t0, t0));
+    assert!(!crate::features::chat::chat_pane::settle_active(
+        t0,
+        t0 + std::time::Duration::from_millis(450)
+    ));
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            let id = st.state.current_id.clone().unwrap();
+            let chat = st.state.chats.get_mut(&id).unwrap();
+            chat.compact_settled = None;
+            st.chat.chat_version += 1;
+            cx.notify();
+        });
+    });
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("compact-settle").is_none(),
+        "收尾态清掉后完成闪即摘(不常驻)"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
