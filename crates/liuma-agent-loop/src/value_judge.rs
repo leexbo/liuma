@@ -36,6 +36,9 @@ pub struct FoldAdvice {
     /// 裁定为「不值得带入 checkpoint」的条数(shadow 也回传——观察面:
     /// 只记录时 UI/轨迹要能回答「若生效会裁多少」)
     pub no_value: usize,
+    /// 上述候选的字符数合计(台账「裁掉约 N tokens」;shadow 下即
+    /// 「若生效会省多少」)
+    pub no_value_chars: usize,
     /// 是否已生效(裁定方已落 `decision/pruned`;engine 须重派生)
     pub applied: bool,
     /// 本次实际送去评估的候选数

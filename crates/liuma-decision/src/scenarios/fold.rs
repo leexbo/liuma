@@ -194,6 +194,11 @@ impl liuma_agent_loop::value_judge::ValueJudge for FoldJudge {
                         &answers.answers,
                         crate::thresholds::FOLD_DROP_PROBABILITY,
                     );
+                    let no_value_chars: usize = picked
+                        .iter()
+                        .filter(|c| lost.iter().any(|(seq, _)| *seq == c.seq))
+                        .map(|c| c.chars)
+                        .sum();
                     self.record(
                         asked,
                         json!({
@@ -212,6 +217,7 @@ impl liuma_agent_loop::value_judge::ValueJudge for FoldJudge {
                     if lost.is_empty() || !self.enforce {
                         return Ok(FoldAdvice {
                             no_value: lost.len(),
+                            no_value_chars,
                             applied: false,
                             judged: picked.len(),
                             total,
@@ -227,6 +233,7 @@ impl liuma_agent_loop::value_judge::ValueJudge for FoldJudge {
                     (self.sink)("decision/pruned", json!({ "pruned": pruned }));
                     Ok(FoldAdvice {
                         no_value: lost.len(),
+                        no_value_chars,
                         applied: true,
                         judged: picked.len(),
                         total,

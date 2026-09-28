@@ -63,6 +63,32 @@ pub enum LoopError {
     Cancelled,
 }
 
+/// 折叠触发来源(审计载荷与台账的归因面)。
+///
+/// 与压力门槛是两个问题:来源说「谁要求压的」,门槛说「够不够压」。
+/// 自动折叠靠门槛判定;手动与溢出都是越门强制(故同走 `Some(0)`)——
+/// 只凭门槛值反推来源会把溢出记成自动,故来源显式传入。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FoldTrigger {
+    /// 自动:上下文量测越过压力阈值
+    Auto,
+    /// 手动(`/compact`):显式要求,无门槛
+    Manual,
+    /// 溢出:provider 报上下文超长,强制压一次再重试
+    Overflow,
+}
+
+impl FoldTrigger {
+    /// 载荷与台账用的词
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FoldTrigger::Auto => "auto",
+            FoldTrigger::Manual => "manual",
+            FoldTrigger::Overflow => "overflow",
+        }
+    }
+}
+
 /// 一次折叠的结果(`Skipped` = 低于阈值/无可压缩/前缀退化)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FoldOutcome {
@@ -1000,6 +1026,7 @@ impl LoopEngine {
             // turn_anchor = 本 turn 首条 claimed 的归因锚。
             Self::maybe_fold(
                 &self.log,
+                FoldTrigger::Auto,
                 self.fold_threshold_tokens,
                 self.fold_retain_tokens,
                 transport,
@@ -1150,7 +1177,8 @@ impl LoopEngine {
                     overflow_retried = true;
                     let outcome = Self::fold_once(
                         &self.log,
-                        Some(0), // 阈值 0 = 必然越过门槛;status 仍属自动路径
+                        FoldTrigger::Overflow,
+                        Some(0), // 阈值 0 = 必然越过门槛
                         self.fold_retain_tokens,
                         transport,
                         &self.header,
@@ -1531,6 +1559,7 @@ impl LoopEngine {
     #[allow(clippy::too_many_arguments)]
     async fn maybe_fold<T>(
         log: &Arc<Mutex<EventLog>>,
+        trigger: FoldTrigger,
         threshold: u64,
         retain: u64,
         transport: &mut T,
@@ -1545,6 +1574,7 @@ impl LoopEngine {
     {
         match Self::fold_once(
             log,
+            trigger,
             Some(threshold),
             retain,
             transport,
@@ -1576,6 +1606,7 @@ impl LoopEngine {
     {
         Self::fold_once(
             &self.log,
+            FoldTrigger::Manual,
             None,
             self.fold_retain_tokens,
             transport,
@@ -1590,11 +1621,14 @@ impl LoopEngine {
 
     /// 折叠共用实现:`threshold` Some = 自动(低于即跳过;摘要失败降级
     /// 跳过),None = 手动(无门槛;失败上抛)。`user_seq` = 自动折叠的
-    /// 归因锚(手动无 turn,审计不带 source)。`judge` = 折叠价值裁定
-    /// 端口(None = 不咨询;fail-open 见 [`crate::value_judge`])。
+    /// 归因锚(手动无 turn,审计不带 source)。`trigger` = 触发来源
+    /// (审计与台账的归因;与门槛分开传,溢出与自动因此不再同形)。
+    /// `judge` = 折叠价值裁定端口(None = 不咨询;fail-open 见
+    /// [`crate::value_judge`])。
     #[allow(clippy::too_many_arguments)]
     async fn fold_once<T>(
         log: &Arc<Mutex<EventLog>>,
+        trigger: FoldTrigger,
         threshold: Option<u64>,
         retain: u64,
         transport: &mut T,
@@ -1644,7 +1678,12 @@ impl LoopEngine {
                 BOUNDARY_LLM,
                 "compaction",
                 serde_json::json!({
+                    // 压力量测(台账的 pressure_tokens)
                     "tokens": measure,
+                    // 触发来源与门槛/保留尾预算(台账据此回答「为什么压」)
+                    "trigger": trigger.as_str(),
+                    "threshold": threshold,
+                    "retain": retain,
                     "items": range.fold_len,
                     "through": range.through_seq,
                     "manual": threshold.is_none(),
@@ -1799,6 +1838,11 @@ impl LoopEngine {
                     // 条数分「已生效」(prunedItems)与「若生效会裁多少」
                     // (noValueCandidates;仅记录档两者不同)
                     "prunedItems": if advice.applied { advice.no_value } else { 0 },
+                    "prunedTokens": if advice.applied {
+                        advice.no_value_chars as u64 / liuma_compaction::CHARS_PER_TOKEN
+                    } else {
+                        0
+                    },
                     "noValueCandidates": advice.no_value,
                     "judgedCandidates": advice.judged,
                     "totalCandidates": advice.total,

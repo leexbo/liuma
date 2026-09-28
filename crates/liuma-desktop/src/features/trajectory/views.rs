@@ -4059,6 +4059,7 @@ mod tests {
             schema_detail: None,
             source: None,
             decision: None,
+            fold: None,
         }
     }
 

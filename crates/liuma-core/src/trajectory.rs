@@ -154,6 +154,64 @@ pub struct TrajectoryRecord {
     /// stop/context 是回合级/会话级事件,没有调用可挂 → `kind =
     /// "decision"` 独立成行,此字段即该行本体。
     pub decision: Option<DecisionRecord>,
+    /// 折叠事实(仅 `kind = "compacted"` 行)。
+    ///
+    /// 由 `audit/call(operation=compaction)`(触发来源/压力/门槛/保留尾)
+    /// 与紧随其后的 `compaction/summary`(条数/前缀 token/裁定计数)合成
+    /// ——审计先落、摘要后落,故折叠期用暂存对,摘要到达时一并挂上
+    /// (见 `FoldStash`)。`decision` 位同时携带本场景的价值裁定 receipt
+    /// (scenario = "fold"),检查器因此白拿「决策」页。
+    pub fold: Option<FoldRecord>,
+}
+
+/// 一次折叠的审计事实(台账「折叠」页的数据面)。
+///
+/// 全部字段来自落档事件本身(重放可重建,不引入第二权威):
+/// 触发来源/压力/门槛/保留尾来自折叠开始的审计载荷,条数/前缀 token/
+/// 裁定计数来自 `compaction/summary`。
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoldRecord {
+    /// 触发来源:`auto`(压力越阈值)/ `manual`(/compact)/ `overflow`
+    /// (provider 报上下文超长);空串 = 旧日志无此字段(未知)
+    #[serde(default)]
+    pub trigger: String,
+    /// 折叠前的上下文量测(token;压力值)
+    #[serde(default)]
+    pub pressure_tokens: u64,
+    /// 触发所需的压力门槛(token;手动/溢出 = None)
+    #[serde(default)]
+    pub threshold_tokens: Option<u64>,
+    /// 保留尾预算(token;逐字保留的下限)
+    #[serde(default)]
+    pub retain_tokens: u64,
+    /// 折叠遮蔽区间的首条消息 seq(退化 = end)
+    #[serde(default)]
+    pub shadowed_start: u64,
+    /// 折叠终点 seq(含)
+    #[serde(default)]
+    pub shadowed_end: u64,
+    /// 本次折叠条数(live 消息数)
+    #[serde(default)]
+    pub items: u64,
+    /// 折叠前缀估算 token(摘要吃进去的量)
+    #[serde(default)]
+    pub prefix_tokens: u64,
+    /// 裁定**已生效**裁掉的条数(enforce 才有;shadow 恒 0)
+    #[serde(default)]
+    pub pruned_items: u64,
+    /// 裁掉条数对应的估算 token
+    #[serde(default)]
+    pub pruned_tokens: u64,
+    /// 裁定判为「不值得带入」的条数(含未生效:shadow 观察面)
+    #[serde(default)]
+    pub no_value_candidates: u64,
+    /// 送去评估的候选数
+    #[serde(default)]
+    pub judged_candidates: u64,
+    /// 折叠区间内的候选总数(诚实分母)
+    #[serde(default)]
+    pub total_candidates: u64,
 }
 
 /// 决策 receipt 摘要(decision/asked + decision/answered 折叠一体)。
@@ -321,6 +379,8 @@ pub struct TrajectoryFolder {
     pending_calls: Vec<(u64, TrajectoryRecord)>,
     /// (turn, step) → 工具记录条数
     tools_by_step: std::collections::HashMap<(u64, u64), u64>,
+    /// 折叠期暂存(审计先落、摘要后落;摘要到达时合成一条台账行)
+    fold_stash: Option<FoldStash>,
     cumulative: TrajectoryUsage,
     /// 台账记录(显示序);不变式:records[i].index == i+1
     records: Vec<TrajectoryRecord>,
@@ -344,6 +404,28 @@ struct RequestMetrics {
     ttft_ms: Option<i64>,
     usage: Option<TrajectoryUsage>,
 }
+
+/// 折叠期暂存对:一次折叠的落档序是「audit/call(compaction) →
+/// [decision/asked → answered → pruned] → compaction/summary」,而台账的
+/// 一行要等最后的摘要才成形。收据与事实在此先攒着,摘要到达时合成
+/// 一条带 `fold` 事实(与裁决 receipt)的行。
+///
+/// 失败/中断(摘要不落)由 turn/end 与冷尾冲刷兜底——有收据就让它独立
+/// 成行,不静默丢。
+#[derive(Default)]
+struct FoldStash {
+    /// 折叠开始的审计载荷(detail;触发来源/压力/门槛/保留尾)
+    audit: Option<Value>,
+    /// 折叠开始时刻(epoch ms;摘要到达时差出本次折叠耗时)
+    started_at: i64,
+    /// 价值裁定 receipt(入暂存时记源事件,冲刷时按事件序插回)
+    decision: Option<(u64, i64, DecisionRecord)>,
+}
+
+/// `decision/pruned` 的阶段词缺省(旧载荷无 stage = 上下文裁判期)
+const STAGE_CONTEXT: &str = "context";
+/// 折叠价值裁定的阶段词(与 liuma-decision 的落档口径同字面)
+const STAGE_FOLD: &str = "fold";
 
 /// 批量折叠日志为轨迹数据(增量包装:新建 folder 逐条 feed 后取终态,
 /// 与直播增量同一份代码,输出必然一致)。
@@ -506,24 +588,66 @@ impl TrajectoryFolder {
         }
     }
 
-    /// 决策记录落位:当前开着调用(守卫裁决)→ 挂到那条记录上,不另
-    /// 立行;否则(stop/context 等无调用可挂的)→ 按事件序独立成行。
-    fn place_decision(&mut self, ev: &EventEnvelope, rec: DecisionRecord) {
-        // 顺序即绑定:引擎契约「pre_tool 在 tool/call 落档后、执行前」
-        // + 工具调用顺序执行 ⇒ pending_calls 里至多一条,且就是它裁决的
-        if let Some((_, call)) = self.pending_calls.last_mut() {
-            call.decision = Some(rec);
+    /// 折叠事实合成(摘要到达时调用):暂存的审计面 + 摘要载荷面 →
+    /// 一条 `fold` 事实;裁决 receipt 与耗时一并取出。
+    ///
+    /// 审计缺席(旧日志 / 摘要先于审计到达的异常序)时审计面留空,只有
+    /// 摘要载荷有的事实(条数/token/裁定计数)——不假装知道触发来源。
+    fn compose_fold(
+        &mut self,
+        ev: &EventEnvelope,
+    ) -> (Option<FoldRecord>, Option<DecisionRecord>, Option<f64>) {
+        let stash = self.fold_stash.take().unwrap_or_default();
+        let d = &ev.data;
+        let num = |k: &str| d[k].as_u64().unwrap_or(0);
+        let audit = stash.audit.as_ref();
+        let record = FoldRecord {
+            trigger: audit
+                .and_then(|a| a["trigger"].as_str())
+                .unwrap_or_default()
+                .to_string(),
+            pressure_tokens: audit.and_then(|a| a["tokens"].as_u64()).unwrap_or(0),
+            threshold_tokens: audit.and_then(|a| a["threshold"].as_u64()),
+            retain_tokens: audit.and_then(|a| a["retain"].as_u64()).unwrap_or(0),
+            // 遮蔽区间与条数/裁定计数来自摘要载荷(审计侧没有)
+            shadowed_start: d["shadowedRange"]["start"].as_u64().unwrap_or(0),
+            shadowed_end: d["shadowedRange"]["end"].as_u64().unwrap_or(0),
+            items: num("items"),
+            prefix_tokens: num("shadowedTokens"),
+            pruned_items: num("prunedItems"),
+            pruned_tokens: num("prunedTokens"),
+            no_value_candidates: num("noValueCandidates"),
+            judged_candidates: num("judgedCandidates"),
+            total_candidates: num("totalCandidates"),
+        };
+        let elapsed = (stash.started_at > 0 && ev.time > stash.started_at)
+            .then(|| (ev.time - stash.started_at) as f64 / 1000.0);
+        (Some(record), stash.decision.map(|(_, _, d)| d), elapsed)
+    }
+
+    /// 未合成的折叠暂存兜底出账(失败/中断:审计落了、摘要没落)。
+    ///
+    /// 有裁决 receipt 就让它独立成行——收据是对外承诺,不静默丢;只有
+    /// 审计(一次没有裁定的失败折叠)则丢弃:tell 不出比噪声更有用的东西
+    fn flush_fold_stash(&mut self) {
+        let Some(stash) = self.fold_stash.take() else {
             return;
-        }
-        self.insert_record_ordered(TrajectoryRecord {
+        };
+        let Some((seq, at, rec)) = stash.decision else {
+            return;
+        };
+        let turn = (self.turn > 0).then_some(self.turn);
+        let row = Self::decision_row(seq, at, turn, rec);
+        self.insert_record_ordered(row);
+    }
+
+    /// 裁决独立行的形态(place_decision 与折叠冲刷共用)
+    fn decision_row(seq: u64, at: i64, turn: Option<u64>, rec: DecisionRecord) -> TrajectoryRecord {
+        TrajectoryRecord {
             index: 0,
-            seq: ev.seq,
+            seq,
             kind: "decision".into(),
-            turn: if self.turn == 0 {
-                None
-            } else {
-                Some(self.turn)
-            },
+            turn,
             group: "Message".into(),
             // 裁决行不顶 Turn 标签:它是过程记录,不是轮次起点
             turn_start: false,
@@ -531,7 +655,7 @@ impl TrajectoryFolder {
             result: None,
             is_error: rec.error.is_some(),
             time_seconds: (rec.duration_ms > 0).then(|| rec.duration_ms as f64 / 1000.0),
-            started_at: Some(ev.time),
+            started_at: Some(at),
             request_number: None,
             input: None,
             output: None,
@@ -545,7 +669,21 @@ impl TrajectoryFolder {
             schema_detail: None,
             source: None,
             decision: Some(rec),
-        });
+            fold: None,
+        }
+    }
+
+    /// 决策记录落位:当前开着调用(守卫裁决)→ 挂到那条记录上,不另
+    /// 立行;否则(stop/context 等无调用可挂的)→ 按事件序独立成行。
+    fn place_decision(&mut self, ev: &EventEnvelope, rec: DecisionRecord) {
+        // 顺序即绑定:引擎契约「pre_tool 在 tool/call 落档后、执行前」
+        // + 工具调用顺序执行 ⇒ pending_calls 里至多一条,且就是它裁决的
+        if let Some((_, call)) = self.pending_calls.last_mut() {
+            call.decision = Some(rec);
+            return;
+        }
+        let turn = (self.turn > 0).then_some(self.turn);
+        self.insert_record_ordered(Self::decision_row(ev.seq, ev.time, turn, rec));
     }
 
     /// 决策收口(answered 以 id 配对):两处找——还挂着的调用,或已入
@@ -634,6 +772,7 @@ impl TrajectoryFolder {
                 // 日志尽头冲刷,按 seq 插回事件序位置两者同序)。
                 // take 后快照不再重复发占位
                 self.flush_pending_calls();
+                self.flush_fold_stash();
                 if let Some(open) = self.open_request.take() {
                     let req = self.error_request(&open);
                     self.push_request(req);
@@ -678,6 +817,7 @@ impl TrajectoryFolder {
                     // 注入行带 source 染色(真用户消息无)
                     source: inject.then(|| ev.data["source"].clone()),
                     decision: None,
+                    fold: None,
                 });
                 if !inject {
                     self.turn_has_record = true;
@@ -708,6 +848,16 @@ impl TrajectoryFolder {
                         let rec = rec.clone();
                         self.dirty.records.push(rec);
                     }
+                }
+                if boundary == "llm" && operation == "compaction" {
+                    // 折叠开始:暂存审计事实(摘要到达时合成台账行)。
+                    // 上一次折叠若有残留(失败未冲刷),先兜底出账
+                    self.flush_fold_stash();
+                    self.fold_stash = Some(FoldStash {
+                        audit: Some(detail.clone()),
+                        started_at: ev.time,
+                        decision: None,
+                    });
                 }
                 if boundary == "llm" && operation == "request" {
                     // 新请求:#N + 信封变更检测(SYSTEM 记录)。
@@ -775,6 +925,7 @@ impl TrajectoryFolder {
                             schema_detail: None,
                             source: None,
                             decision: None,
+                            fold: None,
                         };
                         if label == "Initial System Prompt" {
                             // 置顶(Initial System Prompt 事件时序上
@@ -905,6 +1056,7 @@ impl TrajectoryFolder {
                     schema_detail: None,
                     source: None,
                     decision: None,
+                    fold: None,
                 });
                 if self.turn > 0 {
                     self.turn_has_record = true;
@@ -946,6 +1098,7 @@ impl TrajectoryFolder {
                     // 守卫 receipt 在 result 之前到达,此时本记录还在
                     // pending_calls 里 → 就地附着(见 decision 字段文档)
                     decision: None,
+                    fold: None,
                 };
                 *self
                     .tools_by_step
@@ -1017,7 +1170,16 @@ impl TrajectoryFolder {
                     duration_ms: 0,
                     pruned: None,
                 };
-                self.place_decision(ev, rec);
+                // 折叠期裁定:挂到同一次折叠的 compacted 行上(摘要到达时
+                // 合成),不独立成行。暂存不在场(收据先于审计到达/旧日志)
+                // 则照常独立成行——receipt 是对外承诺,不丢
+                if rec.scenario == STAGE_FOLD
+                    && let Some(stash) = self.fold_stash.as_mut()
+                {
+                    stash.decision = Some((ev.seq, ev.time, rec));
+                } else {
+                    self.place_decision(ev, rec);
+                }
             }
             // 裁定的实际效果(仅 enforce 分支落档):修剪条数补进**对应
             // 阶段**那条裁决——它是本场景的收尾量,单看 receipt 无从知道
@@ -1029,8 +1191,19 @@ impl TrajectoryFolder {
                     let stage = items
                         .first()
                         .and_then(|p| p["stage"].as_str())
-                        .unwrap_or("context");
-                    self.settle_pruned(items.len() as u64, stage);
+                        .unwrap_or(STAGE_CONTEXT);
+                    if stage == STAGE_FOLD {
+                        // 折叠期裁定还没有台账行:补记进暂存,摘要到达时随行出账
+                        if let Some((_, _, rec)) =
+                            self.fold_stash.as_mut().and_then(|s| s.decision.as_mut())
+                        {
+                            rec.pruned = Some(items.len() as u64);
+                        } else {
+                            self.settle_pruned(items.len() as u64, stage);
+                        }
+                    } else {
+                        self.settle_pruned(items.len() as u64, stage);
+                    }
                 }
             }
             "decision/answered" => {
@@ -1046,10 +1219,31 @@ impl TrajectoryFolder {
                         .to_string()
                 });
                 let duration_ms = ev.data["durationMs"].as_i64().unwrap_or(0);
-                self.settle_decision(id, answers, error, duration_ms);
+                // 暂存中的折叠裁决优先收口(它还没有台账行)
+                let stashed = self
+                    .fold_stash
+                    .as_mut()
+                    .and_then(|s| s.decision.as_mut())
+                    .filter(|(_, _, d)| d.id == id);
+                match stashed {
+                    Some((_, _, d)) => {
+                        d.answers = answers;
+                        d.error = error;
+                        d.duration_ms = duration_ms;
+                    }
+                    None => self.settle_decision(id, answers, error, duration_ms),
+                }
+            }
+            // 折叠终局 failed:摘要不会来了(自动路径失败是静默的 Skipped)
+            // ——暂存兜底出账,收据不悬置到下一次折叠或 turn 结束
+            "compaction/progress" => {
+                if ev.data["phase"].as_str() == Some("failed") {
+                    self.flush_fold_stash();
+                }
             }
             "compaction/summary" => {
                 let summary = ev.data["summary"].as_str().unwrap_or_default();
+                let (fold, decision, elapsed) = self.compose_fold(ev);
                 self.stage_record(TrajectoryRecord {
                     index: 0,
                     seq: ev.seq,
@@ -1068,7 +1262,8 @@ impl TrajectoryFolder {
                     },
                     result: None,
                     is_error: false,
-                    time_seconds: None,
+                    // 本次折叠耗时(审计 → 摘要;审计缺席 = 未知)
+                    time_seconds: elapsed,
                     started_at: Some(ev.time),
                     request_number: None,
                     input: None,
@@ -1086,7 +1281,8 @@ impl TrajectoryFolder {
                     tools_catalog: None,
                     schema_detail: None,
                     source: None,
-                    decision: None,
+                    decision,
+                    fold,
                 });
                 if self.turn > 0 {
                     self.turn_has_record = true;
@@ -1815,6 +2011,185 @@ mod tests {
         assert_eq!(c.kind, "compacted");
         assert_eq!(c.text, "早期讨论了 A。");
         assert!(c.turn_start);
+    }
+
+    /// 折叠审计面 + 摘要面合成一条 `fold` 事实;价值裁定挂同一行,
+    /// **不独立成行**(一次折叠在台账里是一行,不是两行)
+    #[test]
+    fn fold_facts_compose_onto_the_compacted_row() {
+        let log = vec![
+            ev_seq("turn/start", 1, 1000, json!({})),
+            ev_seq(
+                "audit/call",
+                2,
+                1000,
+                json!({
+                    "boundary": "llm", "operation": "compaction",
+                    "detail": {
+                        "tokens": 812_000, "trigger": "auto", "threshold": 800_000,
+                        "retain": 160_000, "items": 42, "through": 96, "manual": false,
+                    },
+                }),
+            ),
+            ev_seq(
+                "decision/asked",
+                3,
+                1050,
+                json!({ "id": "f1", "scenario": "fold", "model": "jev-latest",
+                        "questions": [ { "id": "s7", "kind": "noul" } ],
+                        "stateDigest": "abc123" }),
+            ),
+            ev_seq(
+                "decision/answered",
+                4,
+                1900,
+                json!({ "id": "f1", "ok": true, "durationMs": 850,
+                        "answers": { "s7": { "type": "noul", "noul": 0.03 } } }),
+            ),
+            ev_seq(
+                "decision/pruned",
+                5,
+                1910,
+                json!({ "pruned": [
+                    { "seq": 7, "score": 0.03, "stage": "fold" },
+                    { "seq": 9, "score": 0.05, "stage": "fold" },
+                ] }),
+            ),
+            ev_seq(
+                "compaction/summary",
+                6,
+                4000,
+                json!({
+                    "summary": "folded", "throughSeq": 96,
+                    "shadowedRange": { "start": 12, "end": 96 },
+                    "items": 42, "shadowedTokens": 203_000,
+                    "prunedItems": 2, "prunedTokens": 1_500,
+                    "noValueCandidates": 3, "judgedCandidates": 2, "totalCandidates": 5,
+                }),
+            ),
+        ];
+        let data = fold_trajectory(&log);
+        assert!(
+            !data.records.iter().any(|r| r.kind == "decision"),
+            "折叠裁决不独立成行:{:?}",
+            data.records.iter().map(|r| &r.kind).collect::<Vec<_>>()
+        );
+        let c = data
+            .records
+            .iter()
+            .find(|r| r.kind == "compacted")
+            .expect("compacted 行");
+        let f = c.fold.as_ref().expect("折叠事实");
+        assert_eq!(f.trigger, "auto");
+        assert_eq!(f.pressure_tokens, 812_000, "压力 = 审计的 tokens");
+        assert_eq!(f.threshold_tokens, Some(800_000));
+        assert_eq!(f.retain_tokens, 160_000);
+        assert_eq!((f.shadowed_start, f.shadowed_end), (12, 96));
+        assert_eq!(f.items, 42);
+        assert_eq!(f.prefix_tokens, 203_000);
+        assert_eq!(
+            (f.pruned_items, f.pruned_tokens),
+            (2, 1_500),
+            "已生效裁掉量"
+        );
+        assert_eq!(f.no_value_candidates, 3, "裁定判无价值 3 条(含未评估)");
+        assert_eq!(
+            (f.judged_candidates, f.total_candidates),
+            (2, 5),
+            "诚实分母"
+        );
+        assert_eq!(c.time_seconds, Some(3.0), "耗时 = 审计到摘要");
+        // 裁决 receipt 挂同一行(检查器「决策」页白拿)
+        let d = c.decision.as_ref().expect("裁定 receipt 随行");
+        assert_eq!(d.scenario, "fold");
+        assert_eq!(d.id, "f1");
+        assert_eq!(d.duration_ms, 850, "answered 已收口");
+        assert_eq!(d.pruned, Some(2), "pruned 补进本条");
+        assert_eq!(d.answers.as_ref().unwrap()["s7"]["noul"], 0.03);
+    }
+
+    /// 摘要先于审计(旧日志 / 异常序):只有载荷面的事实,触发来源留空
+    /// ——不假装知道为什么压
+    #[test]
+    fn fold_facts_survive_without_the_audit() {
+        let log = vec![
+            ev_seq("turn/start", 1, 0, json!({})),
+            ev_seq(
+                "compaction/summary",
+                2,
+                0,
+                json!({ "summary": "s", "throughSeq": 9, "items": 3,
+                        "shadowedTokens": 1000 }),
+            ),
+        ];
+        let data = fold_trajectory(&log);
+        let f = data.records[0].fold.as_ref().expect("折叠事实");
+        assert_eq!(f.trigger, "", "审计缺席 → 未知");
+        assert_eq!(f.threshold_tokens, None);
+        assert_eq!(f.pressure_tokens, 0);
+        assert_eq!(f.items, 3);
+        assert_eq!(data.records[0].time_seconds, None, "无可算的耗时");
+        assert!(data.records[0].decision.is_none());
+    }
+
+    /// 失败的折叠:摘要不会落,收据不能悬置——终局 failed 相位与
+    /// turn/end 两条兜底都要把它冲成独立裁决行
+    #[test]
+    fn failed_fold_flushes_its_receipt() {
+        let receipt = |end: (u64, &str)| {
+            let mut log = vec![
+                ev_seq("turn/start", 1, 1000, json!({})),
+                ev_seq(
+                    "audit/call",
+                    2,
+                    1000,
+                    json!({
+                        "boundary": "llm", "operation": "compaction",
+                        "detail": { "tokens": 900_000, "trigger": "overflow",
+                                    "threshold": 0, "retain": 160_000 },
+                    }),
+                ),
+                ev_seq(
+                    "decision/asked",
+                    3,
+                    1050,
+                    json!({ "id": "f9", "scenario": "fold", "model": "m", "questions": [] }),
+                ),
+                ev_seq(
+                    "decision/answered",
+                    4,
+                    1100,
+                    json!({ "id": "f9", "ok": false, "error": "decision timeout",
+                            "durationMs": 2000 }),
+                ),
+            ];
+            match end {
+                (seq, "failed") => log.push(ev_seq(
+                    "compaction/progress",
+                    seq,
+                    1200,
+                    json!({ "phase": "failed", "throughSeq": 9 }),
+                )),
+                (seq, _) => log.push(ev_seq("turn/end", seq, 1200, json!({}))),
+            }
+            let data = fold_trajectory(&log);
+            let rows: Vec<&TrajectoryRecord> = data
+                .records
+                .iter()
+                .filter(|r| r.decision.is_some())
+                .collect();
+            assert_eq!(rows.len(), 1, "收据兜底成一行:{rows:?}");
+            assert_eq!(rows[0].kind, "decision");
+            assert_eq!(rows[0].text, "fold");
+            assert!(rows[0].is_error, "ok=false → 失败态");
+            assert_eq!(rows[0].seq, 3, "按收据自己的事件序归位");
+            assert!(
+                data.records.iter().all(|r| r.kind != "compacted"),
+                "没有摘要就没有折叠行"
+            );
+        };
+        receipt((5, "failed"));
+        receipt((5, "turn/end"));
     }
 
     #[test]

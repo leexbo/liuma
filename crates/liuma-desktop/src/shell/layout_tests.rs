@@ -333,6 +333,7 @@ fn tool_read_expanded_keeps_collapse_and_inspect_jumps(cx: &mut TestAppContext) 
         schema_detail: None,
         source: None,
         decision: None,
+        fold: None,
     };
     cx.update(|app| {
         store.update(app, |st, _| {
@@ -2814,6 +2815,7 @@ fn trajectory_ledger_rows_inspector_and_tabs(cx: &mut TestAppContext) {
             source: (kind == "context")
                 .then(|| serde_json::json!({ "kind": "agent-instructions" })),
             decision: None,
+            fold: None,
         }
     };
     let request = TrajectoryRequest {
@@ -3191,6 +3193,7 @@ fn trajectory_delta_applies_upsert_and_drops_foreign_session(cx: &mut TestAppCon
         schema_detail: None,
         source: None,
         decision: None,
+        fold: None,
     };
     let req = |number: u64, tool_calls: u64| TrajectoryRequest {
         number,
@@ -3379,6 +3382,7 @@ fn trajectory_drag_state_renders_in_paint_phase(cx: &mut TestAppContext) {
         schema_detail: None,
         source: None,
         decision: None,
+        fold: None,
     };
 
     cx.update(|app| {
@@ -5787,6 +5791,7 @@ fn trajectory_empty_load_earlier_and_turn_collapse(cx: &mut TestAppContext) {
         schema_detail: None,
         source: None,
         decision: None,
+        fold: None,
     };
     cx.update(|app| {
         store.update(app, |st, _| {

@@ -749,6 +749,7 @@ async fn advisory_judge_records_counts_without_touching_the_prefix() {
     engine.set_fold_thresholds(0, 1);
     let judge = Arc::new(ScriptedFoldJudge::returning(Ok(FoldAdvice {
         no_value: 2,
+        no_value_chars: 0,
         applied: false,
         judged: 2,
         total: 3,
@@ -794,6 +795,19 @@ async fn advisory_judge_records_counts_without_touching_the_prefix() {
     assert_eq!(summary.data["judgedCandidates"], json!(2));
     assert_eq!(summary.data["totalCandidates"], json!(3));
     assert_eq!(summary.data["prunedItems"], json!(0));
+    // 审计面:触发来源/门槛/保留尾(台账 fold 事实的审计半边;摘要半边
+    // 的映射见 liuma-core trajectory::fold_facts_compose_onto_the_compacted_row)
+    let audit = all
+        .iter()
+        .find(|e| e.r#type == "audit/call" && e.data["operation"] == "compaction")
+        .expect("折叠审计");
+    assert_eq!(audit.data["detail"]["trigger"], json!("manual"));
+    assert_eq!(audit.data["detail"]["threshold"], json!(null), "手动无门槛");
+    assert_eq!(audit.data["detail"]["retain"], json!(1));
+    assert!(
+        audit.data["detail"]["tokens"].as_u64().is_some(),
+        "压力量测"
+    );
     // 只落 receipt:无 decision/pruned(派生面不动)
     assert!(
         !all.iter().any(|e| e.r#type == "decision/pruned"),
@@ -826,6 +840,7 @@ async fn advisory_keeps_the_summarize_input_verbatim() {
     engine.set_fold_thresholds(0, 1);
     let judge = Arc::new(ScriptedFoldJudge::returning(Ok(FoldAdvice {
         no_value: 6,
+        no_value_chars: 0,
         applied: false,
         judged: 6,
         total: 6,
@@ -947,6 +962,7 @@ async fn empty_candidate_set_skips_the_judge() {
     engine.set_fold_thresholds(0, 1);
     let judge = Arc::new(ScriptedFoldJudge::returning(Ok(FoldAdvice {
         no_value: 9,
+        no_value_chars: 0,
         applied: false,
         judged: 9,
         total: 9,
@@ -1081,4 +1097,9 @@ async fn enforced_fold_replaces_outputs_in_the_prefix_only() {
     assert_eq!(summary.data["prunedItems"], json!(5));
     assert_eq!(summary.data["noValueCandidates"], json!(5));
     assert_eq!(summary.data["totalCandidates"], json!(5));
+    assert_eq!(
+        summary.data["prunedTokens"],
+        json!(5 * 3_000 / 4),
+        "裁掉的字符折 token"
+    );
 }
