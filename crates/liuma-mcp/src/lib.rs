@@ -1460,20 +1460,26 @@ mod tests {
     }
 
     /// Windows 侧:裸名按 PATH × PATHEXT 解析成绝对路径(包管理器 shim
-    /// 是 `.cmd`,不解析就报 program not found);参数原样透传
+    /// 是 `.cmd`,不解析就报 program not found);参数原样透传。
+    ///
+    /// 期望值必须走**同一次 join** 拼出:候选路径的分隔符随宿主走
+    /// (`C:\nodejs\npx.CMD` vs `C:\nodejs/npx.CMD`),写死反斜杠字面量
+    /// 会让本用例在非 Windows 上恒红。存在性谓词保持大小写不敏感——那
+    /// 是 Windows 文件系统的语义,PATHEXT 候选本身是大写扩展名。
     #[test]
     fn launch_argv_resolves_bare_name_via_pathext() {
         let dir = PathBuf::from(r"C:\nodejs");
         let args = vec!["-y".to_string(), "pkg".to_string()];
+        let want = dir.join("npx.cmd").to_string_lossy().to_string();
         let (program, argv) = launch_argv(
             true,
             "npx",
             &args,
             std::slice::from_ref(&dir),
             &pathext_entries(None),
-            &exists_as(r"C:\nodejs\npx.cmd"),
+            &exists_as(&want),
         );
-        assert!(same_path(&program, r"C:\nodejs\npx.cmd"), "{program}");
+        assert!(same_path(&program, &want), "{program}");
         assert_eq!(argv, ["-y", "pkg"]);
     }
 
@@ -1481,15 +1487,16 @@ mod tests {
     #[test]
     fn launch_argv_keeps_plain_executable() {
         let dir = PathBuf::from(r"C:\tools");
+        let want = dir.join("uvx.exe").to_string_lossy().to_string();
         let (program, argv) = launch_argv(
             true,
             "uvx",
             &[],
             std::slice::from_ref(&dir),
             &pathext_entries(None),
-            &exists_as(r"C:\tools\uvx.exe"),
+            &exists_as(&want),
         );
-        assert!(same_path(&program, r"C:\tools\uvx.exe"), "{program}");
+        assert!(same_path(&program, &want), "{program}");
         assert!(argv.is_empty());
     }
 
