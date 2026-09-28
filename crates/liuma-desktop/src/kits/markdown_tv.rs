@@ -509,4 +509,84 @@ mod tests {
             "增量喂成高度应与全量一致(增量 {prev_h} vs 全量 {full_h})"
         );
     }
+
+    /// 未闭合代码块的流式重解析不崩(库侧 #3238 的复现尝试)。
+    ///
+    /// 机制:tree-sitter 的读回调曾按 `&str` 切片,当旧树/included range
+    /// 让它从**多字节字符中间**请求 offset 时 panic 落在 `extern "C"`
+    /// 回调里 → abort 整个进程(非 unwind)。上方 `view_style()` 的
+    /// 「围栏未闭合不劈裂」策略意味着流式期间每次 `push_str` 都会把
+    /// 整个未闭合围栏重新喂给高亮器,旧树与新增多字节内容交替,正是
+    /// stale included range 的温床。本用例逐字追加含中文的未闭合
+    /// rust 围栏,末段才闭合。
+    ///
+    /// 实测记录:本用例在 0.6.6 与 0.7.0 上**均通过**——项目这条路径
+    /// 无法复现 #3238,故它是一条覆盖锁而非该修的反向锚,勿据它宣称
+    /// 锁住了 #3238。
+    #[gpui_kit::test]
+    fn tv_unclosed_cjk_fence_streams_without_abort(cx: &mut TestAppContext) {
+        init(cx);
+        struct FenceView {
+            reg: TvStreamRegistry,
+        }
+        impl Render for FenceView {
+            fn render(
+                &mut self,
+                _: &mut Window,
+                _: &mut gpui_kit::Context<Self>,
+            ) -> impl IntoElement {
+                div()
+                    .id("tv-fence-scroll")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .v_flex()
+                    .child(
+                        div()
+                            .id("tv-fence-inc")
+                            .debug_selector(|| "tv-fence-inc".to_string())
+                            .w(px(400.))
+                            .child(self.reg.view_composed("f", "", |v| v)),
+                    )
+            }
+        }
+        let inner = std::rc::Rc::new(std::cell::RefCell::new(None::<gpui_kit::Entity<FenceView>>));
+        let cell = inner.clone();
+        let (_root, cx) = cx.add_window_view(|window, cx| {
+            let v = cx.new(|_| FenceView {
+                reg: TvStreamRegistry::default(),
+            });
+            *cell.borrow_mut() = Some(v.clone());
+            Root::new(v, window, cx)
+        });
+        let view = inner.borrow().clone().expect("内层实体应在场");
+        // 未闭合围栏 + 中文注释/字符串:每个字符一次 push,制造最多轮次
+        // 的 stale-tree 重解析;末段才补上闭合围栏
+        let head = "说明:\n\n```rust\n// 时区处理\nfn f() {\n";
+        let body =
+            "    let s = \"北京时间\";\n    // 逐字追加中文注释,令字节边界不断落在多字节字符邻域\n";
+        let tail = "}\n```\n\n收尾。\n";
+        let full = format!("{head}{body}{tail}");
+        let mut sent = String::new();
+        for (ix, ch) in head
+            .chars()
+            .chain(body.chars())
+            .chain(tail.chars())
+            .enumerate()
+        {
+            sent.push(ch);
+            // text_ver 从 1 起:0 在 drive 里是「初始记账」语义,逐字喂用递增序
+            let ver = ix as u32 + 1;
+            let part = sent.clone();
+            view.update(cx, |v, cx| v.reg.drive("f", &part, ver, cx));
+            cx.refresh().expect("刷新失败");
+            cx.run_until_parked();
+        }
+        assert_eq!(sent, full, "逐字喂入的文本应与目标一致");
+        let h = f32::from(
+            cx.debug_bounds("tv-fence-inc")
+                .map(|b| b.size.height)
+                .unwrap_or(px(0.)),
+        );
+        assert!(h > 0., "闭合后视图应有高度(未崩且渲染完成),实得 {h}");
+    }
 }

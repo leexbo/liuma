@@ -690,17 +690,11 @@ impl Render for WorkspaceView {
                 self.store.read(cx).attachments.attachment_toast.is_some(),
                 |el| el.child(attachment_toast_card(&self.store, cx)),
             )
-            // Dialog/Sheet 层(gpui-component;store 经 with_window 桥
-            // window.open_dialog 打开的模态在此渲染。树序置于手写 overlay
-            // 之后:模态遮罩压过 lightbox/查看器)
-            .children(gpui_kit::component::Root::render_dialog_layer(window, cx))
-            .children(gpui_kit::component::Root::render_sheet_layer(window, cx))
-            // 通知层(gpui-component NotificationList;Root 持有实体但
-            // 自身不渲染,应用根视图须显式挂层——不挂则 push 的通知
-            // 全数不可见)。置于树序最末:浮于含查看器在内的全部 overlay
-            .children(gpui_kit::component::Root::render_notification_layer(
-                window, cx,
-            ))
+        // Dialog/Sheet/Notification 三层由 Root 托管(0.7.0 起 Root
+        // 自渲染,应用根视图不再挂层;`Root::render_*_layer` 已删)。
+        // 层位于 Root 的 absolute/inset_0 overlay 子树,绘制在手写
+        // overlay 之后且覆盖整窗——原「模态遮罩压过 lightbox/查看器」
+        // 与「通知浮于全部 overlay」两条树序意图由库侧保证
     }
 }
 

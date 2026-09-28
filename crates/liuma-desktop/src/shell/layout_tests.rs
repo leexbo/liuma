@@ -7661,6 +7661,100 @@ fn mcp_json_editor_accepts_typing(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 升级锁(0.7.0):Dialog/Sheet/Notification 三层改由 Root 自渲染,
+/// 以 `root-layers`(absolute/inset_0)包住 sheet→dialog→notification。
+/// 0.6.6 只渲染 `dialog-layer` 且应用根视图必须自己挂层——本用例在
+/// 0.6.6 上必红、0.7.0 上必绿,是「层托管已移交库侧」的直接锚点;
+/// 层一旦缺席,`window.open_dialog` / `push_notification` 全数静默失效。
+#[gpui_kit::test]
+fn root_hosts_overlay_layers(cx: &mut TestAppContext) {
+    let (_store, mut wcx, root) = menu_harness(cx, "rootlayers");
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("root-layers").is_some(),
+        "Root 未托管 overlay 层:应用根视图已不再挂层,层缺席会让 dialog/sheet/notification 全数不可见"
+    );
+    // 空层不占位:无 dialog 时 dialog-layer 缺席(既有用例断言同一语义)
+    assert!(
+        wcx.debug_bounds("dialog-layer").is_none(),
+        "无 dialog 时 dialog-layer 应缺席"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 覆盖锁:MCP JSON 编辑器接受中文键入。
+///
+/// 既有 `mcp_json_editor_accepts_typing` 只喂 ASCII,而该编辑器装的正是
+/// 用户粘贴的中文配置(`EditorState::new(window, cx).language("json")`
+/// 走增量 `update_input` + 真 old_tree),中文路径/value 是它的常态输入。
+/// 本用例逐段键入中文 JSON,补齐这条真实路径的覆盖。
+///
+/// 与库侧 #3238 的关系(实测记录,勿误读):tree-sitter 的读回调曾按
+/// `&str` 切片,当 stale included range 让它从多字节字符中间请求 offset
+/// 时 panic 落在 `extern "C"` 回调里 → abort 整个进程。0.7.0 修了它,
+/// 但**本用例在 0.6.6 与 0.7.0 上均通过**——项目这条路径复现不出该
+/// 触发条件,故它是覆盖锁,**不是** #3238 的反向锚。
+#[gpui_kit::test]
+fn mcp_json_editor_accepts_cjk_typing(cx: &mut TestAppContext) {
+    let (_store, mut wcx, root) = menu_harness(cx, "mcpcjk");
+    click_sel(&mut wcx, "settings-row");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "settings-nav-MCP");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "mcp-add");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "mcp-tab-json");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    let b = wcx
+        .debug_bounds("mcp-json-input")
+        .expect("JSON 粘贴区不在场");
+    wcx.simulate_click(
+        gpui_kit::Point {
+            x: b.origin.x + b.size.width / 2.,
+            y: b.origin.y + b.size.height / 2.,
+        },
+        gpui_kit::Modifiers::default(),
+    );
+    wcx.run_until_parked();
+    // 逐段键入:每段之间都让高亮器重解析一次,制造 stale tree
+    for seg in [
+        "{\"mcpServers\":",
+        "{\"文件系统\":",
+        "{\"命令\":\"npx\",",
+        "\"参数\":[\"中文路径\"]",
+        "}}}",
+    ] {
+        wcx.simulate_input(seg);
+        wcx.run_until_parked();
+        wcx.refresh().expect("刷新失败");
+        wcx.run_until_parked();
+    }
+    let typed = cx.update(|app| {
+        _store
+            .read(app)
+            .settings
+            .mcp_detail
+            .as_ref()
+            .and_then(|d| d.json_input.as_ref())
+            .map(|input| input.read(app).value().to_string())
+            .unwrap_or_default()
+    });
+    assert!(
+        typed.contains("文件系统") && typed.contains("中文路径"),
+        "中文键入未完整落值(value={typed:?})"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 编辑卡姿态流:首运行 setup 卡 / 取消后回退普通行 /
 /// 行内编辑再展开 / 添加卡 / 删除确认模态
 #[gpui_kit::test]
