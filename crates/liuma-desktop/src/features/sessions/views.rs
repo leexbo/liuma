@@ -471,7 +471,7 @@ fn pinned_session_row(store: &Entity<AppStore>, cx: &App, s: &SessionSummary) ->
                 .children(
                     running
                         .then(running_dot)
-                        .or_else(|| Some(fixed(LiumaIcon::MessageSquare, 13.).into_any_element())),
+                        .or_else(|| Some(fixed(LiumaIcon::Message, 13.).into_any_element())),
                 ),
         )
         .child(
@@ -838,7 +838,7 @@ pub(crate) fn ws_info_card(
                 ),
         )
         .child(row(
-            fixed(LiumaIcon::MessageSquare, 14.)
+            fixed(LiumaIcon::Message, 14.)
                 .text_color(theme::LABEL_2())
                 .into_any_element(),
             dict::sessions::ws_task_count(session_count),

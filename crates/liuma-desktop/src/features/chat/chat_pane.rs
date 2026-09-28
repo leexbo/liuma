@@ -897,7 +897,7 @@ fn context_block(
         dict::chat::inject(label)
     };
     let icon = if role == "recall" {
-        fixed(LiumaIcon::MessageSquare, 14.).into_any_element()
+        fixed(LiumaIcon::Message, 14.).into_any_element()
     } else {
         fixed(IconName::File, 14.).into_any_element()
     };
@@ -1924,10 +1924,7 @@ fn bubble_rich_text(ix: usize, text: &str) -> impl IntoElement {
 fn bubble_ref_chip(tok: &super::reference::AtToken) -> impl IntoElement {
     use super::reference::AtKind;
     let (icon, label) = match tok.kind {
-        AtKind::Session => (
-            fixed(LiumaIcon::MessageSquare, 14.),
-            format!("@{}", tok.label),
-        ),
+        AtKind::Session => (fixed(LiumaIcon::Message, 14.), format!("@{}", tok.label)),
         AtKind::Folder => (fixed(IconName::Folder, 14.), basename_of(&tok.label)),
         AtKind::File => (fixed(IconName::File, 14.), basename_of(&tok.label)),
     };

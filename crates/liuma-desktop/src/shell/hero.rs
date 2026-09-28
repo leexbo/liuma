@@ -63,8 +63,7 @@ pub fn render(
                         .gap(px(10.))
                         .child(
                             div().flex().justify_center().child(
-                                fixed(crate::kits::icons::LiumaIcon::Logo, 64.)
-                                    .text_color(theme::LABEL()),
+                                fixed(icons::LiumaIcon::Logo, 64.).text_color(theme::LABEL()),
                             ),
                         )
                         .child(

@@ -40,7 +40,7 @@ pub enum LiumaIcon {
     /// 计划 / todo 类
     ListChecks,
     /// 会话行
-    MessageSquare,
+    Message,
     /// 置顶(侧栏行菜单;pin.svg,ISC 内置资产)
     Pin,
     /// 取消置顶(已置顶行的置顶钮形态;pin-off.svg 同源。中性灰,
@@ -124,6 +124,8 @@ pub enum LiumaIcon {
     FolderOpen,
     /// 工作区组头·关闭(folder_close_16)
     FolderClose,
+    /// 轨迹
+    Trajectory,
 }
 
 impl IconNamed for LiumaIcon {
@@ -136,12 +138,11 @@ impl IconNamed for LiumaIcon {
             Self::Shield => "shield",
             Self::ShieldAlert => "shield-alert",
             Self::ShieldCheck => "shield-check",
-            // 编辑钮图标 = file-pen(笔写纸形,用户指定;原 pencil 素材退役)
             Self::Pencil => "file-pen",
             Self::GitBranch => "git-branch",
             Self::Archive => "archive",
             Self::ListChecks => "list-checks",
-            Self::MessageSquare => "message-square",
+            Self::Message => "message-circle",
             Self::Pin => "pin",
             Self::PinOff => "pin-off",
             Self::Settings => "settings",
@@ -182,6 +183,7 @@ impl IconNamed for LiumaIcon {
             Self::NewChat => "new-chat",
             Self::FolderOpen => "folder-open",
             Self::FolderClose => "folder-close",
+            Self::Trajectory => "trace",
         };
         format!("icons/_liuma/{name}.svg").into()
     }
@@ -250,8 +252,8 @@ const LIUMA_ICONS: &[(&str, &[u8])] = &[
         include_bytes!("../../assets/icons/list-checks.svg"),
     ),
     (
-        "icons/_liuma/message-square.svg",
-        include_bytes!("../../assets/icons/message-square.svg"),
+        "icons/_liuma/message-circle.svg",
+        include_bytes!("../../assets/icons/message-circle.svg"),
     ),
     (
         "icons/_liuma/logo.svg",
@@ -401,6 +403,10 @@ const LIUMA_ICONS: &[(&str, &[u8])] = &[
         "icons/_liuma/folder-close.svg",
         include_bytes!("../../assets/icons/folder-close.svg"),
     ),
+    (
+        "icons/_liuma/trace.svg",
+        include_bytes!("../../assets/icons/trace.svg"),
+    ),
 ];
 
 impl AssetSource for MergedAssets {
@@ -502,7 +508,7 @@ mod tests {
     /// 枚举全变体的 path 必须命中 LIUMA_ICONS 静态表(防加枚举忘加 SVG)
     #[test]
     fn liuma_icon_paths_all_embedded() {
-        const ALL: [LiumaIcon; 52] = [
+        const ALL: [LiumaIcon; 53] = [
             LiumaIcon::Sparkles,
             LiumaIcon::Zap,
             LiumaIcon::Brain,
@@ -514,7 +520,7 @@ mod tests {
             LiumaIcon::GitBranch,
             LiumaIcon::Archive,
             LiumaIcon::ListChecks,
-            LiumaIcon::MessageSquare,
+            LiumaIcon::Message,
             LiumaIcon::Pin,
             LiumaIcon::PinOff,
             LiumaIcon::Settings,
@@ -555,6 +561,7 @@ mod tests {
             LiumaIcon::NewChat,
             LiumaIcon::FolderOpen,
             LiumaIcon::FolderClose,
+            LiumaIcon::Trajectory,
         ];
         for icon in ALL {
             let p = icon.path();

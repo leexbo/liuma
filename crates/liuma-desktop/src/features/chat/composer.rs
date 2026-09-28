@@ -483,7 +483,7 @@ fn at_completion_card(
                     &label,
                     idx,
                     idx == at.highlight,
-                    fixed(LiumaIcon::MessageSquare, 14.),
+                    fixed(LiumaIcon::Message, 14.),
                     move |window, cx| {
                         let mention = super::reference::session_mention(&label_c, &sid_c);
                         st2.update(cx, |st, cx| {

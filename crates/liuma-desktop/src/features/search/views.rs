@@ -139,7 +139,7 @@ pub(crate) fn search_hits_panel(store: &Entity<AppStore>, cx: &App) -> impl Into
                 .pr(px(8.))
                 .cursor_pointer()
                 .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
-                .child(fixed(LiumaIcon::MessageSquare, 14.).text_color(theme::LABEL_3()))
+                .child(fixed(LiumaIcon::Message, 14.).text_color(theme::LABEL_3()))
                 .child(
                     div()
                         .v_flex()

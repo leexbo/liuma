@@ -73,7 +73,7 @@ impl PanelTab {
     pub fn icon(&self, size: f32) -> gpui_kit::component::Icon {
         match self {
             PanelTab::Plan => fixed(LiumaIcon::ListChecks, size),
-            PanelTab::Trajectory => fixed(IconName::GalleryVerticalEnd, size),
+            PanelTab::Trajectory => fixed(LiumaIcon::Trajectory, size),
             PanelTab::Files => fixed(LiumaIcon::FolderTree, size),
             PanelTab::Preview(p) => {
                 let name = p
