@@ -1104,6 +1104,50 @@ fn trajectory_delta_frame(
     )
 }
 
+/// 统计帧:事件属统计面即 apply 并推 `session/stats`(事件驱动,替代
+/// 客户端轮询;chunk 等高频非统计事件不推)。构成三段为字符启发式线性扫,
+/// 随推随算保鲜。
+///
+/// turn 内 sink 与 **turn 外**的维护任务(手动压缩)共用:压缩的
+/// `compaction/summary`/`compaction/stats` 不经过 turn 的引擎回调,只挂在
+/// 那条回调上的推送会让占用卡停在压缩前——环停在上一次真实请求的用量、
+/// 构成停在未折叠的全量,同一张卡两个口径。
+fn push_stats_frame(
+    session_id: &str,
+    log: &Mutex<EventLog>,
+    mux: &broadcast::Sender<ServerRequest>,
+    agg: &mut stats::StatsAgg,
+    provider_label: &str,
+    context_window: u64,
+    ev: &EventEnvelope,
+) {
+    if !stats::StatsAgg::is_stats_event(&ev.r#type) {
+        return;
+    }
+    agg.apply(&ev.r#type, ev.time, &ev.data);
+    let breakdown = log
+        .lock()
+        .ok()
+        .map(|l| {
+            let b = crate::context::context_breakdown(l.iter());
+            stats::Breakdown {
+                system_tokens: b.system_tokens,
+                tools_tokens: b.tools_tokens,
+                message_tokens: b.message_tokens,
+            }
+        })
+        .unwrap_or_default();
+    let mut stats_json = agg.to_json(breakdown, context_window);
+    // 最近完成轮桶(turn/end 收口即推,轮尾即时拿到本轮用量;无完成轮时缺键)
+    if let Some(lt) = agg.last_turn_json(provider_label) {
+        stats_json["lastTurn"] = lt;
+    }
+    let _ = mux.send(frame(
+        "session/stats",
+        json!({ "sessionId": session_id, "stats": stats_json }),
+    ));
+}
+
 /// 直播热路径:喂入刚 COMMITTED 的事件(turn sink 顺序回调,seq 递增),
 /// 有台账变更即广播 delta。锁内只折叠与组帧,mux 发送在锁外
 fn feed_trajectory_delta(
@@ -7609,6 +7653,7 @@ async fn handle_driver_cmd(
     inner: &SlotInner,
     session_id: &str,
     mux: &broadcast::Sender<ServerRequest>,
+    context_window: u64,
     cmd: DriverCmd,
 ) {
     match cmd {
@@ -7648,14 +7693,20 @@ async fn handle_driver_cmd(
             // 失败/空落 compaction/error(kind 区分:empty=无历史可压,
             // 桌面渲染期换词典;error=真实失败,红色告警)
             let mut translator = Translator::new(provider_info.clone());
+            // 统计聚合同款预热(与 turn 内 sink 同一 apply;压缩落的
+            // compaction/stats 是占用回落的唯一信号,漏推则占用卡停在
+            // 压缩前——见 push_stats_frame 的说明)
+            let mut stats_agg = stats::StatsAgg::default();
             {
                 // 预热:translator 依全量事件演进(与 broadcast_event 同;
                 // 一次日志扫描,相对分钟级摘要是零成本)
                 let log = inner.log.lock_recover();
                 for ev in log.iter() {
                     translator.translate(ev);
+                    stats_agg.apply(&ev.r#type, ev.time, &ev.data);
                 }
             }
+            let provider_label = provider_info.provider.clone();
             let mut sink = |ev: &EventEnvelope| {
                 if let Some(event) = translator.translate(ev)
                     && let Some(f) = event_frame(session_id, event)
@@ -7663,6 +7714,15 @@ async fn handle_driver_cmd(
                     let _ = mux.send(f);
                 }
                 feed_trajectory_delta(session_id, &inner.traj, ev, mux);
+                push_stats_frame(
+                    session_id,
+                    &inner.log,
+                    mux,
+                    &mut stats_agg,
+                    &provider_label,
+                    context_window,
+                    ev,
+                );
             };
             match session.compact_now(&mut sink).await {
                 Ok(Some(_)) => {}
@@ -7921,6 +7981,7 @@ async fn driver_loop(
                 inner,
                 &session_id,
                 &host0.mux,
+                host0.session_context_window(&session_id),
                 cmd,
             )
             .await;
@@ -7966,7 +8027,13 @@ async fn driver_loop(
                         return;
                     }
                     handle_driver_cmd(
-                        &mut session, &provider_info, inner, &session_id, &host0.mux, cmd,
+                        &mut session,
+                        &provider_info,
+                        inner,
+                        &session_id,
+                        &host0.mux,
+                        host0.session_context_window(&session_id),
+                        cmd,
                     )
                     .await;
                 }
@@ -8093,35 +8160,15 @@ async fn driver_loop(
                     // 轨迹增量:落档即折叠出账,变更即推 delta(亚回合粒度;
                     // 工具/消息/请求在轨迹面板落档即现)
                     feed_trajectory_delta(&sid, &inner.traj, ev, &mux);
-                    // 统计相关事件落档即推 session/stats(事件驱动,替代
-                    // 客户端轮询;chunk 等高频非统计事件不推)。构成三段
-                    // 为字符启发式线性扫,随推随算保鲜
-                    if stats::StatsAgg::is_stats_event(&ev.r#type) {
-                        stats_agg.apply(&ev.r#type, ev.time, &ev.data);
-                        let breakdown = inner
-                            .log
-                            .lock()
-                            .ok()
-                            .map(|l| {
-                                let b = crate::context::context_breakdown(l.iter());
-                                stats::Breakdown {
-                                    system_tokens: b.system_tokens,
-                                    tools_tokens: b.tools_tokens,
-                                    message_tokens: b.message_tokens,
-                                }
-                            })
-                            .unwrap_or_default();
-                        let mut stats_json = stats_agg.to_json(breakdown, context_window);
-                        // 最近完成轮桶(turn/end 收口即推,轮尾即时拿到
-                        // 本轮用量;无完成轮时缺键)
-                        if let Some(lt) = stats_agg.last_turn_json(&provider_label) {
-                            stats_json["lastTurn"] = lt;
-                        }
-                        let _ = mux.send(frame(
-                            "session/stats",
-                            json!({ "sessionId": sid, "stats": stats_json }),
-                        ));
-                    }
+                    push_stats_frame(
+                        &sid,
+                        &inner.log,
+                        &mux,
+                        &mut stats_agg,
+                        &provider_label,
+                        context_window,
+                        ev,
+                    );
                 },
             )
             .await;
@@ -9854,6 +9901,102 @@ mod tests {
                 .iter()
                 .any(|r| r.decision.as_ref().is_some_and(|d| d.scenario == "context")),
             "裁判裁决必须在台账里"
+        );
+    }
+
+    /// 手动压缩(/compact)落档的统计必须推给桌面。
+    ///
+    /// 压缩是 **turn 外**的维护任务(驱动命令经 Job 通道),它的
+    /// `compaction/summary` / `compaction/stats` 不经过 turn 的事件回调——
+    /// 而 session/stats 推送挂在那个回调上。漏掉这条路径时占用卡停在压缩
+    /// 前:`contextUsed` 停在上一次真实请求的用量、`messageTokens` 停在
+    /// **未折叠**的全量(现场:环 8% 而构成卡 99%,同一张卡两个口径)。
+    #[tokio::test]
+    async fn manual_compact_pushes_stats_after_the_fold() {
+        let host = temp_host("compact-stats");
+        // 带真实用量(压缩前占用采样非 0,才能断言「压缩后回落」);
+        // 首轮给足正文,折叠的节省才不会被摘要自身的价格盖过去
+        let long = "甲".repeat(6000);
+        host.set_fake_script(
+            [long.as_str(), "乙"]
+                .iter()
+                .map(|m| {
+                    vec![
+                        LlmEvent::AssistantMessage(json!({ "content": m })),
+                        LlmEvent::Usage(json!({
+                            "input_tokens": 60_000,
+                            "output_tokens": 120,
+                        })),
+                        LlmEvent::Done,
+                    ]
+                })
+                .collect(),
+        );
+        let mut mux = host.mux_subscribe();
+        let id = host.create_session(None, None, None);
+
+        // 两轮:攒出可折叠的历史 + 当前 turn(压缩压的是当前 turn 之前)
+        // 沿途记下压缩前的 (占用, 构成 messageTokens)
+        let mut pre_fold: Option<(u64, u64)> = None;
+        for text in ["第一轮", "第二轮"] {
+            host.prompt(&id, &[json!({ "type": "text", "text": text })], "queue")
+                .await
+                .unwrap();
+            // 排空到 turn/end,沿途记下压缩前的构成(messageTokens)
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                assert!(std::time::Instant::now() < deadline, "turn 未结束");
+                match mux.try_recv() {
+                    Ok(f) if f.method == "session/stats" => {
+                        let used = f.payload["stats"]["contextUsed"].as_u64();
+                        let msgs = f.payload["stats"]["contextBreakdown"]["messageTokens"].as_u64();
+                        if let (Some(u), Some(m)) = (used, msgs) {
+                            pre_fold = Some((u, m));
+                        }
+                    }
+                    Ok(f)
+                        if f.method == "session/event"
+                            && f.payload["sessionId"].as_str() == Some(id.as_str())
+                            && f.payload["event"]["type"] == "turn/end" =>
+                    {
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::TryRecvError::Empty) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await
+                    }
+                    Err(_) => panic!("mux 关闭"),
+                }
+            }
+        }
+        let pre_fold = pre_fold.expect("压缩前应已推过占用与构成");
+
+        // 手动压缩:受理即返回,落档经帧通告
+        host.execute_command(&id, "/compact").await.unwrap();
+        recv_until(&mut mux, |f| {
+            f.method == "session/event" && f.payload["event"]["type"] == "compaction/summary"
+        })
+        .await
+        .expect("两轮历史应可折叠(折不动则本锁不成立)");
+
+        // 摘要之后必须有一条 stats 帧:占用回到压缩后的估算,构成随之回落
+        let stats = recv_until(&mut mux, |f| f.method == "session/stats")
+            .await
+            .expect("压缩落档后必须推 session/stats(占用环随摘要回落)");
+        let used = stats.payload["stats"]["contextUsed"]
+            .as_u64()
+            .expect("统计帧应带占用");
+        assert!(
+            used < pre_fold.0,
+            "占用应随摘要回落(压缩前 {pre_fold:?} → 压缩后 {used})"
+        );
+        let after = stats.payload["stats"]["contextBreakdown"]["messageTokens"]
+            .as_u64()
+            .expect("统计帧应带构成三段");
+        assert!(
+            after < pre_fold.1,
+            "构成应随折叠回落(压缩前 {} → 压缩后 {after})",
+            pre_fold.1
         );
     }
 
