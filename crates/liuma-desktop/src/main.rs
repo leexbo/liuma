@@ -171,19 +171,24 @@ fn main() {
             };
             let view_store = store.clone();
             cx.spawn(async move |cx| {
-                cx.open_window(options, move |window, cx| {
-                    view_store.update(cx, |s, cx| s.attach_window_state(window, cx));
-                    let view =
-                        cx.new(|cx| crate::shell::WorkspaceView::new(view_store.clone(), cx));
-                    // 窗口第一层 view 必须是 Root
-                    let root = cx.new(|cx| gpui_kit::component::Root::new(view, window, cx));
+                // `open_window` 要 `&mut App`,而这里是 AsyncApp → 整块进 update
+                cx.update(move |cx| {
+                    // kit 入口自把内容包进 Root(0.7.0 起 Root 亦自渲染
+                    // dialog/sheet/notification 三层);builder 只返回应用内容
+                    let (window_handle, _view) =
+                        gpui_kit::open_window(options, cx, move |window, cx| {
+                            view_store.update(cx, |s, cx| s.attach_window_state(window, cx));
+                            cx.new(|cx| crate::shell::WorkspaceView::new(view_store.clone(), cx))
+                        })?;
                     // 启动即激活到前台:终端/nohup 拉起时窗口默认留在
                     // 启动方背后,macOS 对被遮挡窗口停发绘制帧,首帧之后
-                    // 界面冻结(实测空面板)直到用户手动点到它
-                    window.activate_window();
-                    root
-                })?;
-                Ok::<_, anyhow::Error>(())
+                    // 界面冻结(实测空面板)直到用户手动点到它。
+                    // 置于 Root 构造之后,与手工包 Root 时的次序一致
+                    window_handle.update(cx, |_, window, _| window.activate_window())?;
+                    // `_view`:Root 以 AnyView 强持有内容,句柄丢开不拆视图;
+                    // WorkspaceView 除测试计数外无自有状态,状态全在 AppStore
+                    Ok::<_, anyhow::Error>(())
+                })
             })
             .detach();
         });
