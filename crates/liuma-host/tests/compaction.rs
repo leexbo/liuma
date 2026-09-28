@@ -273,6 +273,77 @@ async fn manual_compact_forces_summary_and_replays_without_recall() {
     );
 }
 
+/// 小历史手动压缩回归锁(真机:1M 窗口 → 保留尾预算 = 0.16×1M = 16 万
+/// token,会话 8% 用量按压缩恒回「暂无可压缩的历史」)。**默认装配**
+/// (不调 set_fold_thresholds)下,小历史也必须折叠落档,且只折到当前
+/// 这一轮之前。修复前:select_range 见全量不足保留尾即 None → Skipped。
+#[tokio::test]
+async fn manual_compact_folds_small_history_to_current_turn() {
+    use liuma_agent_loop::FoldOutcome;
+
+    // 三轮小消息 + 当前这一轮(估算 token 远低于默认保留尾 16 万)
+    let log = Arc::new(Mutex::new(EventLog::new()));
+    {
+        let mut l = log.lock().unwrap();
+        for i in 0..3 {
+            l.append(EventEnvelope::new(
+                "user/message",
+                0,
+                json!({ "content": format!("q{i}") }),
+            ))
+            .unwrap();
+            l.append(EventEnvelope::new(
+                "assistant/message",
+                0,
+                json!({ "content": format!("a{i}") }),
+            ))
+            .unwrap();
+        }
+        l.append(EventEnvelope::new(
+            "user/message",
+            0,
+            json!({ "content": "q3" }),
+        ))
+        .unwrap();
+    }
+    let mut engine = LoopEngine::new(header(), Arc::clone(&log));
+    // 刻意不设阈值/保留尾:走真实窗口占比(默认 1M 窗口 = 保留尾 16 万)
+    let mut provider = FakeProvider::new();
+    provider.summaries.push("small condensed".into());
+    let mut gate = InvariantGate::new(provider, Arc::clone(&log));
+    let mut sink = |_ev: &EventEnvelope| {};
+
+    let outcome = engine
+        .compact_now(&mut gate, &|| 0_i64, &mut sink)
+        .await
+        .expect("compact");
+    let FoldOutcome::Folded { items, .. } = outcome else {
+        panic!("小历史手动压缩应折叠落档(修复前回 Skipped)");
+    };
+    assert_eq!(items, 6, "折 q0/a0..q2/a2 共 6 条;当前这一轮 q3 留下");
+    {
+        let l = log.lock().unwrap();
+        let visible = liuma_session::derive_visible_messages(l.iter());
+        let arr = visible.as_array().expect("数组");
+        assert_eq!(arr.len(), 2, "派生面 = checkpoint + 当前这一轮");
+        assert!(
+            arr[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("<compacted-summary>\nsmall condensed"),
+            "首条 = checkpoint 包装的摘要:{:?}",
+            arr[0]["content"]
+        );
+        assert_eq!(arr[1]["content"], "q3", "保留尾首条 = 当前这一轮");
+    }
+    // 二调:边界之前已无内容可折 → Skipped(不重调 summarize)
+    let outcome2 = engine
+        .compact_now(&mut gate, &|| 0_i64, &mut sink)
+        .await
+        .expect("compact 2");
+    assert_eq!(outcome2, FoldOutcome::Skipped);
+}
+
 /// 回归锁:同一会话第二次压缩——摘要前缀必须覆盖 `throughSeq` 指向的
 /// 尾条消息,且 tool 往返完整。旧实现切派生面 `arr[..fold_len]`,而
 /// 派生面头部多一条旧 checkpoint 占位,于是前缀漏掉尾条:本例尾条是

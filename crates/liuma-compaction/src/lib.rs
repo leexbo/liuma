@@ -83,6 +83,15 @@ fn estimate_tokens(ty: &str, data: &serde_json::Value) -> u64 {
         / CHARS_PER_TOKEN
 }
 
+/// 保留尾策略(两入口共用 [`select_range_with`] 的实现)
+#[derive(Clone, Copy)]
+enum Tail {
+    /// 自尾累计到预算 token(自动折叠)
+    Budget(u64),
+    /// 预算优先;预算吞掉全部 live 历史时退回「保留当前这一轮」(手动)
+    BudgetOrCurrentTurn(u64),
+}
+
 /// 选段:在「最近一次折叠之后」的消息面事件上,自尾倒序累计估算
 /// token(字符÷4)到 `retain` 得保留尾,再把切点向回走到 tool 配对
 /// 平衡处(切点前的调用全部已有结果)。保留尾不足以离开区间头、或
@@ -92,6 +101,21 @@ fn estimate_tokens(ty: &str, data: &serde_json::Value) -> u64 {
 /// (含旧 checkpoint 占位);[`CompactRange::fold_len`] 只计本次折叠
 /// 的 live 消息数(UI 统计)。
 pub fn select_range(events: &[EventEnvelope], retain: u64) -> Option<CompactRange> {
+    select_range_with(events, Tail::Budget(retain))
+}
+
+/// 选段(手动 /compact):除保留尾的兜底外与 [`select_range`] 同规则。
+/// 手动路径「显式要求即压」,而预算本身不该成为拒绝的理由:会话还没
+/// 长到窗口占比(1M 窗口 = 16 万 token)时,预算把整段历史都算进保留
+/// 尾,自动路径据此不动是对的,手动路径据此回「暂无可压缩的历史」则
+/// 与显式要求矛盾(真机:8% 用量的会话按压缩无反应)。故预算落空时
+/// 退回「保留当前这一轮」——折叠到最后一条**真实** user 消息之前,
+/// 其后一切(含注入上下文)照常逐字保留;该边界之前无内容可折 → 仍 None。
+pub fn select_range_manual(events: &[EventEnvelope], retain: u64) -> Option<CompactRange> {
+    select_range_with(events, Tail::BudgetOrCurrentTurn(retain))
+}
+
+fn select_range_with(events: &[EventEnvelope], tail: Tail) -> Option<CompactRange> {
     let prev_through = events
         .iter()
         .rev()
@@ -117,19 +141,11 @@ pub fn select_range(events: &[EventEnvelope], retain: u64) -> Option<CompactRang
         return None;
     }
 
-    // 自尾倒序累计消息 token 到保留预算 → 保留尾起点(消息序下标)
-    let mut accumulated: u64 = 0;
-    let mut keep_from = 0usize;
-    for (k, &t) in msg_tokens.iter().enumerate().rev() {
-        accumulated += t;
-        keep_from = k;
-        if accumulated >= retain {
-            break;
-        }
-    }
-    if keep_from == 0 {
-        return None;
-    }
+    let keep_from = match tail {
+        Tail::Budget(retain) => budget_tail_start(&msg_tokens, retain)?,
+        Tail::BudgetOrCurrentTurn(retain) => budget_tail_start(&msg_tokens, retain)
+            .or_else(|| current_turn_start(&live, &msg_idx))?,
+    };
 
     // 切点 = 保留尾起点前;回退到配对平衡处(该切点前无未回应用的调用)
     let mut cut = keep_from;
@@ -147,13 +163,64 @@ pub fn select_range(events: &[EventEnvelope], retain: u64) -> Option<CompactRang
     // liuma_session::derive_visible_messages),摘要前缀须含它——
     // 指令要求「已有 <compacted-summary> 是旧 checkpoint,合并而非丢弃」
     let prior_checkpoint = usize::from(prev_through > 0);
+    // 派生面短于消息面:被取代的 skill 目录在派生面没有位置,前缀长要
+    // 相应扣减,否则切片会越过切点(多折切点之后的消息——手动兜底路径
+    // 下即「把当前这一轮也折进去」)
+    let superseded = superseded_catalogs(&live, &msg_idx, cut);
     Some(CompactRange {
         through_seq,
         shadowed_start,
         fold_len: cut,
-        prefix_len: cut + prior_checkpoint,
+        prefix_len: cut + prior_checkpoint - superseded,
         estimated_tokens,
     })
+}
+
+/// 自尾倒序累计消息 token 到保留预算 → 保留尾起点(消息序下标);
+/// 整段历史都在预算内(累计未及预算即耗尽)→ None
+fn budget_tail_start(msg_tokens: &[u64], retain: u64) -> Option<usize> {
+    let mut accumulated: u64 = 0;
+    for (k, &t) in msg_tokens.iter().enumerate().rev() {
+        accumulated += t;
+        if accumulated >= retain {
+            // k = 0:保留尾吞掉整段历史 → 无可压缩(调用方另有兜底策略)
+            return (k > 0).then_some(k);
+        }
+    }
+    None
+}
+
+/// 当前这轮起点 = 最后一条**真实** user 消息(注入上下文——目录/插件/
+/// 指令——不算一轮,来源判定同 trajectory/projection:source.kind 缺省
+/// 或 "user")。取其消息序下标为保留尾起点,即折叠它之前的一切;它之后
+/// 注入的消息随之逐字保留,不会被折掉。
+fn current_turn_start(live: &[&EventEnvelope], msg_idx: &[usize]) -> Option<usize> {
+    (0..msg_idx.len()).rev().find(|&k| {
+        let ev = live[msg_idx[k]];
+        ev.r#type == "user/message"
+            && ev.data["source"]["kind"].as_str().unwrap_or("user") == "user"
+    })
+}
+
+/// 切点前被取代的 skill 目录条数(派生面「只保留最新一条」的策略③):
+/// 这些消息在派生面没有对应条目,故不计入前缀长
+fn superseded_catalogs(live: &[&EventEnvelope], msg_idx: &[usize], cut: usize) -> usize {
+    let Some(last_catalog_seq) = live
+        .iter()
+        .rev()
+        .find(|e| e.r#type == "user/message" && liuma_session::is_skill_catalog(&e.data))
+        .map(|e| e.seq)
+    else {
+        return 0;
+    };
+    (0..cut)
+        .filter(|&k| {
+            let ev = live[msg_idx[k]];
+            ev.seq < last_catalog_seq
+                && ev.r#type == "user/message"
+                && liuma_session::is_skill_catalog(&ev.data)
+        })
+        .count()
 }
 
 /// 摘要指令:以最终 user 消息追加
@@ -244,6 +311,116 @@ mod tests {
         assert_eq!(
             select_range(&all, retain_tokens(DEFAULT_CONTEXT_WINDOW)),
             None
+        );
+    }
+
+    /// 目录(注入上下文)事件:source.kind=skill-catalog
+    fn catalog(text: &str) -> (&'static str, serde_json::Value) {
+        (
+            "user/message",
+            serde_json::json!({ "content": text, "source": { "kind": "skill-catalog" } }),
+        )
+    }
+
+    /// 手动兜底锁(真机回归:1M 窗口下头 16 万 token 内 /compact 恒回
+    /// 「暂无可压缩的历史」):预算吞掉全部 live 历史时,自动路径不动,
+    /// 手动路径折叠到最后一条真实 user 消息之前(保留当前这一轮)
+    #[test]
+    fn manual_folds_to_current_turn_when_below_retain() {
+        let all = logged(&[
+            user_msg("q1"),
+            assistant_msg("a1"),
+            user_msg("q2"),
+            assistant_msg("a2"),
+            user_msg("q3"),
+        ]);
+        let retain = retain_tokens(DEFAULT_CONTEXT_WINDOW);
+        assert_eq!(select_range(&all, retain), None, "自动路径:预算未越不动");
+        let r = select_range_manual(&all, retain).expect("手动应压到当前轮之前");
+        assert_eq!(r.fold_len, 4, "折 q1/a1/q2/a2;当前轮 q3 留下");
+        assert_eq!(r.through_seq, 4);
+        assert_eq!(r.prefix_len, 4, "无旧 checkpoint → 切点即前缀长");
+        assert!(r.estimated_tokens > 0);
+        // 派生面切片:保留尾首条正是当前轮的 q3
+        let visible = derive_visible_messages(all.iter());
+        let arr = visible.as_array().expect("数组");
+        assert_eq!(arr[r.prefix_len]["content"], "q3");
+        assert_eq!(arr.len(), 5, "前缀 + 保留尾 = 全部");
+    }
+
+    /// 手动兜底不越过「当前这一轮」:只有一轮(或边界之前没有内容)
+    /// 仍回 None —— 「暂无可压缩的历史」在真的没得压时依然成立
+    #[test]
+    fn manual_without_a_prior_turn_selects_nothing() {
+        let retain = retain_tokens(DEFAULT_CONTEXT_WINDOW);
+        let one_turn = logged(&[user_msg("hi"), assistant_msg("hello")]);
+        assert_eq!(select_range_manual(&one_turn, retain), None, "单轮无可折");
+        // 会话开头就是注入上下文 + 当前轮:边界前只有注入,仍算有内容可折
+        let injected_first = logged(&[catalog("<cat>"), user_msg("q1"), assistant_msg("a1")]);
+        let r = select_range_manual(&injected_first, retain).expect("注入在边界前 → 可折");
+        assert_eq!(r.fold_len, 1);
+    }
+
+    /// 手动不是「一律更激进」:历史已超预算时与自动同一切点(保留尾
+    /// 照旧按窗口占比留)
+    #[test]
+    fn manual_keeps_the_budget_tail_when_history_exceeds_it() {
+        let all = logged(&[
+            big_user(500),
+            assistant_msg("a"),
+            big_user(500),
+            assistant_msg("b"),
+            big_user(500),
+            assistant_msg("c"),
+        ]);
+        let retain = 100_000;
+        assert!(select_range(&all, retain).is_some());
+        assert_eq!(
+            select_range_manual(&all, retain),
+            select_range(&all, retain)
+        );
+    }
+
+    /// 边界 = 最后一条**真实** user 消息:注入上下文(目录)不算一轮,
+    /// 故它之后的保留尾从真实轮起;切点前的被取代目录在派生面无位置,
+    /// 前缀长按条数扣减(否则切片越过切点,把当前轮也折进去)
+    #[test]
+    fn manual_boundary_skips_injected_and_counts_superseded() {
+        let retain = retain_tokens(DEFAULT_CONTEXT_WINDOW);
+        // 注入目录在末位:不算一轮,随保留尾留下
+        let tail_catalog = logged(&[
+            user_msg("q1"),
+            assistant_msg("a1"),
+            user_msg("q2"),
+            assistant_msg("a2"),
+            catalog("<cat>"),
+        ]);
+        let r = select_range_manual(&tail_catalog, retain).expect("range");
+        assert_eq!(r.fold_len, 2, "折 q1/a1;q2 起保留(含其后的目录)");
+        let visible = derive_visible_messages(tail_catalog.iter());
+        assert_eq!(
+            visible.as_array().expect("数组")[r.prefix_len]["content"],
+            "q2"
+        );
+
+        // 切点前有被取代目录:派生面少一条,prefix_len 须扣减
+        let superseded = logged(&[
+            user_msg("q1"),
+            assistant_msg("a1"),
+            catalog("<cat-1>"),
+            user_msg("q2"),
+            assistant_msg("a2"),
+            catalog("<cat-2>"),
+            user_msg("q3"),
+        ]);
+        let r = select_range_manual(&superseded, retain).expect("range");
+        assert_eq!(r.fold_len, 6, "折到 q3 之前(含两条目录)");
+        let visible = derive_visible_messages(superseded.iter());
+        let arr = visible.as_array().expect("数组");
+        assert_eq!(arr.len(), 6, "旧目录在派生面无位置");
+        assert_eq!(
+            arr[r.prefix_len]["content"], "q3",
+            "切片必须正好停在当前轮(prefix_len 未扣减时此处是 a2)"
         );
     }
 

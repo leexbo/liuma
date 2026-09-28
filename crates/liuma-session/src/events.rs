@@ -733,8 +733,10 @@ pub fn derive_visible_messages<'a>(
     serde_json::Value::Array(msgs)
 }
 
-/// skill 目录事件判定(user/message + source.kind=skill-catalog)
-fn is_skill_catalog(data: &serde_json::Value) -> bool {
+/// skill 目录事件判定(user/message + source.kind=skill-catalog)。
+/// 本判定是策略③「只保留最新一条」的输入,故对派生面之外同样公开:
+/// 压缩选段要按它在派生面的缺席扣减前缀长,谓词两处必须同源。
+pub fn is_skill_catalog(data: &serde_json::Value) -> bool {
     data["source"]["kind"].as_str() == Some("skill-catalog")
 }
 

@@ -32,7 +32,7 @@ pub use events::{
     PRUNE_HEAD_CHARS, PRUNE_TAIL_CHARS, PRUNE_THRESHOLD_CHARS, PRUNED_TOOL_PLACEHOLDER,
     PlanApproved, PlanSubmitted, SURFACE_EVENT_TYPES, SessionEventData, SessionMode, TodoItem,
     TodoWrite, ToolResult, UserMessage, derive_messages, derive_visible_messages, frame_checkpoint,
-    message_from_event, prune_output,
+    is_skill_catalog, message_from_event, prune_output,
 };
 pub use log::{EventLog, LogError};
 pub use store::{EventStore, EventStoreError, verify_seq_contiguity};

@@ -1563,7 +1563,14 @@ impl LoopEngine {
         if threshold.is_some_and(|t| measure < t) {
             return Ok(FoldOutcome::Skipped);
         }
-        let Some(range) = liuma_compaction::select_range(&events, retain) else {
+        // 手动(threshold=None)= 显式要求即压:预算吞掉全部 live 历史时
+        // 退回「保留当前这一轮」,不因会话还没长到窗口占比而拒
+        let range = if threshold.is_none() {
+            liuma_compaction::select_range_manual(&events, retain)
+        } else {
+            liuma_compaction::select_range(&events, retain)
+        };
+        let Some(range) = range else {
             return Ok(FoldOutcome::Skipped);
         };
         let Some(arr) = visible.as_array() else {
