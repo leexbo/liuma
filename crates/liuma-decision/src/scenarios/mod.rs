@@ -1,4 +1,4 @@
-//! 场景适配:决策端口在四个运行时场景的消费逻辑。
+//! 场景适配:决策端口在五个运行时场景的消费逻辑。
 //!
 //! 共同契约(社区共识):advisory/shadow 先行、fail-open、
 //! 确定性代码持最终裁决、问题文案与阈值集中 thresholds.rs。
@@ -11,5 +11,6 @@ pub type ReceiptSink = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 
 pub mod approvals;
 pub mod context;
+pub mod fold;
 pub mod guard;
 pub mod stop;

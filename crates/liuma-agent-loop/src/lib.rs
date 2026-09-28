@@ -19,6 +19,7 @@ pub mod retry;
 pub mod runtime_context;
 pub mod summarizer;
 pub mod tools;
+pub mod value_judge;
 
 pub use cancel::CancelToken;
 pub use engine::{
@@ -38,6 +39,7 @@ pub use tools::{
     DuplicateToolNameError, NoTools, ToolCallRequest, ToolOutput, ToolPort, ToolPortObj, ToolSet,
 };
 pub use transport::{LlmEvent, LlmTransport, TransportError};
+pub use value_judge::{FoldAdvice, ValueCandidate, ValueJudge, ValueJudgePolicy};
 
 mod transport;
 

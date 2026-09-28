@@ -300,6 +300,8 @@ entries! {
     decision_guard => ["工具守卫", "Tool guard"],
     /// 决策场景行:上下文裁判
     decision_context => ["上下文裁判", "Context judge"],
+    /// 决策场景行:折叠价值裁定
+    decision_fold => ["折叠价值裁定", "Fold value judge"],
     /// 场景三态:关闭
     decision_mode_off => ["关闭", "Off"],
     /// 场景两态:开启(无 enforce 位的场景)
@@ -316,6 +318,8 @@ entries! {
     decision_guard_desc => ["工具执行前风险评估", "Risk check before each tool call"],
     /// 决策场景说明:裁判
     decision_context_desc => ["上下文吃紧时修剪旧工具输出", "Prunes stale tool outputs under context pressure"],
+    /// 决策场景说明:折叠价值裁定
+    decision_fold_desc => ["压缩时裁定哪些旧输出不值得带进摘要", "Judges which stale outputs are not worth keeping in the summary"],
     /// 决策表单字段:模型
     decision_model_label => ["模型", "Model"],
     /// 决策表单占位:API key(留空 = 不改已存)

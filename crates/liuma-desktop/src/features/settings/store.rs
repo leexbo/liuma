@@ -2541,9 +2541,9 @@ impl AppStore {
         self.save_decision(|e| e.enabled = !e.enabled, cx);
     }
 
-    /// 场景状态(kind: approvals / stop / guard / context)。`mode` 是分段
-    /// 控件的下标:0 = 关闭,1 = 仅记录(启用但 shadow),2 = 拦截(enforce)。
-    /// approvals / stop 无 enforce 位,只用 0 / 1。
+    /// 场景状态(kind: approvals / stop / guard / context / fold)。`mode`
+    /// 是分段控件的下标:0 = 关闭,1 = 仅记录(启用但 shadow),2 = 拦截
+    /// (enforce)。approvals / stop 无 enforce 位,只用 0 / 1。
     ///
     /// 关闭(0)时**不动** enforce 位:重新开启能回到用户上次选的模式。
     /// 选中态由 enabled / enforce 共同推出,关闭态下标恒为 0——残留的
@@ -2567,12 +2567,15 @@ impl AppStore {
                             e.guard_enforce = enforce;
                         }
                     }
-                    _ => {
+                    "context" => {
                         e.context = on;
                         if on {
                             e.context_enforce = enforce;
                         }
                     }
+                    "fold" => e.fold = on,
+                    // 未知 kind:不动配置(旧客户端读到新场景行时静默)
+                    _ => {}
                 }
             },
             cx,

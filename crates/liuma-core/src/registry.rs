@@ -102,6 +102,17 @@ impl AnySession {
         }
     }
 
+    /// 折叠价值裁定器热替换(None = 卸载;保存决策设置即生效)
+    fn set_value_judge_opt(
+        &mut self,
+        port: Option<Arc<dyn liuma_agent_loop::value_judge::ValueJudge>>,
+    ) {
+        match self {
+            AnySession::Real(s) => s.set_value_judge_port(port),
+            AnySession::Fake(s) => s.set_value_judge_port(port),
+        }
+    }
+
     /// 装配当前模型上下文窗口(自动折叠阈值/保留尾 + stats 同源)
     fn set_context_window(&mut self, window: u64) {
         match self {
@@ -253,6 +264,8 @@ enum DriverCmd {
     SetApproval(String),
     /// hooks 桥热替换(保存配置即生效,turn 边界换装;None = 卸载)
     SetHooks(Option<std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>>),
+    /// 折叠价值裁定器热替换(决策场景开关;None = 卸载)
+    SetValueJudge(Option<std::sync::Arc<dyn liuma_agent_loop::value_judge::ValueJudge>>),
     /// 手动压缩(/compact;摘要调用可达分钟级,驱动侧 await)
     Compact,
 }
@@ -3135,6 +3148,25 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         }
     }
 
+    /// 折叠价值裁定器热下发(决策场景开关变化;与 `broadcast_hook_ports`
+    /// 同一条热生效路:保存配置即对全部附着会话换装)
+    fn broadcast_value_judge(self: &Arc<Self>) {
+        let slots: Vec<String> = {
+            let slots = self.sessions.read_recover();
+            slots.keys().cloned().collect()
+        };
+        for sid in slots {
+            let Some(slot) = self.get_slot(&sid) else {
+                continue;
+            };
+            let Some(inner) = slot.inner.get() else {
+                continue;
+            };
+            let port = fold_judge_port(&inner.decision, &sid, &inner.log, &inner.traj, &self.mux);
+            let _ = inner.driver_cmd.send(DriverCmd::SetValueJudge(port));
+        }
+    }
+
     /// 新增/更新 hooks 桥(id 唯一;dialect 只认 claude-code|codex;
     /// config_path 必填)。变更 = 下次 attach 生效(配置进程级)。
     pub fn upsert_hook_bridge(
@@ -3214,6 +3246,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             }
         }
         self.broadcast_hook_ports();
+        self.broadcast_value_judge();
     }
 
     /// 决策模型设置(设置页读取面)
@@ -7275,6 +7308,27 @@ fn decision_hooks(
     )
 }
 
+/// 折叠价值裁定器(决策场景 `fold`;端口缺/场景关 = None = 引擎不咨询)。
+///
+/// receipt 走与钩子桥同一个宿主事件汇(落档之外推轨迹增量——带外
+/// receipt 只落档不推增量,轨迹永远看不见它们)。
+fn fold_judge_port(
+    decision: &Option<DecisionRuntime>,
+    session_id: &str,
+    log: &Arc<Mutex<EventLog>>,
+    traj: &Arc<Mutex<crate::trajectory::TrajectoryFolder>>,
+    mux: &broadcast::Sender<ServerRequest>,
+) -> Option<Arc<dyn liuma_agent_loop::value_judge::ValueJudge>> {
+    let runtime = decision.as_ref()?;
+    let settings = runtime.settings.lock_recover().clone();
+    liuma_app::build_fold_judge(
+        &runtime.port,
+        &settings,
+        log,
+        hook_event_sink(session_id, log, traj, mux),
+    )
+}
+
 /// 桥钩子 + 决策钩子合成单槽下发(HookChain 最严格者胜;全空 = 直通)
 fn compose_hook_chain(
     bridge: Option<std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>>,
@@ -7557,6 +7611,11 @@ async fn handle_driver_cmd(
             // turn)。None = 卸载全部钩子。
             session.set_hook_port_opt(port);
         }
+        DriverCmd::SetValueJudge(port) => {
+            // 折叠价值裁定器热替换(决策场景开关;turn 间隙生效——引擎在
+            // 折叠开始时取端口,不中断运行中 turn)
+            session.set_value_judge_opt(port);
+        }
         DriverCmd::Compact => {
             // 手动压缩:摘要调用可达分钟级,await 阻塞的是驱动循环本身
             // (turn 间隙),新输入在队列排队、压完即处理(维护任务独占、
@@ -7784,6 +7843,14 @@ async fn driver_loop(
         ) {
             session.set_hook_port(hook);
         }
+        // 折叠价值裁定(决策场景 fold;关 = None 卸载)
+        session.set_value_judge_opt(fold_judge_port(
+            &inner.decision,
+            &session_id,
+            &inner.log,
+            &inner.traj,
+            &host0.mux,
+        ));
         // SessionStart detached(上下文可能错过首请求)
         if let Some(service) = &service {
             let ss_service = Arc::clone(service);

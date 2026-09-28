@@ -65,6 +65,60 @@ pub struct CompactRange {
     pub estimated_tokens: u64,
 }
 
+/// 折叠价值裁定的候选(一个待裁定的旧工具输出)。
+///
+/// DTO 是本 crate 的公共词汇:裁定端口在 `liuma-agent-loop`(转引),
+/// 实现方在宿主侧——两侧都不需要为此牵进决策协议类型。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValueCandidate {
+    /// tool/result 事件 seq(裁定引用与 `decision/pruned` 的锚点)
+    pub seq: u64,
+    /// 输出字符数(排序键:大输出优先裁定,省 token 收益最大)
+    pub chars: usize,
+    /// 输出预览(裁定 state;截断到策略给的 preview_chars)
+    pub preview: String,
+}
+
+/// 折叠价值候选选择(纯函数):**折叠区间内**的 `tool/result`、长度
+/// 达标、未被历史 `decision/pruned` 引用过(裁定幂等)。
+///
+/// 区间 = `[shadowed_start, through_seq]`(含两端),退化形态与
+/// `compaction/summary` 的 `shadowedRange` 同式(端取 through_seq)——
+/// 候选必须落在本次要折叠的前缀里:保留尾内模型正在用的输出不动,
+/// 区间外的更动不了(checkpoint 只吃前缀)。
+///
+/// **不截断**:条数上限由裁定方按策略裁(「评估 M / 共 N」的分母须诚实
+/// ——截断在这里发生,调用方就看不到 N 了)。大输出优先排序。
+pub fn select_value_candidates<'a>(
+    events: impl Iterator<Item = &'a EventEnvelope>,
+    range: &CompactRange,
+    already_pruned: &std::collections::HashSet<u64>,
+    min_chars: usize,
+    preview_chars: usize,
+) -> Vec<ValueCandidate> {
+    let start = if range.shadowed_start == 0 {
+        range.through_seq
+    } else {
+        range.shadowed_start
+    };
+    let mut out: Vec<ValueCandidate> = events
+        .into_iter()
+        .filter(|ev| ev.r#type == "tool/result" && ev.seq >= start && ev.seq <= range.through_seq)
+        .filter(|ev| !already_pruned.contains(&ev.seq))
+        .filter_map(|ev| {
+            let output = ev.data["output"].as_str()?;
+            let chars = output.chars().count();
+            (chars >= min_chars).then(|| ValueCandidate {
+                seq: ev.seq,
+                chars,
+                preview: output.chars().take(preview_chars).collect(),
+            })
+        })
+        .collect();
+    out.sort_by_key(|c| std::cmp::Reverse(c.chars));
+    out
+}
+
 /// 消息面事件的 tool 配对增量:assistant/message 带 tool_calls 计 +
 /// N,tool/result 计 −1,其余 0。
 fn pairing_delta(ty: &str, data: &serde_json::Value) -> i64 {
@@ -573,6 +627,93 @@ mod tests {
         // 128K 窗口:阈值 102_400 / 保留尾 20_480(旧硬编码 1M 会晚触发 8 倍)
         assert_eq!(threshold_tokens(128_000), 102_400);
         assert_eq!(retain_tokens(128_000), 20_480);
+    }
+
+    /// 造带 tool_calls 的助手消息(配对平衡用)
+    fn assistant_calls() -> (&'static str, serde_json::Value) {
+        (
+            "assistant/message",
+            serde_json::json!({ "content": "", "tool_calls": [{ "id": "c1", "name": "bash" }] }),
+        )
+    }
+
+    /// tool/result(chars 个 x 的输出)
+    fn tool_result(chars: usize) -> (&'static str, serde_json::Value) {
+        (
+            "tool/result",
+            serde_json::json!({ "call": 1, "output": "x".repeat(chars) }),
+        )
+    }
+
+    /// 裁定候选窗口 = 折叠区间(含两端):保留尾内的输出不参选
+    /// (模型正在用的不动),也不越到切点之后
+    #[test]
+    fn value_candidates_stay_inside_the_folded_range() {
+        let retain = retain_tokens(DEFAULT_CONTEXT_WINDOW);
+        // 折叠区间 [1,4](q1/call/big/a1);保留尾内另有一个大输出
+        let all = logged(&[
+            user_msg("q1"),
+            assistant_calls(),
+            tool_result(3_000),
+            assistant_msg("a1"),
+            user_msg("q2"),
+            assistant_calls(),
+            tool_result(9_000),
+        ]);
+        let range = select_range_manual(&all, retain).expect("range");
+        assert_eq!((range.shadowed_start, range.through_seq), (1, 4));
+        let none = std::collections::HashSet::new();
+        let picked = select_value_candidates(all.iter(), &range, &none, 2_000, 600);
+        // 保留尾内的 9K 输出(seq7)不参选:区间外
+        assert_eq!(picked.iter().map(|c| c.seq).collect::<Vec<_>>(), vec![3]);
+        assert_eq!(picked[0].chars, 3_000);
+        assert_eq!(picked[0].preview.chars().count(), 600, "预览截断到策略值");
+
+        // 端含入:切点本身是 tool/result 时该条参选
+        let ends_on_result = logged(&[
+            user_msg("q1"),
+            assistant_calls(),
+            tool_result(2_500),
+            user_msg("q2"),
+            assistant_calls(),
+            tool_result(8_000),
+        ]);
+        let range = select_range_manual(&ends_on_result, retain).expect("range");
+        assert_eq!((range.shadowed_start, range.through_seq), (1, 3));
+        let picked = select_value_candidates(ends_on_result.iter(), &range, &none, 2_000, 600);
+        assert_eq!(picked.iter().map(|c| c.seq).collect::<Vec<_>>(), vec![3]);
+    }
+
+    /// 候选:最小字符门槛、已裁集合跳过、大输出优先排序
+    /// (排序是收益序:条数上限截断时被丢的是收益最小的那些)
+    #[test]
+    fn value_candidates_filter_and_order_by_size() {
+        let range = CompactRange {
+            through_seq: 12,
+            shadowed_start: 1,
+            fold_len: 0,
+            prefix_len: 0,
+            estimated_tokens: 0,
+        };
+        // 手造日志:短输出 / 达标 / 已裁 / 未达标边界(恰为门槛)
+        let mut log = EventLog::new();
+        for chars in [1_999usize, 2_000, 5_000, 9_000, 7_000] {
+            log.append(EventEnvelope::new("tool/result", 0, tool_result(chars).1))
+                .expect("append");
+        }
+        let events: Vec<EventEnvelope> = log.iter().cloned().collect();
+        let already: std::collections::HashSet<u64> = [4].into(); // 9_000 那条已裁
+        let picked = select_value_candidates(events.iter(), &range, &already, 2_000, 600);
+        assert_eq!(
+            picked.iter().map(|c| (c.seq, c.chars)).collect::<Vec<_>>(),
+            vec![(5, 7_000), (3, 5_000), (2, 2_000)],
+            "门槛含端点(2_000 入):1_999 出、已裁的 9_000 出、大者在前"
+        );
+        assert_eq!(
+            select_value_candidates(events.iter(), &range, &already, 10_000, 600),
+            Vec::new(),
+            "门槛之上无候选"
+        );
     }
 
     #[test]

@@ -157,6 +157,10 @@ pub struct LoopEngine {
     /// hooks 拦截点(宿主注入;None = 无钩子,零开销直通)。四调用点:
     /// prompt-submit / pre-tool / post-tool / stop(M4.2 拍板 1)。
     hook_port: Option<std::sync::Arc<dyn crate::hooks::HookPortObj>>,
+    /// 折叠价值裁定端口(宿主注入;None = 不咨询,零开销直通)。
+    /// 时机 = 选段之后、摘要之前(此时才有有界候选集;摘要后
+    /// checkpoint 已定型)。见 [`crate::value_judge`]。
+    value_judge: Option<std::sync::Arc<dyn crate::value_judge::ValueJudge>>,
     /// 每 step 重建 header 的回调(宿主注入;None = 沿用 turn 开始时的
     /// header)。per-request 组装:turn 中途落档的状态事件(如计划
     /// 批准切回 standard)立即反映到下一步的提示词段——批准结果
@@ -223,6 +227,7 @@ impl LoopEngine {
             skill_catalog_provider: None,
             skill_gesture_provider: None,
             hook_port: None,
+            value_judge: None,
             header_rebuilder: None,
             pending_touches: Vec::new(),
             retry_policy: RetryPolicy::default(),
@@ -294,6 +299,16 @@ impl LoopEngine {
     /// 卸载 hooks 拦截点(热卸载;保存配置即生效路径)
     pub fn clear_hook_port(&mut self) {
         self.hook_port = None;
+    }
+
+    /// 挂折叠价值裁定端口(宿主装配;None = 不咨询)
+    pub fn set_value_judge(&mut self, port: std::sync::Arc<dyn crate::value_judge::ValueJudge>) {
+        self.value_judge = Some(port);
+    }
+
+    /// 卸载折叠价值裁定端口(热卸载;保存配置即生效路径)
+    pub fn clear_value_judge(&mut self) {
+        self.value_judge = None;
     }
 
     /// 从既有日志恢复投影 retained(重开会话:runtime-context 快照同源恢复)。
@@ -992,6 +1007,7 @@ impl LoopEngine {
                 turn_anchor,
                 clock,
                 sink,
+                self.value_judge.as_deref(),
             )
             .await?;
 
@@ -1141,6 +1157,7 @@ impl LoopEngine {
                         Some(turn_anchor),
                         clock,
                         sink,
+                        self.value_judge.as_deref(),
                     )
                     .await?;
                     if let FoldOutcome::Folded { .. } = outcome {
@@ -1521,6 +1538,7 @@ impl LoopEngine {
         user_seq: u64,
         clock: &(dyn Fn() -> i64 + Send + Sync),
         sink: &mut (dyn FnMut(&EventEnvelope) + Send),
+        judge: Option<&dyn crate::value_judge::ValueJudge>,
     ) -> Result<(), LoopError>
     where
         T: LlmTransport + crate::summarizer::Summarizer,
@@ -1534,6 +1552,7 @@ impl LoopEngine {
             Some(user_seq),
             clock,
             sink,
+            judge,
         )
         .await
         {
@@ -1564,13 +1583,15 @@ impl LoopEngine {
             None,
             clock,
             sink,
+            self.value_judge.as_deref(),
         )
         .await
     }
 
     /// 折叠共用实现:`threshold` Some = 自动(低于即跳过;摘要失败降级
     /// 跳过),None = 手动(无门槛;失败上抛)。`user_seq` = 自动折叠的
-    /// 归因锚(手动无 turn,审计不带 source)。
+    /// 归因锚(手动无 turn,审计不带 source)。`judge` = 折叠价值裁定
+    /// 端口(None = 不咨询;fail-open 见 [`crate::value_judge`])。
     #[allow(clippy::too_many_arguments)]
     async fn fold_once<T>(
         log: &Arc<Mutex<EventLog>>,
@@ -1581,6 +1602,7 @@ impl LoopEngine {
         user_seq: Option<u64>,
         clock: &(dyn Fn() -> i64 + Send + Sync),
         sink: &mut (dyn FnMut(&EventEnvelope) + Send),
+        judge: Option<&dyn crate::value_judge::ValueJudge>,
     ) -> Result<FoldOutcome, LoopError>
     where
         T: LlmTransport + crate::summarizer::Summarizer,
@@ -1631,11 +1653,46 @@ impl LoopEngine {
             ),
             sink,
         )?;
+        let manual = threshold.is_none();
+        let started_ms = clock();
+
+        // ── 折叠价值裁定(决策模型;端口缺席 = 直通)──
+        // 时机:选段之后、摘要之前——选段前没有有界候选集,摘要后
+        // checkpoint 已定型。裁定只进回执与载荷(观察面),派生面不动:
+        // 「模型可见 ⟺ 已记录」不因一次咨询而变。
+        let mut advice = crate::value_judge::FoldAdvice::default();
+        if let Some(judge) = judge {
+            let policy = judge.policy();
+            let candidates = liuma_compaction::select_value_candidates(
+                events.iter(),
+                &range,
+                &liuma_session::events::pruned_seqs(events.iter()),
+                policy.min_chars,
+                policy.preview_chars,
+            );
+            if !candidates.is_empty() {
+                // 相位 judge:判定请求没有字符流,进度条走不确定态
+                Self::commit(
+                    log,
+                    Self::progress_event(clock, "judge", 0, started_ms, &range, manual),
+                    sink,
+                )?;
+                match judge.judge(&candidates).await {
+                    Ok(a) => advice = a,
+                    // fail-open:裁定失败照常折叠(收据由裁定方自行落
+                    // answered{ok:false});FoldOutcome 不受影响
+                    Err(e) => {
+                        eprintln!("[liuma-agent-loop] 折叠价值裁定失败,照常折叠:{e}");
+                    }
+                }
+            }
+        }
+        let Some(arr) = visible.as_array() else {
+            return Ok(FoldOutcome::Skipped);
+        };
         // 前缀 = 派生面头部到切点(含上次 checkpoint 占位;prefix_len
         // 已把该偏移算入——切 fold_len 会漏掉 through_seq 指向的尾条)
         let fold_messages = Value::Array(arr[..range.prefix_len].to_vec());
-        let manual = threshold.is_none();
-        let started_ms = clock();
         // 进度相位(真实边界;UI 进度条的唯一数据源):
         // summarize(本条即开始信号,自动路径此前对桌面完全不可见)
         // → commit(摘要已返回,进入落档)→ done / failed(终局契约:
@@ -1725,6 +1782,13 @@ impl LoopEngine {
                     // 压缩统计(UI 标记行「已压缩 N 条(约 X tokens)」)
                     "items": range.fold_len,
                     "shadowedTokens": range.estimated_tokens,
+                    // 价值裁定(决策模型)计数:分母诚实(评估 M / 共 N),
+                    // 条数分「已生效」(prunedItems)与「若生效会裁多少」
+                    // (noValueCandidates;仅记录档两者不同)
+                    "prunedItems": if advice.applied { advice.no_value } else { 0 },
+                    "noValueCandidates": advice.no_value,
+                    "judgedCandidates": advice.judged,
+                    "totalCandidates": advice.total,
                 }),
             ),
             sink,

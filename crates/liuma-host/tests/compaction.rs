@@ -699,3 +699,284 @@ async fn manual_compact_streams_progress_to_sink() {
         );
     }
 }
+
+/// 预置含大工具输出的历史(裁定候选面:tool/result ≥ 2000 字符)
+fn big_tool_log() -> Arc<Mutex<EventLog>> {
+    let log = Arc::new(Mutex::new(EventLog::new()));
+    {
+        let mut l = log.lock().unwrap();
+        for i in 0..6 {
+            l.append(EventEnvelope::new(
+                "user/message",
+                0,
+                json!({ "content": format!("question {i}: {}", "q".repeat(600)) }),
+            ))
+            .unwrap();
+            l.append(EventEnvelope::new(
+                "assistant/message",
+                0,
+                json!({
+                    "content": "",
+                    "tool_calls": [{ "id": format!("c{i}"), "name": "bash", "arguments": "{}" }],
+                }),
+            ))
+            .unwrap();
+            l.append(EventEnvelope::new(
+                "tool/result",
+                0,
+                json!({ "id": format!("c{i}"), "output": "x".repeat(3_000) }),
+            ))
+            .unwrap();
+        }
+    }
+    log
+}
+
+/// 会话里的事件(锁内克隆;测试断言用)
+fn events(log: &Arc<Mutex<EventLog>>) -> Vec<EventEnvelope> {
+    log.lock().unwrap().iter().cloned().collect()
+}
+
+/// 只记录且如实报数的裁定器:回执与计数进载荷,**派生面不动**
+/// (advisory;「模型可见 ⟺ 已记录」不因一次咨询而变)
+#[tokio::test]
+async fn advisory_judge_records_counts_without_touching_the_prefix() {
+    use liuma_agent_loop::value_judge::{FoldAdvice, ValueJudge};
+    use liuma_decision::fake::ScriptedFoldJudge;
+
+    let log = big_tool_log();
+    let mut engine = LoopEngine::new(header(), Arc::clone(&log));
+    engine.set_fold_thresholds(0, 1);
+    let judge = Arc::new(ScriptedFoldJudge::returning(Ok(FoldAdvice {
+        no_value: 2,
+        applied: false,
+        judged: 2,
+        total: 3,
+    })));
+    engine.set_value_judge(Arc::clone(&judge) as Arc<dyn ValueJudge>);
+    let mut provider = FakeProvider::new();
+    provider.summaries.push("condensed".into());
+    let mut gate = InvariantGate::new(provider, Arc::clone(&log));
+    let mut seen: Vec<EventEnvelope> = Vec::new();
+    {
+        let mut sink = |ev: &EventEnvelope| seen.push(ev.clone());
+        engine
+            .compact_now(&mut gate, &|| 0_i64, &mut sink)
+            .await
+            .expect("compact");
+    }
+    let all = events(&log);
+    // 候选窗口 = 折叠区间内的 tool/result(seq 单调、大小达标)
+    let summary = all
+        .iter()
+        .find(|e| e.r#type == "compaction/summary")
+        .expect("summary 落档");
+    let through = summary.data["throughSeq"].as_u64().unwrap();
+    let batches = judge.take_seen();
+    assert_eq!(batches.len(), 1, "折叠区间有候选 → 咨询一次");
+    let expected: Vec<u64> = all
+        .iter()
+        .filter(|e| e.r#type == "tool/result" && e.seq <= through)
+        .map(|e| e.seq)
+        .collect();
+    assert!(!expected.is_empty(), "夹具须含区间内的大输出");
+    assert_eq!(
+        batches[0].iter().map(|c| c.seq).collect::<Vec<_>>(),
+        expected,
+        "候选 = 折叠区间内的全部 tool/result(大输出优先序)"
+    );
+    assert!(
+        batches[0].windows(2).all(|w| w[0].chars >= w[1].chars),
+        "大输出优先"
+    );
+    // 计数进载荷(诚实分母);只记录 → prunedItems 恒 0
+    assert_eq!(summary.data["noValueCandidates"], json!(2));
+    assert_eq!(summary.data["judgedCandidates"], json!(2));
+    assert_eq!(summary.data["totalCandidates"], json!(3));
+    assert_eq!(summary.data["prunedItems"], json!(0));
+    // 只落 receipt:无 decision/pruned(派生面不动)
+    assert!(
+        !all.iter().any(|e| e.r#type == "decision/pruned"),
+        "advisory 不得落 pruned"
+    );
+    // 相位序:judge 在 summarize 之前(真实边界)
+    let phases: Vec<String> = seen
+        .iter()
+        .filter(|e| e.r#type == "compaction/progress")
+        .filter_map(|e| e.data["phase"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(
+        phases.first().map(String::as_str),
+        Some("judge"),
+        "{phases:?}"
+    );
+    assert!(phases.contains(&"summarize".to_string()), "{phases:?}");
+    assert_eq!(phases.last().map(String::as_str), Some("done"));
+}
+
+/// 口径不变锁(advisory):裁前裁后摘要输入逐字相同——占位符不出现、
+/// 正文仍在、前缀长度不变。裁定若顺手改了派生面,此处必红
+#[tokio::test]
+async fn advisory_keeps_the_summarize_input_verbatim() {
+    use liuma_agent_loop::value_judge::{FoldAdvice, ValueJudge};
+    use liuma_decision::fake::ScriptedFoldJudge;
+
+    let log = big_tool_log();
+    let mut engine = LoopEngine::new(header(), Arc::clone(&log));
+    engine.set_fold_thresholds(0, 1);
+    let judge = Arc::new(ScriptedFoldJudge::returning(Ok(FoldAdvice {
+        no_value: 6,
+        applied: false,
+        judged: 6,
+        total: 6,
+    })));
+    engine.set_value_judge(Arc::clone(&judge) as Arc<dyn ValueJudge>);
+    let mut provider = FakeProvider::new();
+    provider.summaries.push("condensed".into());
+    let mut gate = InvariantGate::new(provider, Arc::clone(&log));
+    {
+        let mut sink = |_ev: &EventEnvelope| {};
+        engine
+            .compact_now(&mut gate, &|| 0_i64, &mut sink)
+            .await
+            .expect("compact");
+    }
+    let sent = gate
+        .inner()
+        .summary_inputs
+        .first()
+        .expect("摘要调用")
+        .1
+        .clone();
+    let text = sent.to_string();
+    assert!(
+        !text.contains(liuma_session::events::PRUNED_TOOL_PLACEHOLDER),
+        "advisory 下摘要输入不得出现占位符"
+    );
+    assert!(text.contains(&"x".repeat(3_000)), "正文逐字进摘要输入");
+    // 摘要输入 == **未折叠**派生面的头部逐条相同(裁前裁后同源;占位符
+    // 一旦落进派生面,此处必红)。指令由 transport 追加(`summarization_
+    // messages` 在 http 侧),故此处恰为 prefix_len 条
+    let pre_fold = liuma_session::events::derive_visible_messages(
+        events(&log)
+            .iter()
+            .filter(|e| e.r#type != "compaction/summary"),
+    );
+    let pre_arr = pre_fold.as_array().unwrap();
+    assert_eq!(pre_arr.len(), 18, "6 轮 × 3 条消息(日志原文全在)");
+    let sent_arr = sent.as_array().expect("数组");
+    assert_eq!(sent_arr.len(), 16, "前缀 = 切点前的派生面");
+    assert_eq!(
+        &pre_arr[..16],
+        sent_arr.as_slice(),
+        "裁前裁后前缀逐条相等(口径不变锁)"
+    );
+    for ev in events(&log).iter().filter(|e| e.r#type == "tool/result") {
+        let body = ev.data["output"].as_str().unwrap();
+        assert_eq!(body.chars().count(), 3_000, "日志原文不动");
+    }
+}
+
+/// fail-open 三连:端口缺席(不咨询)、候选为空(不咨询)、裁定 Err
+/// (照常折叠)——三条路径折叠结果一致,`FoldOutcome` 不变
+#[tokio::test]
+async fn judge_failures_fail_open_into_the_same_fold() {
+    use liuma_agent_loop::value_judge::ValueJudge;
+    use liuma_decision::fake::ScriptedFoldJudge;
+
+    async fn fold_with(judge: Option<Arc<dyn ValueJudge>>) -> (usize, usize, Vec<String>) {
+        use liuma_agent_loop::FoldOutcome;
+        let log = big_tool_log();
+        let mut engine = LoopEngine::new(header(), Arc::clone(&log));
+        engine.set_fold_thresholds(0, 1);
+        if let Some(j) = judge {
+            engine.set_value_judge(j);
+        }
+        let mut provider = FakeProvider::new();
+        provider.summaries.push("condensed".into());
+        let mut gate = InvariantGate::new(provider, Arc::clone(&log));
+        let mut phases: Vec<String> = Vec::new();
+        {
+            let mut sink = |ev: &EventEnvelope| {
+                if ev.r#type == "compaction/progress"
+                    && let Some(p) = ev.data["phase"].as_str()
+                {
+                    phases.push(p.to_string());
+                }
+            };
+            let outcome = engine
+                .compact_now(&mut gate, &|| 0_i64, &mut sink)
+                .await
+                .expect("fail-open:折叠照常完成");
+            assert!(matches!(outcome, FoldOutcome::Folded { .. }), "仍折叠");
+        }
+        let all = events(&log);
+        let summaries = all
+            .iter()
+            .filter(|e| e.r#type == "compaction/summary")
+            .count();
+        let pruned = all.iter().filter(|e| e.r#type == "decision/pruned").count();
+        assert_eq!(summaries, 1, "摘要照落");
+        assert_eq!(pruned, 0);
+        (summaries, pruned, phases)
+    }
+
+    // ①端口缺席:直通,无 judge 相位
+    let (_, _, phases) = fold_with(None).await;
+    assert!(!phases.contains(&"judge".to_string()), "{phases:?}");
+    // ②裁定 Err:照常折叠(judge 相位在场,无 failed 终局)
+    let failing = Arc::new(ScriptedFoldJudge::returning(Err("port down".into())));
+    let (_, _, phases) = fold_with(Some(Arc::clone(&failing) as Arc<dyn ValueJudge>)).await;
+    assert_eq!(
+        phases.first().map(String::as_str),
+        Some("judge"),
+        "{phases:?}"
+    );
+    assert!(!phases.contains(&"failed".to_string()), "{phases:?}");
+    assert_eq!(phases.last().map(String::as_str), Some("done"));
+}
+
+/// 候选为空(区间内无达标 tool/result)= 不咨询:省一次出网,载荷计数全零
+#[tokio::test]
+async fn empty_candidate_set_skips_the_judge() {
+    use liuma_agent_loop::value_judge::{FoldAdvice, ValueJudge};
+    use liuma_decision::fake::ScriptedFoldJudge;
+
+    let log = big_log(); // 只有 user/assistant 消息,无工具输出
+    let mut engine = LoopEngine::new(header(), Arc::clone(&log));
+    engine.set_fold_thresholds(0, 1);
+    let judge = Arc::new(ScriptedFoldJudge::returning(Ok(FoldAdvice {
+        no_value: 9,
+        applied: false,
+        judged: 9,
+        total: 9,
+    })));
+    engine.set_value_judge(Arc::clone(&judge) as Arc<dyn ValueJudge>);
+    let mut provider = FakeProvider::new();
+    provider.summaries.push("condensed".into());
+    let mut gate = InvariantGate::new(provider, Arc::clone(&log));
+    let mut phases: Vec<String> = Vec::new();
+    {
+        let mut sink = |ev: &EventEnvelope| {
+            if ev.r#type == "compaction/progress"
+                && let Some(p) = ev.data["phase"].as_str()
+            {
+                phases.push(p.to_string());
+            }
+        };
+        engine
+            .compact_now(&mut gate, &|| 0_i64, &mut sink)
+            .await
+            .expect("compact");
+    }
+    assert!(judge.take_seen().is_empty(), "无候选 → 不咨询");
+    assert!(!phases.contains(&"judge".to_string()), "{phases:?}");
+    let all = events(&log);
+    let summary = all
+        .iter()
+        .find(|e| e.r#type == "compaction/summary")
+        .expect("summary");
+    assert_eq!(summary.data["totalCandidates"], json!(0));
+    assert_eq!(summary.data["judgedCandidates"], json!(0));
+    assert_eq!(summary.data["noValueCandidates"], json!(0));
+}

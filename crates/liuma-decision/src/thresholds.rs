@@ -87,6 +87,22 @@ pub const CONTEXT_PRUNE_QUESTION: &str =
 /// 上下文裁判:noul ≥ 此值(「已无引用价值」)→ 修剪
 pub const PRUNE_NO_VALUE_PROBABILITY: f64 = 0.85;
 
+/// 折叠价值裁定:单问题文案(每候选一条;反引号路径引用
+/// `candidates[N]`,state 里带 task 与该数组)。
+///
+/// **极性警告**:本问问的是「价值」——值越高越该带进 checkpoint,故
+/// **低** noul 才是「不值得带走」。与上下文裁判
+/// [`CONTEXT_PRUNE_QUESTION`](问「已无价值」,高 noul 裁)方向相反:
+/// 同一份答案在两个场景给出相反的裁决,改文案或改判读前先读
+/// [`FOLD_DROP_PROBABILITY`]。
+pub const FOLD_VALUE_QUESTION: &str = "How important is the tool result `candidates[@]` for the work that continues after this checkpoint? 1.0 = irreplaceable (paths, error strings, decisions, numbers); 0.0 = disposable (superseded listings, repeated dumps, routine success already reflected elsewhere).";
+
+/// 折叠价值裁定:noul ≤ 此值(判为「不值得带入」)→ 裁掉。
+///
+/// 反向极性见 [`FOLD_VALUE_QUESTION`]:它落在概率区间**下端**,而
+/// 上下文裁判的 [`PRUNE_NO_VALUE_PROBABILITY`] 落在上端。
+pub const FOLD_DROP_PROBABILITY: f64 = 0.15;
+
 /// 上下文裁判:候选最小字符数(太短的不值得问)
 pub const PRUNE_CANDIDATE_MIN_CHARS: usize = 2_000;
 

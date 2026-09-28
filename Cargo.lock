@@ -5324,6 +5324,7 @@ dependencies = [
  "hex",
  "liuma-agent-loop",
  "liuma-attachment",
+ "liuma-decision",
  "liuma-llm",
  "liuma-plan",
  "liuma-session",

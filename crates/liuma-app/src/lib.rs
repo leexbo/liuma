@@ -33,8 +33,8 @@ use mount::assemble;
 
 /// 决策模型场景开关(合并后;默认关)。
 ///
-/// `enforce` 仅对 guard/context 有意义(显式配置才开);approvals/stop
-/// 恒 advisory,合并时该位恒 false。
+/// `enforce` 仅对 guard/context 有意义(显式配置才开);approvals/stop/
+/// fold 恒 advisory,合并时该位恒 false。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DecisionScenario {
     /// 场景开关(总开关也要开)
@@ -69,6 +69,8 @@ pub struct DecisionSettings {
     pub guard: DecisionScenario,
     /// 场景4:上下文裁判
     pub context: DecisionScenario,
+    /// 场景5:折叠价值裁定(摘要前裁定哪些旧输出不值得带进 checkpoint)
+    pub fold: DecisionScenario,
 }
 
 impl Default for DecisionSettings {
@@ -83,6 +85,7 @@ impl Default for DecisionSettings {
             stop: DecisionScenario::default(),
             guard: DecisionScenario::default(),
             context: DecisionScenario::default(),
+            fold: DecisionScenario::default(),
         }
     }
 }
@@ -117,6 +120,8 @@ pub struct DecisionEntry {
     pub guard_enforce: bool,
     /// 上下文裁判 enforce(默认 shadow 只记录)
     pub context_enforce: bool,
+    /// 场景开关:折叠价值裁定(只记录)
+    pub fold: bool,
 }
 
 impl Default for DecisionEntry {
@@ -133,6 +138,7 @@ impl Default for DecisionEntry {
             context: false,
             guard_enforce: false,
             context_enforce: false,
+            fold: false,
         }
     }
 }
@@ -156,6 +162,7 @@ impl DecisionEntry {
             stop: scenario(self.stop, false),
             guard: scenario(self.guard, self.guard_enforce),
             context: scenario(self.context, self.context_enforce),
+            fold: scenario(self.fold, false),
         }
     }
 }
@@ -289,6 +296,28 @@ pub fn decision_hook_port(
     } else {
         Some(Arc::new(liuma_agent_loop::hooks::HookChain::new(hooks)))
     }
+}
+
+/// 折叠价值裁定器装配(`fold` 场景开关门控;关闭 = `None`,引擎折叠
+/// 照常、零开销)。
+///
+/// receipt 落档口由**调用方注入**(宿主事件汇):与 [`decision_hook_port`]
+/// 同款理由——只落档不推轨迹增量的 receipt 对直播轨迹永久不可见。
+pub fn build_fold_judge(
+    port: &Arc<dyn liuma_decision::DecisionPort>,
+    settings: &DecisionSettings,
+    log: &Arc<Mutex<EventLog>>,
+    sink: liuma_decision::scenarios::ReceiptSink,
+) -> Option<Arc<dyn liuma_agent_loop::value_judge::ValueJudge>> {
+    if !settings.fold.enabled {
+        return None;
+    }
+    Some(Arc::new(liuma_decision::scenarios::fold::FoldJudge::new(
+        Arc::clone(port),
+        settings.model.clone(),
+        Arc::clone(log),
+        sink,
+    )) as Arc<dyn liuma_agent_loop::value_judge::ValueJudge>)
 }
 
 /// 毫秒 Unix 时间戳(会话事件信封用;与 liuma-core 同式)
@@ -743,6 +772,18 @@ impl<T: Send, TOOLS> Session<T, TOOLS> {
     /// 卸载 hooks 拦截点(热卸载)。
     pub fn clear_hook_port(&mut self) {
         self.engine.clear_hook_port();
+    }
+
+    /// 挂折叠价值裁定端口(None = 卸载;宿主装配,保存配置即生效)。
+    /// 未挂 = 折叠不咨询决策模型(零开销直通)。
+    pub fn set_value_judge_port(
+        &mut self,
+        port: Option<std::sync::Arc<dyn liuma_agent_loop::value_judge::ValueJudge>>,
+    ) {
+        match port {
+            Some(p) => self.engine.set_value_judge(p),
+            None => self.engine.clear_value_judge(),
+        }
     }
 
     /// 从既有日志恢复投影 retained(runtime 快照同源恢复;冷附着重开会话用)。

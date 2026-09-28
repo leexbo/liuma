@@ -8018,6 +8018,32 @@ fn decision_scenario_mode_selection(cx: &mut TestAppContext) {
             .unwrap_or(false)
     });
     assert!(!approvals_on, "「关闭」应清 enabled");
+
+    // 折叠价值裁定行:只记录场景(无 enforce 位),两态
+    assert!(
+        wcx.debug_bounds("decision-mode-fold").is_some(),
+        "fold 行未渲染"
+    );
+    assert!(
+        wcx.debug_bounds("decision-mode-fold-block").is_none(),
+        "只记录场景不该有「拦截」项"
+    );
+    click_sel(&mut wcx, "decision-mode-fold-on");
+    settle(&mut wcx);
+    let fold_on = cx.update(|app| {
+        store.read(app).settings.settings_snapshot["decision"]["fold"]
+            .as_bool()
+            .unwrap_or(false)
+    });
+    assert!(fold_on, "「开启」应落 enabled");
+    click_sel(&mut wcx, "decision-mode-fold-off");
+    settle(&mut wcx);
+    let fold_on = cx.update(|app| {
+        store.read(app).settings.settings_snapshot["decision"]["fold"]
+            .as_bool()
+            .unwrap_or(false)
+    });
+    assert!(!fold_on, "「关闭」应清 enabled");
     let _ = std::fs::remove_dir_all(root);
 }
 

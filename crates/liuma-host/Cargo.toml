@@ -28,4 +28,5 @@ wasmtime-wasi.workspace = true
 
 [dev-dependencies]
 liuma-agent-loop.workspace = true
+liuma-decision.workspace = true
 liuma-llm.workspace = true

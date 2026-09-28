@@ -673,6 +673,21 @@ pub fn frame_checkpoint(summary: &str) -> String {
 pub const PRUNED_TOOL_PLACEHOLDER: &str =
     "(older tool result pruned by the decision model; the full output remains in the session log)";
 
+/// `decision/pruned` 引用的事件 seq 并集(策略④的输入)。
+///
+/// 与派生面同源单处:引擎在折叠前选裁定候选时要排除「已被裁掉」的
+/// tool/result(裁定幂等),谓词必须与派生层替换面一致——两份实现
+/// 会让引擎把模型根本看不见的输出再送一次裁定。
+pub fn pruned_seqs<'a>(
+    events: impl Iterator<Item = &'a crate::EventEnvelope>,
+) -> std::collections::HashSet<u64> {
+    events
+        .filter(|e| e.r#type == "decision/pruned")
+        .flat_map(|e| e.data["pruned"].as_array().cloned().unwrap_or_default())
+        .filter_map(|p| p["seq"].as_u64())
+        .collect()
+}
+
 /// 模型可见消息 = 日志投影 + 显式策略栈。
 ///
 /// 策略栈:① tool/result 输出裁剪(常量,确定性);② 历史折叠——最近一条
@@ -688,12 +703,7 @@ pub fn derive_visible_messages<'a>(
     events: impl Iterator<Item = &'a crate::EventEnvelope>,
 ) -> serde_json::Value {
     let events: Vec<&crate::EventEnvelope> = events.collect();
-    let pruned_seqs: std::collections::HashSet<u64> = events
-        .iter()
-        .filter(|e| e.r#type == "decision/pruned")
-        .flat_map(|e| e.data["pruned"].as_array().cloned().unwrap_or_default())
-        .filter_map(|p| p["seq"].as_u64())
-        .collect();
+    let pruned_seqs = pruned_seqs(events.iter().copied());
     let last_catalog_seq = events
         .iter()
         .rev()
