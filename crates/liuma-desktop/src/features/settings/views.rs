@@ -15,6 +15,7 @@ use gpui_kit::component::InteractiveElementExt as _;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::StyledExt;
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::radio::{Radio, RadioGroup};
 use gpui_kit::component::select::{Select, SelectState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -3204,8 +3205,8 @@ pub(crate) fn menu(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 .hover(|s| s.bg(theme::LAYER()))
                 .child(fixed(IconName::ArrowLeft, 15.))
                 .child(dict::settings::back_workspace())
-                .on_click(move |_, _, cx| {
-                    back.update(cx, |st, cx| st.toggle_settings(cx));
+                .on_click(move |_, window, cx| {
+                    back.update(cx, |st, cx| st.toggle_settings(window, cx));
                 }),
         )
         .child(list)
@@ -3267,8 +3268,8 @@ fn nav_item(
         .when(active, |el| el.font_weight(gpui_kit::FontWeight::MEDIUM))
         .child(icon)
         .child(label)
-        .on_click(move |_, _, cx| {
-            s.update(cx, |st, cx| st.set_settings_nav(nav, cx));
+        .on_click(move |_, window, cx| {
+            s.update(cx, |st, cx| st.set_settings_nav(nav, window, cx));
         })
 }
 
@@ -3291,52 +3292,154 @@ pub(crate) fn settings_row(store: &Entity<AppStore>) -> impl IntoElement {
         .text_color(theme::LABEL_3())
         .child(fixed(IconName::Settings, 16.))
         .child(dict::settings::settings_title())
-        .on_click(move |_, _, cx| {
-            s.update(cx, |st, cx| st.toggle_settings(cx));
+        .on_click(move |_, window, cx| {
+            s.update(cx, |st, cx| st.toggle_settings(window, cx));
         })
 }
 
-/// 决策模型区(System One 协议):总开关 + 四场景开关(+ guard/context
-/// 的 enforce 位)。端点/模型只读展示——编辑设置文件(下次会话附着生效)。
+/// 决策区配置块(端点 / 模型 / 密钥 + 保存)。输入是常驻表单:回填由
+/// store 的 `sync_decision_form` 在「进入该区」时驱动,本函数只读不写。
+fn decision_config_block(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
+    let st = store.read(cx);
+    let s_save = store.clone();
+    // 明文 key 不出快照(与 providers 同惯例):「已配置」读 apiKeySet 布尔,
+    // 不读 api_key——后者在快照里恒缺席,读它等于恒报「未配置」
+    let key_configured = st.settings.settings_snapshot["decision"]["apiKeySet"]
+        .as_bool()
+        .unwrap_or(false);
+    div()
+        .id("decision-endpoint-block")
+        .debug_selector(|| "decision-endpoint-block".to_string())
+        .v_flex()
+        .gap(px(10.))
+        .child(field_input(
+            "Base URL",
+            "decision-url-input",
+            &st.settings.decision_form_url,
+        ))
+        .child(field_input(
+            dict::settings::decision_model_label(),
+            "decision-model-input",
+            &st.settings.decision_form_model,
+        ))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                // 弹性层持 flex_1:并排时若无此层,输入框会塌成小方块
+                .child(div().flex_1().min_w(px(0.)).child(field_input(
+                    dict::settings::api_key_plain(),
+                    "decision-key-input",
+                    &st.settings.decision_form_key,
+                )))
+                .child(
+                    div()
+                        .id("decision-key-state")
+                        .debug_selector(|| "decision-key-state".to_string())
+                        .flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap(px(5.))
+                        .child(credential_dot(key_configured))
+                        .child(div().text_size(px(11.)).text_color(theme::CAPTION()).child(
+                            if key_configured {
+                                dict::settings::decision_key_set()
+                            } else {
+                                dict::settings::decision_key_missing()
+                            },
+                        )),
+                ),
+        )
+        // 端点/模型/密钥附着时才烘进端口,如实交代生效时机
+        .child(
+            div()
+                .id("decision-attach-hint")
+                .debug_selector(|| "decision-attach-hint".to_string())
+                .text_size(px(11.))
+                .text_color(theme::CAPTION())
+                .child(dict::settings::decision_attach_hint()),
+        )
+        .children(st.settings.settings_notice.as_ref().map(|(ok, msg)| {
+            div()
+                .debug_selector(|| "decision-settings-notice".to_string())
+                .text_size(px(12.))
+                .text_color(if *ok {
+                    theme::SUCCESS()
+                } else {
+                    theme::DANGER()
+                })
+                .child(format!("{} {msg}", if *ok { "✓" } else { "⚠" }))
+        }))
+        .child(
+            div().flex().justify_end().child(
+                div()
+                    .id("decision-save")
+                    .debug_selector(|| "decision-save".to_string())
+                    .flex()
+                    .h(px(32.))
+                    .items_center()
+                    .px(px(14.))
+                    .rounded(px(16.))
+                    .border_1()
+                    .border_color(theme::BORDER())
+                    .cursor_pointer()
+                    .text_size(px(13.))
+                    .text_color(theme::LABEL_2())
+                    .hover(|s| s.bg(theme::DOCK()))
+                    .child(dict::common::save())
+                    .on_click(move |_, window, cx| {
+                        s_save.update(cx, |st, cx| st.apply_decision_form(window, cx));
+                    }),
+            ),
+        )
+}
+
+/// 决策模型区(System One 协议):端点/模型/密钥配置块 + 总开关 + 四场景
+/// 开关(+ guard/context 的 enforce 位)。
 fn decision_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let st = store.read(cx);
     let entry = serde_json::from_value::<liuma_core::settings::DecisionEntry>(
         st.settings.settings_snapshot["decision"].clone(),
     )
     .unwrap_or_default();
-    // 明文 key 不出快照(与 providers 同惯例):「已设置」读 apiKeySet
-    // 布尔,不读 api_key——后者在快照里恒缺席,读它等于恒报「未设置」
-    let key_state = if st.settings.settings_snapshot["decision"]["apiKeySet"]
-        .as_bool()
-        .unwrap_or(false)
-    {
-        dict::settings::decision_key_set()
-    } else {
-        dict::settings::decision_key_missing()
-    };
-    let endpoint_line = format!(
-        "{} · {}",
-        dict::settings::decision_endpoint(entry.base_url.as_str(), entry.model.as_str()),
-        key_state
-    );
     let mut col = div()
         .v_flex()
         .gap(px(12.))
         .child(section_title("Decision"))
         .child(intro_line(dict::settings::decision_intro()))
-        .child(caption_line(endpoint_line));
+        .child(decision_config_block(store, cx));
 
-    // 开关行通用形态(标题 + 说明 + Switch;主开关独立置顶)
+    // 场景行通用形态(标题 + 说明 + 单选组;主开关独立置顶)。
+    // 三态一一对应底层两位:关闭(enabled=false)/ 仅记录(enabled, shadow)/
+    // 拦截(enabled + enforce);approvals / stop 没有 enforce 位,只有两态。
+    // 用库 `RadioGroup`(受控单选):语义就是「从 N 个里选一个」,选中点是
+    // 品牌色实心 + 勾——形状信号,不靠底色深浅。不选 `TabBar::segmented`:
+    // 那是切视图的标签页控件,且它的选中药丸被库硬编码成画布色,在本主题
+    // 下与页面同色(深盘差 2/255)。
     let scenario_row = |store: &Entity<AppStore>,
                         id: &'static str,
                         label: String,
                         desc: &str,
-                        on: bool,
-                        enforce: Option<(&'static str, bool)>|
+                        mode: usize,
+                        has_enforce: bool|
      -> gpui_kit::AnyElement {
         let st_row = store.clone();
-        let st_enf = store.clone();
-        let mut row = div()
+        // 每项挂独立 selector,测试才能点到具体那一项
+        let item = |kind: &'static str, label: &'static str| {
+            let sel = format!("decision-mode-{id}-{kind}");
+            Radio::new(gpui_kit::SharedString::from(sel.clone()))
+                .debug_selector(move || sel.clone())
+                .label(label)
+        };
+        let mut items = vec![item("off", dict::settings::decision_mode_off())];
+        if has_enforce {
+            items.push(item("shadow", dict::settings::decision_mode_shadow()));
+            items.push(item("block", dict::settings::decision_mode_block()));
+        } else {
+            items.push(item("on", dict::settings::decision_mode_on()));
+        }
+        div()
             .id(gpui_kit::SharedString::from(format!("decision-row-{id}")))
             .debug_selector(move || format!("decision-row-{id}"))
             .flex()
@@ -3363,58 +3466,32 @@ fn decision_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             )
             .child(
                 div()
-                    .id(gpui_kit::SharedString::from(format!(
-                        "decision-switch-{id}"
-                    )))
-                    .debug_selector(move || format!("decision-switch-{id}"))
+                    .id(gpui_kit::SharedString::from(format!("decision-mode-{id}")))
+                    .debug_selector(move || format!("decision-mode-{id}"))
+                    .flex_shrink_0()
                     .child(
-                        Switch::new(gpui_kit::SharedString::from(format!(
-                            "decision-toggle-{id}"
+                        RadioGroup::horizontal(gpui_kit::SharedString::from(format!(
+                            "decision-mode-group-{id}"
                         )))
-                        .checked(on)
-                        .color(theme::BRAND())
-                        .on_click({
-                            let st_click = st_row.clone();
-                            let kind = id;
-                            move |_, _, cx| {
-                                st_click.update(cx, |st, cx| st.toggle_decision_scenario(kind, cx));
-                            }
-                        }),
+                        .selected_index(Some(mode))
+                        .on_click(move |ix: &usize, _, cx| {
+                            st_row.update(cx, |st, cx| st.set_decision_scenario(id, *ix, cx));
+                        })
+                        .children(items),
                     ),
-            );
-        if let Some((enf_kind, enf_on)) = enforce {
-            let label = dict::settings::decision_enforce();
-            row = row.child(
-                div()
-                    .id(gpui_kit::SharedString::from(format!(
-                        "decision-enforce-{enf_kind}"
-                    )))
-                    .debug_selector(move || format!("decision-enforce-{enf_kind}"))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(theme::CAPTION())
-                            .child(label),
-                    )
-                    .child(
-                        Switch::new(gpui_kit::SharedString::from(format!(
-                            "decision-enforce-toggle-{enf_kind}"
-                        )))
-                        .checked(enf_on)
-                        .color(theme::WARN())
-                        .on_click({
-                            move |_, _, cx| {
-                                st_enf
-                                    .update(cx, |st, cx| st.toggle_decision_enforce(enf_kind, cx));
-                            }
-                        }),
-                    ),
-            );
+            )
+            .into_any_element()
+    };
+
+    // 三态下标:关闭 0 / 仅记录 1 / 拦截 2(enabled=false 时恒 0)
+    let scenario_mode = |on: bool, enforce: bool| {
+        if !on {
+            0
+        } else if enforce {
+            2
+        } else {
+            1
         }
-        row.into_any_element()
     };
 
     let st_master = store.clone();
@@ -3442,7 +3519,7 @@ fn decision_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                     }),
             ),
     );
-    // 主开关关闭时场景行整体退灰(仍可查看,不可交互的语义由 Switch 态承担)
+    // 主开关关闭时场景行整体退灰(仍可查看,不可交互的语义由分段选中态承担)
     let _ = &entry;
     col = col
         .child(scenario_row(
@@ -3450,32 +3527,32 @@ fn decision_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             "approvals",
             dict::settings::decision_approvals().to_string(),
             dict::settings::decision_approvals_desc(),
-            entry.approvals,
-            None,
+            scenario_mode(entry.approvals, false),
+            false,
         ))
         .child(scenario_row(
             store,
             "stop",
             dict::settings::decision_stop().to_string(),
             dict::settings::decision_stop_desc(),
-            entry.stop,
-            None,
+            scenario_mode(entry.stop, false),
+            false,
         ))
         .child(scenario_row(
             store,
             "guard",
             dict::settings::decision_guard().to_string(),
             dict::settings::decision_guard_desc(),
-            entry.guard,
-            Some(("guard", entry.guard_enforce)),
+            scenario_mode(entry.guard, entry.guard_enforce),
+            true,
         ))
         .child(scenario_row(
             store,
             "context",
             dict::settings::decision_context().to_string(),
             dict::settings::decision_context_desc(),
-            entry.context,
-            Some(("context", entry.context_enforce)),
+            scenario_mode(entry.context, entry.context_enforce),
+            true,
         ));
     col
 }

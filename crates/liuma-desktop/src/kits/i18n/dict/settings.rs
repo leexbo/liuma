@@ -291,7 +291,7 @@ entries! {
     /// 决策模型主开关行
     decision_master => ["启用决策模型", "Enable decision model"],
     /// 决策模型区介绍
-    decision_intro => ["决策模型(System One 协议):审批风险标注、完成证据核对、高危工具拦截与上下文修剪的快速判断层。默认关闭;端点与模型经设置文件配置(下次会话附着生效)。", "Decision model (System One protocol): a fast judgment layer for approval risk labels, completion evidence checks, risky-tool blocking and context pruning. Off by default; configure the endpoint and model in the settings file (takes effect when the next session attaches)."],
+    decision_intro => ["让一个小模型替你做几个判断:审批卡标风险、核对结论证据、拦高危工具、清理过期输出。默认关闭。", "Let a small model make a few judgement calls: flag risk on approval cards, check conclusions against evidence, block risky tools, prune stale output. Off by default."],
     /// 决策场景行:审批评审员
     decision_approvals => ["审批评审员", "Approval reviewer"],
     /// 决策场景行:Stop 哨兵
@@ -300,18 +300,36 @@ entries! {
     decision_guard => ["工具守卫", "Tool guard"],
     /// 决策场景行:上下文裁判
     decision_context => ["上下文裁判", "Context judge"],
-    /// enforce 模式后缀(默认 shadow)
-    decision_enforce => ["enforce(高置信才自动动作)", "enforce (act automatically at high confidence)"],
+    /// 场景三态:关闭
+    decision_mode_off => ["关闭", "Off"],
+    /// 场景两态:开启(无 enforce 位的场景)
+    decision_mode_on => ["开启", "On"],
+    /// 场景三态:仅记录(shadow;启用但不动作)
+    decision_mode_shadow => ["仅记录", "Log only"],
+    /// 场景三态:拦截(enforce;高置信才动作)
+    decision_mode_block => ["拦截", "Block"],
     /// 决策场景说明:评审员
     decision_approvals_desc => ["审批卡附带风险标注(建议,不自动批)", "Risk label on approval cards (advisory, never auto-approves)"],
     /// 决策场景说明:哨兵
     decision_stop_desc => ["完成陈述缺证据时允许模型继续(每回合至多 2 次)", "Lets the model continue when the final statement lacks evidence (max 2 per turn)"],
     /// 决策场景说明:守卫
-    decision_guard_desc => ["工具执行前风险评估;shadow 只记录,enforce 高置信才拦", "Risk check before each tool call; shadow records only, enforce blocks at high confidence"],
+    decision_guard_desc => ["工具执行前风险评估", "Risk check before each tool call"],
     /// 决策场景说明:裁判
-    decision_context_desc => ["上下文吃紧时修剪旧工具输出;shadow 只记录,enforce 才生效", "Prunes stale tool outputs under context pressure; shadow records only, enforce applies"],
-    /// 决策端点信息行
-    decision_endpoint(base, model) => ["端点 {base} · 模型 {model}", "Endpoint {base} · model {model}"],
+    decision_context_desc => ["上下文吃紧时修剪旧工具输出", "Prunes stale tool outputs under context pressure"],
+    /// 决策表单字段:模型
+    decision_model_label => ["模型", "Model"],
+    /// 决策表单占位:API key(留空 = 不改已存)
+    decision_key_placeholder => ["留空 = 不改已存 key", "Leave empty to keep the stored key"],
+    /// 决策表单通告:Base URL 空
+    decision_url_empty => ["Base URL 不能为空", "Base URL can't be empty"],
+    /// 决策表单通告:Base URL 非法
+    decision_url_invalid => ["Base URL 需以 http:// 或 https:// 开头", "Base URL must start with http:// or https://"],
+    /// 决策表单通告:模型名空
+    decision_model_empty => ["模型不能为空", "Model can't be empty"],
+    /// 决策配置生效时机(端点/模型/密钥附着时烘入端口)
+    decision_attach_hint => ["端点、模型与密钥在下次会话附着时生效。", "Endpoint, model and key take effect when the next session attaches."],
+    /// 决策配置保存成功通知
+    decision_saved => ["决策模型配置已保存", "Decision model settings saved"],
     /// 决策 key 已配置
     decision_key_set => ["key 已配置", "key configured"],
     /// 决策 key 未配置

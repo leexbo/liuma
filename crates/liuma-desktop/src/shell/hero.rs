@@ -93,8 +93,8 @@ pub fn render(
                             .text_color(theme::WARN())
                             .hover(|s| s.bg(theme::LAYER()))
                             .child(crate::kits::i18n::dict::shell::hero_no_key())
-                            .on_click(move |_, _, cx| {
-                                s.update(cx, |st, cx| st.toggle_settings(cx));
+                            .on_click(move |_, window, cx| {
+                                s.update(cx, |st, cx| st.toggle_settings(window, cx));
                             }),
                     )
                 })

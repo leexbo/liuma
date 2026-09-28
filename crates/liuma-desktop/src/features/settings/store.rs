@@ -116,6 +116,13 @@ pub(crate) struct SettingsStore {
     pub set_form_model: Option<Entity<InputState>>,
     /// provider 表单方言选择(chips 三选一)
     pub set_form_dialect: String,
+    /// 决策表单:端点输入(常驻;本区无「打开」事件,回填时机见
+    /// [`SettingsStore::sync_decision_form`])
+    pub decision_form_url: Option<Entity<InputState>>,
+    /// 决策表单:模型输入
+    pub decision_form_model: Option<Entity<InputState>>,
+    /// 决策表单:API key 输入(write-only——明文永不回填,保存成功即清空)
+    pub decision_form_key: Option<Entity<InputState>>,
     /// 设置页导航(两栏壳:左 nav + 单区内容)
     pub settings_nav: SettingsNav,
     /// MCP 分区详情页(None = 列表页;Some = 详情:新增/编辑/JSON 导入)
@@ -230,6 +237,9 @@ impl Default for SettingsStore {
             set_form_url: None,
             set_form_model: None,
             set_form_dialect: "openai-completions".into(),
+            decision_form_url: None,
+            decision_form_model: None,
+            decision_form_key: None,
             settings_nav: SettingsNav::Models,
             mcp_detail: None,
             hooks_detail: None,
@@ -584,11 +594,15 @@ impl AppStore {
         state
     }
     /// 设置页开关(独立页路由;打开时刷新快照与 onboarding 态)
-    pub fn toggle_settings(&mut self, cx: &mut Context<Self>) {
+    pub fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.settings_open = !self.settings.settings_open;
         if self.settings.settings_open {
             self.settings.settings_snapshot = self.bridge.host().settings_view();
             self.recalc_onboarding();
+            // 决策区是常驻表单(无「打开编辑卡」事件),开页落在该区即回填
+            if self.settings.settings_nav == SettingsNav::Decision {
+                self.sync_decision_form(window, cx);
+            }
         }
         cx.notify();
     }
@@ -810,8 +824,18 @@ impl AppStore {
     }
 
     /// 切换设置页导航区(两栏壳:左 nav + 单区内容)
-    pub fn set_settings_nav(&mut self, nav: SettingsNav, cx: &mut Context<Self>) {
+    pub fn set_settings_nav(
+        &mut self,
+        nav: SettingsNav,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // 判「是否真的换了区」:重复点当前项不得冲掉用户未保存的输入
+        let changed = self.settings.settings_nav != nav;
         self.settings.settings_nav = nav;
+        if changed && nav == SettingsNav::Decision {
+            self.sync_decision_form(window, cx);
+        }
         cx.notify();
     }
 
@@ -2417,30 +2441,139 @@ impl AppStore {
         cx.notify();
     }
 
+    /// 决策表单三输入惰建(挂窗一次;`sync_decision_form` 亦会自足调用,
+    /// 不依赖 attach 先后)
+    pub(crate) fn ensure_decision_form_inputs(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings.decision_form_url.is_none() {
+            self.settings.decision_form_url = Some(cx.new(|cx| {
+                InputState::new(window, cx).placeholder(dict::settings::url_placeholder())
+            }));
+        }
+        if self.settings.decision_form_model.is_none() {
+            self.settings.decision_form_model =
+                Some(cx.new(|cx| InputState::new(window, cx).placeholder("jev-latest")));
+        }
+        if self.settings.decision_form_key.is_none() {
+            self.settings.decision_form_key = Some(cx.new(|cx| {
+                InputState::new(window, cx).placeholder(dict::settings::decision_key_placeholder())
+            }));
+        }
+    }
+
+    /// 决策表单回填(唯一入口:切到 Decision 分区,或开设置页时当前
+    /// 已在该区)。**不得在渲染期或 [`Self::settings_refresh`] 内调用**:
+    /// 那会覆盖用户正在输入的内容(同 `ask_custom_input_not_rewritten_each_frame`
+    /// 锁住的契约)。key 恒不回填、只清空(write-only;明文不回显)。
+    pub(crate) fn sync_decision_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_decision_form_inputs(window, cx);
+        let entry = self.decision_entry();
+        if let Some(input) = &self.settings.decision_form_url {
+            input.update(cx, |s, cx| s.set_value(entry.base_url.as_str(), window, cx));
+        }
+        if let Some(input) = &self.settings.decision_form_model {
+            input.update(cx, |s, cx| s.set_value(entry.model.as_str(), window, cx));
+        }
+        if let Some(input) = &self.settings.decision_form_key {
+            input.update(cx, |s, cx| s.set_value("", window, cx));
+        }
+    }
+
+    /// 决策配置保存(端点 / 模型 / 密钥)。key 留空 = 不改已存(后端
+    /// `api_key == None` 保留原值);端点或模型为空、端点无 http(s) 前缀
+    /// 一律拒绝并内联通告——空端点会让 `build_decision_port` 返回 `None`,
+    /// 整个功能无声失效。成功即清空 key 明文并刷快照(圆点转「已配置」)。
+    pub fn apply_decision_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let base_url = self
+            .settings
+            .decision_form_url
+            .as_ref()
+            .map(|i| i.read(cx).value().trim().to_string())
+            .unwrap_or_default();
+        let model = self
+            .settings
+            .decision_form_model
+            .as_ref()
+            .map(|i| i.read(cx).value().trim().to_string())
+            .unwrap_or_default();
+        let key = self
+            .settings
+            .decision_form_key
+            .as_ref()
+            .map(|i| i.read(cx).value().trim().to_string())
+            .unwrap_or_default();
+        if base_url.is_empty() {
+            self.set_settings_notice(false, dict::settings::decision_url_empty(), cx);
+            return;
+        }
+        if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
+            self.set_settings_notice(false, dict::settings::decision_url_invalid(), cx);
+            return;
+        }
+        if model.is_empty() {
+            self.set_settings_notice(false, dict::settings::decision_model_empty(), cx);
+            return;
+        }
+        let mut entry = self.decision_entry();
+        entry.base_url = base_url;
+        entry.model = model;
+        // 空 key = 保持 None,交给 host 保留原值(与 provider upsert 同惯例)
+        if !key.is_empty() {
+            entry.api_key = Some(key);
+        }
+        if let Err(e) = self.bridge.host().upsert_decision_settings(entry) {
+            self.set_settings_notice(false, dict::settings::save_failed(&e.message), cx);
+            return;
+        }
+        // 明文不留在控件里(也避免下次保存把同一 key 再提交一遍)
+        if let Some(input) = &self.settings.decision_form_key {
+            input.update(cx, |s, cx| s.set_value("", window, cx));
+        }
+        self.set_settings_notice(true, dict::settings::decision_saved(), cx);
+        self.settings_refresh(cx);
+    }
+
     /// 决策总开关
     pub fn toggle_decision_enabled(&mut self, cx: &mut Context<Self>) {
         self.save_decision(|e| e.enabled = !e.enabled, cx);
     }
 
-    /// 场景开关(kind: approvals / stop / guard / context)
-    pub fn toggle_decision_scenario(&mut self, kind: &'static str, cx: &mut Context<Self>) {
+    /// 场景状态(kind: approvals / stop / guard / context)。`mode` 是分段
+    /// 控件的下标:0 = 关闭,1 = 仅记录(启用但 shadow),2 = 拦截(enforce)。
+    /// approvals / stop 无 enforce 位,只用 0 / 1。
+    ///
+    /// 关闭(0)时**不动** enforce 位:重新开启能回到用户上次选的模式。
+    /// 选中态由 enabled / enforce 共同推出,关闭态下标恒为 0——残留的
+    /// enforce 不可见,也不会让控件读出第四种状态。
+    pub fn set_decision_scenario(
+        &mut self,
+        kind: &'static str,
+        mode: usize,
+        cx: &mut Context<Self>,
+    ) {
         self.save_decision(
-            |e| match kind {
-                "approvals" => e.approvals = !e.approvals,
-                "stop" => e.stop = !e.stop,
-                "guard" => e.guard = !e.guard,
-                _ => e.context = !e.context,
-            },
-            cx,
-        );
-    }
-
-    /// enforce 模式(kind: guard / context;默认 shadow)
-    pub fn toggle_decision_enforce(&mut self, kind: &'static str, cx: &mut Context<Self>) {
-        self.save_decision(
-            |e| match kind {
-                "guard" => e.guard_enforce = !e.guard_enforce,
-                _ => e.context_enforce = !e.context_enforce,
+            |e| {
+                let on = mode > 0;
+                let enforce = mode == 2;
+                match kind {
+                    "approvals" => e.approvals = on,
+                    "stop" => e.stop = on,
+                    "guard" => {
+                        e.guard = on;
+                        if on {
+                            e.guard_enforce = enforce;
+                        }
+                    }
+                    _ => {
+                        e.context = on;
+                        if on {
+                            e.context_enforce = enforce;
+                        }
+                    }
+                }
             },
             cx,
         );

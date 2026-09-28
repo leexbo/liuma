@@ -633,6 +633,33 @@ mod tests {
         });
     }
 
+    /// 选择控件的**选中态**必须与画布可分:库的 `Radio` 选中点取
+    /// `theme.primary`(liuma = 品牌色),未选中描边取 `theme.input`。
+    /// 品牌色一旦与画布同色,决策区的场景行就读不出选了哪个。
+    /// 回归锚:决策区场景行用 Radio 而非分段控件,正是因为它走 primary
+    /// 而不是画布色——分段控件的选中药丸被库硬编码成 `tokens.background`,
+    /// 在本主题下与页面同色(深盘实测差 2/255,整条控件看不见)。
+    #[gpui_kit::test]
+    fn selected_marker_is_distinguishable_from_canvas(cx: &mut TestAppContext) {
+        for mode in [ThemeMode::Dark, ThemeMode::Light] {
+            cx.update(|cx| {
+                gpui_kit::component::init(cx);
+                Theme::change(mode, None, cx);
+                apply_tokens(mode, cx);
+                let t = Theme::global(cx);
+                let p = palette_of(mode);
+                assert_eq!(t.colors.primary, Hsla::from(p.brand));
+                let canvas = *t.tokens.background;
+                assert!(
+                    (Hsla::from(p.brand).l - canvas.l).abs() >= 0.2,
+                    "{mode:?}:品牌色与画布亮度差过小({} vs {}),选中点会看不出来",
+                    Hsla::from(p.brand).l,
+                    canvas.l
+                );
+            });
+        }
+    }
+
     /// 正文族锁(机制见 [`FONT_SANS`]):必须是显式族、不得回落系统
     /// 字体,且派生面(组件读 `tokens.typography.sans`)同源。
     /// 改回 `.SystemUIFont` 时本用例先于真机「行尾被裁」失败

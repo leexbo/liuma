@@ -7241,6 +7241,330 @@ fn settings_page_route_end_to_end(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 渲染推进三连(run_until_parked + refresh + run_until_parked)
+fn settle(wcx: &mut gpui_kit::VisualTestContext) {
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+}
+
+/// 决策表单三输入的当前文本(None 字段回空串)
+fn read_decision_inputs(
+    store: &Entity<AppStore>,
+    cx: &mut TestAppContext,
+) -> (String, String, String) {
+    cx.update(|app| {
+        let st = store.read(app);
+        (
+            st.settings
+                .decision_form_url
+                .as_ref()
+                .map(|e| e.read(app).value().to_string())
+                .unwrap_or_default(),
+            st.settings
+                .decision_form_model
+                .as_ref()
+                .map(|e| e.read(app).value().to_string())
+                .unwrap_or_default(),
+            st.settings
+                .decision_form_key
+                .as_ref()
+                .map(|e| e.read(app).value().to_string())
+                .unwrap_or_default(),
+        )
+    })
+}
+
+/// 写入决策表单(None = 该字段不动)
+fn set_decision_inputs(
+    store: &Entity<AppStore>,
+    wcx: &mut gpui_kit::VisualTestContext,
+    url: Option<&str>,
+    model: Option<&str>,
+    key: Option<&str>,
+) {
+    wcx.update(|window, cx| {
+        store.update(cx, |st, cx| {
+            if let (Some(i), Some(v)) = (&st.settings.decision_form_url, url) {
+                i.update(cx, |s, cx| s.set_value(v, window, cx));
+            }
+            if let (Some(i), Some(v)) = (&st.settings.decision_form_model, model) {
+                i.update(cx, |s, cx| s.set_value(v, window, cx));
+            }
+            if let (Some(i), Some(v)) = (&st.settings.decision_form_key, key) {
+                i.update(cx, |s, cx| s.set_value(v, window, cx));
+            }
+        });
+    });
+}
+
+/// 决策区配置块:端点/模型/密钥可编辑 → 保存落盘;key write-only
+/// (明文不回填、保存即清空、留空不改已存);空端点拒绝保存且不落盘。
+#[gpui_kit::test]
+fn decision_config_form_round_trip(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "decform");
+    click_sel(&mut wcx, "settings-row");
+    settle(&mut wcx);
+    click_sel(&mut wcx, "settings-nav-Decision");
+    settle(&mut wcx);
+
+    for sel in [
+        "decision-endpoint-block",
+        "decision-url-input",
+        "decision-model-input",
+        "decision-key-input",
+        "decision-key-state",
+        "decision-attach-hint",
+        "decision-save",
+    ] {
+        assert!(wcx.debug_bounds(sel).is_some(), "{sel} 未渲染");
+    }
+    // 弹性并排层漏 flex_1 时输入框会塌成小方块(同 mcp_detail_inputs_have_width)
+    let url_w = wcx
+        .debug_bounds("decision-url-input")
+        .expect("端点输入")
+        .size
+        .width;
+    assert!(url_w >= gpui_kit::px(120.), "端点输入宽度不足:{url_w:?}");
+
+    // 进入该区即回填快照值
+    let (want_url, want_model) = cx.update(|app| {
+        let snap = store.read(app).settings.settings_snapshot["decision"].clone();
+        (
+            snap["baseUrl"].as_str().unwrap_or_default().to_string(),
+            snap["model"].as_str().unwrap_or_default().to_string(),
+        )
+    });
+    let (got_url, got_model, got_key) = read_decision_inputs(&store, cx);
+    assert_eq!(got_url, want_url, "端点未回填");
+    assert_eq!(got_model, want_model, "模型未回填");
+    assert!(got_key.is_empty(), "key 输入不得回填明文");
+
+    // 三项一起改并保存
+    set_decision_inputs(
+        &store,
+        &mut wcx,
+        Some("https://endpoint.test/v1"),
+        Some("jev-test"),
+        Some("sk-decision-test"),
+    );
+    click_sel(&mut wcx, "decision-save");
+    settle(&mut wcx);
+    cx.update(|app| {
+        let snap = store.read(app).settings.settings_snapshot["decision"].clone();
+        assert_eq!(snap["baseUrl"], "https://endpoint.test/v1");
+        assert_eq!(snap["model"], "jev-test");
+        assert_eq!(snap["apiKeySet"], true, "key 未落盘");
+        assert!(snap.get("apiKey").is_none(), "明文 key 不得进快照");
+    });
+    let (_, _, got_key) = read_decision_inputs(&store, cx);
+    assert!(got_key.is_empty(), "保存后 key 输入应清空,实为 {got_key:?}");
+
+    // key 留空再保存 = 不改已存(host 侧 api_key == None 保留原值)
+    set_decision_inputs(
+        &store,
+        &mut wcx,
+        Some("https://endpoint.test/v2"),
+        Some("jev-test2"),
+        None,
+    );
+    click_sel(&mut wcx, "decision-save");
+    settle(&mut wcx);
+    cx.update(|app| {
+        let snap = store.read(app).settings.settings_snapshot["decision"].clone();
+        assert_eq!(snap["baseUrl"], "https://endpoint.test/v2");
+        assert_eq!(snap["apiKeySet"], true, "留空不得抹掉已存 key");
+    });
+
+    // 空端点与非法端点各自拒绝并给出对应通告;落盘值都不得变
+    for (bad, want_notice) in [
+        ("", crate::kits::i18n::dict::settings::decision_url_empty()),
+        (
+            "endpoint.test/v1",
+            crate::kits::i18n::dict::settings::decision_url_invalid(),
+        ),
+    ] {
+        set_decision_inputs(&store, &mut wcx, Some(bad), None, None);
+        click_sel(&mut wcx, "decision-save");
+        settle(&mut wcx);
+        cx.update(|app| {
+            let snap = store.read(app).settings.settings_snapshot["decision"].clone();
+            assert_eq!(
+                snap["baseUrl"], "https://endpoint.test/v2",
+                "端点 {bad:?} 不得落盘"
+            );
+            let notice = store.read(app).settings.settings_notice.clone();
+            assert_eq!(
+                notice.map(|(_, msg)| msg),
+                Some(want_notice.to_string()),
+                "端点 {bad:?} 的通告不对"
+            );
+        });
+    }
+    // 模型为空同样拒绝
+    set_decision_inputs(
+        &store,
+        &mut wcx,
+        Some("https://endpoint.test/v3"),
+        Some(""),
+        None,
+    );
+    click_sel(&mut wcx, "decision-save");
+    settle(&mut wcx);
+    cx.update(|app| {
+        let snap = store.read(app).settings.settings_snapshot["decision"].clone();
+        assert_eq!(
+            snap["baseUrl"], "https://endpoint.test/v2",
+            "模型为空不得落盘"
+        );
+        let notice = store.read(app).settings.settings_notice.clone();
+        assert_eq!(
+            notice.map(|(_, msg)| msg),
+            Some(crate::kits::i18n::dict::settings::decision_model_empty().to_string()),
+            "模型为空的通告不对"
+        );
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 场景选择控件(库 `RadioGroup` 受控单选):三态一一对应底层两位
+/// (关闭 / 仅记录 = 启用但 shadow / 拦截 = enforce);approvals / stop
+/// 无 enforce 位,只有两态。关闭不清 enforce 位——重新开启应回到用户
+/// 上次选的模式。
+#[gpui_kit::test]
+fn decision_scenario_mode_selection(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "decseg");
+    click_sel(&mut wcx, "settings-row");
+    settle(&mut wcx);
+    click_sel(&mut wcx, "settings-nav-Decision");
+    settle(&mut wcx);
+
+    for sel in ["decision-mode-guard", "decision-mode-approvals"] {
+        assert!(wcx.debug_bounds(sel).is_some(), "{sel} 未渲染");
+    }
+    assert!(
+        wcx.debug_bounds("decision-mode-approvals-block").is_none(),
+        "两态行不该有「拦截」项"
+    );
+    // 布局不得塌:每项都要有可点面积(库的 horizontal 组内用 w_full,
+    // 外层若不给宽度会塌成零宽)
+    for sel in [
+        "decision-mode-guard-off",
+        "decision-mode-guard-shadow",
+        "decision-mode-guard-block",
+    ] {
+        let w = wcx
+            .debug_bounds(sel)
+            .unwrap_or_else(|| panic!("{sel} 缺失"))
+            .size
+            .width;
+        assert!(w >= gpui_kit::px(40.), "{sel} 宽度不足:{w:?}");
+    }
+
+    // 读底层两位(快照 camelCase)
+    let bits = |cx: &mut TestAppContext, store: &Entity<AppStore>| -> (bool, bool) {
+        cx.update(|app| {
+            let snap = store.read(app).settings.settings_snapshot["decision"].clone();
+            (
+                snap["guard"].as_bool().unwrap_or(false),
+                snap["guardEnforce"].as_bool().unwrap_or(false),
+            )
+        })
+    };
+
+    click_sel(&mut wcx, "decision-mode-guard-block");
+    settle(&mut wcx);
+    assert_eq!(
+        bits(cx, &store),
+        (true, true),
+        "「拦截」应落 enabled + enforce"
+    );
+
+    click_sel(&mut wcx, "decision-mode-guard-shadow");
+    settle(&mut wcx);
+    assert_eq!(
+        bits(cx, &store),
+        (true, false),
+        "「仅记录」应落 enabled 且清 enforce"
+    );
+
+    click_sel(&mut wcx, "decision-mode-guard-block");
+    settle(&mut wcx);
+    assert_eq!(bits(cx, &store), (true, true), "再选「拦截」应回 enforce");
+
+    click_sel(&mut wcx, "decision-mode-guard-off");
+    settle(&mut wcx);
+    assert_eq!(
+        bits(cx, &store),
+        (false, true),
+        "「关闭」只清 enabled,不得抹掉 enforce 位"
+    );
+
+    click_sel(&mut wcx, "decision-mode-guard-block");
+    settle(&mut wcx);
+    assert_eq!(bits(cx, &store), (true, true), "关闭后重开应回到上次的模式");
+
+    // 两态行:开启 / 关闭
+    click_sel(&mut wcx, "decision-mode-approvals-on");
+    settle(&mut wcx);
+    let approvals_on = cx.update(|app| {
+        store.read(app).settings.settings_snapshot["decision"]["approvals"]
+            .as_bool()
+            .unwrap_or(false)
+    });
+    assert!(approvals_on, "「开启」应落 enabled");
+    click_sel(&mut wcx, "decision-mode-approvals-off");
+    settle(&mut wcx);
+    let approvals_on = cx.update(|app| {
+        store.read(app).settings.settings_snapshot["decision"]["approvals"]
+            .as_bool()
+            .unwrap_or(false)
+    });
+    assert!(!approvals_on, "「关闭」应清 enabled");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 决策表单回填只由「进入该区」驱动:刷快照(`settings_refresh` 正是
+/// settings/changed 帧的入口)与重复点当前导航项都不得覆盖用户输入。
+/// 回归锚:渲染期/刷新期按值比对回写会把光标拍回句首——同类事故的既有
+/// 锁见 ask_custom_input_not_rewritten_each_frame。
+#[gpui_kit::test]
+fn decision_form_sync_never_clobbers_typing(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "decsync");
+    click_sel(&mut wcx, "settings-row");
+    settle(&mut wcx);
+    click_sel(&mut wcx, "settings-nav-Decision");
+    settle(&mut wcx);
+
+    set_decision_inputs(&store, &mut wcx, Some("draft-typing"), None, None);
+    // 刷快照(settings/changed 帧走同一个函数)不得回填覆盖
+    cx.update(|app| store.update(app, |st, cx| st.settings_refresh(cx)));
+    settle(&mut wcx);
+    let (url, _, _) = read_decision_inputs(&store, cx);
+    assert_eq!(url, "draft-typing", "刷快照覆盖了用户输入");
+
+    // 重复点当前导航项 = 无变化,不得重填
+    click_sel(&mut wcx, "settings-nav-Decision");
+    settle(&mut wcx);
+    let (url, _, _) = read_decision_inputs(&store, cx);
+    assert_eq!(url, "draft-typing", "重复点当前项覆盖了用户输入");
+
+    // 切走再切回 = 显式重入,重新预填快照值
+    click_sel(&mut wcx, "settings-nav-常规");
+    settle(&mut wcx);
+    click_sel(&mut wcx, "settings-nav-Decision");
+    settle(&mut wcx);
+    let want = cx.update(|app| {
+        store.read(app).settings.settings_snapshot["decision"]["baseUrl"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    });
+    let (url, _, _) = read_decision_inputs(&store, cx);
+    assert_eq!(url, want, "重入该区应重新预填");
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// MCP 添加详情页:表单输入框必须有宽度(弹性行内 wrap 层须持 flex_1;
 /// 输入框塌成小方块的回归锁)+ JSON 粘贴区高度足额
 #[gpui_kit::test]
