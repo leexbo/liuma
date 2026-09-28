@@ -9527,7 +9527,6 @@ fn compaction_rows_quiet_states(cx: &mut TestAppContext) {
             chat.compact_running = false;
             chat.nodes.push(ChatNode::CompactStatus {
                 key: "cpt-empty:3".into(),
-                message: "No compactable history yet.".into(),
             });
             // 直改绕过帧泵 notify:补版本位触发重绘(生产路径经 apply 有)
             st.chat.chat_version += 1;

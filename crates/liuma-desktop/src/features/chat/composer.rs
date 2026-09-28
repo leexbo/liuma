@@ -599,7 +599,7 @@ fn commands_card(
         for cmd in cmds {
             let s = store.clone();
             let name = cmd.name.to_string();
-            let desc = cmd.description.to_string();
+            let desc = command_desc(&name, cmd.description);
             let name_static: &'static str = Box::leak(name.clone().into_boxed_str());
             // 命令行呈现(命令与输入文字区分;输入框写任务描述,发送时
             // 拼接 /name + 文本);无参命令 = 保持既有立即执行
@@ -658,6 +658,21 @@ fn commands_card(
 
 /// 指令行(命令名黑 semibold + 描述灰同行;
 /// 大行高、hover 灰底圆角,非勾选语义)
+/// 命令描述:宿主 `builtin_commands` 的描述是 locale-owned 中文原文
+/// (core 文案不动,见 i18n 拍板「范围仅桌面 UI chrome」),此处按命令名
+/// 在词典取当前语言值;未登记的命令回落宿主原文(扩展命令零改动)。
+fn command_desc(name: &str, host: &str) -> String {
+    match name {
+        "plan" => dict::chat::command_plan(),
+        "compact" => dict::chat::command_compact(),
+        "export" => dict::chat::command_export(),
+        "goal" => dict::chat::command_goal(),
+        "model" => dict::chat::command_model(),
+        _ => return host.to_string(),
+    }
+    .to_string()
+}
+
 fn command_row(
     cmd: &'static str,
     desc: String,

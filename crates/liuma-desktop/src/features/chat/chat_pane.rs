@@ -943,7 +943,7 @@ fn context_block(
 /// 标题 + 2px 圆点分隔 + 消息,全部中性色(仅错误态标红——红色走
 /// notice())。running = 透明度呼吸 shimmer;排队态静态。
 /// 用于:进行中(compact-running)/ 排队(compact-queued)/ 空反馈
-/// (compact-row,kind=empty 原样显示宿主 settlement 原文)。
+/// (compact-row,kind=empty 的文案走词典;宿主载荷是英文常量)。
 fn compact_row(message: &str, running: bool, selector: &'static str) -> AnyElement {
     let row = div()
         .debug_selector(move || selector.to_string())
@@ -1611,8 +1611,8 @@ fn render_node(
             tokens,
         } => compaction_block(store, open_compactions, ix, key, summary, *items, *tokens)
             .into_any_element(),
-        ChatNode::CompactStatus { message, .. } => {
-            compact_row(message, false, "compact-row").into_any_element()
+        ChatNode::CompactStatus { .. } => {
+            compact_row(dict::chat::compact_empty(), false, "compact-row").into_any_element()
         }
         ChatNode::Plan { key, plan, status } => {
             plan_archive_card(store, cx, ix, key, plan, *status).into_any_element()

@@ -19,6 +19,16 @@ entries! {
     section_commands => ["命令", "Commands"],
     /// @引用分区:技能
     section_skills => ["技能", "Skills"],
+    /// 命令描述:/plan(宿主描述为 locale-owned 中文原文,en 档在此映射)
+    command_plan => ["进入或退出计划模式", "Enter or leave plan mode"],
+    /// 命令描述:/compact
+    command_compact => ["压缩以上对话内容", "Compact the conversation above"],
+    /// 命令描述:/export
+    command_export => ["导出本会话日志为 ZIP 归档", "Export this session log as a ZIP archive"],
+    /// 命令描述:/goal
+    command_goal => ["查看或设置长期任务的目标", "View or set the long-term goal"],
+    /// 命令描述:/model
+    command_model => ["查看或切换当前模型", "View or switch the current model"],
     /// 引用/下拉分区与菜单项:模型
     model_label => ["模型", "Model"],
     /// 模型菜单分区:推理等级
@@ -91,6 +101,8 @@ entries! {
     compact_summary_hint => ["点击查看压缩摘要", "Click to view the compaction summary"],
     /// 压缩摘要不可用
     compact_summary_na => ["压缩摘要不可用", "Compaction summary unavailable"],
+    /// 压缩空反馈行(宿主 kind=empty 载荷为英文常量,渲染期换词典)
+    compact_empty => ["暂无可压缩的历史", "No compactable history yet."],
     /// 已中断(回合被打断)
     interrupted => ["已中断", "Interrupted"],
     /// 队列计数头(多条待运行消息折叠态)

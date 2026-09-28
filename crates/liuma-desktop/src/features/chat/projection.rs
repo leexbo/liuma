@@ -140,13 +140,11 @@ pub enum ChatNode {
         /// 折叠前缀估算 token
         tokens: Option<u64>,
     },
-    /// 压缩空反馈行(compaction/error kind=empty;原样显示
-    /// 宿主英文 settlement 文本,中性别红)
+    /// 压缩空反馈行(compaction/error kind=empty;渲染期词典化,
+    /// 中性别红。宿主载荷是英文常量,事件原文不动)
     CompactStatus {
         /// 稳定 key(cpt-empty:<seq>)
         key: String,
-        /// 宿主 settlement 文本(如 "No compactable history yet.")
-        message: String,
     },
     /// 计划归档卡(plan/submitted 落档;批准/取消仅更新状态)
     Plan {
@@ -647,9 +645,10 @@ impl ChatState {
                     tokens: ev.data["shadowedTokens"].as_u64(),
                 });
             }
-            // 压缩终局失败/空(kind 区分:empty=无历史可压 → 中性状态行
-            // 原样显示宿主 settlement 英文文本;error=真实失败 →
-            // 红色告警行,文本=消息原文(错误态直显 settlement))
+            // 压缩终局失败/空(kind 区分:empty=无历史可压 → 中性状态行,
+            // 文案渲染期换词典(宿主常量是英文;照 `(tool call only)` 先例,
+            // 事件原文不动);error=真实失败 → 红色告警行,文本=消息原文
+            // (错误态直显 settlement))
             "compaction/error" => {
                 self.compact_running = false;
                 self.compact_queued = false;
@@ -659,7 +658,6 @@ impl ChatState {
                 if ev.data["kind"].as_str() == Some("empty") {
                     self.push_node(ChatNode::CompactStatus {
                         key: format!("cpt-empty:{}", ev.seq),
-                        message: msg.to_string(),
                     });
                 } else {
                     self.push_node(ChatNode::Notice {
@@ -1484,7 +1482,9 @@ mod tests {
             }
             other => panic!("expected compaction marker, got {other:?}"),
         }
-        // kind=empty → 中性状态行,原样显示宿主 settlement 英文原文
+        // kind=empty → 中性状态行;节点只带 key,文案渲染期取词典
+        // (宿主载荷里的英文 settlement 不落节点 = 结构上锁死中英混排
+        // 的回归)
         st.compact_running = true;
         st.apply(&ev(
             "compaction/error",
@@ -1493,12 +1493,13 @@ mod tests {
         ));
         assert!(!st.compact_running, "empty 终局应清进行位");
         match &st.nodes[1] {
-            ChatNode::CompactStatus { key, message } => {
-                assert_eq!(key, "cpt-empty:3");
-                assert_eq!(message, "No compactable history yet.");
-            }
+            ChatNode::CompactStatus { key } => assert_eq!(key, "cpt-empty:3"),
             other => panic!("expected compact status, got {other:?}"),
         }
+        assert!(
+            !format!("{:?}", st.nodes[1]).contains("No compactable history yet."),
+            "空反馈节点不得携带宿主英文原文(渲染期走词典)"
+        );
         // kind=error(真实失败)→ 红色通告,文本 = 消息原文(无「压缩:」前缀)
         st.apply(&ev(
             "compaction/error",

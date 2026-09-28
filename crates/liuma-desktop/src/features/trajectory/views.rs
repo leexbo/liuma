@@ -1587,10 +1587,10 @@ fn record_row(
             .text_color(color)
             // liuma-core 自产的展示占位在渲染层词典化(检索面仍用线上
             // 原文,见 filter haystack);其余逐字
-            .child(if rec.text == "(tool call only)" {
-                dict::trajectory::tool_call_only().to_string()
-            } else {
-                rec.text.clone()
+            .child(match rec.text.as_str() {
+                "(tool call only)" => dict::trajectory::tool_call_only().to_string(),
+                "Context compacted" => dict::trajectory::compact_fallback().to_string(),
+                _ => rec.text.clone(),
             })
             .into_any_element()
     };
@@ -2943,9 +2943,9 @@ fn request_summary_body(store: &Entity<AppStore>, s: &Snap, q: &TrajectoryReques
         r.request_number == Some(q.number) && matches!(r.kind.as_str(), "message" | "compacted")
     }) {
         let label = if res.kind == "compacted" {
-            "Compacted"
+            dict::trajectory::request_result_compacted()
         } else {
-            "Assistant Message"
+            dict::trajectory::request_result_assistant()
         };
         let s2 = store.clone();
         let ix = res.index;

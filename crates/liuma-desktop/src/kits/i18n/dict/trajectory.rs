@@ -29,6 +29,12 @@ entries! {
     kind_decision => ["决策", "DECISION"],
     /// 助手行占位(无文本仅有工具调用的轮;liuma-core 自产展示文案)
     tool_call_only => ["(仅工具调用)", "(tool call only)"],
+    /// 压缩行兜底(摘要为空时 liuma-core 自产展示文案)
+    compact_fallback => ["上下文已压缩", "Context compacted"],
+    /// 请求 Result 行:产出为压缩记录
+    request_result_compacted => ["已压缩", "Compacted"],
+    /// 请求 Result 行:产出为助手回复
+    request_result_assistant => ["助手回复", "Assistant Message"],
     /// 请求标(Request #N;时间线头与层级行)
     request_n(n) => ["请求 #{n}", "Request #{n}"],
 

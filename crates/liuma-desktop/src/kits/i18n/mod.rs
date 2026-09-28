@@ -398,4 +398,36 @@ mod tests {
         assert_eq!(l::tool_call_only(Lang::Zh), "(仅工具调用)");
         assert_eq!(l::tool_call_only(Lang::En), "(tool call only)");
     }
+
+    /// 压缩链路文案 zh/en(回归锁:宿主 compaction/error kind=empty 的
+    /// 英文常量曾逐字直显在中文界面;现渲染期换词典。命令描述同理——
+    /// 宿主 builtin_commands 是中文原文,en 档由此处映射)
+    #[test]
+    fn compaction_and_command_copy_dispatch_both_langs() {
+        use dict::chat::l as cl;
+        use dict::trajectory::l as tl;
+        assert_eq!(cl::compact_empty(Lang::Zh), "暂无可压缩的历史");
+        assert_eq!(cl::compact_empty(Lang::En), "No compactable history yet.");
+        assert_eq!(cl::compact_running(Lang::Zh), "正在压缩…");
+        assert_eq!(cl::compact_title(Lang::En), "Context compacted");
+        // 命令描述:zh 槽 = 宿主原文(逐字),en 槽无 CJK
+        assert_eq!(cl::command_compact(Lang::Zh), "压缩以上对话内容");
+        for desc in [
+            cl::command_compact(Lang::En),
+            cl::command_plan(Lang::En),
+            cl::command_export(Lang::En),
+            cl::command_goal(Lang::En),
+            cl::command_model(Lang::En),
+        ] {
+            assert!(
+                !desc.chars().any(|c| ('一'..='鿿').contains(&c)),
+                "en 档命令描述不得含中文: {desc:?}"
+            );
+        }
+        // 轨迹:压缩兜底行与请求 Result 标签
+        assert_eq!(tl::compact_fallback(Lang::Zh), "上下文已压缩");
+        assert_eq!(tl::compact_fallback(Lang::En), "Context compacted");
+        assert_eq!(tl::request_result_compacted(Lang::En), "Compacted");
+        assert_eq!(tl::request_result_assistant(Lang::Zh), "助手回复");
+    }
 }
