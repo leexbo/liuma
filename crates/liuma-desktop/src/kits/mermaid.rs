@@ -395,14 +395,17 @@ pub(crate) fn diagram(
         .overflow_x_scroll()
         .rounded(px(12.))
         .bg(theme::CODE())
-        .p(px(10.))
+        // 工具条行贴边(6),正文另补内距回到 10。工具条自身的控件还带
+        // 一圈内距(药丸 2+12、动作钮 8),再叠一整份卡片内距,字形离
+        // 卡片上/左/右缘就是 21/25/23px —— 比正文字距还远一倍
+        .p(px(6.))
         .child(if have_ctx {
             let cb = callbacks.as_ref().expect("have_ctx → callbacks");
             card_toolbar(&key, cx, show_code, copied, cb, source.clone()).into_any_element()
         } else {
             div().into_any_element()
         })
-        .child(body);
+        .child(div().px(px(4.)).pb(px(4.)).child(body));
 
     el.into_any_element()
 }
@@ -545,7 +548,9 @@ fn segment_button(
         .h(px(22.))
         .items_center()
         .justify_center()
-        .px(px(12.))
+        // 12 过宽:药丸 2 + 段 12 + 卡片 6 = 字形离左缘 21px,比正文字距
+        // 远一倍(用户实测「离容器左缘太远」)
+        .px(px(8.))
         .rounded_full()
         .cursor_pointer()
         .text_size(px(12.));
@@ -592,6 +597,9 @@ fn card_button(
         .h(px(26.))
         .px(px(8.))
         .rounded(px(8.))
+        // 库 `Button` 的底是 `cursor_default()`,只有 link/text 变体才转手型;
+        // 自定义变体的按钮要自己给(手绘版本来就有)
+        .cursor_pointer()
         .custom(
             ButtonCustomVariant::new(cx)
                 .color(theme::TRANSPARENT().into())

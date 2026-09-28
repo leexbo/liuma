@@ -848,6 +848,36 @@ fn mermaid_viewer_full_interaction(cx: &mut TestAppContext) {
     assert!(wcx.debug_bounds(seg_chart).is_some(), "卡片图表按钮应出现");
     assert!(wcx.debug_bounds(download).is_some(), "卡片下载按钮应出现");
 
+    // 贴边锁:工具条行离卡片缘 = 卡片内距 6(正文另补回 10)。此前卡片
+    // 整份 p(10)、控件再叠自己的内距,字形离上/左/右缘 21/25/23px ——
+    // 比正文字距还远一倍,这正是「离容器边缘太远」的实测量。
+    {
+        let card_box = wcx.debug_bounds(card).expect("卡片 bounds");
+        let pill = wcx.debug_bounds(seg_chart).expect("图表段 bounds");
+        let bar = wcx.debug_bounds(toolbar).expect("工具条 bounds");
+        let last = wcx.debug_bounds(enlarge).expect("放大钮 bounds");
+        assert!(
+            f32::from(bar.top() - card_box.top()) <= 6.,
+            "工具条离卡片上缘 {} 过远(应 = 卡片内距 6)",
+            f32::from(bar.top() - card_box.top())
+        );
+        assert!(
+            f32::from(bar.left() - card_box.left()) <= 6.,
+            "工具条离卡片左缘 {} 过远(应 = 卡片内距 6)",
+            f32::from(bar.left() - card_box.left())
+        );
+        assert!(
+            f32::from(card_box.right() - last.right()) <= 10.,
+            "末位动作钮离卡片右缘 {} 过远(6 + 条内 4)",
+            f32::from(card_box.right() - last.right())
+        );
+        assert!(
+            f32::from(pill.left() - card_box.left()) <= 8.,
+            "分段控件离卡片左缘 {} 过远(6 + 药丸内距 2)",
+            f32::from(pill.left() - card_box.left())
+        );
+    }
+
     // 文字体量锁:钮**盒**高由 `.h(px(26.))` 钉死,字号变了它也纹丝不动
     // —— 收编期就是只量了盒(58×26 前后一致)才漏掉这条:库把可见内容放在
     // 子元素里并自设 `.button_text_size(self.size)`,写在钮根上的字号到不了

@@ -777,6 +777,8 @@ fn toggle_button(
         .accessibility_label(label.to_string())
         .rounded(px(6.))
         .px(px(8.))
+        // 库 `Button` 底是 `cursor_default()`,自定义变体不会转手型
+        .cursor_pointer()
         .child(
             // 图标 + 文字自成一排:库对**子元素**内容自设
             // `.button_text_size(self.size)`,子元素自带字号压过继承 ——
@@ -834,6 +836,8 @@ fn action_button(
         .accessibility_label(label.to_string())
         .rounded(px(6.))
         .px(px(5.))
+        // 库 `Button` 底是 `cursor_default()`,自定义变体不会转手型
+        .cursor_pointer()
         .custom(
             ButtonCustomVariant::new(cx)
                 .color(theme::TRANSPARENT().into())
