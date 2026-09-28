@@ -284,8 +284,8 @@ static CACHE: MemoCache<Vec<Vec<Span>>> = MemoCache::new(CACHE_CAP, CACHE_MIN_BY
 
 /// tree-sitter 全量高亮:语言经 `LanguageRegistry`(聚合 feature 已
 /// 开 29 种;缺的语言后续经 `LanguageRegistry::register` 增补)。
-/// 未注册/无 grammar → None,调用方按纯文本渲染(预览无 syntect
-/// 兜底)。输出 = 行级**稀疏** spans(只含有样式段;行渲染的
+/// 未注册/无 grammar → None(预览经 [`code_spans`] 回退本仓 syntect
+/// 引擎)。输出 = 行级**稀疏** spans(只含有样式段;行渲染的
 /// StyledText ranges 对未覆盖段用行前景)
 pub(crate) fn treesitter_spans(lang: &str, text: &str) -> Option<Vec<Vec<Span>>> {
     use gpui_kit::component::highlighter::{HighlightTheme, LanguageRegistry, SyntaxHighlighter};
@@ -352,6 +352,25 @@ pub(crate) fn treesitter_spans(lang: &str, text: &str) -> Option<Vec<Vec<Span>>>
         }
     }
     Some(out)
+}
+
+/// 文件预览的代码高亮入口:tree-sitter 优先(库聚合语法,染得最细),
+/// **缺语法回退本仓 syntect 引擎**。库的聚合集不含 XML/SVG(svg 后缀
+/// 在 XML 语法里),syntect 默认集含;TOML/mermaid 两边都缺,由内嵌
+/// 资产补齐。回退只在 tree-sitter 返回 None 时发生 —— 已有语法色的
+/// 语言一个都不受影响,新得色的是 `.xml/.xsd/.xslt/.svg/.htm/.xhtml`
+/// 与 `.h/.hh/.hpp/.hxx/.cc/.cxx/.pyw/.pyi/.rake/.gemspec` 这些只在
+/// syntect 侧有定义的后缀。
+///
+/// 两路输出形状相同(逐行一段,行数 = `split('\n')` 行数,预览按行号
+/// 取用);差别只在覆盖度:tree-sitter 给**稀疏**段(未覆盖处走行前景),
+/// syntect 给整行**稠密**段 —— 行渲染对两者同构(有段即染色)。
+pub(crate) fn code_spans(lang: &str, text: &str) -> Option<Vec<Vec<Span>>> {
+    if let Some(spans) = treesitter_spans(lang, text) {
+        return Some(spans);
+    }
+    let lines: Vec<&str> = text.split('\n').collect();
+    highlight(lang, &lines)
 }
 
 fn rgba_of(c: syntect::highlighting::Color) -> Rgba {
@@ -665,6 +684,48 @@ mod tests {
                 .map(|s| (s.color, s.text.clone()))
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// 预览高亮入口的兜底锁:库聚合集没有的后缀(XML/SVG 一族)必须
+    /// 由本仓 syntect 引擎补色 —— 修复前预览里 .svg/.xml 整篇纯色。
+    /// 同时锁住两路输出**形状一致**(行数 = `split('\n')` 行数,预览按
+    /// 行号取用)与「已有语法的语言仍走 tree-sitter」(顺序没被换)。
+    #[test]
+    fn code_spans_fall_back_to_the_syntect_engine() {
+        let svg = "<svg viewBox=\"0 0 24 24\">\n  <!-- 图标 -->\n  <path d=\"M4 4\" fill=\"#fff\"/>\n</svg>";
+        let spans = code_spans("svg", svg).expect("svg 应经 syntect 兜底有色");
+        assert_eq!(
+            spans.len(),
+            svg.split('\n').count(),
+            "行数须与按行号取用的索引一致"
+        );
+        let has = |ix: usize, text: &str, color: Rgba| {
+            spans[ix].iter().any(|s| s.text == text && s.color == color)
+        };
+        assert!(has(0, "svg", palette::KEYWORD_TYPE), "标签名应染类型色");
+        assert!(has(0, "viewBox", palette::VARIABLE), "属性名应染属性色");
+        assert!(has(1, "<!--", palette::COMMENT), "XML 注释应染注释色");
+        assert!(
+            spans[2].iter().any(|s| s.text.contains("#fff")),
+            "属性值在场:{:?}",
+            spans[2]
+        );
+        // xml 同源(XML 语法的后缀含 xml/xsd/xslt/svg),多字节内容不破行
+        let xml = "<?xml version=\"1.0\"?>\n<note id=\"1\">\n  <to>张三</to>\n</note>";
+        let spans = code_spans("xml", xml).expect("xml 应经 syntect 兜底有色");
+        assert_eq!(spans.len(), xml.split('\n').count());
+        assert!(
+            spans[2].iter().any(|s| s.text.contains("张三")),
+            "中文内容段在场:{:?}",
+            spans[2]
+        );
+        // 已有语法的语言不改道:入口输出 == tree-sitter 输出(逐段同色)
+        let rs = "fn main() {\n    // 注\n    let s = \"x\";\n}";
+        let entry = code_spans("rs", rs).expect("rs 应可用");
+        let direct = treesitter_spans("rs", rs).expect("rs 应可用");
+        assert_eq!(entry, direct, "tree-sitter 认得的语言不得改走 syntect");
+        // 两路都不认 → None(纯色语义)
+        assert!(code_spans("no-such-lang", "x").is_none());
     }
 
     /// 代码块回调的偏移换算:行内偏移 → **块内**全局偏移(逐行累加,

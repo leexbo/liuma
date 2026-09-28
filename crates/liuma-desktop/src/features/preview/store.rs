@@ -611,10 +611,10 @@ impl AppStore {
         .detach();
     }
 
-    /// 踢 code 高亮后台任务(tree-sitter,Zed 同款管线:15000 行
+    /// 踢 code 高亮后台任务(tree-sitter 优先,Zed 同款管线:15000 行
     /// ≈0.5s,一次全量落桶;首帧先出纯色行,色块随后到位)。
-    /// 未注册语言 → 纯色收场(无 syntect 兜底;缺语法后续经
-    /// `LanguageRegistry::register` 增补)。lines 变化经
+    /// 库的聚合集缺语法时回退本仓 syntect 引擎(XML/SVG 一族只有它有,
+    /// 见 `highlight::code_spans`);两路都没有 → 纯色收场。lines 变化经
     /// highlight_epoch 使过期回包失效;全量产物入缓存,重开秒回
     fn preview_maybe_kick_highlight(&mut self, rel: &PathBuf, cx: &mut Context<Self>) {
         use crate::kits::highlight as hl;
@@ -666,12 +666,12 @@ impl AppStore {
             let task_lang = lang;
             let task_key = key;
             let compute_lang = task_lang.clone();
-            let computed = cx
-                .background_executor()
-                .spawn(async move {
-                    hl::treesitter_spans(compute_lang.as_deref().unwrap_or_default(), &text)
-                })
-                .await;
+            let computed =
+                cx.background_executor()
+                    .spawn(async move {
+                        hl::code_spans(compute_lang.as_deref().unwrap_or_default(), &text)
+                    })
+                    .await;
             let refs: Vec<&str> = task_lines.iter().map(String::as_str).collect();
             store.update(cx, |s, cx| {
                 let Some(bucket) = s.preview.buckets.get_mut(&rel_done) else {
@@ -686,7 +686,7 @@ impl AppStore {
                     hl::cache_spans(&task_key, task_lang.as_deref(), &refs, spans.clone());
                     bucket.spans = Some(spans);
                 }
-                // None = 语言未注册:纯色渲染收场(照纯文本语义)
+                // None = 两路引擎都无此语法:纯色渲染收场(照纯文本语义)
                 cx.notify();
             });
         })

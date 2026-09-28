@@ -10695,6 +10695,67 @@ fn preview_code_rows_render_before_highlight(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 预览 XML/SVG 高亮回归锁:库的 tree-sitter 聚合集没有 XML 语法(预览
+/// 原话「无 syntect 兜底」),修复前 `.svg`/`.xml` 在预览里整篇纯色。
+/// 现入口 `highlight::code_spans` 在 tree-sitter 无语法时回退本仓
+/// syntect 引擎。锁法:夹具落盘 → 开预览 → 行先可见 → 轮询本文件桶内
+/// spans 到位且**首行 ≥2 色**(纯色时 0 色,红)
+#[gpui_kit::test]
+fn preview_svg_and_xml_files_get_syntax_colors(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "preview-svgxml");
+    let ws = root.join("ws");
+    std::fs::create_dir_all(&ws).expect("建夹具目录");
+    std::fs::write(
+        ws.join("icon.svg"),
+        "<svg viewBox=\"0 0 24 24\">\n  <!-- 图标 -->\n  <path d=\"M4 4h16\" fill=\"#fff\"/>\n</svg>\n",
+    )
+    .expect("写 icon.svg");
+    std::fs::write(
+        ws.join("note.xml"),
+        "<?xml version=\"1.0\"?>\n<note id=\"1\">\n  <to>张三</to>\n</note>\n",
+    )
+    .expect("写 note.xml");
+    for name in ["icon.svg", "note.xml"] {
+        let abs = ws.join(name).display().to_string();
+        cx.update(|app| {
+            store.update(app, |st, cx| st.open_file_preview(&abs, None, cx));
+        });
+        // 行先于高亮可见(纯色首帧语义不变)
+        let row = wait_bounds(cx, &mut wcx, "preview-code-line-0");
+        assert!(f32::from(row.size.height) > 0., "{name} 首行应先于高亮可见");
+        // 高亮后台落桶:本文件桶内首行必须有 ≥2 种颜色
+        let bucket_key = std::path::PathBuf::from(name);
+        let mut colored: Option<usize> = None;
+        for _ in 0..300 {
+            wcx.refresh().expect("刷新失败");
+            cx.update(|_: &mut gpui_kit::App| {});
+            cx.run_until_parked();
+            let hues = cx.update(|app| {
+                store
+                    .read(app)
+                    .preview
+                    .buckets
+                    .get(&bucket_key)
+                    .and_then(|b| b.spans.as_ref())
+                    .and_then(|s| s.first())
+                    .map(|line| line.iter().filter(|sp| line[0].color != sp.color).count())
+            });
+            if let Some(extra) = hues
+                && extra > 0
+            {
+                colored = Some(extra);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        assert!(
+            colored.is_some(),
+            "{name} 预览首行应落 ≥2 色 spans(修复前 XML/SVG 无语法 = 纯色)"
+        );
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// TextView 迁移真实路径回归锁:发消息走 fake 流式,助手正文
 /// (asst-body)必须有非零高度。flex_1 塌陷回归锁(垂直 flex 列 +
 /// 父行高 auto 下 flex-basis 0 = 塌 0,真机表现为「聊天被吞」)
