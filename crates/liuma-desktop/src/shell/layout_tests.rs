@@ -4872,11 +4872,11 @@ fn ask_card_header_states_never_fall_back_to_question(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 问答卡「其他」输入:渲染期不得回写(逐帧按值比对 set_value 会把
-/// 光标拍回句首、与输入法组合冲突)。契约 = 同一卡/题重复同步为 no-op,
-/// 用户已键入的值不被草稿值覆盖。
-/// 回归锚:此前 render 每帧 `displayed != custom → set_value(custom)`,
-/// 光标恒被重置到 0。
+/// 问答卡「其他」输入:草稿不得被渲染期回写打掉(逐帧按值比对 set_value
+/// 会把光标拍回句首、与输入法组合冲突)。
+/// 收编库 `Questionnaire` 后该契约换了持有者:每题一个 `InputState` 归库,
+/// 卡只在首帧建、之后不写值,故「同一卡/题重复同步」这件事在结构上不再
+/// 存在。锁的是结果:键入 → 重绘数帧 → 值原样在场。
 #[gpui_kit::test]
 fn ask_custom_input_not_rewritten_each_frame(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "ask-custom-sync");
@@ -4909,52 +4909,50 @@ fn ask_custom_input_not_rewritten_each_frame(cx: &mut TestAppContext) {
         }
     }
     assert!(wcx.debug_bounds("ask-question").is_some(), "问答卡未弹出");
-    let rpc_id = cx
-        .update(|app| {
-            store
-                .read(app)
-                .state
-                .pending_ask
-                .as_ref()
-                .map(|a| a.rpc_id.clone())
-        })
-        .expect("pending_ask 应在场");
 
-    // 首次同步建输入框;模拟用户键入 "abc"
+    // 真实路径:聚焦「其他」输入框并键入
     wcx.update(|window, cx| {
-        let rpc = rpc_id.clone();
         store.update(cx, |st, cx| {
-            st.sync_ask_input(&rpc, 0, window, cx);
-            if let Some(input) = &st.ask.ask_input {
-                input.update(cx, |s, cx| s.set_value("abc", window, cx));
-            }
+            let Some(state) = st.ask.ask_questionnaire.clone() else {
+                return;
+            };
+            state.update(cx, |s, cx| {
+                s.focus_input("0", window, cx);
+            });
         });
     });
-    // 重复同卡/题同步(模拟下一帧 render)→ 不得覆盖用户输入
-    wcx.update(|window, cx| {
-        let rpc = rpc_id.clone();
-        store.update(cx, |st, cx| st.sync_ask_input(&rpc, 0, window, cx));
-    });
-    let value = wcx.update(|_window, cx| {
-        store.read(cx).ask.ask_input.as_ref().map(|e| {
-            use gpui_kit::component::input::TextareaState;
-            let guard = e.read(cx);
-            TextareaState::value(guard).to_string()
-        })
+    wcx.simulate_input("abc");
+    wcx.run_until_parked();
+    // 连推数帧:渲染期若回写草稿,值会被打掉
+    for _ in 0..3 {
+        wcx.refresh().expect("刷新失败");
+        cx.run_until_parked();
+    }
+    let value = cx.update(|app| {
+        store
+            .read(app)
+            .ask
+            .ask_questionnaire
+            .as_ref()
+            .and_then(|q| {
+                q.read(app)
+                    .input_state("0")
+                    .map(|i| i.read(app).value().to_string())
+            })
     });
     assert_eq!(
         value.as_deref(),
         Some("abc"),
-        "同卡重复同步不得回写用户输入(光标会被拍回句首)"
+        "重绘不得回写「其他」草稿(光标会被拍回句首)"
     );
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 问答卡多页门控:主按钮情境化——非末页
-/// 「下一题」(当前题未答 → 卡内报错不翻页),末页才是「提交」;提交
-/// 要求每题完成(作答或显式跳过),有缺口 → 跳回缺口题报错,绝不静默
-/// 代答。回归锁:旧实现任意页恒显可点的「提交」,未作答的后续题被
-/// 静默按空答提交(用户还没看到的问题就交了白卷)。
+/// 问答卡多页门控:动作钮由库按当前题自动收放——非末页出「下一题」、
+/// 末页才出「提交」、首题不出「上一题」;提交要求每题完成(作答或显式
+/// 跳过),有缺口 → 跳回缺口题报错,绝不静默代答。
+/// 回归锁:旧实现任意页恒显可点的「提交」,未作答的后续题被静默按空答
+/// 提交(用户还没看到的问题就交了白卷)。
 #[gpui_kit::test]
 fn ask_card_multi_page_gating(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "ask-pager");
@@ -4993,59 +4991,121 @@ fn ask_card_multi_page_gating(cx: &mut TestAppContext) {
         }
     }
     assert!(wcx.debug_bounds("ask-question").is_some(), "问答卡未弹出");
-    let state = |cx: &mut TestAppContext| {
-        cx.update(|app| {
+
+    // 库按实体 id 命名动作件(元素 id 与 debug selector 同源)
+    let qid = cx
+        .update(|app| {
             store
                 .read(app)
                 .ask
-                .ask_state
+                .ask_questionnaire
                 .as_ref()
-                .map(|s| (s.index, s.error.map(str::to_string), s.skipped.clone()))
+                .map(|q| q.entity_id().to_string())
         })
-        .expect("ask_state 应在场")
+        .expect("questionnaire 应在场");
+    let sel = |suffix: &str| -> &'static str {
+        Box::leak(format!("questionnaire-{qid}-{suffix}").into_boxed_str())
     };
+    let (next, prev, skip, submit) = (sel("Next"), sel("Previous"), sel("Skip"), sel("Submit"));
+    let position = |cx: &mut TestAppContext| {
+        cx.update(|app| {
+            let st = store.read(app);
+            let q = st.ask.ask_questionnaire.as_ref()?;
+            let q = q.read(app);
+            let current = q.current_ix().map(|ix| ix.to_string());
+            Some((
+                q.current_ix(),
+                current
+                    .as_deref()
+                    .is_some_and(|name| q.error(name).is_some()),
+                q.answer("0").map(|a| a.choices().len()),
+                q.item_state("1").map(|s| s.status()),
+            ))
+        })
+    };
+    // 首题:无「上一题」;末页才有「提交」
+    assert!(wcx.debug_bounds(prev).is_none(), "首题不应出「上一题」");
+    assert!(wcx.debug_bounds(submit).is_none(), "非末页不应出「提交」");
+    assert!(wcx.debug_bounds(next).is_some(), "非末页应出「下一题」");
 
-    // 第 1 页:主按钮在当前题未答时为禁用态——点击
-    // 惰性,不得提交(回归锁:旧「提交」任意页恒可点)
-    click_sel(&mut wcx, "ask-primary");
+    // 未作答点「下一题」→ 卡内报错、不翻页、绝不提交
+    click_sel(&mut wcx, next);
     redraw(cx, &mut wcx);
+    let (ix, has_err, _, _) = position(cx).expect("questionnaire 应在场");
+    assert_eq!(ix, Some(0), "未答不得翻页");
+    assert!(has_err, "未答点下一题应出卡内错误行");
     cx.update(|app| {
         assert!(
             store.read(app).state.pending_ask.is_some(),
-            "未答时主按钮不得提交"
+            "未答时不得提交"
         );
     });
 
-    // 作答 q1 → 主按钮(下一题)翻到第 2 页
-    click_sel(&mut wcx, "ask-opt-a1");
+    // 作答 q1(选项件本身无 selector,选经由库的作答 API;分页与门控才是
+    // 本用例的主体)→ 「下一题」翻到第 2 页
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            if let Some(q) = st.ask.ask_questionnaire.clone() {
+                q.update(cx, |s, cx| {
+                    s.activate_choice("0", "0", cx).expect("选项应在 schema 内");
+                });
+            }
+        });
+    });
     redraw(cx, &mut wcx);
-    click_sel(&mut wcx, "ask-primary");
+    click_sel(&mut wcx, next);
     redraw(cx, &mut wcx);
-    let (idx, err, _) = state(cx);
-    assert_eq!(idx, 1, "已答应翻到第 2 题");
-    assert!(err.is_none());
+    let (ix, has_err, selected, _) = position(cx).expect("questionnaire 应在场");
+    assert_eq!(ix, Some(1), "已答应翻到第 2 题");
+    assert!(!has_err, "作答交互应清掉错误行");
+    assert_eq!(selected, Some(1), "作答应落在第 1 题(选中恰一项,不串位)");
 
-    // pager 自由翻到末页;作答 q3 后点「提交」→ q2 缺席,跳回 q2 报错
-    // (绝不静默代答)
-    click_sel(&mut wcx, "ask-next");
+    // 第 2 页未答:同样不得前进(库的 go_next 先校验,与首题同一道闸)
+    click_sel(&mut wcx, next);
     redraw(cx, &mut wcx);
-    let (idx, _, _) = state(cx);
-    assert_eq!(idx, 2, "pager 应到末页");
-    click_sel(&mut wcx, "ask-opt-c1");
-    redraw(cx, &mut wcx);
-    click_sel(&mut wcx, "ask-primary");
-    redraw(cx, &mut wcx);
-    let (idx, err, _) = state(cx);
-    assert_eq!(idx, 1, "提交应跳回第一道缺口题");
-    assert_eq!(err.as_deref(), Some("请先完成这道问题。"));
+    let (ix, has_err, _, _) = position(cx).expect("questionnaire 应在场");
+    assert_eq!(ix, Some(1), "第 2 页未答亦不得翻页");
+    assert!(has_err, "第 2 页未答点下一题应报错");
 
-    // 显式跳过 q2 → 前进末页;提交成功,整卡收口
-    click_sel(&mut wcx, "ask-skip");
+    // 显式跳过 q2 → 前进末页,该题标记 Skipped
+    click_sel(&mut wcx, skip);
     redraw(cx, &mut wcx);
-    let (idx, _, skipped) = state(cx);
-    assert_eq!(idx, 2, "跳过应前进到末页");
-    assert!(skipped[1], "跳过应标记 q2");
-    click_sel(&mut wcx, "ask-primary");
+    let (ix, _, _, status) = position(cx).expect("questionnaire 应在场");
+    assert_eq!(ix, Some(2), "跳过应前进到末页");
+    assert_eq!(
+        status,
+        Some(gpui_kit::component::questionnaire::QuestionnaireItemStatus::Skipped),
+        "跳过应标记 q2"
+    );
+
+    // 末页:末题未答点「提交」→ 校验拦下,不静默代答
+    assert!(wcx.debug_bounds(submit).is_some(), "末页应出「提交」");
+    assert!(wcx.debug_bounds(next).is_none(), "末页不应出「下一题」");
+    click_sel(&mut wcx, submit);
+    redraw(cx, &mut wcx);
+    assert!(
+        position(cx).expect("questionnaire 应在场").1,
+        "末题未答提交应报错"
+    );
+    cx.update(|app| {
+        assert!(
+            store.read(app).state.pending_ask.is_some(),
+            "末题未答时不得提交(绝不静默代答)"
+        );
+    });
+
+    // 作答 q3 → 提交成功,整卡收口
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            if let Some(q) = st.ask.ask_questionnaire.clone() {
+                q.update(cx, |s, cx| {
+                    s.activate_choice("2", "0", cx).expect("选项应在 schema 内");
+                });
+            }
+        });
+    });
+    redraw(cx, &mut wcx);
+    click_sel(&mut wcx, submit);
     redraw(cx, &mut wcx);
     cx.update(|app| {
         assert!(
@@ -5056,11 +5116,15 @@ fn ask_card_multi_page_gating(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 问答卡选项含长 ASCII 词元(不可断行)时不得撑破卡片:内容列
-/// min_w(0) 让文本换行,选项行右缘不超出卡右缘(此前 flex item
-/// 缺省最小宽 = max-content,整卡溢出弹窗)
+/// 问答卡选项含长 ASCII 词元(不可断行)时必须换行,不得溢出成一行:
+/// 长描述把该选项行撑高,与短描述行**不等高**。
+///
+/// 回归锚:D54 同款修复——flex item 缺省最小宽 = 内容 max-content,长
+/// ASCII 词元会拒绝换行。库的 content 槽默认不带 `min_w(0)`,须经
+/// `QuestionnaireChoice::content_style` 显式给;去掉该项后本用例实测两行
+/// 由 108/68 塌成 68/68,即红。
 #[gpui_kit::test]
-fn ask_option_long_ascii_description_stays_in_card(cx: &mut TestAppContext) {
+fn ask_option_long_ascii_description_wraps_in_card(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "ask-overflow");
     let sid = cx
         .update(|app| store.read(app).state.current_id.clone())
@@ -5109,14 +5173,20 @@ fn ask_option_long_ascii_description_stays_in_card(cx: &mut TestAppContext) {
     }
     assert!(popped, "问答卡应弹出");
     let card = wcx.debug_bounds("ask-question").expect("问答卡缺失");
-    let opt = wcx
-        .debug_bounds("ask-opt-长词元选项 (Recommended)")
-        .expect("溢出选项行未渲染");
-    let opt_right = f32::from(opt.origin.x) + f32::from(opt.size.width);
+    let long = wcx.debug_bounds("ask-opt-0").expect("长描述选项行未渲染");
+    let short = wcx.debug_bounds("ask-opt-1").expect("短描述选项行未渲染");
+    assert!(
+        long.size.height > short.size.height,
+        "长描述未换行:长行 {} vs 短行 {}(二者等高 = 文本溢出成一行)",
+        long.size.height,
+        short.size.height
+    );
+    // 行不得横向溢出卡片(换行生效的同一件事的另一面)
+    let long_right = f32::from(long.origin.x) + f32::from(long.size.width);
     let card_right = f32::from(card.origin.x) + f32::from(card.size.width);
     assert!(
-        opt_right <= card_right + 1.0,
-        "选项行右缘 {opt_right} 超出卡片右缘 {card_right}"
+        long_right <= card_right + 1.0,
+        "选项行右缘 {long_right} 超出卡片右缘 {card_right}"
     );
     let _ = std::fs::remove_dir_all(root);
 }

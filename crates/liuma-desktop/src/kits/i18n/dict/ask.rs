@@ -55,7 +55,6 @@ entries! {
     /// 问答卡错误:未选未填
     err_pick => ["请选择一个选项或填写自定义答案。", "Pick an option or write your own answer."],
     /// 问答卡错误:必答题未完成
-    err_required => ["请先完成这道问题。", "Answer this question first."],
 
     /// 计划评审:批准钮
     approve_plan => ["是,实施此计划", "Yes, implement this plan"],

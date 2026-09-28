@@ -1,15 +1,26 @@
 //! 问答卡:
-//! 模型 `ask_user_question` 抛出的问题集,pager 分页一题一答(单选/多选),
+//! 模型 `ask_user_question` 抛出的问题集,分页一题一答(单选/多选),
 //! 可自定义文本;提交(整批)或放弃(取消)。应答经 host.respond 回填,
 //! 工具结果作为同一 tool-call 的 tool/result。
+//!
+//! 选项、分页、校验与键盘全部归库 `Questionnaire`:状态机与 wire 形状的
+//! 互译见 [`crate::features::ask::store::AppStore::ensure_ask_questionnaire`],
+//! 本文件只负责卡壳与卡头(eyebrow + 取消)。库按当前题自动收放动作钮
+//! (`navigation_state`:首题无「上一题」、末题才出「提交」、非必答恒出
+//! 「跳过」),故四处动作件一律挂上,由库决定可见性。
 
 use gpui_kit::component::IconName;
 use gpui_kit::component::StyledExt;
-use gpui_kit::component::input::Textarea;
+use gpui_kit::component::questionnaire::{
+    Questionnaire, QuestionnaireActions, QuestionnaireChoice, QuestionnaireChoices,
+    QuestionnaireError, QuestionnaireInput, QuestionnaireItem, QuestionnaireNext,
+    QuestionnairePrevious, QuestionnaireProgress, QuestionnaireSkip, QuestionnaireSubmit,
+    QuestionnaireTitle, QuestionnaireValidationError,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
-    Styled, Window, div, px,
+    StyleRefinement, Styled, Window, div, px,
 };
 
 use crate::kits::i18n::dict;
@@ -32,136 +43,58 @@ pub fn render(
         );
         return None;
     }
+    // 库状态懒建(需要 Window):题集 → item 定义 + 提交订阅
+    store.update(cx, |st, cx| st.ensure_ask_questionnaire(window, cx));
+    let state = store.read(cx).ask.ask_questionnaire.clone()?;
     let total = ask.questions.len();
-    let index = store
+    let index = state
         .read(cx)
-        .ask
-        .ask_state
-        .as_ref()
-        .map(|s| s.index)
+        .current_ix()
         .unwrap_or(0)
         .min(total.saturating_sub(1));
-    let q = ask.questions.get(index)?;
-    let selected: Vec<String> = store
-        .read(cx)
-        .ask
-        .ask_state
-        .as_ref()
-        .and_then(|s| s.selected.get(index))
-        .cloned()
+    let name = index.to_string();
+    let eyebrow = ask
+        .questions
+        .get(index)
+        .and_then(|q| q.header.clone())
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty());
+    let question_text = ask
+        .questions
+        .get(index)
+        .map(|q| q.question.clone())
         .unwrap_or_default();
-    let custom: String = store
-        .read(cx)
-        .ask
-        .ask_state
-        .as_ref()
-        .and_then(|s| s.custom.get(index))
-        .cloned()
-        .unwrap_or_default();
-    // 「其他」输入懒建 + 同步仅在卡/题切换时回写(按值比对回写会经
-    // set_value 把光标拍回句首,与输入法组合冲突)
-    let call_id = ask.rpc_id.clone();
-    store.update(cx, |st, cx| st.sync_ask_input(&call_id, index, window, cx));
-    let multi = q.multi_select.unwrap_or(false);
-    let options = q.options.clone().unwrap_or_default();
-    // 主按钮情境化:非末页 = 「下一题」,末页 = 「提交」;
-    // 当前题未答时禁用
-    let is_last = index + 1 >= total;
-    let answered_current = !selected.is_empty() || !custom.trim().is_empty();
-    let error_text = store.read(cx).ask.ask_state.as_ref().and_then(|s| s.error);
-
-    let toggle = store.clone();
-    let idx = index;
-    let mut option_rows: Vec<gpui_kit::AnyElement> = Vec::new();
-    for (oi, opt) in options.iter().enumerate() {
-        let label = opt.label.clone();
-        let desc = opt.description.clone();
-        let is_sel = selected.contains(&label);
-        let s2 = toggle.clone();
-        let label_c = label.clone();
-        option_rows.push(
-            div()
-                .id(("ask-opt", oi))
-                .debug_selector(move || format!("ask-opt-{}", label_c).to_string())
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(8.))
-                .rounded(px(8.))
-                .px(px(10.))
-                .py(px(8.))
-                .cursor_pointer()
-                .bg(if is_sel {
-                    theme::DOCK()
-                } else {
-                    theme::LAYER()
-                })
-                .border_1()
-                .border_color(if is_sel {
-                    theme::BRAND()
-                } else {
-                    theme::BORDER()
-                })
-                .on_click({
-                    let l = label.clone();
-                    move |_, _, cx| {
-                        let l = l.clone();
-                        s2.update(cx, |st, cx| st.toggle_ask_option(&l, cx));
-                    }
-                })
-                .child(
-                    div()
-                        .size(px(18.))
-                        .flex_shrink_0()
-                        .rounded_full()
-                        .border_1()
-                        .border_color(if is_sel {
-                            theme::BRAND()
-                        } else {
-                            theme::CAPTION()
-                        })
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(div().when(is_sel, |el| {
-                            el.child(fixed(IconName::Check, 12.).text_color(theme::BRAND()))
-                        })),
-                )
-                .child(
-                    // min_w(0):flex item 缺省最小宽 = 内容 max-content,长
-                    // ASCII 词元(不可断行)会把卡片撑出弹窗——压回可用宽度
-                    // 让文本换行(D54 @补全同款修复)
-                    div()
-                        .v_flex()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .gap(px(2.))
-                        .child(
-                            div()
-                                .text_size(px(13.))
-                                .text_color(theme::LABEL())
-                                .child(label),
-                        )
-                        .when(desc.is_some(), |el| {
-                            let d = desc.clone();
-                            el.child(
-                                div()
-                                    .text_size(px(11.))
-                                    .text_color(theme::CAPTION())
-                                    .child(d.unwrap_or_default()),
-                            )
-                        }),
-                )
-                .into_any_element(),
-        );
-    }
-
-    let submit = store.clone();
+    let option_count = ask
+        .questions
+        .get(index)
+        .and_then(|q| q.options.as_ref().map(Vec::len))
+        .unwrap_or(0);
     let cancel = store.clone();
-    let prev = store.clone();
-    let next = store.clone();
-    let skip = store.clone();
-    let advance = store.clone();
+    // 库只报「为什么不合格」,句子归表现层(其自带译文仅默认值):
+    // 本卡无必答项,故 Required 与 Unanswered 同取「请选择一个选项或
+    // 填写自定义答案。」
+    let error_line = state.read(cx).error(&name).map(|error| match error {
+        QuestionnaireValidationError::Message(message) => message.to_string(),
+        _ => dict::ask::err_pick().to_string(),
+    });
+    let progress = state.read(cx).progress();
+    let counter = format!("{}/{}", progress.current(), progress.total());
+    // 选项文字列的 min_w(0):flex item 缺省最小宽 = 内容 max-content,长
+    // ASCII 词元(不可断行)会把卡片撑出列宽——压回可用宽度让文本换行
+    // (D54 同款修复;库的 content 槽默认不带,须由调用方经 content_style 给)
+    let choice_content = StyleRefinement::default().min_w(px(0.));
+    let choices = (0..option_count)
+        .map(|oi| {
+            let sel = format!("ask-opt-{oi}");
+            div()
+                .debug_selector(move || sel.clone())
+                .child(
+                    QuestionnaireChoice::new(&state, name.clone(), oi.to_string())
+                        .content_style(choice_content.clone()),
+                )
+                .into_any_element()
+        })
+        .collect::<Vec<_>>();
     Some(
         div()
             .id("ask-question")
@@ -175,239 +108,103 @@ pub fn render(
             .p(px(14.))
             .gap(px(10.))
             .child(
-                // 卡头行:heading block =
-                // eyebrow(header,可选)+ title(question,恒唯一);
-                // header 缺席不回退到 question——回退曾造成标题重复
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
+                Questionnaire::new(&state)
+                    .gap(px(10.))
                     .child(
-                        div()
-                            .v_flex()
-                            .gap(px(2.))
-                            .when_some(
-                                q.header.as_deref().map(str::trim).filter(|h| !h.is_empty()),
-                                |el, eyebrow| {
-                                    el.child(
+                        QuestionnaireItem::new(&state, name.clone())
+                            .child(
+                                // 卡头行:左 = eyebrow(header,可选)+ 题面;
+                                // header 缺席不回退到 question——回退曾造成
+                                // 标题重复
+                                div()
+                                    .flex()
+                                    .items_start()
+                                    .justify_between()
+                                    .w_full()
+                                    .child(
                                         div()
-                                            .id("ask-eyebrow")
-                                            .debug_selector(|| "ask-eyebrow".to_string())
-                                            .text_size(px(11.))
-                                            .text_color(theme::CAPTION())
-                                            .child(eyebrow.to_string()),
+                                            .v_flex()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .gap(px(2.))
+                                            .when_some(eyebrow, |el, eyebrow| {
+                                                el.child(
+                                                    div()
+                                                        .id("ask-eyebrow")
+                                                        .debug_selector(|| {
+                                                            "ask-eyebrow".to_string()
+                                                        })
+                                                        .text_size(px(11.))
+                                                        .text_color(theme::CAPTION())
+                                                        .child(eyebrow),
+                                                )
+                                            })
+                                            .child(
+                                                // 题面经子元素给定(库的回落文本即
+                                                // accessibility_label,二者同源);
+                                                // 包一层带 selector 的壳供测试寻址
+                                                QuestionnaireTitle::new(&state, name.clone())
+                                                    .child(
+                                                        div()
+                                                            .debug_selector(|| {
+                                                                "ask-title".to_string()
+                                                            })
+                                                            .child(question_text),
+                                                    ),
+                                            ),
                                     )
-                                },
+                                    .child(
+                                        div()
+                                            .id("ask-cancel")
+                                            .debug_selector(|| "ask-cancel".to_string())
+                                            .size(px(24.))
+                                            .flex_shrink_0()
+                                            .rounded_full()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .cursor_pointer()
+                                            .text_color(theme::CAPTION())
+                                            .hover(|s| s.bg(theme::DOCK()))
+                                            .on_click(move |_, _, cx| {
+                                                cancel.update(cx, |st, cx| st.cancel_ask(cx))
+                                            })
+                                            .child(fixed(IconName::Close, 12.)),
+                                    ),
                             )
                             .child(
-                                div()
-                                    .id("ask-title")
-                                    .debug_selector(|| "ask-title".to_string())
-                                    .text_size(px(14.))
-                                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                                    .text_color(theme::LABEL())
-                                    .child(q.question.clone()),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id("ask-cancel")
-                            .size(px(24.))
-                            .rounded_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_color(theme::CAPTION())
-                            .hover(|s| s.bg(theme::DOCK()))
-                            .on_click(move |_, _, cx| cancel.update(cx, |st, cx| st.cancel_ask(cx)))
-                            .child(fixed(IconName::Close, 12.)),
-                    ),
-            )
-            .children(option_rows)
-            // 「其他」自定义行——checkbox + 可输入框;
-            // 输入即视为「其他」答案(单选取清选中,多选保留已勾)。
-            .child(
-                div()
-                    .id("ask-custom")
-                    .flex()
-                    .min_h(px(34.))
-                    .items_center()
-                    .gap(px(8.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(if custom.is_empty() {
-                        theme::BORDER()
-                    } else {
-                        theme::BRAND()
-                    })
-                    .bg(if custom.is_empty() {
-                        // 卡上内嵌输入面:CODE(比 CARD 深一阶的内嵌语义)
-                        theme::CODE()
-                    } else {
-                        theme::DOCK()
-                    })
-                    .px(px(10.))
-                    // 与上方选项一致的 checkbox:单选圆形、多选方形,有值即打勾
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .size(px(18.))
-                            .rounded(if multi { px(4.) } else { px(9.) })
-                            .border_1()
-                            .border_color(if custom.is_empty() {
-                                theme::CAPTION()
-                            } else {
-                                theme::BRAND()
-                            })
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(div().when(!custom.is_empty(), |el| {
-                                el.child(fixed(IconName::Check, 12.).text_color(theme::BRAND()))
+                                QuestionnaireChoices::new(&state, name.clone()).children(choices),
+                            )
+                            .child(QuestionnaireInput::new(&state, name.clone()))
+                            .children(error_line.map(|text| {
+                                QuestionnaireError::new(&state, name.clone()).child(text)
                             })),
                     )
-                    .when(custom.is_empty(), |el| {
-                        el.child(
-                            div()
-                                .flex_shrink_0()
-                                .text_size(px(12.))
-                                .text_color(theme::CAPTION())
-                                .child(dict::ask::other_option()),
-                        )
-                    })
+                    // 动作行:上一题 / 计数 / 下一题 在左,跳过 / 提交在右
+                    // (库把「跳过」与「跳过缺席时的下一题」自动右靠);
+                    // 计数在单题时同原实现一并省去
                     .child(
-                        store
-                            .read(cx)
-                            .ask
-                            .ask_input
-                            .clone()
-                            .map(|input| {
-                                Textarea::new(&input)
-                                    .appearance(false)
-                                    .text_size(px(13.))
-                                    .into_any_element()
+                        QuestionnaireActions::new(&state)
+                            .when(total > 1, |el| {
+                                el.child(QuestionnaireProgress::new(&state).child(counter))
                             })
-                            .unwrap_or_else(|| div().child(custom.clone()).into_any_element()),
-                    ),
-            )
-            // 卡内错误行(未答/作答不完整;作答交互即清)
-            .when_some(error_text, |el, t| {
-                el.child(div().text_size(px(11.)).text_color(theme::WARN()).child(t))
-            })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    // 单题无需翻页
-                    .when(total > 1, |el| {
-                        el.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .child(nav_button(
-                                    "ask-prev",
-                                    dict::ask::prev_q(),
-                                    index > 0,
-                                    move |_, _, cx| {
-                                        let idx = idx.saturating_sub(1);
-                                        prev.update(cx, |st, cx| st.set_ask_index(idx, cx));
-                                    },
-                                ))
-                                .child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(theme::CAPTION())
-                                        .child(format!("{}/{}", index + 1, total)),
-                                )
-                                .child(nav_button(
-                                    "ask-next",
-                                    dict::ask::next_q(),
-                                    index + 1 < total,
-                                    move |_, _, cx| {
-                                        let idx = idx + 1;
-                                        next.update(cx, |st, cx| st.set_ask_index(idx, cx));
-                                    },
-                                )),
-                        )
-                    })
-                    // 右侧动作组:跳过(显式跳过本题;源恒可点)+ 主按钮
-                    // (非末页「下一题」/ 末页「提交」;当前题未答 = 禁用态)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(nav_button(
-                                "ask-skip",
-                                dict::ask::skip_q(),
-                                true,
-                                move |_, _, cx| {
-                                    skip.update(cx, |st, cx| st.skip_ask(cx));
-                                },
-                            ))
                             .child(
-                                div()
-                                    .id("ask-primary")
-                                    .debug_selector(|| "ask-primary".to_string())
-                                    .flex()
-                                    .h(px(28.))
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded(px(14.))
-                                    .px(px(16.))
-                                    .text_size(px(13.))
-                                    .when(answered_current, |el| {
-                                        el.bg(theme::BRAND())
-                                            .cursor_pointer()
-                                            .text_color(gpui_kit::white())
-                                            .on_click(move |_, _, cx| {
-                                                if is_last {
-                                                    submit.update(cx, |st, cx| st.submit_ask(cx));
-                                                } else {
-                                                    advance.update(cx, |st, cx| st.advance_ask(cx));
-                                                }
-                                            })
-                                    })
-                                    .when(!answered_current, |el| {
-                                        el.border_1()
-                                            .border_color(theme::BORDER())
-                                            .text_color(theme::CAPTION())
-                                    })
-                                    .child(if is_last {
-                                        dict::ask::submit_q()
-                                    } else {
-                                        dict::ask::next_q()
-                                    }),
+                                QuestionnairePrevious::new(&state)
+                                    .child(dict::ask::prev_q().to_string()),
+                            )
+                            .child(
+                                QuestionnaireNext::new(&state)
+                                    .child(dict::ask::next_q().to_string()),
+                            )
+                            .child(
+                                QuestionnaireSkip::new(&state)
+                                    .child(dict::ask::skip_q().to_string()),
+                            )
+                            .child(
+                                QuestionnaireSubmit::new(&state)
+                                    .child(dict::ask::submit_q().to_string()),
                             ),
                     ),
             ),
     )
-}
-
-/// 翻题小钮(disabled 时隐藏)
-fn nav_button(
-    id: &'static str,
-    label: &str,
-    enabled: bool,
-    on_click: impl Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut App) + 'static,
-) -> impl IntoElement {
-    let sel = id.to_string();
-    div()
-        .id(id)
-        .debug_selector(move || sel.clone())
-        .flex()
-        .h(px(24.))
-        .items_center()
-        .rounded(px(12.))
-        .px(px(10.))
-        .text_size(px(12.))
-        .text_color(theme::CAPTION())
-        .when(enabled, |el| {
-            el.cursor_pointer()
-                .hover(|s| s.bg(theme::DOCK()))
-                .on_click(on_click)
-        })
-        .child(label.to_string())
 }
