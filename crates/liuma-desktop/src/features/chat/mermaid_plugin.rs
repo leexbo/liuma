@@ -87,7 +87,7 @@ impl MarkdownPlugin for MermaidTextViewPlugin {
     fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let data = node.data::<MermaidData>().expect("mermaid 节点数据应在");
         let cards = mermaid_cards_for(&self.store, cx);
-        mermaid::diagram(&data.card_key, 0, data.source.clone(), Some(cards))
+        mermaid::diagram(&data.card_key, 0, data.source.clone(), Some(cards), cx)
     }
 }
 

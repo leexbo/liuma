@@ -995,6 +995,42 @@ fn mermaid_viewer_full_interaction(cx: &mut TestAppContext) {
         "角落关闭钮应关闭查看器"
     );
 
+    // 卡片工具条的动作钮挂在库 `Toolbar` 上:方向键在条内移动,Enter
+    // 激活**当前聚焦**的钮。收编前它们是纯 div(既不可聚焦也无 a11y
+    // 角色),入条判定那步就过不去 → 本段在那时必红。
+    // 入条手法同 `trajectory_toolbar_geometry_and_roving_focus`(点击
+    // 不取焦、空焦点下 Tab 不响应,故用 focus_next 推进 + 方向键试探)。
+    let focused = |wcx: &mut gpui_kit::VisualTestContext| wcx.update(|w, cx| w.focused(cx));
+    let mut entered = false;
+    for _ in 0..64 {
+        wcx.update(|w, cx| w.focus_next(cx));
+        redraw(cx, &mut wcx);
+        let before = focused(&mut wcx);
+        assert!(before.is_some(), "focus_next 未取得焦点");
+        wcx.simulate_keystrokes("left");
+        redraw(cx, &mut wcx);
+        if focused(&mut wcx) != before {
+            wcx.simulate_keystrokes("right");
+            redraw(cx, &mut wcx);
+            entered = true;
+            break;
+        }
+    }
+    assert!(entered, "Tab 环上前 64 站未进入卡片工具条(动作钮不可聚焦?)");
+    // 条内首个钮 = 复制(挂载序):Right ×2 → 放大,Enter 应开查看器
+    wcx.simulate_keystrokes("right");
+    redraw(cx, &mut wcx);
+    wcx.simulate_keystrokes("right");
+    redraw(cx, &mut wcx);
+    press_enter(&mut wcx);
+    redraw(cx, &mut wcx);
+    assert!(
+        cx.update(|app| store.read(app).chat.mermaid_viewer.is_some()),
+        "Right ×2 后 Enter 未激活「放大」——roving 焦点未生效"
+    );
+    wcx.simulate_keystrokes("escape");
+    redraw(cx, &mut wcx);
+
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1342,6 +1378,22 @@ fn menu_harness_opts_inner(
     // 克隆解除对 cx 的借用(VisualTestContext Clone + Deref 到
     // TestAppContext,内部 Arc 共享,测试可交替用 cx / wcx)
     (store, wcx.clone(), root)
+}
+
+/// 键盘「按下 + 抬起」回车。
+///
+/// `simulate_keystrokes` 只发 KeyDown(window.rs:5365),而 div 的键盘激活
+/// 要求在 **KeyUp** 上落 `ClickEvent::Keyboard`(elements/div.rs:3036
+/// 「Press enter, space to trigger click」)—— 故按钮的键盘激活须补齐
+/// KeyUp。真实平台两者都发,这不是测试专属路径。
+fn press_enter(wcx: &mut gpui_kit::VisualTestContext) {
+    let keystroke = gpui_kit::Keystroke::parse("enter").expect("enter 可解析");
+    wcx.simulate_event(gpui_kit::KeyDownEvent {
+        keystroke: keystroke.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    wcx.simulate_event(gpui_kit::KeyUpEvent { keystroke });
 }
 
 /// 按 debug selector 点击元素中心
@@ -5235,6 +5287,153 @@ fn trajectory_tab_entry_repulls_stale_blank_cache(cx: &mut TestAppContext) {
     assert!(
         wcx.debug_bounds("trajectory-view").is_some(),
         "轨迹视图未渲染"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 轨迹工具条:几何(条 32px / 钮 20px)、鼠标路径,以及**库 `Toolbar` 的
+/// roving 键盘焦点**——左右方向键在条内控件间循环移动,Enter 激活当前
+/// 聚焦的钮。锁:roving 焦点是收编 Toolbar 的全部收益(按钮为真 `Button`、
+/// 默认 `tab_stop`);若按钮退化为不可聚焦的自绘 div,这条必红。
+///
+/// 条内可聚焦序列 = [时长, 轮次, 调用, 搜索框]——搜索框恒在(`store.rs`
+/// 的 `attach_window_state` 无条件建),且按库的约定排在条尾。
+#[gpui_kit::test]
+fn trajectory_toolbar_geometry_and_roving_focus(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "traj-toolbar");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+    };
+    // 空会话直开轨迹面板(不经 handler,不触发拉取)
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            st.panel_open = true;
+            st.panel_tabs = vec![crate::shell::panel::PanelTab::Trajectory];
+            st.panel_active_tab = Some(crate::shell::panel::PanelTab::Trajectory);
+        });
+    });
+    redraw(cx, &mut wcx);
+
+    // ── 几何:条高由本处样式覆盖回 32px(库 XSmall 档默认 h_7=28),
+    // 按钮 20px(库 XSmall 档 h_5;与手绘药丸同高)
+    let bar = wcx.debug_bounds("traj-toolbar").expect("工具条未渲染");
+    assert_eq!(bar.size.height, px(32.), "工具条高度漂移: {bar:?}");
+    let btn = wcx
+        .debug_bounds("traj-toolbar-duration")
+        .expect("时长钮未渲染");
+    assert_eq!(btn.size.height, px(20.), "工具条按钮高度漂移: {btn:?}");
+
+    let flags = |cx: &mut TestAppContext| {
+        cx.update(|app| {
+            let st = store.read(app);
+            (
+                st.trajectory.trajectory_duration,
+                st.trajectory.all_turns_collapsed,
+                st.trajectory.all_calls_collapsed,
+            )
+        })
+    };
+    let search_val = |cx: &mut TestAppContext| {
+        cx.update(|app| {
+            store
+                .read(app)
+                .trajectory
+                .trajectory_search
+                .as_ref()
+                .map(|i| i.read(app).value().to_string())
+                .unwrap_or_default()
+        })
+    };
+    assert_eq!(flags(cx), (false, false, false), "工具条开关初值应为关");
+
+    // ── 鼠标路径:点钮切换,再点一次复原
+    click_sel(&mut wcx, "traj-toolbar-duration");
+    redraw(cx, &mut wcx);
+    assert_eq!(flags(cx), (true, false, false), "点时长钮未生效");
+    click_sel(&mut wcx, "traj-toolbar-duration");
+    redraw(cx, &mut wcx);
+    assert_eq!(flags(cx), (false, false, false), "再点时长钮未复原");
+
+    // ── 键盘路径。进入工具条有两处 gpui 事实要绕:
+    // ① `Button` 在鼠标按下时明确 `prevent_default`(button.rs:821
+    //    「Avoid focus on mouse down」),点击**不取焦**;
+    // ② `tab` 绑定挂在 `Root` 上下文(gpui-base/src/root.rs:16),须已有
+    //    焦点才匹配 —— 空焦点时连 Tab 都不响应。
+    // 故用 `focus_next` 顺着环推进,每步以「左方向键是否换焦点」判定是否
+    // 已进条:条内方向键被 `move_focus` 收束在条内(toolbar.rs:87),条外
+    // 无方向键绑定、焦点不动。判中当帧再按一次 right 即回到条内首个钮
+    // (时长),后续断言全部确定。
+    let focused = |wcx: &mut gpui_kit::VisualTestContext| wcx.update(|w, cx| w.focused(cx));
+    let mut entered = false;
+    for _ in 0..16 {
+        wcx.update(|w, cx| w.focus_next(cx));
+        redraw(cx, &mut wcx);
+        let before = focused(&mut wcx);
+        assert!(before.is_some(), "focus_next 未取得焦点");
+        wcx.simulate_keystrokes("left");
+        redraw(cx, &mut wcx);
+        if focused(&mut wcx) != before {
+            wcx.simulate_keystrokes("right");
+            redraw(cx, &mut wcx);
+            entered = true;
+            break;
+        }
+    }
+    assert!(entered, "Tab 环上前 16 站未进入轨迹工具条(按钮不可聚焦?)");
+
+    // 条内首个钮 = 时长:Enter 翻起它
+    press_enter(&mut wcx);
+    redraw(cx, &mut wcx);
+    assert_eq!(
+        flags(cx),
+        (true, false, false),
+        "Enter 未激活条内首个钮(时长)"
+    );
+
+    // Right → 下一个钮(轮次);Enter 应触发轮次而非时长
+    wcx.simulate_keystrokes("right");
+    redraw(cx, &mut wcx);
+    press_enter(&mut wcx);
+    redraw(cx, &mut wcx);
+    assert_eq!(
+        flags(cx),
+        (true, true, false),
+        "Right 后 Enter 未激活「轮次」——roving 焦点未生效"
+    );
+
+    // Left → 退回时长;Enter 把它切回
+    wcx.simulate_keystrokes("left");
+    redraw(cx, &mut wcx);
+    press_enter(&mut wcx);
+    redraw(cx, &mut wcx);
+    assert_eq!(
+        flags(cx),
+        (false, true, false),
+        "Left 后 Enter 未激活「时长」"
+    );
+
+    // 环绕:聚焦首个钮时 Left 绕到条尾的搜索框。落点用「键入落到搜索框」
+    // 证身——条内只有它收字符,而 Enter 在此不翻任何开关
+    wcx.simulate_keystrokes("left");
+    redraw(cx, &mut wcx);
+    press_enter(&mut wcx);
+    redraw(cx, &mut wcx);
+    assert_eq!(flags(cx), (false, true, false), "Left 未绕出按钮组");
+    wcx.simulate_input("q");
+    redraw(cx, &mut wcx);
+    assert_eq!(search_val(cx), "q", "Left 未从首个钮环绕到条尾搜索框");
+
+    // 再从搜索框 Right 绕回首个钮
+    wcx.simulate_keystrokes("right");
+    redraw(cx, &mut wcx);
+    press_enter(&mut wcx);
+    redraw(cx, &mut wcx);
+    assert_eq!(
+        flags(cx),
+        (true, true, false),
+        "Right 未从条尾搜索框环绕回首个钮"
     );
     let _ = std::fs::remove_dir_all(root);
 }

@@ -31,6 +31,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use gpui_kit::component::IconName;
+use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
+use gpui_kit::component::toolbar::Toolbar;
 use gpui_kit::{
     AnyElement, App, FontWeight, ImageCacheError, ImageSource, InteractiveElement, IntoElement,
     ParentElement, Rgba, SharedString, StatefulInteractiveElement, Styled, StyledImage, Window,
@@ -307,6 +309,7 @@ pub(crate) fn diagram(
     ix: usize,
     source: Arc<str>,
     cards: Option<MermaidCards>,
+    cx: &App,
 ) -> AnyElement {
     let id = SharedString::from(format!("{prefix}-md-mermaid-{ix}"));
     let key = id.to_string();
@@ -395,7 +398,7 @@ pub(crate) fn diagram(
         .p(px(10.))
         .child(if have_ctx {
             let cb = callbacks.as_ref().expect("have_ctx → callbacks");
-            card_toolbar(&key, show_code, copied, cb, source.clone()).into_any_element()
+            card_toolbar(&key, cx, show_code, copied, cb, source.clone()).into_any_element()
         } else {
             div().into_any_element()
         })
@@ -407,8 +410,14 @@ pub(crate) fn diagram(
 /// 卡片工具条(仅交互调用点):图表/代码分段 + 复制 + 下载 + 放大。
 /// 全部动作经宿主注入的 callbacks(收图源码);kits 只按快照渲染。
 /// 复制反馈 = 按钮本体态切换(✓ 已复制,绿色),非异步通知。
+///
+/// 右侧三个动作钮挂在库 `Toolbar` 上 —— 收编的是**语义与键盘通路**
+/// (`Role::Toolbar` + roving 方向键 + Enter 激活);它们此前是纯 `div`,
+/// 既无 a11y 角色也不可聚焦。分段控件不在其中:库无分段件(见
+/// `segment_button`),且它自带 full-round 药丸外观,不进条。
 fn card_toolbar(
     key: &str,
+    cx: &App,
     show_code: bool,
     copied: bool,
     callbacks: &MermaidCardCallbacks,
@@ -419,6 +428,24 @@ fn card_toolbar(
     let copy_cb = callbacks.copy.clone();
     let enlarge_cb = callbacks.enlarge.clone();
     let download_cb = callbacks.download.clone();
+    // 复制反馈 = 按钮本体态切换:✓ 已复制(SUCCESS 绿)窗口内;
+    // 反馈态点击仍重复复制(重启反馈窗,剪贴板被覆盖后可再取)
+    let (id, icon, label, color) = if copied {
+        (
+            "copy-done",
+            IconName::Check,
+            dict::common::copied(),
+            theme::SUCCESS(),
+        )
+    } else {
+        (
+            "copy",
+            IconName::Copy,
+            dict::common::copy(),
+            theme::LABEL_2(),
+        )
+    };
+    let bar_id = format!("{key}-actions");
     div()
         .debug_selector(|| format!("{key}-toolbar"))
         .flex()
@@ -458,58 +485,45 @@ fn card_toolbar(
                 )),
         )
         .child(div().flex_1())
-        .child({
-            // 复制反馈 = 按钮本体态切换:✓ 已复制(SUCCESS 绿)窗口内;
-            // 反馈态点击仍重复复制(重启反馈窗,剪贴板被覆盖后可再取)
-            let (id, icon, label, color) = if copied {
-                (
-                    "copy-done",
-                    IconName::Check,
-                    dict::common::copied(),
-                    theme::SUCCESS(),
-                )
-            } else {
-                (
-                    "copy",
-                    IconName::Copy,
-                    dict::common::copy(),
+        .child(
+            Toolbar::new(bar_id)
+                .gap(px(2.))
+                .content(card_button(cx, &key, id, icon, label, color, {
+                    let key = key.clone();
+                    let source = source.clone();
+                    let f = copy_cb.clone();
+                    move |w, cx| f(&key, source.clone(), w, cx)
+                }))
+                .content(div().w(px(1.)).h(px(14.)).mx(px(6.)).bg(theme::BORDER_2()))
+                .content(card_button(
+                    cx,
+                    &key,
+                    "download",
+                    LiumaIcon::Download,
+                    dict::chat::mermaid_download(),
                     theme::LABEL_2(),
-                )
-            };
-            toolbar_label_button(&key, id, icon, label, color, {
-                let key = key.clone();
-                let source = source.clone();
-                let f = copy_cb.clone();
-                move |w, cx| f(&key, source.clone(), w, cx)
-            })
-        })
-        .child(div().w(px(1.)).h(px(14.)).mx(px(6.)).bg(theme::BORDER_2()))
-        .child(toolbar_label_button(
-            &key,
-            "download",
-            LiumaIcon::Download,
-            dict::chat::mermaid_download(),
-            theme::LABEL_2(),
-            {
-                let key = key.clone();
-                let source = source.clone();
-                let f = download_cb.clone();
-                move |w, cx| f(&key, source.clone(), w, cx)
-            },
-        ))
-        .child(toolbar_label_button(
-            &key,
-            "enlarge",
-            IconName::Maximize,
-            dict::chat::mermaid_zoom(),
-            theme::LABEL_2(),
-            {
-                let key = key.clone();
-                let source = source.clone();
-                let f = enlarge_cb.clone();
-                move |w, cx| f(&key, source.clone(), w, cx)
-            },
-        ))
+                    {
+                        let key = key.clone();
+                        let source = source.clone();
+                        let f = download_cb.clone();
+                        move |w, cx| f(&key, source.clone(), w, cx)
+                    },
+                ))
+                .content(card_button(
+                    cx,
+                    &key,
+                    "enlarge",
+                    IconName::Maximize,
+                    dict::chat::mermaid_zoom(),
+                    theme::LABEL_2(),
+                    {
+                        let key = key.clone();
+                        let source = source.clone();
+                        let f = enlarge_cb.clone();
+                        move |w, cx| f(&key, source.clone(), w, cx)
+                    },
+                )),
+        )
         .into_any_element()
 }
 
@@ -550,33 +564,41 @@ fn segment_button(
 }
 
 /// 图标+文字按钮(复制/下载/放大);`color` = 文本色(复制反馈态传
-/// SUCCESS 绿)
-fn toolbar_label_button(
+/// SUCCESS 绿)。
+///
+/// 走库 `Button` + `custom` 变体而非默认 ghost:库 `Button` 自己必然设
+/// hover 样式(`elements/div.rs` 的单一悬停槽位),再调 `.hover()` 会撞
+/// 「hover style already set」断言,故悬停配色只能经变体给定。也因此本钮
+/// 以 `Toolbar::content` 挂入 —— `Toolbar::child` 在渲染期强制
+/// `prepare_for_toolbar()`(= `.ghost().compact()`),会把变体改回 ghost。
+/// 高度/内距/圆角沿用收编前的手绘值(26/8/8),由 `Button` 的样式精化
+/// (实例样式最后 refine)压过尺寸档自带值。
+fn card_button(
+    cx: &App,
     key: &str,
     id: &'static str,
     icon: impl Into<gpui_kit::component::Icon>,
     label: &'static str,
     color: Rgba,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    let key = key.to_string();
+) -> Button {
     let sel = format!("{key}-{id}");
-    div()
-        .id(sel.clone())
+    Button::new(sel.clone())
         .debug_selector(move || sel.clone())
         .h(px(26.))
-        .flex()
-        .items_center()
         .gap(px(5.))
         .px(px(8.))
         .rounded(px(8.))
-        .cursor_pointer()
         .text_size(px(13.))
-        .text_color(color)
-        .hover(|st| st.bg(theme::LAYER()))
-        .on_click(move |_ev, window, cx| on_click(window, cx))
         .child(fixed(icon, 14.))
-        .child(label.to_string())
+        .label(label.to_string())
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(theme::TRANSPARENT().into())
+                .foreground(color.into())
+                .hover(theme::LAYER().into()),
+        )
+        .on_click(move |_ev, window, cx| on_click(window, cx))
 }
 
 /// mermaid 站点配置(主题映射;键名是 mermaid 主题契约,

@@ -8,8 +8,10 @@ use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
+use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::toolbar::Toolbar;
 use gpui_kit::component::{Icon, IconName, Sizable as _, StyledExt};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -677,123 +679,156 @@ fn toolbar(store: &Entity<AppStore>, s: &Snap, cx: &App) -> impl IntoElement {
                 .items_center()
                 .child(Input::new(e).small())
         });
+    // 库 Toolbar 接管条体与 roving 键盘焦点;尺寸档取 XSmall 使按钮与
+    // 其包装层同为 20px(`input_h(XSmall)` = `h_5()`),与手绘药丸同高;
+    // 条高/内外边距再由本处样式覆盖回原值(库 XSmall 档默认 h_7/p_1/gap_1)
+    // 库 `Toolbar` 未实现 `InteractiveElement`,挂不了 debug_selector;
+    // 外层包一层只作测试寻址(与 kits::collapse_strip 同款做法)
     div()
-        .flex()
+        .debug_selector(|| "traj-toolbar".to_string())
         .flex_shrink_0()
-        .h(px(32.))
-        .items_center()
-        .gap(px(2.))
-        .px(px(8.))
-        .border_b_1()
-        .border_color(theme::BORDER())
-        .child(toggle_button(
-            "traj-toolbar-duration",
-            dict::trajectory::toolbar_duration(),
-            s.duration,
-            fixed(LiumaIcon::Clock, 12.),
-            {
-                let s = store.clone();
-                move |_, _, cx| {
-                    s.update(cx, |st, cx| st.toggle_trajectory_duration(cx));
-                }
-            },
-        ))
-        .child(action_button(
-            "traj-toolbar-turns",
-            dict::trajectory::toolbar_turns(),
-            s.collapse.all_turns,
-            {
-                let s = store.clone();
-                move |_, _, cx| {
-                    s.update(cx, |st, cx| st.toggle_all_turns(cx));
-                }
-            },
-        ))
-        .child(action_button(
-            "traj-toolbar-calls",
-            dict::trajectory::toolbar_calls(),
-            s.collapse.all_calls,
-            {
-                let s = store.clone();
-                move |_, _, cx| {
-                    s.update(cx, |st, cx| st.toggle_all_calls(cx));
-                }
-            },
-        ))
         .child(
-            div()
-                .min_w(px(0.))
-                .flex_1()
-                .truncate()
-                .text_size(px(11.))
-                .text_color(theme::CAPTION())
-                .pl(px(8.))
-                .child(dict::trajectory::counts(
-                    s.view.records.len(),
-                    s.view.total,
-                    s.view.requests.len(),
-                )),
+            Toolbar::new("traj-toolbar")
+                .xsmall()
+                .h(px(32.))
+                .px(px(8.))
+                .gap(px(2.))
+                .border_b_1()
+                .border_color(theme::BORDER())
+                .content(toggle_button(
+                    cx,
+                    "traj-toolbar-duration",
+                    dict::trajectory::toolbar_duration(),
+                    s.duration,
+                    fixed(LiumaIcon::Clock, 12.),
+                    {
+                        let s = store.clone();
+                        move |_, _, cx| {
+                            s.update(cx, |st, cx| st.toggle_trajectory_duration(cx));
+                        }
+                    },
+                ))
+                .content(action_button(
+                    cx,
+                    "traj-toolbar-turns",
+                    dict::trajectory::toolbar_turns(),
+                    s.collapse.all_turns,
+                    {
+                        let s = store.clone();
+                        move |_, _, cx| {
+                            s.update(cx, |st, cx| st.toggle_all_turns(cx));
+                        }
+                    },
+                ))
+                .content(action_button(
+                    cx,
+                    "traj-toolbar-calls",
+                    dict::trajectory::toolbar_calls(),
+                    s.collapse.all_calls,
+                    {
+                        let s = store.clone();
+                        move |_, _, cx| {
+                            s.update(cx, |st, cx| st.toggle_all_calls(cx));
+                        }
+                    },
+                ))
+                // 计数文本与搜索框走 content(非 Sizable,库不施加尺寸档——
+                // 原样保留);库要求宿主输入框置于条尾以保其自身方向键行为
+                .content(
+                    div()
+                        .min_w(px(0.))
+                        .flex_1()
+                        .truncate()
+                        .text_size(px(11.))
+                        .text_color(theme::CAPTION())
+                        .pl(px(8.))
+                        .child(dict::trajectory::counts(
+                            s.view.records.len(),
+                            s.view.total,
+                            s.view.requests.len(),
+                        )),
+                )
+                .contents(input.map(|el| el.into_any_element())),
         )
-        .children(input)
 }
 
 /// 工具栏切换钮(模式开关,pressed = 高亮;恒显自身图标)
+///
+/// 走 `custom` 变体而非默认 ghost:库 `Button` 自己必然设 hover 样式,
+/// 再调 `.hover()` 会撞 GPUI 的「hover style already set」断言,故悬停配色
+/// 只能经变体给定。也因此本钮以 `Toolbar::content` 挂入——`Toolbar::child`
+/// 在渲染期强制 `prepare_for_toolbar()`(= `.ghost().compact()`),会把变体
+/// 改回 ghost;尺寸档改由本处 `.xsmall()` 自持。
 fn toggle_button(
+    cx: &App,
     id: &'static str,
     label: &'static str,
     pressed: bool,
     icon: Icon,
     on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> Button {
     let sel = id.to_string();
-    div()
-        .id(id)
+    Button::new(id)
+        .compact()
+        .xsmall()
         .debug_selector(move || sel.clone())
-        .flex()
-        .h(px(20.))
-        .items_center()
         .gap(px(4.))
         .rounded(px(6.))
         .px(px(8.))
-        .cursor_pointer()
         .text_size(px(11.))
-        .when(pressed, |el| {
-            el.bg(theme::GLASS_BG())
-                .border_1()
-                .border_color(theme::GLASS_BORDER())
-                .text_color(theme::LABEL())
-        })
-        .when(!pressed, |el| {
-            el.text_color(theme::LABEL_3())
-                .hover(|s| s.bg(theme::BORDER()))
-        })
         .child(icon)
-        .child(label.to_string())
+        .label(label.to_string())
+        .when(pressed, |el| {
+            el.border_1().border_color(theme::GLASS_BORDER())
+        })
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(if pressed {
+                    theme::GLASS_BG().into()
+                } else {
+                    theme::TRANSPARENT().into()
+                })
+                .foreground(if pressed {
+                    theme::LABEL().into()
+                } else {
+                    theme::LABEL_3().into()
+                })
+                // 按下态原无悬停变化,与底色同值即无变化
+                .hover(if pressed {
+                    theme::GLASS_BG().into()
+                } else {
+                    theme::BORDER().into()
+                }),
+        )
         .on_click(move |ev, w, cx| on_click(ev, w, cx))
 }
 
 /// 工具栏动作钮(展开/折叠动作,无 pressed 态;图标随状态
 /// 翻转——全折叠显 ⊞(点=展开),展开显 ⊟(点=折叠),等宽字体)
 fn action_button(
+    cx: &App,
     id: &'static str,
     label: &'static str,
     all_collapsed: bool,
     on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> Button {
     let sel = id.to_string();
-    div()
-        .id(id)
+    // 图标位是 Menlo 字形而非图标字体,故走 `Button` 的任意子元素槽
+    // (`Button` 实现了 `ParentElement`),不用 `.icon()`
+    Button::new(id)
+        .compact()
+        .xsmall()
         .debug_selector(move || sel.clone())
-        .flex()
-        .h(px(20.))
-        .items_center()
         .gap(px(4.))
         .rounded(px(6.))
         .px(px(5.))
-        .cursor_pointer()
         .text_size(px(11.))
-        .text_color(theme::LABEL_3())
-        .hover(|s| s.bg(theme::BORDER()).text_color(theme::LABEL_2()))
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(theme::TRANSPARENT().into())
+                .foreground(theme::LABEL_3().into())
+                .hover(theme::BORDER().into()),
+        )
         .child(
             div()
                 .font_family("Menlo")
@@ -801,7 +836,7 @@ fn action_button(
                 .line_height(gpui_kit::relative(1.))
                 .child(if all_collapsed { "⊞" } else { "⊟" }),
         )
-        .child(label.to_string())
+        .label(label.to_string())
         .on_click(move |ev, w, cx| on_click(ev, w, cx))
 }
 
