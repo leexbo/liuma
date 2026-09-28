@@ -2573,7 +2573,12 @@ impl AppStore {
                             e.context_enforce = enforce;
                         }
                     }
-                    "fold" => e.fold = on,
+                    "fold" => {
+                        e.fold = on;
+                        if on {
+                            e.fold_enforce = enforce;
+                        }
+                    }
                     // 未知 kind:不动配置(旧客户端读到新场景行时静默)
                     _ => {}
                 }

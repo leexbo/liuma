@@ -3559,8 +3559,8 @@ fn decision_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             "fold",
             dict::settings::decision_fold().to_string(),
             dict::settings::decision_fold_desc(),
-            scenario_mode(entry.fold, false),
-            false,
+            scenario_mode(entry.fold, entry.fold_enforce),
+            true,
         ));
     col
 }

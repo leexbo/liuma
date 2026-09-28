@@ -33,8 +33,8 @@ use mount::assemble;
 
 /// 决策模型场景开关(合并后;默认关)。
 ///
-/// `enforce` 仅对 guard/context 有意义(显式配置才开);approvals/stop/
-/// fold 恒 advisory,合并时该位恒 false。
+/// `enforce` 仅对 guard/context/fold 有意义(显式配置才开);
+/// approvals/stop 恒 advisory,合并时该位恒 false。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DecisionScenario {
     /// 场景开关(总开关也要开)
@@ -120,8 +120,10 @@ pub struct DecisionEntry {
     pub guard_enforce: bool,
     /// 上下文裁判 enforce(默认 shadow 只记录)
     pub context_enforce: bool,
-    /// 场景开关:折叠价值裁定(只记录)
+    /// 场景开关:折叠价值裁定
     pub fold: bool,
+    /// 折叠价值裁定 enforce(默认 shadow 只记录)
+    pub fold_enforce: bool,
 }
 
 impl Default for DecisionEntry {
@@ -139,12 +141,13 @@ impl Default for DecisionEntry {
             guard_enforce: false,
             context_enforce: false,
             fold: false,
+            fold_enforce: false,
         }
     }
 }
 
 impl DecisionEntry {
-    /// 转装配层设置(enforce 位仅 guard/context 有意义)
+    /// 转装配层设置(enforce 位仅 guard/context/fold 有意义)
     pub fn to_settings(&self) -> DecisionSettings {
         let scenario = |enabled: bool, enforce: bool| DecisionScenario {
             enabled,
@@ -162,7 +165,7 @@ impl DecisionEntry {
             stop: scenario(self.stop, false),
             guard: scenario(self.guard, self.guard_enforce),
             context: scenario(self.context, self.context_enforce),
-            fold: scenario(self.fold, false),
+            fold: scenario(self.fold, self.fold_enforce),
         }
     }
 }
@@ -317,6 +320,7 @@ pub fn build_fold_judge(
         settings.model.clone(),
         Arc::clone(log),
         sink,
+        settings.fold.enforce,
     )) as Arc<dyn liuma_agent_loop::value_judge::ValueJudge>)
 }
 

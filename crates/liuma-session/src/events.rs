@@ -228,8 +228,19 @@ pub struct DecisionAnswered {
 pub struct DecisionPrunedItem {
     /// 被修剪的 tool/result 事件 seq
     pub seq: u64,
-    /// 决策评分(「已无引用价值」概率,越高越无价值)
+    /// 决策评分(概率;**方向随阶段**:上下文裁判是「已无引用价值」、
+    /// 折叠价值裁定是「不值得带入」——两者都是「越高越该裁」,
+    /// 但文案与阈值分处两端)
     pub score: f64,
+    /// 裁定阶段:`context`(上下文裁判)/ `fold`(折叠价值裁定)。
+    /// 缺省 context——本字段后加,旧日志的载荷里没有
+    #[serde(default = "default_prune_stage")]
+    pub stage: String,
+}
+
+/// 修剪条目 stage 的缺省(旧载荷 = 上下文裁判期产物)
+fn default_prune_stage() -> String {
+    "context".to_string()
 }
 
 /// decision/pruned 载荷:上下文裁判的修剪裁决记录。
@@ -1025,11 +1036,23 @@ mod tests {
             pruned: vec![DecisionPrunedItem {
                 seq: 2,
                 score: 0.93,
+                stage: "context".into(),
             }],
         });
         let v = serde_json::to_value(&pruned).expect("serialize");
         assert_eq!(v["type"], "decision/pruned");
         assert_eq!(v["data"]["pruned"][0]["seq"], 2);
+        assert_eq!(v["data"]["pruned"][0]["stage"], "context");
+        // 旧载荷(本字段之前落的日志)反序列化 = context(阶段是后加的)
+        let legacy: SessionEventData = serde_json::from_value(json!({
+            "type": "decision/pruned",
+            "data": { "pruned": [{ "seq": 2, "score": 0.93 }] },
+        }))
+        .expect("旧载荷兼容");
+        let SessionEventData::DecisionPruned(l) = legacy else {
+            panic!("类型判别");
+        };
+        assert_eq!(l.pruned[0].stage, "context");
         let back: SessionEventData = serde_json::from_value(v).expect("deserialize");
         assert_eq!(back, pruned);
         assert!(KNOWN_EVENT_TYPES.contains(&back.type_name()));

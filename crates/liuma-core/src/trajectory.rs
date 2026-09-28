@@ -592,11 +592,13 @@ impl TrajectoryFolder {
 
     /// 修剪生效量补记:最近一条 context 裁决(该场景恒独立成行——裁判
     /// 在 turn 间隙跑,pending_calls 必空)。就地重发自身以便前端收敛。
-    fn settle_pruned(&mut self, n: u64) {
+    fn settle_pruned(&mut self, n: u64, stage: &str) {
+        // 按 stage 找最近一条**尚未补记**的同场景裁决(上下文裁判 = context,
+        // 折叠价值裁定 = fold):两个场景各自收尾,互不串记
         let Some(pos) = self.records.iter().rposition(|r| {
             r.decision
                 .as_ref()
-                .is_some_and(|d| d.scenario == "context" && d.pruned.is_none())
+                .is_some_and(|d| d.scenario == stage && d.pruned.is_none())
         }) else {
             return;
         };
@@ -1017,15 +1019,19 @@ impl TrajectoryFolder {
                 };
                 self.place_decision(ev, rec);
             }
-            // 上下文裁判的实际效果(仅 enforce 分支落档):修剪条数补进
-            // 刚才那条 context 裁决——它是本场景的收尾量,单看 receipt
-            // 无从知道 shadow 观察与 enforce 生效的区别
+            // 裁定的实际效果(仅 enforce 分支落档):修剪条数补进**对应
+            // 阶段**那条裁决——它是本场景的收尾量,单看 receipt 无从知道
+            // shadow 观察与 enforce 生效的区别。按 stage 分流:折叠期裁定
+            // 与上下文裁判是两个场景,记混等于台账撒谎
             "decision/pruned" => {
-                let n = ev.data["pruned"]
-                    .as_array()
-                    .map(|p| p.len() as u64)
-                    .unwrap_or(0);
-                self.settle_pruned(n);
+                // 空清单 / 缺 pruned 字段:无收尾量可补(不新开记录)
+                if let Some(items) = ev.data["pruned"].as_array().filter(|i| !i.is_empty()) {
+                    let stage = items
+                        .first()
+                        .and_then(|p| p["stage"].as_str())
+                        .unwrap_or("context");
+                    self.settle_pruned(items.len() as u64, stage);
+                }
             }
             "decision/answered" => {
                 let id = ev.data["id"].as_str().unwrap_or_default();
@@ -1224,6 +1230,74 @@ mod tests {
             data.records.iter().filter(|r| r.kind == "decision").count(),
             1
         );
+    }
+
+    /// 折叠期裁定按 stage 分流:两场相邻的裁定各自收尾,不串记
+    /// (若只找 scenario=="context",折叠的修剪量会记到裁判行上——台账
+    /// 会声称是上下文裁判裁的)
+    #[test]
+    fn prune_effect_routes_by_stage_not_by_recency() {
+        let mut f = TrajectoryFolder::new();
+        for e in [
+            ev_seq("turn/start", 1, 1000, json!({})),
+            // 上下文裁判(带 stage 的旧载荷与不带 stage 的都走 context)
+            ev_seq(
+                "decision/asked",
+                2,
+                1010,
+                json!({ "id": "c1", "scenario": "context", "model": "m", "questions": [] }),
+            ),
+            ev_seq(
+                "decision/answered",
+                3,
+                1011,
+                json!({ "id": "c1", "ok": true, "durationMs": 10 }),
+            ),
+            ev_seq(
+                "decision/pruned",
+                4,
+                1012,
+                json!({ "pruned": [{ "seq": 7, "score": 0.91 }] }),
+            ),
+            // 折叠价值裁定(同一次折叠里紧随其后)
+            ev_seq(
+                "decision/asked",
+                5,
+                1020,
+                json!({ "id": "f1", "scenario": "fold", "model": "m", "questions": [] }),
+            ),
+            ev_seq(
+                "decision/answered",
+                6,
+                1021,
+                json!({ "id": "f1", "ok": true, "durationMs": 12 }),
+            ),
+            ev_seq(
+                "decision/pruned",
+                7,
+                1022,
+                json!({ "pruned": [
+                    { "seq": 21, "score": 0.02, "stage": "fold" },
+                    { "seq": 22, "score": 0.04, "stage": "fold" },
+                ] }),
+            ),
+        ] {
+            f.feed(&e);
+        }
+        let data = f.data();
+        let of = |scenario: &str| {
+            data.records
+                .iter()
+                .find(|r| r.decision.as_ref().is_some_and(|d| d.scenario == scenario))
+                .and_then(|r| r.decision.as_ref())
+                .and_then(|d| d.pruned)
+        };
+        assert_eq!(of("context"), Some(1), "裁判行记自己的 1 条");
+        assert_eq!(of("fold"), Some(2), "折叠行记自己的 2 条");
+        // 空清单不新开记录、不改任何行
+        let before = data.records.len();
+        f.feed(&ev_seq("decision/pruned", 8, 1030, json!({ "pruned": [] })));
+        assert_eq!(f.data().records.len(), before);
     }
 
     /// `decide` 工具的真实时序:receipt 与别的工具**不同**——它不是

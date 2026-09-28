@@ -8019,31 +8019,37 @@ fn decision_scenario_mode_selection(cx: &mut TestAppContext) {
     });
     assert!(!approvals_on, "「关闭」应清 enabled");
 
-    // 折叠价值裁定行:只记录场景(无 enforce 位),两态
+    // 折叠价值裁定行:三态,「拦截」落 enabled + enforce
     assert!(
         wcx.debug_bounds("decision-mode-fold").is_some(),
         "fold 行未渲染"
     );
-    assert!(
-        wcx.debug_bounds("decision-mode-fold-block").is_none(),
-        "只记录场景不该有「拦截」项"
-    );
-    click_sel(&mut wcx, "decision-mode-fold-on");
+    let fold_bits = |cx: &mut TestAppContext, store: &Entity<AppStore>| -> (bool, bool) {
+        cx.update(|app| {
+            let snap = store.read(app).settings.settings_snapshot["decision"].clone();
+            (
+                snap["fold"].as_bool().unwrap_or(false),
+                snap["foldEnforce"].as_bool().unwrap_or(false),
+            )
+        })
+    };
+    click_sel(&mut wcx, "decision-mode-fold-block");
     settle(&mut wcx);
-    let fold_on = cx.update(|app| {
-        store.read(app).settings.settings_snapshot["decision"]["fold"]
-            .as_bool()
-            .unwrap_or(false)
-    });
-    assert!(fold_on, "「开启」应落 enabled");
+    assert_eq!(fold_bits(cx, &store), (true, true), "「拦截」应落 enforce");
+    click_sel(&mut wcx, "decision-mode-fold-shadow");
+    settle(&mut wcx);
+    assert_eq!(
+        fold_bits(cx, &store),
+        (true, false),
+        "「仅记录」应清 enforce"
+    );
     click_sel(&mut wcx, "decision-mode-fold-off");
     settle(&mut wcx);
-    let fold_on = cx.update(|app| {
-        store.read(app).settings.settings_snapshot["decision"]["fold"]
-            .as_bool()
-            .unwrap_or(false)
-    });
-    assert!(!fold_on, "「关闭」应清 enabled");
+    assert_eq!(
+        fold_bits(cx, &store),
+        (false, false),
+        "「关闭」应清 enabled"
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 

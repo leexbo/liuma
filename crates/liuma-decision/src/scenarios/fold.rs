@@ -11,9 +11,10 @@
 //! [`crate::thresholds::FOLD_DROP_PROBABILITY`] 与上下文裁判的
 //! `PRUNE_NO_VALUE_PROBABILITY` 分处概率区间两端,不是同一个方向。
 //!
-//! 本场景**只记录**(advisory;社区共识「shadow 先行」):落 receipt 供
-//! 审计与「若生效会裁多少」的观察,派生面不动。fail-open:端口任何
-//! `Err` 一律照常折叠。
+//! 生效语义(与 guard/context 同语言):`enforce` 才落 `decision/pruned`
+//! (派生层策略④生效,条目带 `stage:"fold"` 供台账分流);shadow 只落
+//! receipt——「若生效会裁多少」在 answered 的答案值里可观察。fail-open:
+//! 端口任何 `Err` 一律照常折叠。
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -25,6 +26,10 @@ use serde_json::{Value, json};
 
 use crate::types::{Answer, DecisionRequest, Question};
 
+/// `decision/pruned` 条目的阶段标记(折叠期裁定;缺省 = 上下文裁判)。
+/// 台账按它分流,不按「最近一条裁决」猜
+const STAGE_FOLD: &str = "fold";
+
 /// 最近任务描述的字符上限(state 体积守卫)
 const TASK_MAX_CHARS: usize = 400;
 
@@ -35,21 +40,25 @@ pub struct FoldJudge {
     log: Arc<Mutex<liuma_session::EventLog>>,
     /// 决策 receipt 落档(宿主闭包)
     sink: crate::scenarios::ReceiptSink,
+    /// shadow(只记录)/ enforce(落 pruned,派生层生效)
+    enforce: bool,
 }
 
 impl FoldJudge {
-    /// 构造
+    /// 构造(`enforce = false` 即 shadow)
     pub fn new(
         port: Arc<dyn crate::DecisionPort>,
         model: String,
         log: Arc<Mutex<liuma_session::EventLog>>,
         sink: crate::scenarios::ReceiptSink,
+        enforce: bool,
     ) -> Self {
         Self {
             port,
             model,
             log,
             sink,
+            enforce,
         }
     }
 
@@ -198,11 +207,27 @@ impl liuma_agent_loop::value_judge::ValueJudge for FoldJudge {
                             },
                         }),
                     );
-                    // 只记录:裁掉条数在 answered 的答案值里可观察
-                    // (「若生效会裁多少」),派生面不动
+                    // shadow 只落 receipt:裁掉条数在 answered 的答案值里
+                    // 可观察(「若生效会裁多少」),派生面不动
+                    if lost.is_empty() || !self.enforce {
+                        return Ok(FoldAdvice {
+                            no_value: lost.len(),
+                            applied: false,
+                            judged: picked.len(),
+                            total,
+                        });
+                    }
+                    // enforce:落 pruned(派生层策略④生效;日志原文不动)
+                    let pruned: Vec<Value> = lost
+                        .iter()
+                        .map(|(seq, score)| {
+                            json!({ "seq": seq, "score": score, "stage": STAGE_FOLD })
+                        })
+                        .collect();
+                    (self.sink)("decision/pruned", json!({ "pruned": pruned }));
                     Ok(FoldAdvice {
                         no_value: lost.len(),
-                        applied: false,
+                        applied: true,
                         judged: picked.len(),
                         total,
                     })
@@ -353,6 +378,7 @@ mod tests {
             "m".into(),
             Arc::clone(&log),
             type_sink(&receipts),
+            false,
         );
         let advice = judge.judge(&cands).await.expect("裁定成功");
         assert_eq!(advice.no_value, 1);
@@ -363,6 +389,52 @@ mod tests {
         // 问题里带上了任务描述(state 路径根)
         let received = port.received.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(received[0].state["task"], "fix the parser");
+    }
+
+    /// enforce 生效:落 pruned 且带 stage=fold(台账按它分流——旧记录器
+    /// 不认识该字段即按 context 记,故阶段必须显式带上)
+    #[tokio::test]
+    async fn enforce_records_pruned_with_fold_stage() {
+        let log = Arc::new(Mutex::new(EventLog::new()));
+        let receipts = Arc::new(Mutex::new(Vec::<String>::new()));
+        let pruned: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink: crate::scenarios::ReceiptSink = {
+            let receipts = Arc::clone(&receipts);
+            let pruned = Arc::clone(&pruned);
+            Arc::new(move |ty: &str, d: Value| {
+                if ty == "decision/pruned" {
+                    pruned.lock().unwrap_or_else(|p| p.into_inner()).push(d);
+                }
+                receipts
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push(ty.to_string());
+            })
+        };
+        let port = Arc::new(port_answering(&[(3, 0.02), (5, 0.9)]));
+        let judge = FoldJudge::new(
+            Arc::clone(&port) as Arc<dyn crate::DecisionPort>,
+            "m".into(),
+            Arc::clone(&log),
+            sink,
+            true,
+        );
+        let advice = judge
+            .judge(&[candidate(3, 2_000), candidate(5, 9_000)])
+            .await
+            .expect("裁定成功");
+        assert_eq!(advice.no_value, 1);
+        assert!(advice.applied, "enforce 生效");
+        let kinds = receipts.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(
+            kinds,
+            vec!["decision/asked", "decision/answered", "decision/pruned"]
+        );
+        let p = pruned.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0]["pruned"][0]["seq"], json!(3), "只裁低价值那条");
+        assert_eq!(p[0]["pruned"][0]["stage"], json!("fold"));
+        assert_eq!(p[0]["pruned"][0]["score"], json!(0.02));
     }
 
     /// fail-open:端口 Err 上抛给引擎(照常折叠),receipt 仍收口
@@ -378,6 +450,7 @@ mod tests {
             "m".into(),
             Arc::clone(&log),
             type_sink(&receipts),
+            true,
         );
         let err = judge
             .judge(&[candidate(3, 2_000)])
@@ -404,6 +477,7 @@ mod tests {
             "m".into(),
             Arc::clone(&log),
             type_sink(&receipts),
+            false,
         );
         let advice = judge.judge(&cands).await.expect("裁定成功");
         assert_eq!(advice.judged, cap);

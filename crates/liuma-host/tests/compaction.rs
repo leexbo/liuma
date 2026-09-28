@@ -980,3 +980,105 @@ async fn empty_candidate_set_skips_the_judge() {
     assert_eq!(summary.data["judgedCandidates"], json!(0));
     assert_eq!(summary.data["noValueCandidates"], json!(0));
 }
+
+/// enforce e2e:裁定生效 → 摘要输入含占位符不含正文、日志原文仍在、
+/// 派生面**长度不变 + 配对不破**(策略④是 1:1 替换——口径不变锁)
+#[tokio::test]
+async fn enforced_fold_replaces_outputs_in_the_prefix_only() {
+    use liuma_decision::types::{Answer, DecisionAnswers};
+    use liuma_session::events::{DANGLING_TOOL_PLACEHOLDER, PRUNED_TOOL_PLACEHOLDER};
+
+    let log = big_tool_log();
+    // 夹具:tool/result 落在 seq 3/6/9/12/15/18;保留尾从 seq 17 起
+    let droppable = [3_u64, 6, 9, 12, 15];
+    let mut engine = LoopEngine::new(header(), Arc::clone(&log));
+    engine.set_fold_thresholds(0, 1);
+    let receipts: liuma_decision::scenarios::ReceiptSink = {
+        let log = Arc::clone(&log);
+        Arc::new(move |ty: &str, data: serde_json::Value| {
+            // 宿主汇的最小形态:落档(生产宿主另推轨迹增量)
+            let _ = log.lock().unwrap().append(EventEnvelope::new(ty, 0, data));
+        })
+    };
+    let port = Arc::new(liuma_decision::fake::FakeDecisionPort::scripted(vec![Ok(
+        DecisionAnswers {
+            model: "fake".into(),
+            answers: droppable
+                .iter()
+                .map(|s| (format!("s{s}"), Answer::Noul { noul: 0.02 }))
+                .collect(),
+            usage: Default::default(),
+            request_id: None,
+        },
+    )]));
+    let judge = liuma_decision::scenarios::fold::FoldJudge::new(
+        Arc::clone(&port) as Arc<dyn liuma_decision::DecisionPort>,
+        "m".into(),
+        Arc::clone(&log),
+        receipts,
+        true,
+    );
+    engine.set_value_judge(Arc::new(judge));
+    let mut provider = FakeProvider::new();
+    provider.summaries.push("condensed".into());
+    let mut gate = InvariantGate::new(provider, Arc::clone(&log));
+    {
+        let mut sink = |_ev: &EventEnvelope| {};
+        engine
+            .compact_now(&mut gate, &|| 0_i64, &mut sink)
+            .await
+            .expect("compact");
+    }
+    let all = events(&log);
+    // 裁决落档:stage=fold + 恰好那 5 条
+    let pruned: Vec<EventEnvelope> = all
+        .iter()
+        .filter(|e| e.r#type == "decision/pruned")
+        .cloned()
+        .collect();
+    assert_eq!(pruned.len(), 1, "一次裁定一条 pruned");
+    let seqs: Vec<u64> = pruned[0].data["pruned"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            assert_eq!(p["stage"], json!("fold"), "阶段标记必须显式带上");
+            p["seq"].as_u64().unwrap()
+        })
+        .collect();
+    assert_eq!(seqs, droppable, "裁掉的是评估过的候选");
+    // 摘要输入:占位符在场、正文退场
+    let sent = gate
+        .inner()
+        .summary_inputs
+        .first()
+        .expect("摘要调用")
+        .1
+        .clone();
+    let text = sent.to_string();
+    assert!(text.contains(PRUNED_TOOL_PLACEHOLDER), "前缀换成占位符");
+    assert!(!text.contains(&"x".repeat(3_000)), "正文不得进摘要输入");
+    // 日志原文不动(审计保真)
+    for seq in droppable {
+        let ev = all.iter().find(|e| e.seq == seq).expect("tool/result");
+        assert_eq!(ev.data["output"].as_str().unwrap().chars().count(), 3_000);
+    }
+    // 口径不变:前缀长度仍是 16(1:1 替换,条目不删)
+    assert_eq!(sent.as_array().unwrap().len(), 16);
+    // 派生面:切点之后照常,配对不破(无悬空占位补插)
+    let derived = liuma_session::events::derive_visible_messages(all.iter());
+    let arr = derived.as_array().unwrap();
+    assert_eq!(arr.len(), 3, "占位 checkpoint + 保留尾两条");
+    assert!(
+        !derived.to_string().contains(DANGLING_TOOL_PLACEHOLDER),
+        "配对不破"
+    );
+    // 载荷:已生效条数 = 裁定条数(shadow 下 prunedItems 恒 0)
+    let summary = all
+        .iter()
+        .find(|e| e.r#type == "compaction/summary")
+        .expect("summary");
+    assert_eq!(summary.data["prunedItems"], json!(5));
+    assert_eq!(summary.data["noValueCandidates"], json!(5));
+    assert_eq!(summary.data["totalCandidates"], json!(5));
+}

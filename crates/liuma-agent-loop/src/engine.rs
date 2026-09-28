@@ -1658,8 +1658,11 @@ impl LoopEngine {
 
         // ── 折叠价值裁定(决策模型;端口缺席 = 直通)──
         // 时机:选段之后、摘要之前——选段前没有有界候选集,摘要后
-        // checkpoint 已定型。裁定只进回执与载荷(观察面),派生面不动:
-        // 「模型可见 ⟺ 已记录」不因一次咨询而变。
+        // checkpoint 已定型。生效(enforce)时前缀须**重派生**:裁定是
+        // 策略④的 1:1 内容替换(条目一条不删、下标不动),故
+        // `prefix_len`/`estimated_tokens` 与数组长度裁前裁后逐项相等
+        // ——变的只是前缀里那几条的内容(锁:host 侧 enforce 用例断言
+        // 摘要输入含占位符、日志原文仍在、派生面长度不变)。
         let mut advice = crate::value_judge::FoldAdvice::default();
         if let Some(judge) = judge {
             let policy = judge.policy();
@@ -1687,6 +1690,16 @@ impl LoopEngine {
                 }
             }
         }
+        // 生效:裁定方已落 decision/pruned,日志是唯一权威(本地 events
+        // 快照早于裁定落档),重派生后再切前缀
+        let visible = if advice.applied {
+            let Ok(l) = log.lock() else {
+                return Err(LoopError::Log("log 锁中毒".into()));
+            };
+            derive_visible_messages(l.iter())
+        } else {
+            visible
+        };
         let Some(arr) = visible.as_array() else {
             return Ok(FoldOutcome::Skipped);
         };
