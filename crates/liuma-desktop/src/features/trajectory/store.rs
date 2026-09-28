@@ -47,8 +47,10 @@ pub const TRAJECTORY_PAGE: usize = 500;
 /// 轨迹功能切片状态(台账缓存与滚动态、检查器与时间线交互态、
 /// turns/calls 折叠与 Inspect 待定位)。
 pub(crate) struct TrajectoryStore {
-    /// 工具卡 Inspect 待定位 seq(切轨迹后按 seq+kind 选台账行)
-    pub inspect_locate: Option<(String, u64)>,
+    /// Inspect 待定位(会话 id, 记录 kind, seq):切轨迹后按 kind+seq
+    /// 选台账行。工具卡给 `tool`,压缩标记行给 `compacted`——kind 必带,
+    /// 否则两种跳转会在同 seq 上撞车
+    pub inspect_locate: Option<(String, String, u64)>,
     // ── 轨迹视图(数据缓存 + 交互态;trajectory_session 标识缓存归属)──
     /// 台账缓存(当前会话)
     pub trajectory: TrajectoryView,
@@ -154,9 +156,7 @@ impl Default for TrajectoryStore {
 
 impl AppStore {
     /// 工具卡 Inspect:按 `call:{seq}` 登记待定位的 tool 记录并开轨迹
-    /// 面板标签。与检索跳转同用「先登记、轨迹数据就绪后再定位」的延迟
-    /// 模式(见 `open_search_hit`/`locate_search_hit`),避免会话在轨迹
-    /// 打开前缓存为空导致同步 `records.find` 落空、跳转无声失败。
+    /// 面板标签(= [`Self::inspect_record`] 的调用点包装)。
     /// callId == tool/call 事件 seq,与 chat.rs 的 `call:{seq}` key 同源。
     pub fn inspect_call(&mut self, key: &str, cx: &mut Context<Self>) {
         let Some(seq) = key
@@ -165,8 +165,18 @@ impl AppStore {
         else {
             return;
         };
+        self.inspect_record("tool", seq, cx);
+    }
+
+    /// 定位台账记录并开轨迹面板(kind + seq 即锚:tool/call 的 seq 与
+    /// 压缩标记行的 summary seq 各自唯一)。
+    ///
+    /// 与检索跳转同用「先登记、轨迹数据就绪后再定位」的延迟模式(见
+    /// `open_search_hit`/`locate_search_hit`),避免会话在轨迹打开前缓存
+    /// 为空导致同步 `records.find` 落空、跳转无声失败。
+    pub fn inspect_record(&mut self, kind: &str, seq: u64, cx: &mut Context<Self>) {
         if let Some(sid) = self.state.current_id.clone() {
-            self.trajectory.inspect_locate = Some((sid, seq));
+            self.trajectory.inspect_locate = Some((sid, kind.to_string(), seq));
         }
         self.open_panel_tab(PanelTab::Trajectory, cx);
         // 记录已在窗口(用户先前停在轨迹标签):立即定位;否则留待
@@ -174,10 +184,10 @@ impl AppStore {
         self.locate_inspect(cx);
     }
 
-    /// 轨迹就绪后按 seq 定位 `tool` 记录(工具卡 Inspect 收尾;展开所属 turn,
+    /// 轨迹就绪后按 kind+seq 定位台账记录(Inspect 收尾;展开所属 turn,
     /// 选中记录开检查器)。找不到时静默保留待定位,等下次轨迹数据覆盖再试。
     pub fn locate_inspect(&mut self, cx: &mut Context<Self>) {
-        let Some((sid, seq)) = self.trajectory.inspect_locate.clone() else {
+        let Some((sid, kind, seq)) = self.trajectory.inspect_locate.clone() else {
             return;
         };
         if self.state.current_id.as_deref() != Some(sid.as_str()) {
@@ -188,7 +198,7 @@ impl AppStore {
             .trajectory
             .records
             .iter()
-            .find(|r| r.kind == "tool" && r.seq == seq)
+            .find(|r| r.kind == kind && r.seq == seq)
         else {
             return;
         };

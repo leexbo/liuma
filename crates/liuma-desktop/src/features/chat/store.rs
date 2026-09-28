@@ -138,8 +138,6 @@ pub(crate) struct ChatStore {
     pub open_reasoning: HashSet<String>,
     /// 展开的上下文注入行 key(ctx:<seq>)
     pub open_context: HashSet<String>,
-    /// 展开的压缩标记行 key(cpt:<seq>)
-    pub open_compactions: HashSet<String>,
     /// 展开的轮过程组(键 = 段收口节点 key,如 turn-end:11)。**空集 =
     /// 全收**:历史会话载入即收、turn/end 收口出现即收(「默认收 + 手动
     /// 展开例外」天然实现自动收拢,无需事件 hook);点组头展开后持久,
@@ -318,7 +316,6 @@ impl Default for ChatStore {
             search_collapsed: HashSet::new(),
             open_reasoning: HashSet::new(),
             open_context: HashSet::new(),
-            open_compactions: HashSet::new(),
             open_turns: HashSet::new(),
             nav_hover: None,
             nav_track: None,
@@ -1833,14 +1830,6 @@ impl AppStore {
     pub fn toggle_context(&mut self, key: &str, cx: &mut Context<Self>) {
         if !self.chat.open_context.insert(key.to_string()) {
             self.chat.open_context.remove(key);
-        }
-        cx.notify();
-    }
-
-    /// 压缩标记行展开/折叠(摘要全文显隐)
-    pub fn toggle_compaction(&mut self, key: &str, cx: &mut Context<Self>) {
-        if !self.chat.open_compactions.insert(key.to_string()) {
-            self.chat.open_compactions.remove(key);
         }
         cx.notify();
     }

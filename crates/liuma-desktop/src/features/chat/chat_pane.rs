@@ -222,7 +222,6 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                     cx,
                     &st.chat.open_reasoning,
                     &st.chat.open_context,
-                    &st.chat.open_compactions,
                     settled.as_ref(),
                     &st.chat.expanded_tools,
                     &st.chat.open_retries,
@@ -1084,41 +1083,39 @@ fn compact_progress_row(progress: &CompactProgress) -> AnyElement {
         .into_any_element()
 }
 
-/// 压缩标记行(compaction/summary;quiet 行样式):
-/// 折叠态 = 终端图标 + `compact` + 圆点分隔 + 统计消息(hover 才显
-/// chevron),点击展开渲染摘要全文(markdown);展开态 chevron 常显。
-/// 消息文案(zh locale):有统计 = 已压缩 N 条历史记录(约
-/// X tokens)(全角括号);有摘要无统计 = 点击查看压缩摘要;都无 =
-/// 压缩摘要不可用。
+/// 压缩标记行(compaction/summary;quiet 行样式):终端图标 +
+/// `compact` + 圆点分隔 + 单行统计(条数 + 估算 token + 已生效裁掉
+/// 条数)+ 常显箭头,点击**定位台账记录**——摘要全文的归宿是检查器
+/// 「摘要」页,聊天流不再就地展开。
+///
+/// `key` 的 seq 即 `compaction/summary` 事件 seq,而台账那条
+/// `compacted` 记录的 seq 同源,故定位无需第二个身份字段。
 #[allow(clippy::too_many_arguments)]
 fn compaction_block(
     store: &Entity<AppStore>,
-    open_compactions: &std::collections::HashSet<String>,
     ix: usize,
     key: &str,
-    summary: &str,
     items: Option<u64>,
     tokens: Option<u64>,
+    pruned: Option<u64>,
     settle: Option<std::time::Instant>,
 ) -> impl IntoElement {
-    let open = open_compactions.contains(key);
     // 完成闪:进度会话刚收尾(年龄门控——虚拟化重挂不重放,照节点
     // 入场的既有做法);条走满 + SUCCESS 色,400ms 淡出后即静默行
     let settle = settle.filter(|at| settle_active(*at, std::time::Instant::now()));
     let s = store.clone();
-    let key_owned = key.to_string();
-    let click_key = key.to_string();
+    let seq = key.strip_prefix("cpt:").and_then(|v| v.parse::<u64>().ok());
     let message = match (items, tokens) {
-        (Some(n), Some(t)) => dict::chat::compaction_done(n, t),
-        _ if !summary.is_empty() => dict::chat::compact_summary_hint().to_string(),
-        _ => dict::chat::compact_summary_na().to_string(),
+        (Some(n), Some(t)) => match pruned.filter(|p| *p > 0) {
+            Some(p) => dict::chat::compaction_pruned(n, t, p),
+            None => dict::chat::compaction_done(n, t),
+        },
+        _ => dict::chat::compact_fallback().to_string(),
     };
     let sel = format!("compact-done-{ix}");
-    let grp = format!("cpt-group-{ix}");
     div()
         .id(("compaction", ix))
         .debug_selector(move || sel.clone())
-        .group(grp.clone())
         .v_flex()
         .cursor_pointer()
         .child(
@@ -1152,22 +1149,8 @@ fn compaction_block(
                         .text_color(theme::CAPTION())
                         .child(message),
                 )
-                // 折叠态 hover/focus 才淡入 chevron;
-                // 展开态常显向下
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .when(open, |el| {
-                            el.child(fixed(IconName::ChevronDown, 12.).text_color(theme::CAPTION()))
-                        })
-                        .when(!open, |el| {
-                            el.opacity(0.)
-                                .group_hover(grp, |style| style.opacity(1.))
-                                .child(
-                                    fixed(IconName::ChevronRight, 12.).text_color(theme::CAPTION()),
-                                )
-                        }),
-                )
+                // 定位入台账(常显弱箭头:hover 才显的入口等于没有入口)
+                .child(fixed(IconName::ChevronRight, 12.).text_color(theme::CAPTION()))
                 // 完成闪:条走满 + SUCCESS,400ms 淡出(绝对定位不占位)
                 .when_some(settle, |row, _| {
                     row.child(
@@ -1192,20 +1175,13 @@ fn compaction_block(
                     )
                 }),
         )
-        .when(open, |el| {
-            el.child(
-                div()
-                    .mt(px(4.))
-                    .pl(px(20.))
-                    .child(crate::kits::markdown_tv::tv_static(
-                        key_owned.clone(),
-                        summary,
-                    )),
-            )
-        })
         .on_click(move |_, _, cx| {
-            let key = click_key.clone();
-            s.update(cx, |st, cx| st.toggle_compaction(&key, cx));
+            let Some(seq) = seq else {
+                return;
+            };
+            s.update(cx, |st, cx| {
+                st.inspect_record("compacted", seq, cx);
+            });
         })
 }
 
@@ -1594,7 +1570,6 @@ fn render_node(
     cx: &App,
     open_reasoning: &std::collections::HashSet<String>,
     open_context: &std::collections::HashSet<String>,
-    open_compactions: &std::collections::HashSet<String>,
     compact_settled: Option<&(String, std::time::Instant)>,
     expanded_tools: &std::collections::HashSet<String>,
     open_retries: &std::collections::HashSet<String>,
@@ -1730,22 +1705,12 @@ fn render_node(
         },
         ChatNode::Compaction {
             key,
-            summary,
             items,
             tokens,
+            pruned,
         } => {
             let settle = compact_settled.filter(|(k, _)| k == key).map(|(_, at)| *at);
-            compaction_block(
-                store,
-                open_compactions,
-                ix,
-                key,
-                summary,
-                *items,
-                *tokens,
-                settle,
-            )
-            .into_any_element()
+            compaction_block(store, ix, key, *items, *tokens, *pruned, settle).into_any_element()
         }
         ChatNode::CompactStatus { .. } => {
             compact_row(dict::chat::compact_empty(), false, "compact-row").into_any_element()

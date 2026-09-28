@@ -102,6 +102,8 @@ entries! {
     tab_summary => ["摘要", "Summary"],
     /// 页签:决策(守卫裁决挂在其裁决的工具调用上)
     tab_decision => ["决策", "Decision"],
+    /// 页签:折叠(压缩的审计事实:触发/压力/门槛/遮蔽范围/裁定)
+    tab_fold => ["折叠", "Fold"],
 
     // ── 决策记录 ──
     /// 场景名:守卫(工具执行前拦截)
@@ -112,6 +114,8 @@ entries! {
     scenario_context => ["裁判", "Context"],
     /// 场景名:咨询(模型主动调用 decide 工具)
     scenario_tool => ["咨询", "Ask"],
+    /// 场景名:折叠价值裁定(压缩时裁定旧输出去留)
+    scenario_fold => ["折叠裁定", "Fold judge"],
     /// 守卫裁决:放行
     verdict_proceed => ["放行", "Proceed"],
     /// 守卫裁决:拦下
@@ -134,6 +138,50 @@ entries! {
     pruned_count(n) => ["{n} 条工具输出", "{n} tool outputs"],
     /// 决策页缺省(记录无裁决数据)
     no_decision => ["No decision recorded", "No decision recorded"],
+
+    // ── 折叠事实(台账 compacted 行的审计面)──
+    /// 信息行:触发来源
+    row_trigger => ["触发", "Trigger"],
+    /// 触发来源:自动(上下文压力越阈值)
+    trigger_auto => ["自动", "Auto"],
+    /// 触发来源:手动(/compact)
+    trigger_manual => ["手动", "Manual"],
+    /// 触发来源:溢出(provider 报上下文超长)
+    trigger_overflow => ["溢出", "Overflow"],
+    /// 触发来源:未知(旧日志无此字段)
+    trigger_unknown => ["未知", "Unknown"],
+    /// 信息行:压力(折叠前的上下文量测)
+    row_pressure => ["压力", "Pressure"],
+    /// 信息行:压力门槛(自动折叠触发线)
+    row_threshold => ["门槛", "Threshold"],
+    /// 信息行:保留尾预算(逐字保留的下限)
+    row_retain => ["保留尾", "Retain tail"],
+    /// 信息行:遮蔽范围(被折进摘要的事件区间)
+    row_shadowed => ["遮蔽范围", "Shadowed"],
+    /// 遮蔽范围值(seq 区间)
+    seq_range(a, b) => ["seq {a}–{b}", "seq {a}–{b}"],
+    /// 信息行:折叠条目数
+    row_fold_items => ["折叠条目", "Items"],
+    /// 折叠条目数
+    fold_items_count(n) => ["{n} 条", "{n} items"],
+    /// 信息行:价值裁定(候选/评估/裁掉)
+    row_judge => ["价值裁定", "Value judge"],
+    /// 价值裁定缺省(本次没有候选,未询问)
+    judge_none => ["未裁定", "Not judged"],
+    /// 信息行:折叠前缀 token
+    row_prefix_tokens => ["前缀 Token", "Prefix tokens"],
+    /// 信息行:价值裁定计数(评估/判无价值/已裁)
+    judge_line(judged, total, no_value, pruned) => ["评估 {judged}/{total} · 判无价值 {no_value} · 已裁 {pruned}", "Judged {judged}/{total} · disposable {no_value} · dropped {pruned}"],
+    /// 信息行:未评估候选(超单次问数上限的部分)
+    judge_unjudged(n) => ["（另有 {n} 条未评估）", " ({n} unjudged)"],
+    /// 折叠页缺省(记录无折叠事实)
+    no_fold => ["No fold recorded", "No fold recorded"],
+    /// 台账行 chip:折叠条目 + 前缀 token
+    fold_chip(items, tokens) => ["{items} 条 · {tokens} tok", "{items} items · {tokens} tok"],
+    /// 台账行 chip:已生效裁掉条数后缀
+    fold_chip_pruned(n) => [" · 裁 {n}", " · {n} dropped"],
+    /// 时间线折叠带:区间起点早于已载窗口(不从 0 假装完整)
+    fold_band_clip => ["更早", "earlier"],
 
     // ── 检查器信息行 ──
     /// 信息行:来源

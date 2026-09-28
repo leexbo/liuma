@@ -3158,6 +3158,209 @@ fn trajectory_ledger_rows_inspector_and_tabs(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 折叠带 + 富化行 + 检查器折叠页(C6 渲染面)。
+///
+/// 回归锁:
+/// ① `fold_band_spans_shadowed_range`——带的 x 区间**等于**被遮蔽区间首行
+///    的左缘到末行的右缘(用 `debug_bounds` 与条形实测比较,不硬编码像
+///    素);区间外的前后两行都在带外。
+/// ② 遮蔽起点早于已载窗口 → 带从 track 左缘起画 + 标「更早」,不假装
+///    区间完整。
+/// ③ 点击折叠行 → 检查器激活 + 选中该记录 + 折叠页在场(事实页置首)。
+#[gpui_kit::test]
+fn trajectory_fold_band_row_and_inspector(cx: &mut TestAppContext) {
+    use crate::features::trajectory::{InspectTarget, TrajectoryView};
+    use liuma_core::trajectory::{FoldRecord, TrajectoryRecord};
+
+    let (store, mut wcx, root) = menu_harness(cx, "foldband");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+    };
+
+    let rec = |index: u64, kind: &str| TrajectoryRecord {
+        index,
+        seq: index,
+        kind: kind.into(),
+        turn: Some(1),
+        group: "Message".into(),
+        turn_start: index == 1,
+        text: format!("记录 {index}"),
+        result: None,
+        is_error: false,
+        time_seconds: Some(1.0),
+        started_at: Some(1000 + index as i64 * 10),
+        request_number: None,
+        input: None,
+        output: None,
+        think: None,
+        // 无 TTFT 分色 → 每条一个条,一个 `tl-span-{ix}` 唯一对应一行
+        ttft_ms: None,
+        payload: None,
+        output_detail: None,
+        thinking_detail: None,
+        system_prompt: None,
+        tools_catalog: None,
+        schema_detail: None,
+        source: None,
+        decision: None,
+        fold: None,
+    };
+    // 一次折叠的落档事实:自动触发,遮蔽 seq 2..=7
+    let fold = |start: u64, end: u64| FoldRecord {
+        trigger: "auto".into(),
+        pressure_tokens: 812_000,
+        threshold_tokens: Some(800_000),
+        retain_tokens: 160_000,
+        shadowed_start: start,
+        shadowed_end: end,
+        items: end - start + 1,
+        prefix_tokens: 1_200,
+        pruned_items: 2,
+        pruned_tokens: 1_500,
+        no_value_candidates: 3,
+        judged_candidates: 2,
+        total_candidates: 5,
+    };
+    // 同一次折叠的价值裁定 receipt(C5 落在同一行;检查器「决策」页)
+    let fold_decision = || liuma_core::trajectory::DecisionRecord {
+        id: "d-fold".into(),
+        scenario: "fold".into(),
+        model: "jev-latest".into(),
+        questions: vec!["candidates[0]".into(), "candidates[1]".into()],
+        state_digest: Some("digest".into()),
+        answers: Some(serde_json::json!({
+            "candidates[0]": { "type": "noul", "noul": 0.04 },
+            "candidates[1]": { "type": "noul", "noul": 0.91 },
+        })),
+        error: None,
+        duration_ms: 412,
+        pruned: None,
+    };
+    let put =
+        |st: &mut crate::shell::store::AppStore, records: Vec<TrajectoryRecord>, total: u64| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            st.trajectory.trajectory = TrajectoryView {
+                records,
+                requests: vec![],
+                has_older: false,
+                total,
+                loading: false,
+                loading_older: false,
+            };
+            st.trajectory.trajectory_session = Some(id);
+            st.panel_open = true;
+            st.panel_tabs = vec![crate::shell::panel::PanelTab::Trajectory];
+            st.panel_active_tab = Some(crate::shell::panel::PanelTab::Trajectory);
+        };
+
+    // ── ① 载入完整窗口:8 条历史 + 1 条折叠行 ──────────────────
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let mut records: Vec<TrajectoryRecord> = (1..=8).map(|i| rec(i, "message")).collect();
+            let mut c = rec(9, "compacted");
+            c.text = "Context compacted".into();
+            c.fold = Some(fold(2, 7));
+            c.decision = Some(fold_decision());
+            records.push(c);
+            put(st, records, 9);
+        });
+    });
+    redraw(cx, &mut wcx);
+
+    // 元素实测包围盒(选择器缺失即失败;便于断言间互相比较)
+    macro_rules! bx {
+        ($sel:expr) => {
+            wcx.debug_bounds($sel)
+                .unwrap_or_else(|| panic!("{} 缺失", $sel))
+        };
+    }
+    // 折叠行富化:左括线 + 单行 + chip 三件都在,chip 本体可观测
+    assert!(
+        wcx.debug_bounds("traj-fold-chip-9").is_some(),
+        "折叠行应带富化 chip(触发/条数/已裁)"
+    );
+    // ① 带 = 遮蔽区间首行左缘 → 末行右缘(实测比对,不写死像素)
+    let band = bx!("fold-band-0");
+    let first = bx!("tl-span-2");
+    let last = bx!("tl-span-7");
+    let dl = (f32::from(band.origin.x) - f32::from(first.origin.x)).abs();
+    let dr = (f32::from(band.right()) - f32::from(last.right())).abs();
+    assert!(dl <= 1., "带左缘应贴首行左缘,差 {dl}px");
+    assert!(dr <= 1., "带右缘应贴末行右缘,差 {dr}px");
+    // 区间外的行在带外(带不外扩)
+    assert!(
+        f32::from(bx!("tl-span-1").right()) <= f32::from(band.origin.x) + 1.,
+        "覆盖率区间前的行不应被带覆盖"
+    );
+    assert!(
+        f32::from(bx!("tl-span-8").origin.x) >= f32::from(band.right()) - 1.,
+        "覆盖率区间后的行不应被带覆盖"
+    );
+    assert!(
+        wcx.debug_bounds("fold-band-clip-0").is_none(),
+        "起点在窗口内不应标「更早」"
+    );
+
+    // ③ 点折叠行 → 检查器 + 选中 + 折叠页(事实页置首)
+    click_sel(&mut wcx, "trajectory-row-9");
+    redraw(cx, &mut wcx);
+    assert_eq!(
+        cx.update(|app| store.read(app).trajectory.inspector),
+        Some(InspectTarget::Record(9)),
+        "点折叠行应选中该记录"
+    );
+    assert!(
+        wcx.debug_bounds("inspector-tab-fold").is_some(),
+        "折叠行应含折叠页"
+    );
+    assert!(
+        wcx.debug_bounds("inspector-tab-decision").is_some(),
+        "折叠行的价值裁定 receipt 应进决策页"
+    );
+    assert!(
+        wcx.debug_bounds("inspector-fold-body").is_none(),
+        "默认页不是折叠页"
+    );
+    cx.update(|app| {
+        store.update(app, |st, cx| st.set_inspector_tab("fold", cx));
+    });
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("inspector-fold-body").is_some(),
+        "折叠页应渲染折叠事实"
+    );
+
+    // ── ② 尾窗只载后半:遮蔽起点在窗口外 → 从 track 左缘起 + 标「更早」 ──
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            // 窗口 = seq 5..=9(前 4 条翻页未载),遮蔽区间仍是 2..=7
+            let mut records: Vec<TrajectoryRecord> = (5..=8).map(|i| rec(i, "message")).collect();
+            let mut c = rec(9, "compacted");
+            c.text = "Context compacted".into();
+            c.fold = Some(fold(2, 7));
+            records.push(c);
+            put(st, records, 9);
+        });
+    });
+    redraw(cx, &mut wcx);
+    let band = bx!("fold-band-0");
+    let track = bx!("timeline-track");
+    let d = (f32::from(band.origin.x) - f32::from(track.origin.x)).abs();
+    assert!(d <= 1., "起点未载时带应从 track 左缘起画,差 {d}px");
+    // 带末端仍落在窗口内最后一个被遮蔽行(seq 7)的右缘
+    let last = bx!("tl-span-7");
+    let dr = (f32::from(band.right()) - f32::from(last.right())).abs();
+    assert!(dr <= 1., "带右缘应贴窗口内最后一个被遮蔽行,差 {dr}px");
+    assert!(
+        wcx.debug_bounds("fold-band-clip-0").is_some(),
+        "起点早于已载窗口应标「更早」"
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 轨迹增量帧应用(trajectory/delta → apply_trajectory_delta):
 /// records 按 index upsert(追加保序/同序覆盖)、requests 按 number
 /// upsert、total/has_older 演进、版本推进驱动跟随;他帧会话失配丢弃。
@@ -9576,16 +9779,16 @@ fn compaction_rows_quiet_states(cx: &mut TestAppContext) {
         "空反馈不得走红色告警行"
     );
 
-    // 完成标记:quiet 行,点击展开置 open_compactions
+    // 完成标记:quiet 单行,点击**定位台账**(不再就地展开摘要全文)
     cx.update(|app| {
         store.update(app, |st, cx| {
             let id = st.state.current_id.clone().unwrap();
             let chat = st.state.chats.get_mut(&id).unwrap();
             chat.nodes.push(ChatNode::Compaction {
                 key: "cpt:5".into(),
-                summary: "## 压缩摘要\n正文".into(),
                 items: Some(5),
                 tokens: Some(1234),
+                pruned: Some(2),
             });
             st.chat.chat_version += 1;
             cx.notify();
@@ -9595,13 +9798,22 @@ fn compaction_rows_quiet_states(cx: &mut TestAppContext) {
         poll(cx, &mut wcx, "compact-done-2"),
         "完成标记行应渲染(quiet 样式)"
     );
+    assert!(
+        wcx.debug_bounds("compact-fulltext").is_none(),
+        "聊天流不再就地展开摘要全文(归宿是检查器)"
+    );
+    assert!(
+        wcx.debug_bounds("compact-done-2").is_some(),
+        "完成行有实际布局"
+    );
     click_sel(&mut wcx, "compact-done-2");
     redraw(cx, &mut wcx);
     cx.update(|app| {
         store.update(app, |st, _| {
-            assert!(
-                st.chat.open_compactions.contains("cpt:5"),
-                "点击完成行应置展开位(摘要随展开渲染)"
+            assert_eq!(
+                st.trajectory.inspect_locate,
+                Some((st.state.current_id.clone().unwrap(), "compacted".into(), 5)),
+                "点击完成行应登记台账定位(kind+seq)"
             );
         });
     });
@@ -11884,9 +12096,9 @@ fn compaction_progress_row_and_settle(cx: &mut TestAppContext) {
             chat.compact_settled = Some((key.clone(), std::time::Instant::now()));
             chat.nodes.push(ChatNode::Compaction {
                 key,
-                summary: "## 摘要\n正文".into(),
                 items: Some(3),
                 tokens: Some(1234),
+                pruned: None,
             });
             st.chat.chat_version += 1;
             cx.notify();

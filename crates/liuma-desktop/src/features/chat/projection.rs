@@ -128,17 +128,17 @@ pub enum ChatNode {
         /// 类别(渲染期词典化;宿主 detail 逐字)
         kind: NoticeKind,
     },
-    /// 压缩标记行(compaction/summary 落档;
-    /// 折叠态显统计行,点击展开摘要全文)
+    /// 压缩标记行(compaction/summary 落档;单行统计 + 点击定位台账
+    /// 记录——摘要全文的归宿是检查器,聊天流只留事实)
     Compaction {
-        /// 稳定 key(cpt:<seq>)
+        /// 稳定 key(cpt:<seq>;seq 即台账 compacted 记录的定位锚)
         key: String,
-        /// 摘要正文(markdown)
-        summary: String,
         /// 折叠条数(None = 载荷无统计,标题退「上下文已压缩」)
         items: Option<u64>,
         /// 折叠前缀估算 token
         tokens: Option<u64>,
+        /// 价值裁定**已生效**裁掉的条数(0/缺席 = 未裁)
+        pruned: Option<u64>,
     },
     /// 压缩空反馈行(compaction/error kind=empty;渲染期词典化,
     /// 中性别红。宿主载荷是英文常量,事件原文不动)
@@ -696,9 +696,9 @@ impl ChatState {
                 }
                 self.push_indexed(ChatNode::Compaction {
                     key: format!("cpt:{}", ev.seq),
-                    summary: ev.data["summary"].as_str().unwrap_or_default().to_string(),
                     items: ev.data["items"].as_u64(),
                     tokens: ev.data["shadowedTokens"].as_u64(),
+                    pruned: ev.data["prunedItems"].as_u64(),
                 });
             }
             // 压缩进度(相位 + 真实已生成字符数;引擎按 200ms/64 字符
@@ -1551,20 +1551,21 @@ mod tests {
         st.apply(&ev(
             "compaction/summary",
             2,
-            json!({ "summary": "ckpt body", "items": 5, "shadowedTokens": 1234 }),
+            json!({ "summary": "ckpt body", "items": 5, "shadowedTokens": 1234,
+                    "prunedItems": 2 }),
         ));
         assert!(!st.compact_running, "summary 终局应清进行位");
         match &st.nodes[0] {
             ChatNode::Compaction {
                 key,
-                summary,
                 items,
                 tokens,
+                pruned,
             } => {
-                assert_eq!(key, "cpt:2");
-                assert_eq!(summary, "ckpt body");
+                assert_eq!(key, "cpt:2", "key 的 seq 就是台账定位锚");
                 assert_eq!(*items, Some(5));
                 assert_eq!(*tokens, Some(1234));
+                assert_eq!(*pruned, Some(2), "已生效裁掉条数");
             }
             other => panic!("expected compaction marker, got {other:?}"),
         }

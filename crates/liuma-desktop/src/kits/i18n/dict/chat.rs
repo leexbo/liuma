@@ -89,6 +89,8 @@ entries! {
     message_stopped => ["已停止", "Stopped"],
     /// 压缩标记行标题
     compact_title => ["上下文已压缩", "Context compacted"],
+    /// 压缩标记行兜底(载荷缺统计;台账里仍有事实)
+    compact_fallback => ["已压缩", "Compacted"],
     /// 通告行标题
     turn_failed => ["本轮运行失败", "This turn failed"],
     /// 召回行前缀
@@ -97,10 +99,8 @@ entries! {
     inject(label) => ["注入·{label}", "Inject · {label}"],
     /// 压缩完成统计行
     compaction_done(n, t) => ["已压缩 {n} 条历史记录（约 {t} tokens）", "Compacted {n} entries (~{t} tokens)"],
-    /// 压缩摘要可展开提示
-    compact_summary_hint => ["点击查看压缩摘要", "Click to view the compaction summary"],
-    /// 压缩摘要不可用
-    compact_summary_na => ["压缩摘要不可用", "Compaction summary unavailable"],
+    /// 压缩完成统计行(含价值裁定裁掉条数;三元式)
+    compaction_pruned(n, t, p) => ["已压缩 {n} 条历史记录（约 {t} tokens）· 价值裁定裁掉 {p} 条", "Compacted {n} entries (~{t} tokens) · value judge dropped {p}"]
     /// 压缩空反馈行(宿主 kind=empty 载荷为英文常量,渲染期换词典)
     compact_empty => ["暂无可压缩的历史", "No compactable history yet."],
     /// 压缩相位:裁定价值(决策模型咨询;无字符流,走不确定态)

@@ -447,6 +447,63 @@ fn assistant_ttft_split(rec: &TrajectoryRecord) -> Option<f64> {
     Some(ttft / total)
 }
 
+/// 时间线上的折叠带(域归一化 0..1)
+#[derive(Clone)]
+struct FoldBand {
+    x0: f64,
+    x1: f64,
+    /// 遮蔽区间起点早于已载窗口(左端不从 0 假装完整)
+    clipped: bool,
+    /// 被点击时选中的台账行(那一次折叠的 compacted 记录)
+    record_index: u64,
+}
+
+/// 折叠带投影:每次折叠遮蔽的 seq 区间 → 条形的 x 区间。
+///
+/// 映射复用 [`build_spans`] 的结果(sequence 等差 / duration 按耗时,
+/// 两条路都不必各自再算一遍);区间端点落在窗口外时退到 0(左)/ 折叠行
+/// 自身位置(右),并以 `clipped` 标注——「更早」是有信息量的,
+/// 假装完整不是。
+fn build_fold_bands(records: &[TrajectoryRecord], spans: &[TlSpan]) -> Vec<FoldBand> {
+    let first_seq = records.first().map(|r| r.seq).unwrap_or(0);
+    let x_of = |ix: u64| {
+        spans
+            .iter()
+            .find(|sp| sp.record_index == ix)
+            .map(|sp| (sp.x0, sp.x1))
+    };
+    let mut out = Vec::new();
+    for rec in records.iter().filter(|r| r.kind == "compacted") {
+        let Some(f) = rec.fold.as_ref() else {
+            continue;
+        };
+        let covered: Vec<(f64, f64)> = records
+            .iter()
+            .filter(|r| r.seq >= f.shadowed_start && r.seq <= f.shadowed_end)
+            .filter_map(|r| x_of(r.index))
+            .collect();
+        // 遮蔽区间整体不在窗口(翻页后):退到折叠行自身的位置画一条窄带
+        // ——带要说的是「这里折过一次」,不是伪造一段区间
+        let xs = if covered.is_empty() {
+            match x_of(rec.index) {
+                Some((x0, x1)) => vec![(x0, x0.max(x1 - 0.004))],
+                None => continue,
+            }
+        } else {
+            covered
+        };
+        let x0 = xs.iter().map(|(a, _)| *a).fold(f64::MAX, f64::min);
+        let x1 = xs.iter().map(|(_, b)| *b).fold(f64::MIN, f64::max);
+        out.push(FoldBand {
+            x0,
+            x1,
+            clipped: f.shadowed_start < first_seq,
+            record_index: rec.index,
+        });
+    }
+    out
+}
+
 /// 条形主色(USER 蓝/TOOL 琥珀/error 红/ASSISTANT 紫)
 fn span_color(span: &TlSpan) -> Rgba {
     if span.is_error {
@@ -537,6 +594,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
     let s = snap(store, cx);
     let records = &s.view.records;
     let spans = build_spans(records, s.duration);
+    let bands = build_fold_bands(records, &spans);
     let searching = !s.search.trim().is_empty();
     let range = s.selection.or(s.draft);
 
@@ -565,7 +623,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         .overflow_hidden()
         .debug_selector(|| "trajectory-view".to_string())
         .child(toolbar(store, &s, cx))
-        .child(timeline(store, &s, &spans))
+        .child(timeline(store, &s, &spans, &bands))
         .child(
             div()
                 .flex()
@@ -866,7 +924,12 @@ fn action_button(
 
 // ── Overview 时间线────────────────────
 
-fn timeline(store: &Entity<AppStore>, s: &Snap, spans: &[TlSpan]) -> impl IntoElement {
+fn timeline(
+    store: &Entity<AppStore>,
+    s: &Snap,
+    spans: &[TlSpan],
+    bands: &[FoldBand],
+) -> impl IntoElement {
     let labels = [
         dict::trajectory::legend_input(),
         dict::trajectory::legend_model(),
@@ -919,6 +982,7 @@ fn timeline(store: &Entity<AppStore>, s: &Snap, spans: &[TlSpan]) -> impl IntoEl
             let s3 = store2.clone();
             div()
                 .id(("tl-span", i))
+                .debug_selector(move || format!("tl-span-{ix}"))
                 .absolute()
                 .top(top)
                 .h(px(8.))
@@ -977,6 +1041,66 @@ fn timeline(store: &Entity<AppStore>, s: &Snap, spans: &[TlSpan]) -> impl IntoEl
                     .into_any_element(),
             );
         }
+    }
+
+    // 折叠带(画在条形**之下**:它是背景事实,不抢条形的可点性;
+    // 点击 = 选中那一次折叠的台账行)
+    let mut fold_bands: Vec<gpui_kit::AnyElement> = Vec::new();
+    for (i, band) in bands.iter().enumerate() {
+        let x0 = to_track(band.x0).clamp(0., 1.);
+        let x1 = to_track(band.x1).clamp(0., 1.);
+        if x1 <= 0. || x0 >= 1. {
+            continue;
+        }
+        let w = (x1 - x0).max(0.006);
+        let s2 = store.clone();
+        let ix = band.record_index;
+        let line = gpui_kit::Rgba {
+            a: 0.28,
+            ..theme::LABEL_3()
+        };
+        fold_bands.push(
+            div()
+                .id(("fold-band", i))
+                .debug_selector(move || format!("fold-band-{i}"))
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(gpui_kit::relative(x0 as f32))
+                .w(gpui_kit::relative(w as f32))
+                .bg(gpui_kit::Rgba {
+                    a: 0.10,
+                    ..theme::LABEL_3()
+                })
+                .border_l_1()
+                .border_r_1()
+                .border_color(line)
+                .cursor_pointer()
+                .hover(|st| {
+                    st.bg(gpui_kit::Rgba {
+                        a: 0.18,
+                        ..theme::LABEL_3()
+                    })
+                })
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    s2.update(cx, |st, cx| st.select_trajectory_record(ix, cx));
+                })
+                // 起点早于已载窗口:左缘标「更早」,不假装区间完整
+                .when(band.clipped, |el| {
+                    el.child(
+                        div()
+                            .debug_selector(move || format!("fold-band-clip-{i}"))
+                            .absolute()
+                            .left(px(1.))
+                            .top(px(2.))
+                            .text_size(px(8.))
+                            .text_color(theme::CAPTION())
+                            .child(dict::trajectory::fold_band_clip().to_string()),
+                    )
+                })
+                .into_any_element(),
+        );
     }
 
     // 选区/草稿视觉:填充 + 两侧边线 + 选区外遮罩
@@ -1110,6 +1234,7 @@ fn timeline(store: &Entity<AppStore>, s: &Snap, spans: &[TlSpan]) -> impl IntoEl
             },
             |_, _, _, _| {},
         )))
+        .children(fold_bands)
         .children(turn_lines)
         .children(bars)
         .children(overlays)
@@ -1571,6 +1696,42 @@ fn record_row(
                     ),
             )
             .into_any_element()
+    } else if rec.kind == "compacted" {
+        // 折叠行:左侧括线 + 富化单行(触发/条数/prefix token/已裁)
+        // ——摘要在检查器,这里只留可扫的事实
+        let mut row = div()
+            .min_w(px(0.))
+            .flex()
+            .flex_1()
+            .items_center()
+            .gap(px(7.))
+            .px(px(8.));
+        if rec.fold.is_some() {
+            row = row.child(
+                div()
+                    .flex_shrink_0()
+                    .w(px(2.))
+                    .h(px(16.))
+                    .rounded(px(1.))
+                    .bg(mix(theme::BRAND(), theme::BASE(), 0.45)),
+            );
+        }
+        row = row.child(
+            div()
+                .min_w(px(0.))
+                .flex_1()
+                .truncate()
+                .text_size(px(12.))
+                .text_color(theme::LABEL_3())
+                .child(match rec.text.as_str() {
+                    "Context compacted" => dict::trajectory::compact_fallback().to_string(),
+                    _ => rec.text.clone(),
+                }),
+        );
+        if let Some(f) = &rec.fold {
+            row = row.child(fold_chip(rec.index, f));
+        }
+        row.into_any_element()
     } else {
         let color = match rec.kind.as_str() {
             "user" => theme::LABEL(),
@@ -1675,11 +1836,20 @@ fn inspector_tabs_for(rec: Option<&TrajectoryRecord>, diff_available: bool) -> V
             tabs
         }
         "compacted" => {
-            if r.output_detail.is_some() {
-                vec!["summary", "result"]
-            } else {
-                vec!["summary"]
+            // 折叠事实页置首(那是这次压缩「为什么/怎么压」的答案);
+            // 摘要在 Summary、裁定 receipt 在 Decision
+            let mut tabs = Vec::new();
+            if r.fold.is_some() {
+                tabs.push("fold");
             }
+            tabs.push("summary");
+            if r.output_detail.is_some() {
+                tabs.push("result");
+            }
+            if r.decision.is_some() {
+                tabs.push("decision");
+            }
+            tabs
         }
         _ => vec!["summary"],
     }
@@ -1818,6 +1988,7 @@ fn inspector(
         (Some(r), _, "diff") => diff_body(s, r).into_any_element(),
         (Some(r), _, "schema") => schema_body(store, s, r).into_any_element(),
         (Some(r), _, "decision") => decision_tab_body(r).into_any_element(),
+        (Some(r), _, "fold") => fold_tab_body(r).into_any_element(),
         (Some(r), _, "timing") => timing_body(r).into_any_element(),
         (Some(r), _, _) => summary_body(store, s, r).into_any_element(),
         // 目标数据已不在窗口(翻页/直播后):占位
@@ -1948,6 +2119,7 @@ fn tab_label(name: &str) -> &'static str {
         "diff" => dict::trajectory::tab_diff(),
         "schema" => dict::trajectory::tab_schema(),
         "decision" => dict::trajectory::tab_decision(),
+        "fold" => dict::trajectory::tab_fold(),
         _ => dict::trajectory::tab_summary(),
     }
 }
@@ -3047,6 +3219,7 @@ fn decision_scenario_label(scenario: Option<&str>) -> String {
         Some("stop") => dict::trajectory::scenario_stop().to_string(),
         Some("context") => dict::trajectory::scenario_context().to_string(),
         Some("tool") => dict::trajectory::scenario_tool().to_string(),
+        Some("fold") => dict::trajectory::scenario_fold().to_string(),
         Some(other) => other.to_string(),
         None => String::new(),
     }
@@ -3204,6 +3377,122 @@ fn decision_chip(ix: u64, d: &liuma_core::trajectory::DecisionRecord) -> Div {
                 .text_color(color)
                 .child(text),
         )
+}
+
+/// 折叠行 chip(触发来源 + 条数 + prefix token + 已裁条数)
+fn fold_chip(ix: u64, f: &liuma_core::trajectory::FoldRecord) -> Div {
+    let mut text = dict::trajectory::fold_chip(f.items, f.prefix_tokens);
+    if f.pruned_items > 0 {
+        text.push_str(&dict::trajectory::fold_chip_pruned(f.pruned_items));
+    }
+    div()
+        .debug_selector(move || format!("traj-fold-chip-{ix}"))
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(4.))
+        .pl(px(2.))
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(theme::CAPTION())
+                .child(fold_trigger_label(&f.trigger)),
+        )
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(theme::LABEL_3())
+                .child(text),
+        )
+}
+
+/// 触发来源标签(空串 = 旧日志无此字段)
+fn fold_trigger_label(trigger: &str) -> String {
+    match trigger {
+        "auto" => dict::trajectory::trigger_auto().to_string(),
+        "manual" => dict::trajectory::trigger_manual().to_string(),
+        "overflow" => dict::trajectory::trigger_overflow().to_string(),
+        _ => dict::trajectory::trigger_unknown().to_string(),
+    }
+}
+
+/// 折叠页正文:触发 / 压力 / 门槛 / 保留尾 / 遮蔽范围 / 条数 / 前缀
+/// token / 价值裁定计数 / 本次耗时。全部来自落档事件,没有第二权威。
+fn fold_tab_body(r: &TrajectoryRecord) -> Div {
+    let mut col = div()
+        .v_flex()
+        .gap(px(2.))
+        .debug_selector(|| "inspector-fold-body".to_string());
+    let Some(f) = &r.fold else {
+        return col.child(empty_text(dict::trajectory::no_fold()));
+    };
+    col = col.child(dl_row(
+        dict::trajectory::row_trigger(),
+        fold_trigger_label(&f.trigger),
+    ));
+    if f.pressure_tokens > 0 {
+        col = col.child(dl_row(
+            dict::trajectory::row_pressure(),
+            format!("{} tok", fmt_tok(f.pressure_tokens)),
+        ));
+    }
+    if let Some(t) = f.threshold_tokens {
+        col = col.child(dl_row(
+            dict::trajectory::row_threshold(),
+            format!("{} tok", fmt_tok(t)),
+        ));
+    }
+    if f.retain_tokens > 0 {
+        col = col.child(dl_row(
+            dict::trajectory::row_retain(),
+            format!("{} tok", fmt_tok(f.retain_tokens)),
+        ));
+    }
+    if f.shadowed_end > 0 {
+        col = col.child(dl_row(
+            dict::trajectory::row_shadowed(),
+            div()
+                .font_family("Menlo")
+                .text_size(px(11.))
+                .child(dict::trajectory::seq_range(
+                    f.shadowed_start.min(f.shadowed_end),
+                    f.shadowed_end,
+                )),
+        ));
+    }
+    col = col.child(dl_row(
+        dict::trajectory::row_fold_items(),
+        dict::trajectory::fold_items_count(f.items),
+    ));
+    col = col.child(dl_row(
+        dict::trajectory::row_prefix_tokens(),
+        format!("{} tok", fmt_tok(f.prefix_tokens)),
+    ));
+    // 价值裁定:候选分母诚实(评估 M / 共 N),裁掉分「已生效」与
+    // 「判为无价值」(仅记录档两者不同)
+    if f.total_candidates > 0 || f.judged_candidates > 0 {
+        let mut line = dict::trajectory::judge_line(
+            f.judged_candidates,
+            f.total_candidates,
+            f.no_value_candidates,
+            f.pruned_items,
+        );
+        let unjudged = f.total_candidates.saturating_sub(f.judged_candidates);
+        if unjudged > 0 {
+            line.push_str(&dict::trajectory::judge_unjudged(unjudged));
+        }
+        col = col.child(dl_row(dict::trajectory::row_judge(), line));
+    } else {
+        col = col.child(dl_row(
+            dict::trajectory::row_judge(),
+            dict::trajectory::judge_none(),
+        ));
+    }
+    col = col.child(dl_row(
+        dict::trajectory::row_duration(),
+        rec_total_ms(r).map(fmt_ms).unwrap_or_else(|| "—".into()),
+    ));
+    col
 }
 
 /// 决策页正文:场景 / 模型 / 裁决 / 应答 / 问题 / 耗时 / 状态摘要;
