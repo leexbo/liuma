@@ -12073,6 +12073,7 @@ fn compaction_progress_row_and_settle(cx: &mut TestAppContext) {
                 generated_chars: 1000,
                 elapsed_ms: 2400,
                 estimated_tokens: 8000,
+                through_seq: 42,
             });
             st.state.chats.insert(id, chat);
             st.chat.chat_version += 1;
@@ -12083,6 +12084,56 @@ fn compaction_progress_row_and_settle(cx: &mut TestAppContext) {
     assert!(
         wcx.debug_bounds("compact-running").is_none(),
         "有真实进度时不走旧的呼吸行"
+    );
+    // 进度形态 = 覆盖式填充(回归锁):①盖住整行(高度 ≈ 行高,含文字);
+    // ②宽度 ≈ 百分比 × 行宽(实测比较,不写死像素);③同一帧里只有它一个
+    // 填充,行底不再有第二条推进条(两条刻度会互相打架)
+    let row = wcx.debug_bounds("compact-progress").expect("进度行");
+    let fill = wcx.debug_bounds("compact-fill").expect("确定态应有填充");
+    let dh = (f32::from(fill.size.height) - f32::from(row.size.height)).abs();
+    assert!(dh <= 1., "填充应盖住整行(高度差 {dh}px)");
+    let frac = f32::from(fill.size.width) / f32::from(row.size.width);
+    let want = {
+        let p = crate::features::chat::projection::CompactProgress {
+            phase: "summarize".into(),
+            generated_chars: 1000,
+            elapsed_ms: 2400,
+            estimated_tokens: 8000,
+            through_seq: 42,
+        };
+        p.percent() / 100.0
+    };
+    assert!(
+        (frac - want).abs() < 0.02,
+        "填充宽度应等于百分比 × 行宽(实测 {frac:.3} vs {want:.3})"
+    );
+    assert!(
+        wcx.debug_bounds("compact-fill-indeterminate").is_none(),
+        "确定态不走不定态填充"
+    );
+
+    // judge 相位:没有字符流、没有分母 → 不定态填充,不画比例填充
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            let id = st.state.current_id.clone().unwrap();
+            let chat = st.state.chats.get_mut(&id).unwrap();
+            chat.compact_progress = Some(CompactProgress {
+                phase: "judge".into(),
+                through_seq: 42,
+                ..chat.compact_progress.clone().expect("进行中快照")
+            });
+            st.chat.chat_version += 1;
+            cx.notify();
+        });
+    });
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("compact-fill-indeterminate").is_some(),
+        "judge 相位走不定态填充"
+    );
+    assert!(
+        wcx.debug_bounds("compact-fill").is_none(),
+        "judge 相位不画比例填充(没有分母就不假装有)"
     );
 
     // 落档:标记行 + 完成闪在场(键 = 刚落档的标记行)
@@ -12109,6 +12160,27 @@ fn compaction_progress_row_and_settle(cx: &mut TestAppContext) {
         wcx.debug_bounds("compact-progress").is_none(),
         "落档后进度行即退场"
     );
+    // 完成闪与进行中的填充同一几何:整行覆盖(含文字)——故闪期间行被
+    // 色面盖住,点击必须仍落到行上(覆盖层不吞点击;否则闪的那 400ms
+    // 里压缩行点不动)
+    let row = wcx.debug_bounds("compact-done-1").expect("标记行");
+    let flash = wcx.debug_bounds("compact-settle").expect("完成闪");
+    assert!(
+        f32::from(flash.size.height) >= f32::from(row.size.height) - 1.
+            && f32::from(flash.size.width) >= f32::from(row.size.width) - 1.,
+        "完成闪应与进行中同几何(整行覆盖)"
+    );
+    click_sel(&mut wcx, "compact-done-1");
+    redraw(cx, &mut wcx);
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            assert_eq!(
+                st.trajectory.inspect_locate,
+                Some((st.state.current_id.clone().unwrap(), "compacted".into(), 5)),
+                "覆盖层不得吞掉行点击(完成闪期间仍可定位台账)"
+            );
+        });
+    });
 
     // 年龄门控:闪只在 400ms 窗内存在(超窗的渲染分支单测覆盖,
     // 此处锁状态清掉即摘除 = 不常驻)

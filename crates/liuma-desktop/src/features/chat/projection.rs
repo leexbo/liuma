@@ -292,6 +292,9 @@ pub struct CompactProgress {
     pub elapsed_ms: u64,
     /// 折叠前缀 token 估算(进度分母的来源)
     pub estimated_tokens: u64,
+    /// 本次折叠的终点 seq(载荷 throughSeq;一次折叠内恒定,跨次不同)
+    /// ——填充的值过渡按它作键:新一次压缩从零起涨,不退着走
+    pub through_seq: u64,
 }
 
 impl CompactProgress {
@@ -712,6 +715,7 @@ impl ChatState {
                     generated_chars: ev.data["generatedChars"].as_u64().unwrap_or(0),
                     elapsed_ms: ev.data["elapsedMs"].as_u64().unwrap_or(0),
                     estimated_tokens: ev.data["estimatedTokens"].as_u64().unwrap_or(0),
+                    through_seq: ev.data["throughSeq"].as_u64().unwrap_or(0),
                 };
                 match phase {
                     "done" => {
@@ -1724,17 +1728,20 @@ mod tests {
         let base = ChatState::default;
         let mut a = base();
         let mut b = base();
+        // 逐字段都不同(含折叠身份);仍在相等性之外
         a.compact_progress = Some(CompactProgress {
             phase: "summarize".into(),
             generated_chars: 10,
             elapsed_ms: 5,
             estimated_tokens: 8000,
+            through_seq: 42,
         });
         b.compact_progress = Some(CompactProgress {
-            phase: "summarize".into(),
+            phase: "judge".into(),
             generated_chars: 9999,
             elapsed_ms: 900,
-            estimated_tokens: 8000,
+            estimated_tokens: 8001,
+            through_seq: 43,
         });
         b.compact_settled = Some(("cpt:1".into(), std::time::Instant::now()));
         assert_eq!(a, b, "进度/完成闪不入相等性");

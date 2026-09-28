@@ -357,13 +357,13 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
             |el| {
                 // 槽位 padding 与 turn-status 同款(与列表容器同一中心线)。
                 // 三态优先级:失败终局行(自动路径失败的唯一信号;静态,
-                // 下轮清)→ 直播进度行(真实字符数 + 行底推进条)→
+                // 下轮清)→ 直播进度行(真实字符数 + 覆盖式填充)→
                 // 排队(静态)/进行(呼吸;无进度通道的老日志)
                 let row: AnyElement = match compact_progress.as_ref() {
                     Some(p) if p.phase == "failed" => {
                         compact_row(dict::chat::compact_failed(), false, "compact-failed")
                     }
-                    Some(p) if !p.terminal() => compact_progress_row(p),
+                    Some(p) if !p.terminal() => compact_progress_row(p, window, cx),
                     _ if compact_running => {
                         compact_row(dict::chat::compact_running(), true, "compact-running")
                     }
@@ -1009,13 +1009,30 @@ fn compact_row(message: &str, running: bool, selector: &'static str) -> AnyEleme
     }
 }
 
+/// 进度填充色面(半透明,盖住整行——含文字;读数透过去仍然清楚)
+fn fill_color(color: gpui_kit::Rgba) -> gpui_kit::Rgba {
+    gpui_kit::Rgba { a: 0.20, ..color }
+}
+
 /// 压缩进度行(compaction/progress 直播)。行骨架与静默行一致(图标 +
-/// `compact` + 圆点 + 文本 + 右对齐百分比);行底一条 3px 整行宽推进条
-/// (库 `Progress`,BRAND 填充,绝对定位于行底——出现/消失不挤动布局)。
-/// 分子 = 真实已生成字符数,分母 = 前缀估算;百分比封顶 99%,完成由
-/// `done` 相位宣告(条不由自己宣布完成)。`judge` 相位没有字符流 →
-/// 不确定态(库的 loading 滑动,内建尊重 reduce-motion)。
-fn compact_progress_row(progress: &CompactProgress) -> AnyElement {
+/// `compact` + 圆点 + 相位文本 + 右对齐百分比);进度形态 = 一层**覆盖式
+/// 半透明填充**:从行首按真实进度向右铺满、盖在文字之上(「这一行正在被
+/// 处理」的语义就该盖住它),透明度 0.20,读数仍清楚。
+///
+/// 不自绘库控件:库 `Progress` 强制药丸圆角(半径 = 高度/2),画不出整行
+/// 矩形填充;`ShimmerText` 只作用于字形。故此处是 div 叠层组合,值过渡走
+/// 库的 `transition`(首帧即取目标值,其后向新目标平滑滑动;`reduce_motion`
+/// 由库内部直接落到目标,不再插值)。
+///
+/// 分子 = 真实已生成字符数,分母 = 前缀估算;百分比封顶 99%,完成由 `done`
+/// 相位宣告(填充不由自己宣布完成)。`judge` 相位没有字符流、没有分母 →
+/// 不定态(库 `Progress` 的 loading 同款走位:先涨后滑的块),不假装百分比;
+/// 减少动态偏好下不定态不画填充,由文本交代正在做什么。
+fn compact_progress_row(
+    progress: &CompactProgress,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     let phase = match progress.phase.as_str() {
         "judge" => dict::chat::compact_phase_judge(),
         "commit" => dict::chat::compact_phase_commit(),
@@ -1025,6 +1042,14 @@ fn compact_progress_row(progress: &CompactProgress) -> AnyElement {
     let pct = progress.percent();
     let tip =
         dict::chat::compact_progress_tip(progress.generated_chars, progress.elapsed_ms / 1000);
+    // 确定态:宽度值过渡(库原语;帧间隔 200ms/64 字符,不插值会跳格)
+    let frac = gpui_kit::base::transition(
+        (("compact-progress", progress.through_seq), "fill"),
+        (pct / 100.).clamp(0., 1.),
+        gpui_kit::base::Transition::new(std::time::Duration::from_millis(240)),
+        window,
+        cx,
+    );
     div()
         .id("compact-progress")
         .debug_selector(|| "compact-progress".to_string())
@@ -1064,15 +1089,42 @@ fn compact_progress_row(progress: &CompactProgress) -> AnyElement {
                 .text_color(theme::CAPTION())
                 .child(format!("{}%", pct.round() as u32)),
         )
-        .child(
-            div().absolute().left_0().right_0().bottom_0().child(
-                gpui_kit::component::progress::Progress::new("compact-progress-bar")
-                    .value(pct)
-                    .loading(indeterminate)
-                    .color(theme::BRAND())
-                    .with_size(px(3.)),
-            ),
-        )
+        // 覆盖式填充(**最后一个子元素** = 画在文字之上)
+        .child(match (indeterminate, cx.reduce_motion()) {
+            (false, _) => div()
+                .debug_selector(|| "compact-fill".to_string())
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left_0()
+                .w(gpui_kit::relative(frac))
+                .rounded(px(2.))
+                .bg(fill_color(theme::BRAND()))
+                .into_any_element(),
+            // 不定态:先涨后滑的块(库 Progress loading 同款走位)
+            (true, false) => div()
+                .debug_selector(|| "compact-fill-indeterminate".to_string())
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left_0()
+                .rounded(px(2.))
+                .bg(fill_color(theme::BRAND()))
+                .with_animation(
+                    "liuma-compact-fill",
+                    Animation::new(std::time::Duration::from_millis(1200)).repeat(),
+                    |el, delta| {
+                        let start = gpui_kit::relative(gpui_kit::ease_in_out(
+                            ((delta - 0.5) / 0.5).clamp(0., 1.),
+                        ));
+                        let end = gpui_kit::relative(gpui_kit::ease_in_out(1.0 - delta));
+                        el.when(delta > 0.5, |el| el.left(start)).right(end)
+                    },
+                )
+                .into_any_element(),
+            // 减少动态:不定态不画填充(没有分母就不假装有)
+            (true, true) => div().into_any_element(),
+        })
         // 桌面独有:悬停看真实明细(字符数真值 + 已用时长;百分比是
         // 估算,故不在此列)
         .tooltip(move |window, cx| {
@@ -1151,7 +1203,8 @@ fn compaction_block(
                 )
                 // 定位入台账(常显弱箭头:hover 才显的入口等于没有入口)
                 .child(fixed(IconName::ChevronRight, 12.).text_color(theme::CAPTION()))
-                // 完成闪:条走满 + SUCCESS,400ms 淡出(绝对定位不占位)
+                // 完成闪:填充走满 + SUCCESS,400ms 淡出(与进行中同一几何
+                // ——整行覆盖式填充,故交接读起来是「同一块水涨满后退场」)
                 .when_some(settle, |row, _| {
                     row.child(
                         div()
@@ -1159,13 +1212,10 @@ fn compaction_block(
                             .absolute()
                             .left_0()
                             .right_0()
+                            .top_0()
                             .bottom_0()
-                            .child(
-                                gpui_kit::component::progress::Progress::new("compact-settle")
-                                    .value(100.)
-                                    .color(theme::SUCCESS())
-                                    .with_size(px(3.)),
-                            )
+                            .rounded(px(2.))
+                            .bg(fill_color(theme::SUCCESS()))
                             .with_animation(
                                 "liuma-compact-settle",
                                 Animation::new(COMPACT_SETTLE_MS)
