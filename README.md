@@ -18,9 +18,35 @@
 - **决策模型接入**:按开放品类接入 System One 决策模型(`noul` / `choice` / `score` 三类问题,返回约束在预声明选项内的结构化答案),覆盖审批评审员 / Stop 哨兵 / 工具守卫 / 上下文裁判四个场景,外加一个 `decide` 工具供模型主动咨询。阈值与问题文案集中一处便于人审;默认全关、只建议不自动执行、服务不可用即回退原有行为,每次询问留审计记录(设置页「决策模型」区唯一配置面)。
 - **原生桌面客户端**:GPUI 桌面端(聊天 / 计划审批 / 问答卡 / 轨迹检查器 / 全文检索 / 会话导出),另有 `liuma` CLI(REPL / JSON-RPC stdio 网关)。
 
+## 安装
+
+前置依赖(用 `just preflight` 自检缺件,它会逐项打印安装命令):
+
+| 依赖 | 用途与安装 |
+|---|---|
+| Rust 1.97+ | edition 2024;Unix `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh`,Windows 用 [rustup](https://rustup.rs) |
+| `wasm32-wasip2` 目标 | 组件契约测试要真编译 wasm 组件:`rustup target add wasm32-wasip2` |
+| `just` | 命令入口:`cargo install just` / `brew install just` / `winget install Casey.Just` |
+| 真 Python 3 | `scripts/verify-links` 与 MCP fixture 需要;Unix `brew install python3` / `apt install python3`,Windows `winget install --id Python.Python.3.13` |
+| `bash` | Unix 自带;Windows 用 Git for Windows 自带的那份 |
+
+Windows 另需 `pwsh`(shell 工具的运行时):`winget install --id Microsoft.PowerShell`。Microsoft Store 的 `python3` 只是应用执行别名(命令存在、运行即退出 49),不算真解释器。
+
+```bash
+git clone git@github.com:leexbo/liuma.git && cd liuma
+just preflight    # 开发前置自检:缺什么、怎么装,一次说清
+```
+
+构建:
+
+```bash
+cargo build --workspace    # 全部 crate;首次构建含 wasm 组件与桌面端,耗时较长
+just desktop               # 只构建 GPUI 桌面客户端
+```
+
 ## 快速开始
 
-要求 Rust 1.97+(edition 2024)。
+前置工具链见[安装](#安装);以下命令均在仓库根目录执行。
 
 ```bash
 # 不联网自检(fake provider,脚本化回声)
