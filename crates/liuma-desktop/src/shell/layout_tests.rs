@@ -848,6 +848,18 @@ fn mermaid_viewer_full_interaction(cx: &mut TestAppContext) {
     assert!(wcx.debug_bounds(seg_chart).is_some(), "卡片图表按钮应出现");
     assert!(wcx.debug_bounds(download).is_some(), "卡片下载按钮应出现");
 
+    // 文字体量锁:钮**盒**高由 `.h(px(26.))` 钉死,字号变了它也纹丝不动
+    // —— 收编期就是只量了盒(58×26 前后一致)才漏掉这条:库把可见内容放在
+    // 子元素里并自设 `.button_text_size(self.size)`,写在钮根上的字号到不了
+    // 文字,卡片标签一路是 Medium 档的 16px。故这里量**文字元素自身**。
+    let copy_label = Box::leak(format!("{copy}-label").into_boxed_str());
+    let label = wcx.debug_bounds(copy_label).expect("复制钮文字元素");
+    assert!(
+        f32::from(label.size.height) <= 18.,
+        "卡片钮文字行高 {} 超出本仓体量(13px 档 = 16.25;库 Medium 是 20)",
+        f32::from(label.size.height)
+    );
+
     // 点击卡片图 body(`{card}-figure`)→ 查看器打开(纯图)
     click_sel(&mut wcx, figure);
     wcx.run_until_parked();
@@ -5484,6 +5496,18 @@ fn trajectory_toolbar_geometry_and_roving_focus(cx: &mut TestAppContext) {
         .debug_bounds("traj-toolbar-duration")
         .expect("时长钮未渲染");
     assert_eq!(btn.size.height, px(20.), "工具条按钮高度漂移: {btn:?}");
+    // 文字体量另量**文字元素自身**:钮盒高由尺寸档钉死,字号变了它不动
+    // (收编期就是只看盒而漏掉这条)。库把可见内容放在子元素里自设
+    // `.button_text_size(self.size)`,写在钮根上的 11px 到不了文字,
+    // XSmall 档下会一路是 12px。
+    let label = wcx
+        .debug_bounds("traj-toolbar-duration-label")
+        .expect("时长钮文字元素未渲染");
+    assert!(
+        f32::from(label.size.height) <= 14.5,
+        "工具条钮文字行高 {} 超出本仓体量(11px 档 = 13.75;库 XSmall 是 15)",
+        f32::from(label.size.height)
+    );
 
     let flags = |cx: &mut TestAppContext| {
         cx.update(|app| {

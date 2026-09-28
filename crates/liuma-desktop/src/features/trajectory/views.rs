@@ -768,16 +768,27 @@ fn toggle_button(
     on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
     let sel = id.to_string();
+    let label_sel = format!("{id}-label");
     Button::new(id)
         .compact()
         .xsmall()
         .debug_selector(move || sel.clone())
-        .gap(px(4.))
+        // 可见文字走子元素时,无障碍名仍要显式给(库的 `.label()` 二者兼供)
+        .accessibility_label(label.to_string())
         .rounded(px(6.))
         .px(px(8.))
-        .text_size(px(11.))
-        .child(icon)
-        .label(label.to_string())
+        .child(
+            // 图标 + 文字自成一排:库对**子元素**内容自设
+            // `.button_text_size(self.size)`,子元素自带字号压过继承 ——
+            // 在钮根上写 `.text_size()` 到不了文字(XSmall 档 = 12px)
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .text_size(px(11.))
+                .child(icon)
+                .child(div().debug_selector(move || label_sel.clone()).child(label)),
+        )
         .when(pressed, |el| {
             el.border_1().border_color(theme::GLASS_BORDER())
         })
@@ -813,30 +824,39 @@ fn action_button(
     on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
     let sel = id.to_string();
+    let label_sel = format!("{id}-label");
     // 图标位是 Menlo 字形而非图标字体,故走 `Button` 的任意子元素槽
     // (`Button` 实现了 `ParentElement`),不用 `.icon()`
     Button::new(id)
         .compact()
         .xsmall()
         .debug_selector(move || sel.clone())
-        .gap(px(4.))
+        .accessibility_label(label.to_string())
         .rounded(px(6.))
         .px(px(5.))
-        .text_size(px(11.))
         .custom(
             ButtonCustomVariant::new(cx)
                 .color(theme::TRANSPARENT().into())
                 .foreground(theme::LABEL_3().into())
                 .hover(theme::BORDER().into()),
         )
+        // 字形与文字自成一排(字号同 toggle_button:库对子元素内容自设
+        // `.button_text_size(self.size)`,写在钮根上到不了文字)
         .child(
             div()
-                .font_family("Menlo")
-                .text_size(px(12.))
-                .line_height(gpui_kit::relative(1.))
-                .child(if all_collapsed { "⊞" } else { "⊟" }),
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .text_size(px(11.))
+                .child(
+                    div()
+                        .font_family("Menlo")
+                        .text_size(px(12.))
+                        .line_height(gpui_kit::relative(1.))
+                        .child(if all_collapsed { "⊞" } else { "⊟" }),
+                )
+                .child(div().debug_selector(move || label_sel.clone()).child(label)),
         )
-        .label(label.to_string())
         .on_click(move |ev, w, cx| on_click(ev, w, cx))
 }
 

@@ -583,15 +583,15 @@ fn card_button(
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Button {
     let sel = format!("{key}-{id}");
+    let label_sel = format!("{key}-{id}-label");
     Button::new(sel.clone())
         .debug_selector(move || sel.clone())
+        // 可见文字走子元素时,无障碍名仍要显式给:库的 `.label()` 同时喂
+        // 名字与可见文本,只给其一即丢另一个
+        .accessibility_label(label.to_string())
         .h(px(26.))
-        .gap(px(5.))
         .px(px(8.))
         .rounded(px(8.))
-        .text_size(px(13.))
-        .child(fixed(icon, 14.))
-        .label(label.to_string())
         .custom(
             ButtonCustomVariant::new(cx)
                 .color(theme::TRANSPARENT().into())
@@ -599,6 +599,19 @@ fn card_button(
                 .hover(theme::LAYER().into()),
         )
         .on_click(move |_ev, window, cx| on_click(window, cx))
+        // 图标 + 文字自成一排:库把可见内容放在**子元素**里并对它本身设
+        // `.button_text_size(self.size)`,子元素自带字号压过继承 —— 在钮
+        // 根上写 `.text_size()` 到不了文字(Medium 档 = 16px,正是收编后
+        // 卡片工具条文字变大一圈的原因)。内距/圆角仍由上方实例样式压回。
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .text_size(px(13.))
+                .child(fixed(icon, 14.))
+                .child(div().debug_selector(move || label_sel.clone()).child(label)),
+        )
 }
 
 /// mermaid 站点配置(主题映射;键名是 mermaid 主题契约,
