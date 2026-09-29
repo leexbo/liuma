@@ -71,7 +71,7 @@ pub fn render(
                                 .text_size(px(15.))
                                 .font_weight(gpui_kit::FontWeight::MEDIUM)
                                 .text_color(theme::LABEL())
-                                .child(crate::kits::i18n::dict::shell::hero_tagline()),
+                                .child(crate::kits::i18n::t!("shell.hero_tagline")),
                         ),
                 )
                 // 首运行引导:凭据未配置时给出去设置的入口
@@ -92,7 +92,7 @@ pub fn render(
                             .text_size(px(12.))
                             .text_color(theme::WARN())
                             .hover(|s| s.bg(theme::LAYER()))
-                            .child(crate::kits::i18n::dict::shell::hero_no_key())
+                            .child(crate::kits::i18n::t!("shell.hero_no_key"))
                             .on_click(move |_, window, cx| {
                                 s.update(cx, |st, cx| st.toggle_settings(window, cx));
                             }),

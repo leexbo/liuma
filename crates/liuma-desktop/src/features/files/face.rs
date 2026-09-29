@@ -3,7 +3,7 @@
 //! 超 `max_entries` 截断置标志;symlink/非常规条目归 Other
 //! (不可导航/不可打开)。
 
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use std::cmp::Ordering;
 use std::path::Path;
 
@@ -159,10 +159,10 @@ pub fn list_dir(root: &Path, dir: &Path, max_entries: usize) -> Result<Listing, 
 /// 树行错误文案
 pub fn failure_line(err: &ListError) -> String {
     match err {
-        ListError::NotFound => dict::files::dir_gone().to_string(),
-        ListError::OutsideWorkspace => dict::files::dir_outside().to_string(),
-        ListError::NotDirectory => dict::files::dir_not_dir().to_string(),
-        ListError::Unavailable(msg) => dict::files::read_failed(msg),
+        ListError::NotFound => t!("files.dir_gone").to_string(),
+        ListError::OutsideWorkspace => t!("files.dir_outside").to_string(),
+        ListError::NotDirectory => t!("files.dir_not_dir").to_string(),
+        ListError::Unavailable(msg) => t!("files.read_failed", msg = msg).into_owned(),
     }
 }
 

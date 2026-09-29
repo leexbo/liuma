@@ -19,6 +19,10 @@ mod gitinfo;
 mod kits;
 mod shell;
 
+// `t!` 展开为 `crate::_rust_i18n_t!` → `crate::_rust_i18n_try_translate`
+// (`kits/i18n/gen.rs` 的 `i18n!` 生成物),故两个名字必须在 crate 根可见。
+pub(crate) use crate::kits::i18n::backend::{_rust_i18n_t, _rust_i18n_try_translate};
+
 use std::path::PathBuf;
 
 use futures::StreamExt as _;

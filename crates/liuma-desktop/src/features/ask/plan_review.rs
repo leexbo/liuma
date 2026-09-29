@@ -15,7 +15,7 @@ use gpui_kit::{
     Styled, Window, div, px,
 };
 
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -56,8 +56,8 @@ pub fn render(
             .and_then(|o| o.description.clone())
             .unwrap_or_else(|| fallback.to_string())
     };
-    let approve_desc = option_desc(0, dict::ask::approve_desc());
-    let decline_desc = option_desc(1, dict::ask::decline_desc());
+    let approve_desc = option_desc(0, &t!("ask.approve_desc"));
+    let decline_desc = option_desc(1, &t!("ask.decline_desc"));
     Some(
         div()
             .id("plan-review")
@@ -100,7 +100,7 @@ pub fn render(
                             .text_color(theme::CAPTION())
                             .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL_2()))
                             .child(fixed(IconName::Eye, 12.))
-                            .child(dict::chat::view())
+                            .child(t!("chat.view"))
                             .on_click(move |_, _, cx| {
                                 view.update(cx, |st, cx| {
                                     st.open_panel_tab(crate::shell::panel::PanelTab::Plan, cx)
@@ -175,7 +175,7 @@ pub fn render(
                                 div()
                                     .text_size(px(13.))
                                     .text_color(theme::LABEL())
-                                    .child(dict::ask::approve_plan()),
+                                    .child(t!("ask.approve_plan")),
                             )
                             .child(
                                 div()
@@ -226,7 +226,7 @@ pub fn render(
                                 div()
                                     .text_size(px(13.))
                                     .text_color(theme::LABEL())
-                                    .child(dict::ask::decline_plan()),
+                                    .child(t!("ask.decline_plan")),
                             )
                             .child(
                                 div()
@@ -297,9 +297,9 @@ pub fn render(
                                 .text_color(theme::CAPTION())
                         })
                         .child(if selection == Some(false) {
-                            dict::ask::submit_q()
+                            t!("ask.submit_q")
                         } else {
-                            dict::ask::approve()
+                            t!("ask.approve")
                         }),
                 ),
             ),

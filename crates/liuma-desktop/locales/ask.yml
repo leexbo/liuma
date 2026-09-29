@@ -1,0 +1,105 @@
+# ask 面文案(由 dict/ask.rs 搬迁;key 根段 == 文件 stem)。
+# 值一律加引号(YAML 裸标量会被解析成非字符串,rust-i18n 只收字符串叶子)。
+_version: 2
+
+ask:
+
+  sandbox_title:
+    zh-CN: "沙箱升级审批"
+    en: "Sandbox escalation"
+
+  sandbox_desc:
+    zh-CN: "%{tool} · %{current} → %{target}(仅本次)"
+    en: "%{tool} · %{current} → %{target} (this once)"
+
+  reject:
+    zh-CN: "拒绝"
+    en: "Reject"
+
+  approve_once:
+    zh-CN: "批准一次"
+    en: "Allow once"
+
+  approve:
+    zh-CN: "批准"
+    en: "Approve"
+
+  user_cancelled:
+    zh-CN: "用户取消,回到对话"
+    en: "Cancelled by user — back to the chat"
+
+  risk_title:
+    zh-CN: "决策模型风险评估"
+    en: "Decision model risk"
+
+  risk_low:
+    zh-CN: "低风险"
+    en: "Low risk"
+
+  risk_uncertain:
+    zh-CN: "不确定"
+    en: "Uncertain"
+
+  risk_risky:
+    zh-CN: "有风险"
+    en: "Risky"
+
+  risk_reason_low:
+    zh-CN: "模型判为常规、可逆的操作(低风险概率 %{p})"
+    en: "Model reads this as routine and reversible (low-risk probability %{p})"
+
+  risk_reason_uncertain:
+    zh-CN: "模型对这一手的把握不足(低风险概率 %{p}),建议自己看一眼"
+    en: "Model is not confident about this call (low-risk probability %{p}) — worth a look"
+
+  risk_reason_risky:
+    zh-CN: "模型判为破坏性、不可逆,或越出工作区/扩权的操作(低风险概率 %{p})"
+    en: "Model reads this as destructive, irreversible, or beyond the workspace (low-risk probability %{p})"
+
+  other_option:
+    zh-CN: "其他"
+    en: "Other"
+
+  prev_q:
+    zh-CN: "上一题"
+    en: "Previous"
+
+  next_q:
+    zh-CN: "下一题"
+    en: "Next"
+
+  skip_q:
+    zh-CN: "跳过"
+    en: "Skip"
+
+  submit_q:
+    zh-CN: "提交"
+    en: "Submit"
+
+  answer_ph:
+    zh-CN: "输入你的答案"
+    en: "Type your answer"
+
+  err_pick:
+    zh-CN: "请选择一个选项或填写自定义答案。"
+    en: "Pick an option or write your own answer."
+
+  approve_plan:
+    zh-CN: "是,实施此计划"
+    en: "Yes, implement this plan"
+
+  decline_plan:
+    zh-CN: "否,并告诉它应该如何做不同"
+    en: "No, and tell it what to do differently"
+
+  decline_ph:
+    zh-CN: "否,并告诉它应该如何做不同"
+    en: "No, and tell it what to do differently"
+
+  approve_desc:
+    zh-CN: "离开计划模式;计划从下一步开始执行"
+    en: "Leaves plan mode; the plan runs from the next step"
+
+  decline_desc:
+    zh-CN: "留在计划模式;反馈会回传给模型"
+    en: "Stays in plan mode; feedback goes back to the model"

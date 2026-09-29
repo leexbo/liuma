@@ -99,6 +99,9 @@ sha2 = "0.11.0"
 hex = "0.4"
 # MCP client(stdio + streamable-http)
 rmcp = { version = "3.5", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+# 桌面 UI 文案(rust-i18n)。必须与 gpui-kit→gpui-component 解析到同一 4.2.x:
+# CURRENT_LOCALE 是 rust-i18n 的进程级单例,双版本 = 双语言盘,库层文案不跟随。
+rust-i18n = "4.2.1"
 # 附件 wire 编码(base64 / data URL)
 base64 = "0.23"
 # PDF 预览:pdf-syntax 解析 + 纯 Rust 栅格化(pdf-render 重导出;无 C 交付物)

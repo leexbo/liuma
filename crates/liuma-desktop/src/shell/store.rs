@@ -264,12 +264,12 @@ impl AppStore {
         if self.settings.needs_onboarding && self.settings.onboarding_key_input.is_none() {
             self.settings.onboarding_key_input = Some(cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder(crate::kits::i18n::dict::shell::api_key_input())
+                    .placeholder(crate::kits::i18n::t!("shell.api_key_input"))
             }));
         }
         if self.trajectory.trajectory_search.is_none() {
             self.trajectory.trajectory_search = Some(cx.new(|cx| {
-                InputState::new(window, cx).placeholder(crate::kits::i18n::dict::shell::search_ph())
+                InputState::new(window, cx).placeholder(crate::kits::i18n::t!("shell.search_ph"))
             }));
         }
         self.ensure_provider_form_inputs(window, cx);
@@ -357,7 +357,7 @@ impl AppStore {
             let composer = cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .auto_grow(1, 8)
-                    .placeholder(crate::kits::i18n::dict::chat::composer_standard())
+                    .placeholder(crate::kits::i18n::t!("chat.composer_standard"))
             });
             // Enter 发送(shift=true = Shift+Enter 换行,交给默认行为);
             // 多行模式 Enter 已默认插入换行 → 取值后剥尾随换行,置位延迟清空。
@@ -411,7 +411,11 @@ impl AppStore {
                 if status == "failed" {
                     self.set_settings_notice(
                         false,
-                        crate::kits::i18n::dict::settings::mcp_connect_failed(server, error),
+                        crate::kits::i18n::t!(
+                            "settings.mcp_connect_failed",
+                            server = server,
+                            error = error
+                        ),
                         cx,
                     );
                 }
@@ -815,7 +819,7 @@ impl AppStore {
                         chat.plan_mode = prior;
                     }
                     s.push_local_notice(
-                        &crate::kits::i18n::dict::shell::mode_switch_failed(&e.message),
+                        crate::kits::i18n::t!("shell.mode_switch_failed", msg = &e.message),
                         cx,
                     );
                 }),
@@ -823,7 +827,7 @@ impl AppStore {
                     if let Some(chat) = s.state.chats.get_mut(&rollback_id) {
                         chat.plan_mode = prior;
                     }
-                    s.push_local_notice(crate::kits::i18n::dict::shell::mode_channel_failed(), cx);
+                    s.push_local_notice(crate::kits::i18n::t!("shell.mode_channel_failed"), cx);
                 }),
                 _ => {}
             }
@@ -868,14 +872,14 @@ impl AppStore {
                 Ok(Err(e)) => store.update(cx, |s, cx| {
                     s.set_cfg_permission(&id, &prior);
                     s.push_local_notice(
-                        &crate::kits::i18n::dict::shell::switch_failed(&e.message),
+                        crate::kits::i18n::t!("shell.switch_failed", msg = &e.message),
                         cx,
                     );
                 }),
                 Err(_) => store.update(cx, |s, cx| {
                     s.set_cfg_permission(&id, &prior);
                     s.push_local_notice(
-                        crate::kits::i18n::dict::shell::permission_channel_failed(),
+                        crate::kits::i18n::t!("shell.permission_channel_failed"),
                         cx,
                     );
                 }),
@@ -1028,7 +1032,7 @@ impl AppStore {
         };
         if let Err(e) = f(self.bridge.host(), &id) {
             self.push_local_notice(
-                &crate::kits::i18n::dict::shell::switch_failed(&e.message),
+                crate::kits::i18n::t!("shell.switch_failed", msg = &e.message),
                 cx,
             );
         } else {
@@ -1039,7 +1043,12 @@ impl AppStore {
 
     /// 本地通告行(设置失败等;不经 apply_frame,须自增版本驱动
     /// 渲染侧滚动跟随,且 key 须唯一——push_node 按 key 幂等)
-    pub fn push_local_notice(&mut self, text: &str, cx: &mut Context<Self>) {
+    pub fn push_local_notice(
+        &mut self,
+        text: impl Into<gpui_kit::SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        let text = text.into();
         let Some(id) = self.state.current_id.clone() else {
             return;
         };

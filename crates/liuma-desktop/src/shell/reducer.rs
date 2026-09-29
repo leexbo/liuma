@@ -246,41 +246,47 @@ pub fn apply_frame(state: &mut StoreState, frame: ServerRequest) -> Vec<Effect> 
 /// 运行时长格式(秒取整、分钟位两位零填充)。
 /// 例:`0秒`、`15秒`、`2分05秒`。
 pub fn format_run_duration(d: std::time::Duration) -> String {
-    format_run_duration_l(d, crate::kits::i18n::lang())
+    format_run_duration_l(d, crate::kits::i18n::current_locale())
 }
 
-/// [`format_run_duration`] 显式语言核(测试双语言断言用)
-pub fn format_run_duration_l(d: std::time::Duration, lang: crate::kits::i18n::Lang) -> String {
-    use crate::kits::i18n::dict;
+/// [`format_run_duration`] 显式档核(测试双语言断言用)
+pub fn format_run_duration_l(d: std::time::Duration, locale: &str) -> String {
+    use crate::kits::i18n::t;
     let secs = d.as_secs();
     if secs < 60 {
-        dict::time::l::duration_s(lang, secs)
+        t!("time.duration_s", locale = locale, v = secs).into_owned()
     } else {
         let (minutes, seconds) = (secs / 60, secs % 60);
-        // 秒位两位零填充(格式规格不走词典模板,先格式化再进模板)
-        dict::time::l::duration_ms(lang, minutes, format!("{seconds:02}"))
+        // 秒位两位零填充(格式规格不走文案模板,先格式化再进模板)
+        t!(
+            "time.duration_ms",
+            locale = locale,
+            mins = minutes,
+            secs = format!("{seconds:02}")
+        )
+        .into_owned()
     }
 }
 
 /// 相对时间(侧栏行;now 注入以便测试)
 pub fn relative_time(now_ms: u64, ts_ms: u64) -> String {
-    relative_time_l(now_ms, ts_ms, crate::kits::i18n::lang())
+    relative_time_l(now_ms, ts_ms, crate::kits::i18n::current_locale())
 }
 
-/// [`relative_time`] 显式语言核(测试双语言断言用)
-pub fn relative_time_l(now_ms: u64, ts_ms: u64, lang: crate::kits::i18n::Lang) -> String {
-    use crate::kits::i18n::dict;
+/// [`relative_time`] 显式档核(测试双语言断言用)
+pub fn relative_time_l(now_ms: u64, ts_ms: u64, locale: &str) -> String {
+    use crate::kits::i18n::t;
     let d = now_ms.saturating_sub(ts_ms);
     if d < 60_000 {
-        dict::time::l::rel_just_now(lang).into()
+        t!("time.rel_just_now", locale = locale).into_owned()
     } else if d < 3_600_000 {
-        dict::time::l::rel_mins_ago(lang, d / 60_000)
+        t!("time.rel_mins_ago", locale = locale, n = d / 60_000).into_owned()
     } else if d < 86_400_000 {
-        dict::time::l::rel_hours_ago(lang, d / 3_600_000)
+        t!("time.rel_hours_ago", locale = locale, n = d / 3_600_000).into_owned()
     } else if d < 7 * 86_400_000 {
-        dict::time::l::rel_days_ago(lang, d / 86_400_000)
+        t!("time.rel_days_ago", locale = locale, n = d / 86_400_000).into_owned()
     } else {
-        dict::time::l::rel_earlier(lang).into()
+        t!("time.rel_earlier", locale = locale).into_owned()
     }
 }
 
@@ -300,7 +306,6 @@ mod tests {
 
     #[test]
     fn format_run_duration_seconds_and_minutes() {
-        use crate::kits::i18n::Lang;
         assert_eq!(
             format_run_duration(std::time::Duration::from_secs(0)),
             "0秒"
@@ -323,15 +328,15 @@ mod tests {
         );
         // en(显式语言核,不触进程语言盘)
         assert_eq!(
-            format_run_duration_l(std::time::Duration::from_secs(0), Lang::En),
+            format_run_duration_l(std::time::Duration::from_secs(0), "en"),
             "0s"
         );
         assert_eq!(
-            format_run_duration_l(std::time::Duration::from_secs(60), Lang::En),
+            format_run_duration_l(std::time::Duration::from_secs(60), "en"),
             "1m 00s"
         );
         assert_eq!(
-            format_run_duration_l(std::time::Duration::from_secs(125), Lang::En),
+            format_run_duration_l(std::time::Duration::from_secs(125), "en"),
             "2m 05s"
         );
     }
@@ -678,31 +683,27 @@ mod tests {
 
     #[test]
     fn relative_time_buckets() {
-        use crate::kits::i18n::Lang;
         let now = 10_000_000_000u64;
         assert_eq!(relative_time(now, now), "刚刚");
         assert_eq!(relative_time(now, now - 5 * 60_000), "5 分钟前");
         assert_eq!(relative_time(now, now - 3 * 3_600_000), "3 小时前");
         assert_eq!(relative_time(now, now - 2 * 86_400_000), "2 天前");
         assert_eq!(relative_time(now, now - 30 * 86_400_000), "更早");
-        // en(显式语言核,不触进程语言盘)
-        assert_eq!(relative_time_l(now, now, Lang::En), "Just now");
+        // en(显式档核,不触全局 locale)
+        assert_eq!(relative_time_l(now, now, "en"), "Just now");
         assert_eq!(
-            relative_time_l(now, now - 5 * 60_000, Lang::En),
+            relative_time_l(now, now - 5 * 60_000, "en"),
             "5 minutes ago"
         );
         assert_eq!(
-            relative_time_l(now, now - 3 * 3_600_000, Lang::En),
+            relative_time_l(now, now - 3 * 3_600_000, "en"),
             "3 hours ago"
         );
         assert_eq!(
-            relative_time_l(now, now - 2 * 86_400_000, Lang::En),
+            relative_time_l(now, now - 2 * 86_400_000, "en"),
             "2 days ago"
         );
-        assert_eq!(
-            relative_time_l(now, now - 30 * 86_400_000, Lang::En),
-            "Earlier"
-        );
+        assert_eq!(relative_time_l(now, now - 30 * 86_400_000, "en"), "Earlier");
     }
 
     #[test]

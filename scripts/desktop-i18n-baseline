@@ -1,6 +1,0 @@
-# 桌面硬编码文案存量基线(棘轮,只减不增;scripts/verify-desktop-i18n 消费)。
-# 格式:<crate 相对路径> <次数>;迁移批次清零一个文件即删除该行。
-# 批次计划见 docs/plans/i18n.md。
-# 例外:kits/highlight.rs 的 syntect 主题元数据 author(开发者署名,
-# 非 UI 文案,不迁移,计数恒 1)。
-crates/liuma-desktop/src/kits/highlight.rs 1

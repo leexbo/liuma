@@ -12,7 +12,7 @@ use gpui_kit::{AppContext, Context, Entity, Window};
 
 use liuma_core::proto::RpcResult;
 
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use crate::shell::store::AppStore;
 
 /// 库 `QuestionnaireState` 与本仓 wire 形状之间的反查表。
@@ -59,11 +59,11 @@ impl AppStore {
         let label = if approve {
             opts.first()
                 .map(|o| o.label.clone())
-                .unwrap_or_else(|| dict::ask::approve().into())
+                .unwrap_or_else(|| t!("ask.approve").into())
         } else {
             opts.get(1)
                 .map(|o| o.label.clone())
-                .unwrap_or_else(|| dict::ask::reject().into())
+                .unwrap_or_else(|| t!("ask.reject").into())
         };
         let result = RpcResult::Ok(serde_json::json!({
             "sessionId": plan.session_id,
@@ -85,7 +85,7 @@ impl AppStore {
             &plan.rpc_id,
             &RpcResult::Err(liuma_core::proto::RpcError {
                 code: "cancelled".into(),
-                message: dict::ask::user_cancelled().into(),
+                message: t!("ask.user_cancelled").into(),
                 details: serde_json::Value::Null,
             }),
         );
@@ -104,7 +104,7 @@ impl AppStore {
         let label = opts
             .get(1)
             .map(|o| o.label.clone())
-            .unwrap_or_else(|| dict::ask::reject().into());
+            .unwrap_or_else(|| t!("ask.reject").into());
         let result = RpcResult::Ok(serde_json::json!({
             "sessionId": plan.session_id,
             "answer": { "answers": [ {
@@ -152,8 +152,7 @@ impl AppStore {
         if self.ask.plan_decline_input.is_some() {
             return;
         }
-        let input =
-            cx.new(|cx| TextareaState::new(window, cx).placeholder(dict::ask::decline_ph()));
+        let input = cx.new(|cx| TextareaState::new(window, cx).placeholder(t!("ask.decline_ph")));
         cx.subscribe(&input, |this, _input, event: &InputEvent, cx| match event {
             InputEvent::PressEnter { shift: false, .. } => {
                 this.submit_plan_selection(cx);
@@ -202,7 +201,7 @@ impl AppStore {
             &p.rpc_id,
             &RpcResult::Err(liuma_core::proto::RpcError {
                 code: "cancelled".into(),
-                message: dict::ask::user_cancelled().into(),
+                message: t!("ask.user_cancelled").into(),
                 details: serde_json::Value::Null,
             }),
         );
@@ -251,8 +250,7 @@ impl AppStore {
         let mut items = Vec::with_capacity(ask.questions.len());
         for (i, q) in ask.questions.iter().enumerate() {
             let options = q.options.clone().unwrap_or_default();
-            let input =
-                cx.new(|cx| InputState::new(window, cx).placeholder(dict::ask::answer_ph()));
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("ask.answer_ph")));
             let choices = options
                 .iter()
                 .enumerate()
@@ -270,7 +268,7 @@ impl AppStore {
                     .with_choices(choices)
                     .with_input(QuestionnaireInputDefinition::new(
                         input,
-                        dict::ask::other_option(),
+                        t!("ask.other_option"),
                     )),
             );
             ids.push(q.id.clone());

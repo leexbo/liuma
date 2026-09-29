@@ -20,7 +20,7 @@ use crate::kits::theme;
 use crate::shell::store::AppStore;
 
 use super::store::LineageRow;
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 
 /// 状态点:running=活动蓝,completed=done 绿,
 /// failed=红,killed=黄
@@ -59,9 +59,14 @@ fn duration_text(row: &LineageRow) -> String {
     };
     let secs = (end - started).max(0) / 1000;
     if secs < 60 {
-        dict::time::duration_s(secs)
+        t!("time.duration_s", v = secs).into_owned()
     } else {
-        dict::time::duration_ms(secs / 60, format!("{:02}", secs % 60))
+        t!(
+            "time.duration_ms",
+            mins = secs / 60,
+            secs = format!("{:02}", secs % 60)
+        )
+        .into_owned()
     }
 }
 
@@ -102,7 +107,7 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
             div()
                 .text_size(px(12.))
                 .text_color(theme::LABEL_2())
-                .child(dict::misc::subagents_title()),
+                .child(t!("misc.subagents_title")),
         )
         .child(
             div()
@@ -110,9 +115,9 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                 .text_size(px(11.))
                 .text_color(theme::CAPTION())
                 .child(if running_n > 0 {
-                    dict::misc::running_n(running_n)
+                    t!("misc.running_n", n = running_n).into_owned()
                 } else {
-                    dict::misc::ended().to_string()
+                    t!("misc.ended").to_string()
                 }),
         );
     // 子会话视图:标题行尾缀「主线」返回钮(不挤列表行)
@@ -140,7 +145,7 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                     s_main.update(cx, |st, cx| st.open_session(&id, cx));
                 })
                 .child(fixed(gpui_kit::component::IconName::ArrowLeft, 11.))
-                .child(dict::misc::mainline()),
+                .child(t!("misc.mainline")),
         );
     }
     // 行元素先建(闭包 move 所有权,避免借用 chips 越过函数尾)
@@ -228,7 +233,7 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                             .hover(|st| st.bg(theme::DANGER()).border_color(theme::DANGER()))
                             .text_size(px(11.))
                             .text_color(theme::LABEL_2())
-                            .child(dict::misc::interrupt())
+                            .child(t!("misc.interrupt"))
                             .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
                                 cx.stop_propagation()
                             })

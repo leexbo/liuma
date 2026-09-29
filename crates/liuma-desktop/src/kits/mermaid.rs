@@ -42,7 +42,7 @@ use gpui_kit::{
 use super::icons::{LiumaIcon, fixed};
 use super::theme;
 use super::theme::{Palette, palette_of};
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 
 /// 卡片控件态快照(消息流 per-card map;kits 无状态,不直接引用
 /// AppStore——宿主注入状态与动作,本模块只按快照渲染)。
@@ -429,16 +429,11 @@ fn card_toolbar(
         (
             "copy-done",
             IconName::Check,
-            dict::common::copied(),
+            t!("common.copied"),
             theme::SUCCESS(),
         )
     } else {
-        (
-            "copy",
-            IconName::Copy,
-            dict::common::copy(),
-            theme::LABEL_2(),
-        )
+        ("copy", IconName::Copy, t!("common.copy"), theme::LABEL_2())
     };
     let bar_id = format!("{key}-actions");
     div()
@@ -459,7 +454,7 @@ fn card_toolbar(
                 .child(segment_button(
                     &key,
                     "chart",
-                    dict::chat::mermaid_chart(),
+                    t!("chat.mermaid_chart"),
                     !show_code,
                     {
                         let key = key.clone();
@@ -470,7 +465,7 @@ fn card_toolbar(
                 .child(segment_button(
                     &key,
                     "code",
-                    dict::chat::mermaid_code(),
+                    t!("chat.mermaid_code"),
                     show_code,
                     {
                         let key = key.clone();
@@ -495,7 +490,7 @@ fn card_toolbar(
                     &key,
                     "download",
                     LiumaIcon::Download,
-                    dict::chat::mermaid_download(),
+                    t!("chat.mermaid_download"),
                     theme::LABEL_2(),
                     {
                         let key = key.clone();
@@ -509,7 +504,7 @@ fn card_toolbar(
                     &key,
                     "enlarge",
                     IconName::Maximize,
-                    dict::chat::mermaid_zoom(),
+                    t!("chat.mermaid_zoom"),
                     theme::LABEL_2(),
                     {
                         let key = key.clone();
@@ -527,10 +522,11 @@ fn card_toolbar(
 fn segment_button(
     key: &str,
     id: &'static str,
-    label: &'static str,
+    label: impl Into<gpui_kit::SharedString>,
     active: bool,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    let label = label.into();
     let key = key.to_string();
     let sel = format!("{key}-seg-{id}");
     let base = div()
@@ -575,10 +571,11 @@ fn card_button(
     key: &str,
     id: &'static str,
     icon: impl Into<gpui_kit::component::Icon>,
-    label: &'static str,
+    label: impl Into<gpui_kit::SharedString>,
     color: Rgba,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Button {
+    let label: gpui_kit::SharedString = label.into();
     let sel = format!("{key}-{id}");
     let label_sel = format!("{key}-{id}-label");
     Button::new(sel.clone())

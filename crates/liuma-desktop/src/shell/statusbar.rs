@@ -16,6 +16,7 @@ use crate::features::settings::usage_bar;
 use crate::kits::fmt::{
     fmt_cache_hit, fmt_duration_compact, fmt_exact_count, fmt_tokens_abbrev, fmt_tps,
 };
+use crate::kits::i18n::t;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -101,7 +102,8 @@ fn stats_pills(store: &Entity<AppStore>, cx: &App) -> Option<AnyElement> {
     }
     let mut row = div().flex().items_center().gap(px(6.));
     if steps > 0 {
-        let mut label = crate::kits::i18n::dict::shell::stats_counts(turns, steps);
+        let mut label =
+            crate::kits::i18n::t!("shell.stats_counts", turns = turns, steps = steps).into_owned();
         if tps > 0 {
             label.push_str(&format!(" · {} tok/s", fmt_tps(tps as f64)));
         }
@@ -117,7 +119,10 @@ fn stats_pills(store: &Entity<AppStore>, cx: &App) -> Option<AnyElement> {
     if total > 0 {
         let mut label = format!("{} tok", fmt_tokens_abbrev(total));
         if let Some(hit) = fmt_cache_hit(read, input) {
-            label.push_str(&crate::kits::i18n::dict::shell::stats_cache_hit_pct(hit));
+            label.push_str(&crate::kits::i18n::t!(
+                "shell.stats_cache_hit_pct",
+                hit = hit
+            ));
         }
         row = row.child(stats_chip(
             store,
@@ -185,25 +190,25 @@ pub(crate) fn session_stats_card(store: &Entity<AppStore>, cx: &App) -> AnyEleme
     let mut card = detail_card();
     card = card.child(card_head(
         fixed(LiumaIcon::Gauge, 14.).into_any_element(),
-        crate::kits::i18n::dict::shell::stats_title(),
+        crate::kits::i18n::t!("shell.stats_title"),
         None,
     ));
     if let Some(s) = stats {
         card = card
             .child(detail_row(
-                crate::kits::i18n::dict::shell::stats_model_time(),
+                crate::kits::i18n::t!("shell.stats_model_time"),
                 fmt_duration_compact(s["llmMs"].as_i64().unwrap_or(0)),
             ))
             .child(detail_row(
-                crate::kits::i18n::dict::shell::stats_tool_time(),
+                crate::kits::i18n::t!("shell.stats_tool_time"),
                 fmt_duration_compact(s["toolMs"].as_i64().unwrap_or(0)),
             ))
             .child(detail_row(
-                crate::kits::i18n::dict::shell::stats_ttft(),
+                crate::kits::i18n::t!("shell.stats_ttft"),
                 fmt_duration_compact(s["firstTokenMs"].as_i64().unwrap_or(0)),
             ))
             .child(detail_row(
-                crate::kits::i18n::dict::shell::stats_tps(),
+                crate::kits::i18n::t!("shell.stats_tps"),
                 format!(
                     "{} tok/s",
                     fmt_tps(s["tokensPerSecond"].as_f64().unwrap_or(0.0))
@@ -229,26 +234,26 @@ pub(crate) fn token_usage_card(store: &Entity<AppStore>, cx: &App) -> AnyElement
             let mut rows = vec![];
             if let Some(hit) = fmt_cache_hit(read, input) {
                 rows.push((
-                    crate::kits::i18n::dict::shell::stats_cache_hit().to_string(),
+                    crate::kits::i18n::t!("shell.stats_cache_hit").to_string(),
                     format!("{hit}%"),
                 ));
             }
             rows.push((
-                crate::kits::i18n::dict::shell::stats_uncached().to_string(),
+                crate::kits::i18n::t!("shell.stats_uncached").to_string(),
                 format!("{} tok", fmt_exact_count(uncached)),
             ));
             rows.push((
-                crate::kits::i18n::dict::shell::stats_cache_read().to_string(),
+                crate::kits::i18n::t!("shell.stats_cache_read").to_string(),
                 format!("{} tok", fmt_exact_count(read)),
             ));
             if write != 0 {
                 rows.push((
-                    crate::kits::i18n::dict::shell::stats_cache_write().to_string(),
+                    crate::kits::i18n::t!("shell.stats_cache_write").to_string(),
                     format!("{} tok", fmt_exact_count(write)),
                 ));
             }
             rows.push((
-                crate::kits::i18n::dict::shell::stats_output().to_string(),
+                crate::kits::i18n::t!("shell.stats_output").to_string(),
                 format!("{} tok", fmt_exact_count(output)),
             ));
             (Some(total), rows)
@@ -257,7 +262,7 @@ pub(crate) fn token_usage_card(store: &Entity<AppStore>, cx: &App) -> AnyElement
     };
     card = card.child(card_head(
         fixed(gpui_kit::assets::IconName::Database, 14.).into_any_element(),
-        crate::kits::i18n::dict::shell::stats_token_usage(),
+        crate::kits::i18n::t!("shell.stats_token_usage"),
         total.map(|t| format!("{} tok", fmt_exact_count(t))),
     ));
     for (label, value) in rows {
@@ -272,7 +277,12 @@ fn detail_card() -> gpui_kit::Div {
 }
 
 /// 卡头部(图标+标题,可选右对齐总数)+ 发丝分隔线
-fn card_head(icon: AnyElement, title: &str, total: Option<String>) -> AnyElement {
+fn card_head(
+    icon: AnyElement,
+    title: impl Into<gpui_kit::SharedString>,
+    total: Option<String>,
+) -> AnyElement {
+    let title = title.into();
     div()
         .v_flex()
         .gap(px(10.))
@@ -304,7 +314,8 @@ fn card_head(icon: AnyElement, title: &str, total: Option<String>) -> AnyElement
 }
 
 /// 详情卡行(label 左侧灰 / 值右对齐)
-fn detail_row(label: &str, value: String) -> AnyElement {
+fn detail_row(label: impl Into<gpui_kit::SharedString>, value: String) -> AnyElement {
+    let label = label.into();
     div()
         .flex()
         .items_baseline()
@@ -374,13 +385,13 @@ fn billing_badge(store: &Entity<AppStore>, cx: &App) -> Option<AnyElement> {
                             .hover(|s| s.bg(theme::DOCK()))
                             .child(fixed(LiumaIcon::Gauge, 12.).text_color(theme::LABEL_2()))
                             .when_some(p5, |el, v| {
-                                el.child(window_label(crate::kits::i18n::dict::time::window_5h()))
+                                el.child(window_label(&t!("time.window_5h")))
                                     .child(usage_bar(v, 20.))
                                     .child(pct_label(v))
                             })
                             .when_some(p7, |el, v| {
                                 el.child(div().w(px(1.)).h(px(10.)).bg(theme::BORDER()))
-                                    .child(window_label(crate::kits::i18n::dict::time::window_1w()))
+                                    .child(window_label(&t!("time.window_1w")))
                                     .child(usage_bar(v, 20.))
                                     .child(pct_label(v))
                             }),
@@ -452,13 +463,13 @@ pub(crate) fn billing_card(store: &Entity<AppStore>, cx: &App) -> AnyElement {
         .unwrap_or(serde_json::Value::Null);
     let blocks = [
         (
-            crate::kits::i18n::dict::time::window_5h_long(),
+            t!("time.window_5h_long"),
             cache["pct_5h"].as_u64(),
             cache["resets"].as_str().and_then(|r| reset_time(r, false)),
             theme::BRAND(),
         ),
         (
-            crate::kits::i18n::dict::time::window_1w_long(),
+            t!("time.window_1w_long"),
             cache["pct_7d"].as_u64(),
             cache["resets_7d"]
                 .as_str()
@@ -530,7 +541,7 @@ fn reset_time(resets: &str, weekly: bool) -> Option<String> {
         .timestamp_millis_opt(resets.parse::<i64>().ok()?)
         .single()?;
     Some(if weekly {
-        crate::kits::i18n::dict::time::clock_md_plain(dt.month(), dt.day())
+        t!("time.clock_md_plain", month = dt.month(), day = dt.day()).into_owned()
     } else {
         dt.format("%H:%M").to_string()
     })

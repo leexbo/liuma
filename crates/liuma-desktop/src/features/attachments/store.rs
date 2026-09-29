@@ -13,7 +13,7 @@ use std::sync::Arc;
 use gpui_kit::Context;
 use liuma_attachment::{ImageAttachmentLimits, ImageMediaType};
 
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use crate::shell::store::AppStore;
 
 /// 一条待发送草稿图片(发送前 host 准入;bytes 供 base64 入 content)
@@ -67,21 +67,31 @@ pub struct AttachmentToast {
 /// 映射不全回退通用失败文案)
 pub(crate) fn image_reject_text(reason: &str, limits: &ImageAttachmentLimits) -> String {
     match reason {
-        "TOO_MANY_IMAGES" => dict::files::too_many_images(limits.max_images_per_message),
-        "IMAGES_TOO_LARGE" => {
-            dict::files::images_total_over(image_size_text(limits.max_message_image_bytes))
+        "TOO_MANY_IMAGES" => {
+            t!("files.too_many_images", n = limits.max_images_per_message).into_owned()
         }
-        "UNSUPPORTED_IMAGE_TYPE" => dict::files::unsupported_image_type().to_string(),
-        "IMAGE_TOO_LARGE" => dict::files::image_over(image_size_text(limits.max_image_bytes)),
-        "IMAGE_TOO_MANY_PIXELS" => dict::files::pixels_over().to_string(),
-        "IMAGE_DIMENSION_TOO_LARGE" => dict::files::dims_over(limits.max_image_dimension),
+        "IMAGES_TOO_LARGE" => t!(
+            "files.images_total_over",
+            limit = image_size_text(limits.max_message_image_bytes)
+        )
+        .into_owned(),
+        "UNSUPPORTED_IMAGE_TYPE" => t!("files.unsupported_image_type").into_owned(),
+        "IMAGE_TOO_LARGE" => t!(
+            "files.image_over",
+            limit = image_size_text(limits.max_image_bytes)
+        )
+        .into_owned(),
+        "IMAGE_TOO_MANY_PIXELS" => t!("files.pixels_over").into_owned(),
+        "IMAGE_DIMENSION_TOO_LARGE" => {
+            t!("files.dims_over", limit = limits.max_image_dimension).into_owned()
+        }
         "INVALID_IMAGE_BASE64" | "INVALID_IMAGE" | "IMAGE_TYPE_MISMATCH" => {
-            dict::files::encode_invalid().to_string()
+            t!("files.encode_invalid").into_owned()
         }
-        "MODEL_DOES_NOT_SUPPORT_IMAGES" => dict::files::model_no_images().to_string(),
-        "COMMAND_FILES_UNSUPPORTED" => dict::files::cmd_no_files().to_string(),
-        "INVALID_FILE_NAME" | "INVALID_FILE_SOURCE" => dict::files::invalid_file().to_string(),
-        _ => dict::files::send_failed().to_string(),
+        "MODEL_DOES_NOT_SUPPORT_IMAGES" => t!("files.model_no_images").into_owned(),
+        "COMMAND_FILES_UNSUPPORTED" => t!("files.cmd_no_files").into_owned(),
+        "INVALID_FILE_NAME" | "INVALID_FILE_SOURCE" => t!("files.invalid_file").into_owned(),
+        _ => t!("files.send_failed").into_owned(),
     }
 }
 

@@ -2685,9 +2685,10 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         self.settings.read().language.clone()
     }
 
-    /// 设置界面语言偏好(落盘;白名单 = 桌面词典支持的档位)
+    /// 设置界面语言偏好(落盘;白名单 = 桌面 `LOCALES` 的 locale id 词汇,
+    /// 与 rust-i18n / gpui-component 同词表)
     pub fn set_language(&self, id: &str) -> Result<(), RpcError> {
-        if !["zh", "en"].contains(&id) {
+        if !["zh-CN", "en"].contains(&id) {
             return Err(RpcError::bad_request("不支持的语言"));
         }
         self.settings
@@ -12084,15 +12085,19 @@ mod tests {
         assert_eq!(host2.settings_view()["busyEnter"], "steer");
     }
 
-    /// 通用区偏好:界面语言白名单(zh/en)落盘 + 未知值拒绝 + 重启保留
-    /// + view 携带(回归锁:en 放行前曾有「非 zh 即拒」硬门)
+    /// 通用区偏好:界面语言白名单(zh-CN/en)落盘 + 未知值拒绝 + 重启保留
+    /// + view 携带。
+    ///
+    /// 回归锁:en 放行前曾有「非 zh 即拒」硬门;白名单词汇与桌面
+    /// `LOCALES` 一致,`zh` 旧写法不再放行。
     #[test]
     fn language_preference_roundtrip() {
         let host = temp_host("language");
-        assert_eq!(host.language(), "zh", "缺省中文");
+        assert_eq!(host.language(), "zh-CN", "缺省中文");
         host.set_language("en").unwrap();
         assert_eq!(host.language(), "en");
         assert!(host.set_language("fr").is_err(), "非法值拒绝");
+        assert!(host.set_language("zh").is_err(), "旧 zh 写法已不在白名单");
         let host2 = AppHost::new_at(
             host.workspace.clone(),
             true,

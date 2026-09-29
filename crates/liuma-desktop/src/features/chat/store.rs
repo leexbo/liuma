@@ -15,7 +15,7 @@ use gpui_kit::{AppContext as _, Context, Entity, Window};
 
 use super::projection::{ChatNode, ChatState, RowSlot, build_row_slots};
 use crate::features::attachments::AttachmentToast;
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use crate::shell::store::AppStore;
 
 /// Mermaid 图查看器打开态(`None` = 关闭;打开动作经内嵌图点击)。
@@ -231,8 +231,9 @@ pub(crate) struct ChatStore {
     /// 计划 chip hover 态(激活时 hover 才把图标换成 ⓧ 取消态;
     /// ⓧ 不常显)
     pub plan_chip_hovered: bool,
-    /// composer 当前已应用 placeholder(渲染期同步比对基线,见
-    /// sync_composer_placeholder)
+    /// composer 当前已应用的 placeholder **文案键**(渲染期同步比对基线,
+    /// 见 sync_composer_placeholder)。存键而非译文:换档时键不变、文案
+    /// 由 `t!` 现取,免得把一个语言档位的字符串当成"已应用值"比对)
     pub composer_placeholder: &'static str,
     /// 展开的 LLM 重试行 key(retry:<seq>;缺席 = 折叠)
     pub open_retries: HashSet<String>,
@@ -308,7 +309,7 @@ impl Default for ChatStore {
             composer_h: 0.,
             composer_w: 0.,
             plan_chip_hovered: false,
-            composer_placeholder: crate::kits::i18n::dict::chat::composer_standard(),
+            composer_placeholder: "chat.composer_standard",
             composer_input: None,
             pending_composer_clear: false,
             expanded_tools: HashSet::new(),
@@ -384,17 +385,25 @@ impl AppStore {
     /// flush_composer_clear 同理走渲染期回写;已应用值记
     /// composer_placeholder,不同才 set(无通知环)
     pub fn sync_composer_placeholder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let want: &'static str = if self.current_chat().is_some_and(|c| c.plan_mode) {
-            crate::kits::i18n::dict::chat::composer_plan()
+        let plan = self.current_chat().is_some_and(|c| c.plan_mode);
+        let key: &'static str = if plan {
+            "chat.composer_plan"
         } else {
-            crate::kits::i18n::dict::chat::composer_standard()
+            "chat.composer_standard"
         };
-        if self.chat.composer_placeholder == want {
+        if self.chat.composer_placeholder == key {
             return;
         }
         if let Some(input) = &self.chat.composer_input {
-            input.update(cx, |s, cx| s.set_placeholder(want, window, cx));
-            self.chat.composer_placeholder = want;
+            // 键字面量逐一列出(不下放给变量):`t!` 的键必须是字面量,
+            // 否则门禁拒收——文案键的完整性靠这条守住
+            let text = if plan {
+                t!("chat.composer_plan")
+            } else {
+                t!("chat.composer_standard")
+            };
+            input.update(cx, |s, cx| s.set_placeholder(text, window, cx));
+            self.chat.composer_placeholder = key;
         }
     }
 
@@ -1204,22 +1213,25 @@ impl AppStore {
         if is_cmd && !drafts.is_empty() {
             let has_file = drafts.iter().any(|d| matches!(d, Draft::File(_)));
             self.attachments.attachment_toast = Some(AttachmentToast {
-                text: dict::chat::attach_rejected(
-                    text.split_whitespace()
+                text: t!(
+                    "chat.attach_rejected",
+                    kind = text
+                        .split_whitespace()
                         .next()
                         .unwrap_or_default()
                         .trim_start_matches('/'),
-                    if has_file {
-                        dict::chat::attach_file_full()
+                    has = if has_file {
+                        t!("chat.attach_file_full")
                     } else {
-                        dict::chat::attach_image_full()
+                        t!("chat.attach_image_full")
                     },
-                    if has_file {
-                        dict::chat::attach_file()
+                    remove = if has_file {
+                        t!("chat.attach_file")
                     } else {
-                        dict::chat::attach_image()
-                    },
-                ),
+                        t!("chat.attach_image")
+                    }
+                )
+                .into_owned(),
             });
             self.attachments.drafts = drafts;
             cx.notify();
@@ -1480,7 +1492,7 @@ impl AppStore {
             });
             store.update(cx, |s, cx| {
                 if let Err(e) = result {
-                    s.push_local_notice(&dict::chat::queue_op_failed(&e.message), cx);
+                    s.push_local_notice(t!("chat.queue_op_failed", msg = &e.message), cx);
                 }
             });
             Ok::<(), anyhow::Error>(())
@@ -1724,7 +1736,7 @@ impl AppStore {
                 self.refresh_list(cx);
                 self.open_session(&new_id, cx);
             }
-            Err(e) => self.push_local_notice(&dict::chat::branch_failed(&e.message), cx),
+            Err(e) => self.push_local_notice(t!("chat.branch_failed", msg = &e.message), cx),
         }
     }
 
@@ -1927,8 +1939,8 @@ impl AppStore {
                         else {
                             let _ = wh.update(cx, |_, window, cx| {
                                 window.push_notification(
-                                    Notification::error(dict::chat::export_decode_failed())
-                                        .title(dict::sessions::export_failed()),
+                                    Notification::error(t!("chat.export_decode_failed"))
+                                        .title(t!("sessions.export_failed")),
                                     cx,
                                 );
                             });
@@ -1948,8 +1960,11 @@ impl AppStore {
                             Ok(Err(e)) => {
                                 let _ = wh.update(cx, |_, window, cx| {
                                     window.push_notification(
-                                        Notification::error(dict::sessions::save_dialog_failed(&e))
-                                            .title(dict::sessions::export_failed()),
+                                        Notification::error(t!(
+                                            "sessions.save_dialog_failed",
+                                            e = &e
+                                        ))
+                                        .title(t!("sessions.export_failed")),
                                         cx,
                                     );
                                 });
@@ -1960,8 +1975,8 @@ impl AppStore {
                         if let Err(e) = std::fs::write(&chosen, bytes) {
                             let _ = wh.update(cx, |_, window, cx| {
                                 window.push_notification(
-                                    Notification::error(dict::sessions::write_failed(&e))
-                                        .title(dict::sessions::export_failed()),
+                                    Notification::error(t!("sessions.write_failed", e = &e))
+                                        .title(t!("sessions.export_failed")),
                                     cx,
                                 );
                             });
@@ -1970,7 +1985,7 @@ impl AppStore {
                         let _ = wh.update(cx, |_, window, cx| {
                             window.push_notification(
                                 Notification::success(chosen.display().to_string())
-                                    .title(dict::chat::exported()),
+                                    .title(t!("chat.exported")),
                                 cx,
                             );
                         });
@@ -1996,7 +2011,7 @@ impl AppStore {
                         let text = v
                             .get("model")
                             .and_then(|x| x.as_str())
-                            .map(dict::chat::current_model)
+                            .map(|m| t!("chat.current_model", m = m).into_owned())
                             .unwrap_or_else(|| "done".to_string());
                         store.update(cx, |s, cx| {
                             s.push_local_notice(&text, cx);
@@ -2005,7 +2020,7 @@ impl AppStore {
                 }
                 Ok(Err(e)) => {
                     store.update(cx, |s, cx| {
-                        s.push_local_notice(&dict::chat::command_failed(&e.message), cx);
+                        s.push_local_notice(t!("chat.command_failed", msg = &e.message), cx);
                     });
                 }
                 Err(_) => {}

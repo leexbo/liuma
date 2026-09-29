@@ -21,7 +21,7 @@ use gpui_kit::{
 };
 
 use crate::features::chat::{QueueEntry, QueuePlacement};
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -108,7 +108,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                         .text_size(px(13.))
                         .text_color(theme::LABEL())
                         .font_medium()
-                        .child(dict::chat::queue_count(queued.len())),
+                        .child(t!("chat.queue_count", n = queued.len())),
                 )
                 .child(fixed(
                     if collapsed_now {
@@ -214,7 +214,7 @@ fn queue_row(
 /// 编辑进入需要 window,其余忽略。
 fn action_button(
     store: &Entity<AppStore>,
-    tip: &'static str,
+    tip: impl Into<gpui_kit::SharedString> + 'static,
     icon: gpui_kit::AnyElement,
     id: &'static str,
     on_click: impl Fn(&mut AppStore, &mut Window, &mut Context<AppStore>) + 'static,
@@ -263,14 +263,14 @@ fn queue_actions(
         actions = actions
             .child(action_button(
                 store,
-                dict::common::save(),
+                t!("common.save"),
                 fixed(IconName::Check, 14.).into_any_element(),
                 "queue-save",
                 move |st, _window, cx| st.queue_save_edit(&sid_c, &iid_c, cx),
             ))
             .child(action_button(
                 store,
-                dict::common::cancel(),
+                t!("common.cancel"),
                 fixed(IconName::Close, 14.).into_any_element(),
                 "queue-cancel-edit",
                 move |st, _window, cx| st.queue_cancel_edit(cx),
@@ -284,7 +284,7 @@ fn queue_actions(
             .when(editable, |el| {
                 el.child(action_button(
                     store,
-                    dict::common::edit(),
+                    t!("common.edit"),
                     fixed(LiumaIcon::Pencil, 14.).into_any_element(),
                     "queue-edit",
                     move |st, window, cx| st.queue_begin_edit(&sid_e, &iid_e, window, cx),
@@ -295,7 +295,7 @@ fn queue_actions(
             .when(running, |el| {
                 el.child(action_button(
                     store,
-                    dict::chat::queue_steer(),
+                    t!("chat.queue_steer"),
                     fixed(IconName::ArrowUp, 14.).into_any_element(),
                     "queue-steer",
                     move |st, _window, cx| {
@@ -305,7 +305,7 @@ fn queue_actions(
             })
             .child(action_button(
                 store,
-                dict::common::remove(),
+                t!("common.remove"),
                 fixed(IconName::Delete, 14.).into_any_element(),
                 "queue-remove",
                 move |st, _window, cx| {

@@ -12,7 +12,7 @@ use gpui_kit::{
     Styled, div, px,
 };
 
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use crate::kits::icons::fixed;
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -38,10 +38,10 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
     let risk = data.get("risk").filter(|r| r.is_object());
     let risk_label = risk.and_then(|r| r["label"].as_str());
     let (risk_text, risk_color) = match risk_label {
-        Some("low-risk") => (dict::ask::risk_low(), theme::SUCCESS()),
-        Some("risky") => (dict::ask::risk_risky(), theme::DANGER()),
-        Some(_) => (dict::ask::risk_uncertain(), theme::WARN()),
-        None => ("", theme::CAPTION()),
+        Some("low-risk") => (t!("ask.risk_low"), theme::SUCCESS()),
+        Some("risky") => (t!("ask.risk_risky"), theme::DANGER()),
+        Some(_) => (t!("ask.risk_uncertain"), theme::WARN()),
+        None => ("".into(), theme::CAPTION()),
     };
     // 理由行就地组句(不直接渲染载荷里的 detail):载荷是审计面的英文
     // 单句,卡面是中文界面——同一份判定在两边各说各的语言。
@@ -51,9 +51,9 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
         .map(|l| format!("{l:.2}"))
         .unwrap_or_default();
     let risk_reason = match risk_label {
-        Some("low-risk") => dict::ask::risk_reason_low(&probability),
-        Some("risky") => dict::ask::risk_reason_risky(&probability),
-        Some(_) => dict::ask::risk_reason_uncertain(&probability),
+        Some("low-risk") => t!("ask.risk_reason_low", p = probability).into_owned(),
+        Some("risky") => t!("ask.risk_reason_risky", p = probability).into_owned(),
+        Some(_) => t!("ask.risk_reason_uncertain", p = probability).into_owned(),
         None => String::new(),
     };
     let (approve, reject, dismiss) = (store.clone(), store.clone(), store.clone());
@@ -80,11 +80,19 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
                             .text_size(px(13.))
                             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                             .text_color(theme::LABEL())
-                            .child(dict::ask::sandbox_title()),
+                            .child(t!("ask.sandbox_title")),
                     )
-                    .child(div().text_size(px(11.)).text_color(theme::CAPTION()).child(
-                        dict::ask::sandbox_desc(tool_name, current_mode, target_mode),
-                    ))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(theme::CAPTION())
+                            .child(t!(
+                                "ask.sandbox_desc",
+                                tool = tool_name,
+                                current = current_mode,
+                                target = target_mode
+                            )),
+                    )
                     .child(div().flex_1())
                     .child(
                         div()
@@ -142,7 +150,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
                             div()
                                 .text_size(px(11.))
                                 .text_color(theme::CAPTION())
-                                .child(dict::ask::risk_title()),
+                                .child(t!("ask.risk_title")),
                         )
                         .child(
                             div()
@@ -183,7 +191,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
                             .on_click(move |_, _, cx| {
                                 reject.update(cx, |st, cx| st.answer_approval(false, cx));
                             })
-                            .child(dict::ask::reject()),
+                            .child(t!("ask.reject")),
                     )
                     .child(
                         div()
@@ -202,7 +210,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
                             .on_click(move |_, _, cx| {
                                 approve.update(cx, |st, cx| st.answer_approval(true, cx));
                             })
-                            .child(dict::ask::approve_once()),
+                            .child(t!("ask.approve_once")),
                     ),
             ),
     )

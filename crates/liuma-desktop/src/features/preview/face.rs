@@ -5,7 +5,7 @@
 //! 行数 + eof 标志(offset 越过文件尾 = 0 行 + eof)。NUL / 非 UTF-8
 //! = `NotText`。版本 token = (mtime 纳秒, 长度),供变更提示条比对。
 
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
@@ -175,11 +175,13 @@ pub fn human_bytes(n: u64) -> String {
 /// 错误文案(zh 文案逐字)
 pub fn failure_line(err: &ReadError) -> String {
     match err {
-        ReadError::NotFound => dict::files::file_gone().to_string(),
-        ReadError::TooLarge { limit } => dict::files::page_over(human_bytes(*limit)),
-        ReadError::NotText => dict::files::unsupported_format().to_string(),
-        ReadError::NotRegularFile => dict::files::not_regular().to_string(),
-        ReadError::Unavailable(msg) => dict::files::read_failed(msg),
+        ReadError::NotFound => t!("files.file_gone").to_string(),
+        ReadError::TooLarge { limit } => {
+            t!("files.page_over", limit = human_bytes(*limit)).into_owned()
+        }
+        ReadError::NotText => t!("files.unsupported_format").to_string(),
+        ReadError::NotRegularFile => t!("files.not_regular").to_string(),
+        ReadError::Unavailable(msg) => t!("files.read_failed", msg = msg).into_owned(),
     }
 }
 

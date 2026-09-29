@@ -9,7 +9,7 @@ use gpui_kit::{
     Styled, div, px,
 };
 
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use crate::kits::icons::fixed;
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -138,7 +138,7 @@ pub(crate) fn workspace_menu_rows(
             .text_size(px(13.))
             .text_color(theme::LABEL_2())
             .child(fixed(IconName::Plus, 14.))
-            .child(dict::misc::add_workspace_ellipsis())
+            .child(t!("misc.add_workspace_ellipsis"))
             .on_click(move |_, window, cx| {
                 let pop = pop.clone();
                 pop.update(cx, |state, cx| state.dismiss(window, cx));

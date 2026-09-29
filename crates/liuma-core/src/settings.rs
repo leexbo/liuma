@@ -556,9 +556,9 @@ impl Default for McpServerEntry {
     }
 }
 
-/// language 缺省值
+/// language 缺省值(BCP-47 locale;唯一文案系统 rust-i18n 的档位词汇)
 fn default_language() -> String {
-    "zh".into()
+    "zh-CN".into()
 }
 
 /// appearance 缺省值

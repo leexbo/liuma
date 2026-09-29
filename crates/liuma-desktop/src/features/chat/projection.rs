@@ -3,7 +3,7 @@
 //!
 //! 事件形状源 `liuma-core/src/translate.rs`(客方 camelCase);未列类型忽略。
 
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use liuma_core::proto::SessionEvent;
 use serde_json::Value;
 
@@ -744,7 +744,8 @@ impl ChatState {
                 self.compact_queued = false;
                 let msg = ev.data["message"]
                     .as_str()
-                    .unwrap_or(dict::chat::unknown_error());
+                    .map(str::to_string)
+                    .unwrap_or_else(|| t!("chat.unknown_error").into_owned());
                 if ev.data["kind"].as_str() == Some("empty") {
                     self.push_node(ChatNode::CompactStatus {
                         key: format!("cpt-empty:{}", ev.seq),
@@ -1271,7 +1272,7 @@ pub(crate) fn todo_row_summary(arguments: &str) -> Option<TodoRowSummary> {
         .filter(|t| t["status"] == "in_progress")
         .filter_map(|t| t["content"].as_str())
         .collect();
-    let mut text = dict::chat::todo_done(done, todos.len());
+    let mut text = t!("chat.todo_done", done = done, total = todos.len()).into_owned();
     // 首个进行中文本可用(非空白)才挂名 + 计额外数
     let mut extra = 0;
     if let Some(first) = actives.first().filter(|c| !c.trim().is_empty()) {

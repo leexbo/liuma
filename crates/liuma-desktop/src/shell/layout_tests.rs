@@ -3657,7 +3657,7 @@ fn session_menu_renders_at_root(cx: &mut TestAppContext) {
     );
     // 导出入口已从顶栏药丸移入菜单(该窗口从未渲染过药丸,缺席可断言)
     assert!(
-        wcx.debug_bounds("导出日志").is_some(),
+        wcx.debug_bounds("menu-export-log").is_some(),
         "菜单应含「导出日志」项"
     );
     assert!(
@@ -3665,15 +3665,21 @@ fn session_menu_renders_at_root(cx: &mut TestAppContext) {
         "顶栏不应再有导出药丸"
     );
     // 菜单含 归档/分叉/导出日志;删除/复制工作目录已从菜单移除
-    assert!(wcx.debug_bounds("归档").is_some(), "菜单应含「归档」项");
-    assert!(wcx.debug_bounds("分叉").is_some(), "菜单应含「分叉」项");
-    assert!(wcx.debug_bounds("删除").is_none(), "删除项应已移除");
     assert!(
-        wcx.debug_bounds("复制工作目录").is_none(),
+        wcx.debug_bounds("menu-archive").is_some(),
+        "菜单应含「归档」项"
+    );
+    assert!(
+        wcx.debug_bounds("menu-fork").is_some(),
+        "菜单应含「分叉」项"
+    );
+    assert!(wcx.debug_bounds("menu-delete").is_none(), "删除项应已移除");
+    assert!(
+        wcx.debug_bounds("menu-copy-cwd").is_none(),
         "复制工作目录项应已移除"
     );
     assert!(
-        wcx.debug_bounds("关闭菜单").is_none(),
+        wcx.debug_bounds("menu-close").is_none(),
         "「关闭菜单」项应已移除"
     );
     let _ = store;
@@ -3733,7 +3739,7 @@ fn session_menu_archives_current_session(cx: &mut TestAppContext) {
         wcx.debug_bounds("session-menu-card").is_some(),
         "卡内空白点击不应关菜单"
     );
-    click_sel(&mut wcx, "归档");
+    click_sel(&mut wcx, "menu-archive");
     redraw(cx, &mut wcx);
     let ids = cx.update(|app| {
         store
@@ -3782,7 +3788,7 @@ fn session_export_prompts_for_path_then_notifies(cx: &mut TestAppContext) {
     // 右上角(会正确遮住标题栏 ⋯ 钮),先出通知会让后续点击落空
     click_sel(&mut wcx, "session-menu-btn");
     redraw(cx, &mut wcx);
-    click_sel(&mut wcx, "导出日志");
+    click_sel(&mut wcx, "menu-export-log");
     redraw(cx, &mut wcx);
     assert!(
         wcx.did_prompt_for_new_path(),
@@ -3801,7 +3807,7 @@ fn session_export_prompts_for_path_then_notifies(cx: &mut TestAppContext) {
     // ② 选定路径:落盘 + 恰一条通知
     click_sel(&mut wcx, "session-menu-btn");
     redraw(cx, &mut wcx);
-    click_sel(&mut wcx, "导出日志");
+    click_sel(&mut wcx, "menu-export-log");
     redraw(cx, &mut wcx);
     assert!(wcx.did_prompt_for_new_path(), "再次导出应再次弹对话框");
     let picked = out.clone();
@@ -6095,10 +6101,18 @@ fn plan_toggle_end_to_end_fake(cx: &mut TestAppContext) {
     assert!(on_ok, "/plan on 未生效(set_mode 链路未回流)");
     redraw(cx, &mut wcx);
     assert!(wcx.debug_bounds("chip-plan").is_some(), "Plan chip 未出现");
-    // 计划模式 placeholder 文案切换
+    // 计划模式 placeholder 文案切换(断言输入框实际挂载的文案,而非
+    // store 里的键名——键名是同步去重基线,不是用户可见值)
     assert_eq!(
-        cx.update(|app| store.read(app).chat.composer_placeholder),
-        "描述你的任务以生成计划",
+        cx.update(|app| {
+            store
+                .read(app)
+                .chat
+                .composer_input
+                .as_ref()
+                .map(|i| i.read(app).presentation().placeholder().to_string())
+        }),
+        Some("描述你的任务以生成计划".to_string()),
         "计划模式 placeholder 未切换"
     );
 
@@ -6132,10 +6146,17 @@ fn plan_toggle_end_to_end_fake(cx: &mut TestAppContext) {
         );
     }
     assert!(off_ok, "/plan off 未生效");
-    // 标准态 placeholder 恢复
+    // 标准态 placeholder 恢复(同前:断言输入框实际挂载的文案)
     assert_eq!(
-        cx.update(|app| store.read(app).chat.composer_placeholder),
-        "输入消息,Enter 发送 / Shift+Enter 换行",
+        cx.update(|app| {
+            store
+                .read(app)
+                .chat
+                .composer_input
+                .as_ref()
+                .map(|i| i.read(app).presentation().placeholder().to_string())
+        }),
+        Some("输入消息,Enter 发送 / Shift+Enter 换行".to_string()),
         "标准态 placeholder 未恢复"
     );
 
@@ -6498,21 +6519,21 @@ fn sidebar_header_search_toggle(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(wcx.debug_bounds("sidebar-header").is_some(), "标题行应渲染");
     assert!(
-        wcx.debug_bounds("header-btn-搜索会话").is_some(),
+        wcx.debug_bounds("header-btn-search").is_some(),
         "搜索钮应渲染"
     );
     assert!(
-        wcx.debug_bounds("header-btn-视图选项").is_some(),
+        wcx.debug_bounds("header-btn-view-options").is_some(),
         "视图选项钮应渲染"
     );
     assert!(
-        wcx.debug_bounds("header-btn-添加工作区").is_some(),
+        wcx.debug_bounds("header-btn-add-workspace").is_some(),
         "添加工作区钮应渲染"
     );
     assert!(wcx.debug_bounds("new-session").is_some(), "新会话行应渲染");
 
     // 搜索开:header 切换为搜索框,× 钮在场
-    click_sel(&mut wcx, "header-btn-搜索会话");
+    click_sel(&mut wcx, "header-btn-search");
     cx.run_until_parked();
     assert!(
         cx.update(|app| store.read(app).search.search_open),
@@ -7102,7 +7123,7 @@ fn sidebar_view_options_menu(cx: &mut TestAppContext) {
     );
 
     // 滑块钮开菜单
-    click_sel(&mut wcx, "header-btn-视图选项");
+    click_sel(&mut wcx, "header-btn-view-options");
     cx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     assert!(
@@ -7150,7 +7171,7 @@ fn sidebar_view_options_menu(cx: &mut TestAppContext) {
     );
 
     // 切回按工作区(菜单重开 → 选按工作区)
-    click_sel(&mut wcx, "header-btn-视图选项");
+    click_sel(&mut wcx, "header-btn-view-options");
     cx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     click_sel(&mut wcx, "view-item-view-group-ws");
@@ -8083,10 +8104,10 @@ fn decision_config_form_round_trip(cx: &mut TestAppContext) {
 
     // 空端点与非法端点各自拒绝并给出对应通告;落盘值都不得变
     for (bad, want_notice) in [
-        ("", crate::kits::i18n::dict::settings::decision_url_empty()),
+        ("", crate::kits::i18n::t!("settings.decision_url_empty")),
         (
             "endpoint.test/v1",
-            crate::kits::i18n::dict::settings::decision_url_invalid(),
+            crate::kits::i18n::t!("settings.decision_url_invalid"),
         ),
     ] {
         set_decision_inputs(&store, &mut wcx, Some(bad), None, None);
@@ -8125,7 +8146,7 @@ fn decision_config_form_round_trip(cx: &mut TestAppContext) {
         let notice = store.read(app).settings.settings_notice.clone();
         assert_eq!(
             notice.map(|(_, msg)| msg),
-            Some(crate::kits::i18n::dict::settings::decision_model_empty().to_string()),
+            Some(crate::kits::i18n::t!("settings.decision_model_empty").to_string()),
             "模型为空的通告不对"
         );
     });
@@ -8287,7 +8308,7 @@ fn decision_form_sync_never_clobbers_typing(cx: &mut TestAppContext) {
     assert_eq!(url, "draft-typing", "重复点当前项覆盖了用户输入");
 
     // 切走再切回 = 显式重入,重新预填快照值
-    click_sel(&mut wcx, "settings-nav-常规");
+    click_sel(&mut wcx, "settings-nav-General");
     settle(&mut wcx);
     click_sel(&mut wcx, "settings-nav-Decision");
     settle(&mut wcx);
@@ -8311,7 +8332,7 @@ fn mcp_detail_inputs_have_width(cx: &mut TestAppContext) {
     wcx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     wcx.run_until_parked();
-    click_sel(&mut wcx, "settings-nav-MCP");
+    click_sel(&mut wcx, "settings-nav-Mcp");
     wcx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     wcx.run_until_parked();
@@ -8353,7 +8374,7 @@ fn mcp_json_editor_accepts_typing(cx: &mut TestAppContext) {
     wcx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     wcx.run_until_parked();
-    click_sel(&mut wcx, "settings-nav-MCP");
+    click_sel(&mut wcx, "settings-nav-Mcp");
     wcx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     wcx.run_until_parked();
@@ -8439,7 +8460,7 @@ fn mcp_json_editor_accepts_cjk_typing(cx: &mut TestAppContext) {
     wcx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     wcx.run_until_parked();
-    click_sel(&mut wcx, "settings-nav-MCP");
+    click_sel(&mut wcx, "settings-nav-Mcp");
     wcx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     wcx.run_until_parked();
@@ -8830,7 +8851,7 @@ fn general_rows_geometry(cx: &mut TestAppContext) {
     wcx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     wcx.run_until_parked();
-    click_sel(&mut wcx, "settings-nav-常规");
+    click_sel(&mut wcx, "settings-nav-General");
     wcx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     wcx.run_until_parked();
@@ -8865,7 +8886,7 @@ fn general_rows_present(cx: &mut TestAppContext) {
     wcx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     wcx.run_until_parked();
-    click_sel(&mut wcx, "settings-nav-常规");
+    click_sel(&mut wcx, "settings-nav-General");
     wcx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     wcx.run_until_parked();
@@ -8899,11 +8920,17 @@ fn ws_menu_single_workspace_items(cx: &mut TestAppContext) {
     wcx.refresh().expect("刷新失败");
     wcx.run_until_parked();
     assert!(wcx.debug_bounds("ws-menu-card").is_some(), "菜单卡在场");
-    assert!(wcx.debug_bounds("重命名").is_some());
-    assert!(wcx.debug_bounds("上移").is_none(), "首项无上移");
-    assert!(wcx.debug_bounds("下移").is_none(), "单工作区无下移");
-    assert!(wcx.debug_bounds("移除").is_none(), "默认工作区不可移除");
-    click_sel(&mut wcx, "重命名");
+    assert!(wcx.debug_bounds("menu-ws-rename").is_some());
+    assert!(wcx.debug_bounds("menu-ws-move-up").is_none(), "首项无上移");
+    assert!(
+        wcx.debug_bounds("menu-ws-move-down").is_none(),
+        "单工作区无下移"
+    );
+    assert!(
+        wcx.debug_bounds("menu-ws-delete").is_none(),
+        "默认工作区不可移除"
+    );
+    click_sel(&mut wcx, "menu-ws-rename");
     wcx.run_until_parked();
     let (target, default) = cx.update(|app| {
         let st = store.read(app);

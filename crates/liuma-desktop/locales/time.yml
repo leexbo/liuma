@@ -1,0 +1,81 @@
+# 时间/时长/额度窗口的格式文案(消费面:kits/fmt.rs、shell/reducer.rs 的
+# 显式档核,以及 statusbar/settings/subagents 的读档薄包装)。
+# 占位符是 rust-i18n 的 `%{名}`;字面花括号不受替换影响。
+_version: 2
+
+time:
+
+  # 时长(秒;紧凑/轮尾/运行时长共用形态)
+  duration_s:
+    zh-CN: "%{v}秒"
+    en: "%{v}s"
+
+  # 时长(分 + 秒;秒位由调用方按需零填充)
+  duration_ms:
+    zh-CN: "%{mins}分%{secs}秒"
+    en: "%{mins}m %{secs}s"
+
+  # 时长(时 + 分 + 秒)
+  duration_hms:
+    zh-CN: "%{hours}时%{mins}分%{secs}秒"
+    en: "%{hours}h %{mins}m %{secs}s"
+
+  # 消息时钟(同年跨日)
+  clock_md:
+    zh-CN: "%{month}月%{day}日 %{time}"
+    en: "%{month}/%{day} %{time}"
+
+  # 日期(无时刻;轨迹 Started 段用)
+  clock_md_plain:
+    zh-CN: "%{month}月%{day}日"
+    en: "%{month}/%{day}"
+
+  # 消息时钟(跨年)
+  clock_ymd:
+    zh-CN: "%{year}年%{month}月%{day}日 %{time}"
+    en: "%{year}/%{month}/%{day} %{time}"
+
+  # 相对时间:刚刚
+  rel_just_now:
+    zh-CN: "刚刚"
+    en: "Just now"
+
+  # 相对时间:N 分钟前
+  rel_mins_ago:
+    zh-CN: "%{n} 分钟前"
+    en: "%{n} minutes ago"
+
+  # 相对时间:N 小时前
+  rel_hours_ago:
+    zh-CN: "%{n} 小时前"
+    en: "%{n} hours ago"
+
+  # 相对时间:N 天前
+  rel_days_ago:
+    zh-CN: "%{n} 天前"
+    en: "%{n} days ago"
+
+  # 相对时间:更早(一周开外)
+  rel_earlier:
+    zh-CN: "更早"
+    en: "Earlier"
+
+  # 额度窗口名:5 小时(紧凑;状态栏窗口切换钮)
+  window_5h:
+    zh-CN: "5小时"
+    en: "5h"
+
+  # 额度窗口名:1 周(紧凑)
+  window_1w:
+    zh-CN: "1周"
+    en: "1w"
+
+  # 额度窗口名:5 小时(统计卡行标)
+  window_5h_long:
+    zh-CN: "5 小时"
+    en: "5 hours"
+
+  # 额度窗口名:1 周(统计卡行标)
+  window_1w_long:
+    zh-CN: "1 周"
+    en: "1 week"

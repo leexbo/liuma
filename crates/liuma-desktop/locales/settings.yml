@@ -1,0 +1,753 @@
+# settings 面文案(由 dict/settings.rs 搬迁;key 根段 == 文件 stem)。
+# 值一律加引号(YAML 裸标量会被解析成非字符串,rust-i18n 只收字符串叶子)。
+_version: 2
+
+settings:
+
+  language:
+    zh-CN: "语言"
+    en: "Language"
+
+  settings_title:
+    zh-CN: "设置"
+    en: "Settings"
+
+  general:
+    zh-CN: "常规"
+    en: "General"
+
+  nav_models:
+    zh-CN: "模型设置"
+    en: "Models"
+
+  models_section:
+    zh-CN: "模型与 Provider"
+    en: "Models & providers"
+
+  nav_basics:
+    zh-CN: "基础设置"
+    en: "Basics"
+
+  about:
+    zh-CN: "关于"
+    en: "About"
+
+  back_workspace:
+    zh-CN: "返回工作区"
+    en: "Back to workspace"
+
+  about_intro:
+    zh-CN: "流马 liuma —— Rust 桌面 agent harness。"
+    en: "Liuma — a Rust desktop agent harness."
+
+  version:
+    zh-CN: "版本"
+    en: "Version"
+
+  preset_title:
+    zh-CN: "Agent 预设"
+    en: "Agent preset"
+
+  preset_desc:
+    zh-CN: "对此后新建的会话生效。运行中的会话保持它开始时的预设。"
+    en: "Applies to new sessions. Running sessions keep the preset they started with."
+
+  permission_title:
+    zh-CN: "权限"
+    en: "Permission"
+
+  permission_desc:
+    zh-CN: "选择新会话的默认权限模式"
+    en: "Default permission mode for new sessions"
+
+  busy_title:
+    zh-CN: "繁忙时 Enter 键行为"
+    en: "Enter while busy"
+
+  busy_desc:
+    zh-CN: "仅在智能体运行时生效;Cmd/Ctrl+Enter 使用另一行为"
+    en: "Applies while the agent is running; Cmd/Ctrl+Enter uses the other behavior"
+
+  perm_read_only:
+    zh-CN: "仅可查看"
+    en: "Read-only"
+
+  perm_workspace_write:
+    zh-CN: "工作区内修改"
+    en: "Workspace edits"
+
+  perm_full_access:
+    zh-CN: "完全权限"
+    en: "Full access"
+
+  busy_queue:
+    zh-CN: "排队发送"
+    en: "Queue messages"
+
+  busy_steer:
+    zh-CN: "插话发送"
+    en: "Steer current turn"
+
+  appearance_title:
+    zh-CN: "外观"
+    en: "Appearance"
+
+  appearance_light:
+    zh-CN: "浅色"
+    en: "Light"
+
+  appearance_dark:
+    zh-CN: "深色"
+    en: "Dark"
+
+  appearance_system:
+    zh-CN: "跟随系统"
+    en: "System"
+
+  registry_empty:
+    zh-CN: "注册表为空——「添加 Provider」,或重启后恢复内置默认。"
+    en: "Registry is empty — use “Add provider”, or restart to restore built-ins."
+
+  saved:
+    zh-CN: "已保存 %{name}"
+    en: "Saved %{name}"
+
+  default_badge:
+    zh-CN: "默认"
+    en: "Default"
+
+  provider_label:
+    zh-CN: "提供方"
+    en: "Provider"
+
+  provider_id_label:
+    zh-CN: "Provider ID(小写/连字符)"
+    en: "Provider ID (lowercase/hyphens)"
+
+  add_provider:
+    zh-CN: "添加提供方"
+    en: "Add provider"
+
+  add_custom_provider:
+    zh-CN: "添加自定义提供方"
+    en: "Add custom provider"
+
+  name:
+    zh-CN: "名称"
+    en: "Name"
+
+  api_key:
+    zh-CN: "API 密钥"
+    en: "API key"
+
+  api_key_required:
+    zh-CN: "API Key(必填)"
+    en: "API key (required)"
+
+  api_key_plain:
+    zh-CN: "API Key"
+    en: "API key"
+
+  advanced_section:
+    zh-CN: "自定义设置"
+    en: "Advanced"
+
+  adapter:
+    zh-CN: "适配器"
+    en: "Adapter"
+
+  billing_preset:
+    zh-CN: "计费预设"
+    en: "Billing preset"
+
+  billing_builtin:
+    zh-CN: "已内置"
+    en: "Built in"
+
+  billing_none:
+    zh-CN: "无(可手填计费端点)"
+    en: "None (billing endpoint can be entered manually)"
+
+  catalog_missing:
+    zh-CN: "目录条目缺失"
+    en: "Catalog entry missing"
+
+  api_format:
+    zh-CN: "API 格式"
+    en: "API format"
+
+  model_list:
+    zh-CN: "模型列表"
+    en: "Model list"
+
+  models_empty:
+    zh-CN: "当前没有配置模型,添加模型后可在聊天中使用。"
+    en: "No models configured yet. Add one to use it in chat."
+
+  add_model:
+    zh-CN: "添加模型"
+    en: "Add model"
+
+  fetch_from_endpoint:
+    zh-CN: "从端点获取"
+    en: "Fetch from endpoint"
+
+  ctx_hint:
+    zh-CN: "点「窗口」设置该模型的上下文 token 数(可写 256K / 1M,1M = 1,000,000);留空使用默认,仅影响自动压缩阈值与上下文计量。"
+    en: "Use “Window” to set this model's context tokens (256K / 1M; 1M = 1,000,000). Leave empty for the default. Affects auto-compaction threshold and context metering only."
+
+  ctx_placeholder:
+    zh-CN: "默认 1,000,000"
+    en: "Default 1,000,000"
+
+  ctx_invalid_hint:
+    zh-CN: "填 1 以上的整数或带单位(256K / 1M),或留空使用默认值"
+    en: "Enter an integer ≥ 1, with optional unit (256K / 1M), or leave empty for the default"
+
+  ctx_window:
+    zh-CN: "窗口 %{value}"
+    en: "Window %{value}"
+
+  ctx_window_default:
+    zh-CN: "窗口 默认"
+    en: "Window default"
+
+  ctx_invalid_notice:
+    zh-CN: "上下文窗口需为 1 以上的整数 token 数"
+    en: "Context window must be an integer ≥ 1 token"
+
+  provider_id_empty:
+    zh-CN: "provider id 不可为空"
+    en: "Provider ID can't be empty"
+
+  provider_id_dup:
+    zh-CN: "该 Provider ID 已存在,请在列表中编辑它"
+    en: "This Provider ID already exists — edit it in the list"
+
+  save_failed:
+    zh-CN: "保存失败:%{msg}"
+    en: "Save failed: %{msg}"
+
+  delete_failed:
+    zh-CN: "删除失败:%{msg}"
+    en: "Remove failed: %{msg}"
+
+  key_keep_placeholder:
+    zh-CN: "sk-…(留空 = 保持既有凭据)"
+    en: "sk-… (empty = keep existing credential)"
+
+  key_enter_placeholder:
+    zh-CN: "输入 API Key"
+    en: "Enter API key"
+
+  key_env_placeholder:
+    zh-CN: "输入 API 密钥,或留空使用环境认证"
+    en: "Enter API key, or leave empty to use environment auth"
+
+  id_placeholder:
+    zh-CN: "小写英文/连字符"
+    en: "lowercase/hyphens"
+
+  optional_placeholder:
+    zh-CN: "可选"
+    en: "Optional"
+
+  name_placeholder:
+    zh-CN: "给这个 Provider 起个名字"
+    en: "Name this provider"
+
+  model_id_placeholder:
+    zh-CN: "模型 id"
+    en: "model id"
+
+  url_placeholder:
+    zh-CN: "https://…"
+    en: "https://…"
+
+  billing_endpoint:
+    zh-CN: "计费端点(余额 / 用量展示)"
+    en: "Billing endpoint (balance / usage)"
+
+  billing_balance:
+    zh-CN: "余额"
+    en: "Balance"
+
+  billing_usage:
+    zh-CN: "用量"
+    en: "Usage"
+
+  query_url:
+    zh-CN: "查询 URL(GET)"
+    en: "Query URL (GET)"
+
+  usage_path_5h:
+    zh-CN: "5小时用量路径"
+    en: "5h usage path"
+
+  usage_path_7d:
+    zh-CN: "7天用量路径"
+    en: "7d usage path"
+
+  reset_path:
+    zh-CN: "重置时间路径(可选)"
+    en: "Reset time path (optional)"
+
+  balance_path:
+    zh-CN: "余额金额路径"
+    en: "Balance amount path"
+
+  currency_path:
+    zh-CN: "货币路径(可选)"
+    en: "Currency path (optional)"
+
+  billing_refreshing:
+    zh-CN: "刷新中…"
+    en: "Refreshing…"
+
+  refresh_now:
+    zh-CN: "立即刷新"
+    en: "Refresh now"
+
+  billing_updated:
+    zh-CN: "计费已更新"
+    en: "Billing updated"
+
+  billing_query_failed:
+    zh-CN: "计费查询失败:%{msg}"
+    en: "Billing query failed: %{msg}"
+
+  billing_need_url:
+    zh-CN: "先填写 Base URL 再获取模型"
+    en: "Fill in Base URL before fetching models"
+
+  remaining:
+    zh-CN: "剩余:"
+    en: "Remaining:"
+
+  quota_5h:
+    zh-CN: "5 小时"
+    en: "5h"
+
+  quota_7d:
+    zh-CN: "7 天"
+    en: "7d"
+
+  resets_in:
+    zh-CN: "%{cd}后重置"
+    en: "Resets in %{cd}"
+
+  quota_expiry:
+    zh-CN: "%{days}天%{hours}时"
+    en: "%{days}d %{hours}h"
+
+  quota_expiry_hm:
+    zh-CN: "%{hours}时%{mins}分"
+    en: "%{hours}h %{mins}m"
+
+  quota_expiry_m:
+    zh-CN: "%{mins}分"
+    en: "%{mins}m"
+
+  balance_path_placeholder:
+    zh-CN: "余额金额路径,如 balance_infos.0.total_balance"
+    en: "Balance amount path, e.g. balance_infos.0.total_balance"
+
+  currency_path_placeholder:
+    zh-CN: "货币路径,如 balance_infos.0.currency"
+    en: "Currency path, e.g. balance_infos.0.currency"
+
+  usage5h_path_placeholder:
+    zh-CN: "5小时用量路径,如 five_hour.utilization"
+    en: "5h usage path, e.g. five_hour.utilization"
+
+  usage7d_path_placeholder:
+    zh-CN: "7天用量路径,如 seven_day.utilization"
+    en: "7d usage path, e.g. seven_day.utilization"
+
+  reset_path_placeholder:
+    zh-CN: "重置时间路径,如 resets_in"
+    en: "Reset time path, e.g. resets_in"
+
+  remove_provider:
+    zh-CN: "移除 %{id}"
+    en: "Remove %{id}"
+
+  remove_provider_desc:
+    zh-CN: "移除会移除其配置和存储的 API 密钥;工作区引用回落内置默认。"
+    en: "Removing also deletes its configuration and stored API key. Workspace references fall back to the built-in default."
+
+  fetch_models_title:
+    zh-CN: "从端点获取模型"
+    en: "Fetch models from endpoint"
+
+  picked_count:
+    zh-CN: "已选 %{count}"
+    en: "%{count} selected"
+
+  adopt:
+    zh-CN: "采纳 %{count} 项"
+    en: "Adopt %{count}"
+
+  fetching:
+    zh-CN: "获取中…"
+    en: "Fetching…"
+
+  mcp_intro:
+    zh-CN: "外部 MCP server(stdio)的工具桥接进工具面;保存即连接,所有会话共享。"
+    en: "Tools from external MCP servers (stdio) join the tool surface. Connecting starts on save and is shared across sessions."
+
+  installed:
+    zh-CN: "已安装 %{total}"
+    en: "%{total} installed"
+
+  add_new:
+    zh-CN: "+ 新建"
+    en: "+ New"
+
+  mcp_none:
+    zh-CN: "尚未配置 MCP server。"
+    en: "No MCP servers configured."
+
+  status_connecting:
+    zh-CN: "连接中"
+    en: "Connecting"
+
+  status_reconnecting:
+    zh-CN: "重连中"
+    en: "Reconnecting"
+
+  status_failed:
+    zh-CN: "失败"
+    en: "Failed"
+
+  mcp_edit_card:
+    zh-CN: "编辑 MCP Server · %{id}"
+    en: "Edit MCP server · %{id}"
+
+  mcp_edit_desc:
+    zh-CN: "修改当前 MCP 配置,保存后返回列表。"
+    en: "Edit this MCP configuration. Saving returns to the list."
+
+  mcp_new_card:
+    zh-CN: "新增 MCP Server"
+    en: "New MCP server"
+
+  mcp_new_desc:
+    zh-CN: "注册新的 MCP server,保存后返回列表。"
+    en: "Register a new MCP server. Saving returns to the list."
+
+  form_section:
+    zh-CN: "表单"
+    en: "Form"
+
+  full_config:
+    zh-CN: "完整配置"
+    en: "Full config"
+
+  transport:
+    zh-CN: "传输"
+    en: "Transport"
+
+  headers_desc:
+    zh-CN: "请求头(可选;键 + 值,原样透传)"
+    en: "Headers (optional; key + value, passed through as-is)"
+
+  add_header:
+    zh-CN: "+ 添加请求头"
+    en: "+ Add header"
+
+  args_desc:
+    zh-CN: "参数(每个一条)"
+    en: "Args (one per line)"
+
+  add_arg:
+    zh-CN: "+ 添加参数"
+    en: "+ Add arg"
+
+  env_desc:
+    zh-CN: "环境变量(可选;键 + 值)"
+    en: "Environment variables (optional; key + value)"
+
+  add_env:
+    zh-CN: "+ 添加环境变量"
+    en: "+ Add env var"
+
+  timeout_ms_mcp:
+    zh-CN: "超时 MS"
+    en: "Timeout (ms)"
+
+  enabled:
+    zh-CN: "已启用"
+    en: "Enabled"
+
+  disabled:
+    zh-CN: "未启用"
+    en: "Disabled"
+
+  mcp_imported:
+    zh-CN: "已导入 %{n} 个 MCP server"
+    en: "Imported %{n} MCP servers"
+
+  mcp_connect_failed:
+    zh-CN: "MCP server「%{server}」连接失败:%{error}"
+    en: "MCP server \"%{server}\" failed to connect: %{error}"
+
+  mcp_id_empty:
+    zh-CN: "id 不能为空"
+    en: "ID can't be empty"
+
+  mcp_timeout_invalid:
+    zh-CN: "超时 MS 须为非负整数"
+    en: "Timeout must be a non-negative integer"
+
+  mcp_need_url:
+    zh-CN: "http 传输需要 url"
+    en: "http transport requires a URL"
+
+  mcp_need_command:
+    zh-CN: "command 不能为空"
+    en: "Command can't be empty"
+
+  mcp_name_placeholder:
+    zh-CN: "server 名"
+    en: "server name"
+
+  mcp_command_placeholder:
+    zh-CN: "启动命令(如 npx)"
+    en: "Launch command (e.g. npx)"
+
+  mcp_cwd_placeholder:
+    zh-CN: "工作目录(可选)"
+    en: "Working directory (optional)"
+
+  hooks_intro:
+    zh-CN: "把既有 Claude Code / Codex hooks.json 的 command 钩子接进会话:阻塞工具与提示、附加上下文、强制续跑;变更在下次会话附着时生效。"
+    en: "Bridge command hooks from existing Claude Code / Codex hooks.json into sessions: block tools and prompts, attach context, force continuation. Changes take effect when the next session attaches."
+
+  hooks_none:
+    zh-CN: "尚未配置 hooks 桥。"
+    en: "No hooks bridges configured."
+
+  decision_master:
+    zh-CN: "启用决策模型"
+    en: "Enable decision model"
+
+  decision_intro:
+    zh-CN: "让一个小模型替你做几个判断:审批卡标风险、核对结论证据、拦高危工具、清理过期输出。默认关闭。"
+    en: "Let a small model make a few judgement calls: flag risk on approval cards, check conclusions against evidence, block risky tools, prune stale output. Off by default."
+
+  decision_approvals:
+    zh-CN: "审批评审员"
+    en: "Approval reviewer"
+
+  decision_stop:
+    zh-CN: "Stop 哨兵"
+    en: "Stop sentinel"
+
+  decision_guard:
+    zh-CN: "工具守卫"
+    en: "Tool guard"
+
+  decision_context:
+    zh-CN: "上下文裁判"
+    en: "Context judge"
+
+  decision_fold:
+    zh-CN: "折叠价值裁定"
+    en: "Fold value judge"
+
+  decision_mode_off:
+    zh-CN: "关闭"
+    en: "Off"
+
+  decision_mode_on:
+    zh-CN: "开启"
+    en: "On"
+
+  decision_mode_shadow:
+    zh-CN: "仅记录"
+    en: "Log only"
+
+  decision_mode_block:
+    zh-CN: "拦截"
+    en: "Block"
+
+  decision_approvals_desc:
+    zh-CN: "审批卡附带风险标注(建议,不自动批)"
+    en: "Risk label on approval cards (advisory, never auto-approves)"
+
+  decision_stop_desc:
+    zh-CN: "完成陈述缺证据时允许模型继续(每回合至多 2 次)"
+    en: "Lets the model continue when the final statement lacks evidence (max 2 per turn)"
+
+  decision_guard_desc:
+    zh-CN: "工具执行前风险评估"
+    en: "Risk check before each tool call"
+
+  decision_context_desc:
+    zh-CN: "上下文吃紧时修剪旧工具输出"
+    en: "Prunes stale tool outputs under context pressure"
+
+  decision_fold_desc:
+    zh-CN: "压缩时裁定哪些旧输出不值得带进摘要"
+    en: "Judges which stale outputs are not worth keeping in the summary"
+
+  decision_model_label:
+    zh-CN: "模型"
+    en: "Model"
+
+  decision_key_placeholder:
+    zh-CN: "留空 = 不改已存 key"
+    en: "Leave empty to keep the stored key"
+
+  decision_url_empty:
+    zh-CN: "Base URL 不能为空"
+    en: "Base URL can't be empty"
+
+  decision_url_invalid:
+    zh-CN: "Base URL 需以 http:// 或 https:// 开头"
+    en: "Base URL must start with http:// or https://"
+
+  decision_model_empty:
+    zh-CN: "模型不能为空"
+    en: "Model can't be empty"
+
+  decision_attach_hint:
+    zh-CN: "端点、模型与密钥在下次会话附着时生效。"
+    en: "Endpoint, model and key take effect when the next session attaches."
+
+  decision_saved:
+    zh-CN: "决策模型配置已保存"
+    en: "Decision model settings saved"
+
+  decision_key_set:
+    zh-CN: "key 已配置"
+    en: "key configured"
+
+  decision_key_missing:
+    zh-CN: "key 未配置"
+    en: "key not configured"
+
+  hooks_edit_card:
+    zh-CN: "编辑 Hooks 桥"
+    en: "Edit hooks bridge"
+
+  hooks_new_card:
+    zh-CN: "新建 Hooks 桥"
+    en: "New hooks bridge"
+
+  back_arrow:
+    zh-CN: "← 返回"
+    en: "← Back"
+
+  dialect_section:
+    zh-CN: "方言"
+    en: "Dialect"
+
+  enable_section:
+    zh-CN: "启用"
+    en: "Enable"
+
+  config_section:
+    zh-CN: "配置"
+    en: "Config"
+
+  path:
+    zh-CN: "路径"
+    en: "Path"
+
+  timeout_ms_hooks:
+    zh-CN: "超时 ms"
+    en: "Timeout (ms)"
+
+  hooks_path_placeholder:
+    zh-CN: "hooks.json 路径"
+    en: "hooks.json path"
+
+  hooks_root_placeholder:
+    zh-CN: "可选;替换 ${CLAUDE_PLUGIN_ROOT}"
+    en: "Optional; replaces ${CLAUDE_PLUGIN_ROOT}"
+
+  hooks_cwd_placeholder:
+    zh-CN: "可选;缺省 = 会话工作区"
+    en: "Optional; defaults to the session workspace"
+
+  fa_title:
+    zh-CN: "要开启完全权限吗？"
+    en: "Turn on full access?"
+
+  fa_body:
+    zh-CN: "智能体将能够在未经您许可的情况下，在这台计算机上的任何位置运行命令、使用互联网，以及创建和编辑文件。这包括但不限于："
+    en: "The agent will be able to run commands, use the internet, and create and edit files anywhere on this computer without asking you. This includes, but is not limited to:"
+
+  fa_files:
+    zh-CN: "文件和文件夹"
+    en: "Files and folders"
+
+  fa_files_desc:
+    zh-CN: "读取、创建、修改、上传或删除此计算机上任意位置的文件"
+    en: "Read, create, modify, upload, or delete files anywhere on this computer"
+
+  fa_terminal:
+    zh-CN: "终端命令"
+    en: "Terminal commands"
+
+  fa_terminal_desc:
+    zh-CN: "运行命令、安装软件和更改系统设置"
+    en: "Run commands, install software, and change system settings"
+
+  fa_internet:
+    zh-CN: "互联网和已连接的应用"
+    en: "Internet and connected apps"
+
+  fa_internet_desc:
+    zh-CN: "访问网站、发送数据并使用已启用的插件"
+    en: "Visit websites, send data, and use enabled plugins"
+
+  fa_risk:
+    zh-CN: "这会带来敏感数据丢失或泄露、提示注入等风险。你可以将其关闭。"
+    en: "This carries risks like sensitive data loss or leakage and prompt injection. You can turn it off."
+
+  onboarding_title:
+    zh-CN: "添加一个 API Key 开始使用"
+    en: "Add an API key to get started"
+
+  onboarding_desc:
+    zh-CN: "配置 DeepSeek 官方模型，即可开始使用。"
+    en: "Configure the official DeepSeek models to get started."
+
+  onboarding_later:
+    zh-CN: "稍后配置"
+    en: "Set up later"
+
+  onboarding_save:
+    zh-CN: "保存并继续"
+    en: "Save and continue"
+
+  onboarding_key_empty:
+    zh-CN: "请输入 API 密钥后继续。"
+    en: "Enter an API key to continue."
+
+  nav_mcp:
+    zh-CN: "MCP"
+    en: "MCP"
+
+  nav_hooks:
+    zh-CN: "钩子"
+    en: "Hooks"
+
+  nav_decision:
+    zh-CN: "决策"
+    en: "Decision"
+
+  mcp_servers_title:
+    zh-CN: "MCP 服务"
+    en: "MCP servers"
+
+  mcp_header_key:
+    zh-CN: "名称"
+    en: "Header"
+
+  provider_field_base_url:
+    zh-CN: "基础地址"
+    en: "Base URL"

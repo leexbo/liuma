@@ -1,0 +1,69 @@
+# misc 面文案(由 dict/misc.rs 搬迁;key 根段 == 文件 stem)。
+# 值一律加引号(YAML 裸标量会被解析成非字符串,rust-i18n 只收字符串叶子)。
+_version: 2
+
+misc:
+
+  hits_full:
+    zh-CN: "全库检索 · %{n} 条命中"
+    en: "Search · %{n} hits"
+
+  back_to_list:
+    zh-CN: "返回列表"
+    en: "Back to list"
+
+  no_hits:
+    zh-CN: "无命中"
+    en: "No hits"
+
+  subagents_title:
+    zh-CN: "子代理"
+    en: "Subagents"
+
+  running_n:
+    zh-CN: "%{n} 个运行中"
+    en: "%{n} running"
+
+  ended:
+    zh-CN: "已结束"
+    en: "Ended"
+
+  mainline:
+    zh-CN: "主线"
+    en: "Main"
+
+  interrupt:
+    zh-CN: "打断"
+    en: "Interrupt"
+
+  feedback_ph:
+    zh-CN: "这条回答哪里好，或哪里有问题？（可选）"
+    en: "What was good or bad about this answer? (optional)"
+
+  supplement:
+    zh-CN: "补充说明"
+    en: "Additional comments"
+
+  renderer_text:
+    zh-CN: "纯文本"
+    en: "Plain text"
+
+  renderer_image:
+    zh-CN: "图片"
+    en: "Image"
+
+  renderer_code:
+    zh-CN: "代码"
+    en: "Code"
+
+  add_workspace_ellipsis:
+    zh-CN: "添加工作区…"
+    en: "Add workspace…"
+
+  rename_session:
+    zh-CN: "重命名会话"
+    en: "Rename session"
+
+  rename_workspace:
+    zh-CN: "重命名工作区"
+    en: "Rename workspace"

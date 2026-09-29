@@ -18,7 +18,7 @@ use liuma_core::proto::SessionSummary;
 use crate::features::search;
 use crate::features::sessions::store::{GroupMode, OrderMode};
 use crate::features::settings;
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::popup::PopTrigger;
 use crate::kits::theme;
@@ -187,7 +187,7 @@ fn new_session_row(store: &Entity<AppStore>) -> impl IntoElement {
             .text_color(theme::LABEL())
             .hover(|s| s.bg(theme::DOCK()))
             .child(fixed(LiumaIcon::NewChat, 14.))
-            .child(dict::sessions::new_session())
+            .child(t!("sessions.new_session"))
             .on_click(move |_, _, cx| {
                 s.update(cx, |st, cx| st.create_session(cx));
             }),
@@ -220,15 +220,16 @@ fn header_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 .text_size(px(13.))
                 .text_color(theme::LABEL_3())
                 .child(if flat {
-                    dict::sessions::group_flat()
+                    t!("sessions.group_flat")
                 } else {
-                    dict::sessions::group_by_ws()
+                    t!("sessions.group_by_ws")
                 }),
         )
         .child(div().flex_1())
         .child(
             header_icon_button(
-                dict::sessions::search_ph(),
+                "search",
+                t!("sessions.search_ph"),
                 fixed(LiumaIcon::SearchOutline, 14.),
             )
             .on_click(move |_, window, cx| {
@@ -255,7 +256,8 @@ fn header_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                     let s_click = s_view.clone();
                     PopTrigger(
                         header_icon_button(
-                            dict::sessions::view_options(),
+                            "view-options",
+                            t!("sessions.view_options"),
                             fixed(LiumaIcon::Personalization, 15.),
                         )
                         .on_click(move |_, _, cx| {
@@ -273,7 +275,8 @@ fn header_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         })
         .child(
             header_icon_button(
-                dict::sessions::add_workspace(),
+                "add-workspace",
+                t!("sessions.add_workspace"),
                 fixed(LiumaIcon::ProjectAdd, 16.),
             )
             .on_click(move |_, _, cx| {
@@ -285,8 +288,17 @@ fn header_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
 
 /// 顶栏图标钮(圆形 hover 底;tooltip 走组件库 `.tooltip()` 托管)。
 /// 含 mousedown 豁免(头行为窗口拖拽区,钮点击不得触发拖窗)
-fn header_icon_button(tip: &'static str, icon: Icon) -> gpui_kit::Stateful<gpui_kit::Div> {
-    let id: gpui_kit::SharedString = format!("header-btn-{tip}").into();
+/// 侧栏头小图标钮:`sel` = 稳定 ASCII selector,`tip` = 可见 tooltip。
+///
+/// selector 与 tip 分离:tip 随语言切换,selector 必须恒定(旧实现拿中文
+/// tip 拼 selector,测试也按中文寻址)。
+fn header_icon_button(
+    sel: &'static str,
+    tip: impl Into<gpui_kit::SharedString>,
+    icon: Icon,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let tip = tip.into();
+    let id: gpui_kit::SharedString = format!("header-btn-{sel}").into();
     let sel = id.clone();
     div()
         .id(id)
@@ -311,7 +323,8 @@ fn header_icon_button(tip: &'static str, icon: Icon) -> gpui_kit::Stateful<gpui_
 const GROUP_PREVIEW: usize = 5;
 
 /// 侧栏小节标签(「置顶」/「项目」;12px 三级色,同参照布局的节头)
-fn section_label(text: &'static str) -> gpui_kit::AnyElement {
+fn section_label(text: impl Into<gpui_kit::SharedString>) -> gpui_kit::AnyElement {
+    let text = text.into();
     div()
         .flex_shrink_0()
         .pt(px(6.))
@@ -380,7 +393,7 @@ fn group_empty_row(ws: &str) -> impl IntoElement {
         .ml(px(22.))
         .text_size(px(12.))
         .text_color(theme::CAPTION())
-        .child(dict::sessions::empty_chats())
+        .child(t!("sessions.empty_chats"))
 }
 
 /// 「展开显示 / 收起显示」行(灰字;点击切换该组展开态)
@@ -408,9 +421,9 @@ fn show_more_row(
         .text_color(theme::CAPTION())
         .hover(|s| s.bg(theme::SIDEBAR_HOVER()).text_color(theme::LABEL_2()))
         .child(if expanded {
-            dict::sessions::collapse_show().to_string()
+            t!("sessions.collapse_show").to_string()
         } else {
-            dict::sessions::expand_show_more(hidden)
+            t!("sessions.expand_show_more", hidden = hidden).into_owned()
         })
         .on_click(move |_, _, cx| {
             let ws = ws.clone();
@@ -525,9 +538,9 @@ fn pinned_session_row(store: &Entity<AppStore>, cx: &App, s: &SessionSummary) ->
                             14.,
                         ))
                         .tooltip(crate::shell::tip(if pinned {
-                            dict::sessions::unpin()
+                            t!("sessions.unpin")
                         } else {
-                            dict::sessions::pin()
+                            t!("sessions.pin")
                         }))
                         .on_click(move |_, _, cx| {
                             cx.stop_propagation();
@@ -548,7 +561,7 @@ fn pinned_session_row(store: &Entity<AppStore>, cx: &App, s: &SessionSummary) ->
                         .hover(|s| s.bg(theme::SIDEBAR_ACTIVE()).text_color(theme::LABEL()))
                         .text_color(theme::CAPTION())
                         .child(fixed(LiumaIcon::Archive, 14.))
-                        .tooltip(crate::shell::tip(dict::sessions::tip_archive()))
+                        .tooltip(crate::shell::tip(t!("sessions.tip_archive")))
                         .on_click(move |_, _, cx| {
                             cx.stop_propagation();
                             let id = arch_id.clone();
@@ -669,7 +682,7 @@ fn pinned_workspace_block(
                             .group_hover(pin_grp.clone(), |s| s.opacity(1.))
                             .hover(|s| s.bg(theme::SIDEBAR_ACTIVE()).text_color(theme::LABEL()))
                             .text_color(theme::CAPTION())
-                            .tooltip(crate::shell::tip(dict::sessions::ws_actions()))
+                            .tooltip(crate::shell::tip(t!("sessions.ws_actions")))
                             .child(fixed(IconName::Ellipsis, 14.)),
                     ))
                     .content({
@@ -696,7 +709,7 @@ fn pinned_workspace_block(
                         .group_hover(pin_grp.clone(), |s| s.opacity(1.))
                         .hover(|s| s.bg(theme::SIDEBAR_ACTIVE()).text_color(theme::LABEL()))
                         .text_color(theme::CAPTION())
-                        .tooltip(crate::shell::tip(dict::sessions::edit_project()))
+                        .tooltip(crate::shell::tip(t!("sessions.edit_project")))
                         .child(fixed(LiumaIcon::Pencil, 14.))
                         .on_hover({
                             let s_hover = target_edit.clone();
@@ -750,7 +763,7 @@ pub(crate) fn ws_info_card(
     let active = st.state.active_workspace.as_deref() == Some(ws);
     let (pin_store, edit_store) = (store.clone(), store.clone());
     let (ws_pin, ws_edit) = (ws.to_string(), ws.to_string());
-    let row = |icon: gpui_kit::AnyElement, label: String, sel: &'static str| {
+    let row = |icon: gpui_kit::AnyElement, label: gpui_kit::SharedString, sel: &'static str| {
         div()
             .flex()
             .h(px(34.))
@@ -826,9 +839,9 @@ pub(crate) fn ws_info_card(
                             14.,
                         ))
                         .tooltip(crate::shell::tip(if pinned {
-                            dict::sessions::unpin()
+                            t!("sessions.unpin")
                         } else {
-                            dict::sessions::pin()
+                            t!("sessions.pin")
                         }))
                         .on_click(move |_, _, cx| {
                             cx.stop_propagation();
@@ -841,7 +854,7 @@ pub(crate) fn ws_info_card(
             fixed(LiumaIcon::Message, 14.)
                 .text_color(theme::LABEL_2())
                 .into_any_element(),
-            dict::sessions::ws_task_count(session_count),
+            t!("sessions.ws_task_count", n = session_count).into(),
             "ws-info-count",
         ))
         .child(div().h(px(1.)).mx(px(8.)).my(px(3.)).bg(theme::BORDER()))
@@ -849,7 +862,7 @@ pub(crate) fn ws_info_card(
             fixed(LiumaIcon::FolderClose, 14.)
                 .text_color(theme::LABEL_2())
                 .into_any_element(),
-            path,
+            path.into(),
             "ws-info-path",
         ))
         .child(div().h(px(1.)).mx(px(8.)).my(px(3.)).bg(theme::BORDER()))
@@ -867,7 +880,7 @@ pub(crate) fn ws_info_card(
                 .text_color(theme::LABEL())
                 .hover(|s| s.bg(theme::DOCK()))
                 .child(fixed(LiumaIcon::Settings, 14.).text_color(theme::LABEL_2()))
-                .child(dict::sessions::edit_project())
+                .child(t!("sessions.edit_project"))
                 .on_click(move |_, window, cx| {
                     cx.stop_propagation();
                     let ws = ws_edit.clone();
@@ -989,7 +1002,7 @@ fn session_list(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     // 行下嵌其会话清单,5 条预览纪律同组;清单已剔除置顶会话)。搜索
     // 时置顶项同样走过滤
     if !pinned_sessions.is_empty() || !pinned_ws.is_empty() {
-        children.push(section_label(dict::sessions::pinned_section()));
+        children.push(section_label(t!("sessions.pinned_section")));
         for ix in &pinned_sessions {
             let s = &st.state.sessions[*ix];
             children.push(pinned_session_row(store, cx, s).into_any_element());
@@ -1026,7 +1039,7 @@ fn session_list(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         }
     }
     if !projects.is_empty() {
-        children.push(section_label(dict::sessions::projects_section()));
+        children.push(section_label(t!("sessions.projects_section")));
         children.extend(projects);
     }
 
@@ -1191,7 +1204,7 @@ fn group_header(
                         .group_hover(grp.clone(), |s| s.opacity(1.))
                         .hover(|s| s.bg(theme::SIDEBAR_ACTIVE()).text_color(theme::LABEL()))
                         .text_color(theme::CAPTION())
-                        .tooltip(crate::shell::tip(dict::sessions::ws_actions()))
+                        .tooltip(crate::shell::tip(t!("sessions.ws_actions")))
                         .child(fixed(IconName::Ellipsis, 14.)),
                 ))
                 .content({
@@ -1221,7 +1234,7 @@ fn group_header(
                 .group_hover(grp.clone(), |s| s.opacity(1.))
                 .hover(|s| s.bg(theme::SIDEBAR_ACTIVE()).text_color(theme::LABEL()))
                 .text_color(theme::CAPTION())
-                .tooltip(crate::shell::tip(dict::sessions::edit_project()))
+                .tooltip(crate::shell::tip(t!("sessions.edit_project")))
                 .child(fixed(LiumaIcon::Pencil, 14.))
                 .on_hover({
                     let s_hover = s_edit.clone();
@@ -1394,9 +1407,9 @@ fn session_row_in(
                                     14.,
                                 ))
                                 .tooltip(crate::shell::tip(if pinned {
-                                    dict::sessions::unpin()
+                                    t!("sessions.unpin")
                                 } else {
-                                    dict::sessions::pin()
+                                    t!("sessions.pin")
                                 }))
                                 .on_click(move |_, _, cx| {
                                     cx.stop_propagation();
@@ -1420,7 +1433,7 @@ fn session_row_in(
                                 .hover(|s| s.bg(theme::SIDEBAR_ACTIVE()).text_color(theme::LABEL()))
                                 .text_color(theme::CAPTION())
                                 .child(fixed(LiumaIcon::Archive, 14.))
-                                .tooltip(crate::shell::tip(dict::sessions::tip_archive()))
+                                .tooltip(crate::shell::tip(t!("sessions.tip_archive")))
                                 .on_click(move |_, _, cx| {
                                     cx.stop_propagation();
                                     let id = arch_id.clone();
@@ -1481,10 +1494,11 @@ pub(crate) fn session_menu_card(
         .p(px(4.))
         .shadow_md()
         .child(menu_item(
+            "menu-pin",
             if pinned_session {
-                dict::sessions::unpin()
+                t!("sessions.unpin")
             } else {
-                dict::sessions::pin()
+                t!("sessions.pin")
             },
             fixed(LiumaIcon::Pin, 13.),
             move |_, window, cx| {
@@ -1498,7 +1512,8 @@ pub(crate) fn session_menu_card(
             },
         ))
         .child(menu_item(
-            dict::sessions::rename(),
+            "menu-rename",
+            t!("sessions.rename"),
             fixed(LiumaIcon::Pencil, 13.),
             move |_, window, cx| {
                 pop.update(cx, |state, cx| state.dismiss(window, cx));
@@ -1511,7 +1526,8 @@ pub(crate) fn session_menu_card(
             },
         ))
         .child(menu_item(
-            dict::sessions::archive(),
+            "menu-archive",
+            t!("sessions.archive"),
             fixed(LiumaIcon::Archive, 13.),
             move |_, window, cx| {
                 p_arch.update(cx, |state, cx| state.dismiss(window, cx));
@@ -1524,7 +1540,8 @@ pub(crate) fn session_menu_card(
             },
         ))
         .child(menu_item(
-            dict::sessions::fork(),
+            "menu-fork",
+            t!("sessions.fork"),
             fixed(LiumaIcon::GitBranch, 13.),
             move |_, window, cx| {
                 p_fork.update(cx, |state, cx| state.dismiss(window, cx));
@@ -1538,7 +1555,8 @@ pub(crate) fn session_menu_card(
         ))
         .child(menu_divider())
         .child(menu_item(
-            dict::sessions::export_log(),
+            "menu-export-log",
+            t!("sessions.export_log"),
             fixed(LiumaIcon::Download, 13.),
             move |_, window, cx| {
                 p_export.update(cx, |state, cx| state.dismiss(window, cx));
@@ -1563,14 +1581,20 @@ fn menu_divider() -> gpui_kit::AnyElement {
 }
 
 /// 菜单项(图标 + 文字)
+/// 菜单项:`sel` = 稳定 ASCII selector,`label` = 可见文案。
+///
+/// selector 与文案分离:文案随语言切换,selector 必须恒定(旧实现把
+/// 中文标签当 id,测试也按中文寻址,文案一动就全红)。
 fn menu_item(
-    label: &'static str,
+    sel: &'static str,
+    label: impl Into<gpui_kit::SharedString>,
     icon: Icon,
     on_click: impl Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let label = label.into();
     div()
-        .id(label)
-        .debug_selector(move || label.to_string())
+        .id(sel)
+        .debug_selector(move || sel.to_string())
         .flex()
         .h(px(26.))
         .items_center()
@@ -1620,10 +1644,11 @@ fn ws_menu_card(
         .p(px(4.))
         .shadow_md()
         .child(menu_item(
+            "menu-ws-pin",
             if pinned {
-                dict::sessions::unpin()
+                t!("sessions.unpin")
             } else {
-                dict::sessions::pin()
+                t!("sessions.pin")
             },
             fixed(LiumaIcon::Pin, 13.),
             move |_, window, cx| {
@@ -1633,7 +1658,8 @@ fn ws_menu_card(
             },
         ))
         .child(menu_item(
-            dict::sessions::rename(),
+            "menu-ws-rename",
+            t!("sessions.rename"),
             fixed(LiumaIcon::Pencil, 13.),
             move |_, window, cx| {
                 // 先开模态再收菜单:dismiss 在前会在点击对完成前移除
@@ -1645,7 +1671,8 @@ fn ws_menu_card(
         ))
         .when(!is_default, |el| {
             el.child(menu_item(
-                dict::sessions::delete_workspace(),
+                "menu-ws-delete",
+                t!("sessions.delete_workspace"),
                 fixed(IconName::Delete, 13.),
                 move |_, window, cx| {
                     p_del.update(cx, |state, cx| state.dismiss(window, cx));
@@ -1679,10 +1706,10 @@ fn view_options_menu_card(
         .bg(theme::LAYER())
         .p(px(4.))
         .shadow_md()
-        .child(menu_section_label(dict::sessions::group_label()))
+        .child(menu_section_label(t!("sessions.group_label")))
         .child(view_menu_item(
             "view-group-ws",
-            dict::sessions::by_workspace(),
+            t!("sessions.by_workspace"),
             group == GroupMode::Workspace,
             p_ws.clone(),
             move |_, _, cx| {
@@ -1691,7 +1718,7 @@ fn view_options_menu_card(
         ))
         .child(view_menu_item(
             "view-group-flat",
-            dict::sessions::single_list(),
+            t!("sessions.single_list"),
             group == GroupMode::Flat,
             p_flat.clone(),
             move |_, _, cx| {
@@ -1699,10 +1726,10 @@ fn view_options_menu_card(
             },
         ))
         .child(div().h(px(1.)).mx(px(8.)).my(px(4.)).bg(theme::BORDER()))
-        .child(menu_section_label(dict::sessions::sort_label()))
+        .child(menu_section_label(t!("sessions.sort_label")))
         .child(view_menu_item(
             "view-order-updated",
-            dict::sessions::recent_updates(),
+            t!("sessions.recent_updates"),
             order == OrderMode::Updated,
             p_updated.clone(),
             move |_, _, cx| {
@@ -1721,12 +1748,13 @@ fn view_options_menu_card(
                 .rounded(px(8.))
                 .text_size(px(13.))
                 .text_color(theme::CAPTION())
-                .child(dict::sessions::manual_sort()),
+                .child(t!("sessions.manual_sort")),
         )
 }
 
 /// 菜单节标(分组方式/排序方式)
-fn menu_section_label(label: &'static str) -> gpui_kit::AnyElement {
+fn menu_section_label(label: impl Into<gpui_kit::SharedString>) -> gpui_kit::AnyElement {
+    let label = label.into();
     div()
         .px(px(8.))
         .pt(px(6.))
@@ -1740,11 +1768,12 @@ fn menu_section_label(label: &'static str) -> gpui_kit::AnyElement {
 /// 视图选项菜单项(文字 + 选中尾部 ✓;选择即收菜单)
 fn view_menu_item(
     id: &'static str,
-    label: &'static str,
+    label: impl Into<gpui_kit::SharedString>,
     selected: bool,
     pop: Entity<PopoverState>,
     on_click: impl Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let label = label.into();
     div()
         .id(id)
         .debug_selector(move || format!("view-item-{id}"))
@@ -1782,9 +1811,9 @@ fn sub_running_badge(n: usize) -> gpui_kit::AnyElement {
                 .text_size(px(11.))
                 .text_color(theme::CAPTION())
                 .child(if n == 1 {
-                    dict::sessions::subagents_one(n)
+                    t!("sessions.subagents_one", n = n)
                 } else {
-                    dict::sessions::subagents_other(n)
+                    t!("sessions.subagents_other", n = n)
                 }),
         )
         .into_any_element()

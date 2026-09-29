@@ -26,7 +26,7 @@ use gpui_kit::{
 
 use crate::features::settings::SettingsNav;
 use crate::features::settings::store::{McpDetailMode, grouped_tokens};
-use crate::kits::i18n::{Lang, dict};
+use crate::kits::i18n::{self, t};
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -95,7 +95,8 @@ fn intro_line(text: impl Into<String>) -> impl IntoElement {
 }
 
 /// 区标题(16/500)
-fn section_title(text: &str) -> impl IntoElement {
+fn section_title(text: impl Into<gpui_kit::SharedString>) -> impl IntoElement {
+    let text = text.into();
     div()
         .text_size(px(16.))
         .font_weight(gpui_kit::FontWeight::MEDIUM)
@@ -105,10 +106,11 @@ fn section_title(text: &str) -> impl IntoElement {
 /// MCP Servers 区:server 行卡(id/command/enabled 开关/移除)+ 添加卡。
 /// 通用字段输入行(标签 + 输入实体)。`sel` = 输入包装的布局回归锚
 fn field_input(
-    label: &str,
+    label: impl Into<gpui_kit::SharedString>,
     sel: &'static str,
     input: &Option<gpui_kit::Entity<gpui_kit::component::input::InputState>>,
 ) -> impl IntoElement {
+    let label = label.into();
     div()
         .flex()
         .items_center()
@@ -144,7 +146,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         let mut col = div()
             .v_flex()
             .gap(px(12.))
-            .child(section_title("MCP Servers"))
+            .child(section_title(t!("settings.mcp_servers_title")))
             .children(st.settings.settings_notice.as_ref().map(|(ok, msg)| {
                 div()
                     .debug_selector(|| "mcp-settings-notice".to_string())
@@ -156,7 +158,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                     })
                     .child(format!("{} {msg}", if *ok { "✓" } else { "⚠" }))
             }))
-            .child(intro_line(dict::settings::mcp_intro()));
+            .child(intro_line(t!("settings.mcp_intro")));
         // 列表头:「已安装 N」+ 新建主钮
         let total = servers.len();
         col = col.child(
@@ -172,7 +174,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         .gap(px(4.))
                         .text_size(px(11.))
                         .text_color(theme::CAPTION())
-                        .child(dict::settings::installed(total)),
+                        .child(t!("settings.installed", total = total)),
                 )
                 .child(div().flex_1())
                 .child(
@@ -195,13 +197,13 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                                 st_open.update(cx, |st, cx| st.open_mcp_add(window, cx));
                             }
                         })
-                        .child(dict::settings::add_new()),
+                        .child(t!("settings.add_new")),
                 ),
         );
 
         let mut rows = div().v_flex().gap(px(8.));
         if servers.is_empty() {
-            rows = rows.child(caption_line(dict::settings::mcp_none()));
+            rows = rows.child(caption_line(t!("settings.mcp_none")));
         }
         for (ix, s) in servers.into_iter().enumerate() {
             let id = s["id"].as_str().unwrap_or_default().to_string();
@@ -244,13 +246,13 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 "ready" => (theme::SUCCESS(), String::new()),
                 "connecting" => (
                     theme::LABEL_2(),
-                    dict::settings::status_connecting().to_string(),
+                    t!("settings.status_connecting").to_string(),
                 ),
                 "reconnecting" => (
                     theme::LABEL_2(),
-                    dict::settings::status_reconnecting().to_string(),
+                    t!("settings.status_reconnecting").to_string(),
                 ),
-                "failed" => (theme::DANGER(), dict::settings::status_failed().to_string()),
+                "failed" => (theme::DANGER(), t!("settings.status_failed").to_string()),
                 _ => (theme::CAPTION(), String::new()),
             };
             // 摘要随传输形态:url 在场 = http(host),否则 stdio(命令+参数)
@@ -362,7 +364,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                                     st.open_mcp_edit(&id_ed_click, window, cx)
                                 });
                             })
-                            .child(dict::common::edit()),
+                            .child(t!("common.edit")),
                     )
                     .child(
                         div()
@@ -381,7 +383,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                                 st_remove
                                     .update(cx, |st, cx| st.remove_mcp_server(&id_rm_click, cx));
                             })
-                            .child(dict::common::uninstall()),
+                            .child(t!("common.uninstall")),
                     ),
             );
         }
@@ -392,12 +394,12 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     // ── 详情页(新增/编辑;页签只切换编辑形态,保存是同一个动作)──
     let (title, intro) = match &detail.editing {
         Some(id) => (
-            dict::settings::mcp_edit_card(id),
-            dict::settings::mcp_edit_desc().to_string(),
+            t!("settings.mcp_edit_card", id = id).into_owned(),
+            t!("settings.mcp_edit_desc").to_string(),
         ),
         None => (
-            dict::settings::mcp_new_card().to_string(),
-            dict::settings::mcp_new_desc().to_string(),
+            t!("settings.mcp_new_card").to_string(),
+            t!("settings.mcp_new_desc").to_string(),
         ),
     };
     let json_open = detail.mode == McpDetailMode::Json;
@@ -474,7 +476,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                                 }
                             });
                         })
-                        .child(dict::settings::form_section()),
+                        .child(t!("settings.form_section")),
                 )
                 .child(
                     div()
@@ -546,7 +548,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 div()
                     .v_flex()
                     .gap(px(6.))
-                    .child(caption_line(dict::settings::full_config()))
+                    .child(caption_line(t!("settings.full_config")))
                     .child(
                         div()
                             .id("mcp-json-input")
@@ -618,7 +620,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         .flex_shrink_0()
                         .text_size(px(11.))
                         .text_color(theme::CAPTION())
-                        .child(dict::settings::name()),
+                        .child(t!("settings.name")),
                 )
                 .child(id_field),
         );
@@ -691,7 +693,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         .flex_shrink_0()
                         .text_size(px(11.))
                         .text_color(theme::CAPTION())
-                        .child(dict::settings::transport()),
+                        .child(t!("settings.transport")),
                 )
                 .child(transport_row),
         );
@@ -738,7 +740,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                                         st_rm.update(cx, |st, cx| st.remove_mcp_header(ix, cx));
                                     }
                                 })
-                                .child(dict::common::remove()),
+                                .child(t!("common.remove")),
                         ),
                 );
             }
@@ -747,7 +749,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 div()
                     .v_flex()
                     .gap(px(4.))
-                    .child(caption_line(dict::settings::headers_desc()))
+                    .child(caption_line(t!("settings.headers_desc")))
                     .child(header_rows)
                     .child(
                         div()
@@ -768,7 +770,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                                         .update(cx, |st, cx| st.add_mcp_header(window, cx));
                                 }
                             })
-                            .child(dict::settings::add_header()),
+                            .child(t!("settings.add_header")),
                     ),
             );
         } else {
@@ -812,7 +814,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                                         st_rm.update(cx, |st, cx| st.remove_mcp_arg(ix, cx));
                                     }
                                 })
-                                .child(dict::common::remove()),
+                                .child(t!("common.remove")),
                         ),
                 );
             }
@@ -821,7 +823,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 div()
                     .v_flex()
                     .gap(px(4.))
-                    .child(caption_line(dict::settings::args_desc()))
+                    .child(caption_line(t!("settings.args_desc")))
                     .child(arg_rows)
                     .child(
                         div()
@@ -841,7 +843,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                                     st_arg_add.update(cx, |st, cx| st.add_mcp_arg(window, cx));
                                 }
                             })
-                            .child(dict::settings::add_arg()),
+                            .child(t!("settings.add_arg")),
                     ),
             );
             // 环境变量(键值对,平铺)
@@ -885,7 +887,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                                         st_rm.update(cx, |st, cx| st.remove_mcp_env(ix, cx));
                                     }
                                 })
-                                .child(dict::common::remove()),
+                                .child(t!("common.remove")),
                         ),
                 );
             }
@@ -894,7 +896,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 div()
                     .v_flex()
                     .gap(px(4.))
-                    .child(caption_line(dict::settings::env_desc()))
+                    .child(caption_line(t!("settings.env_desc")))
                     .child(env_rows)
                     .child(
                         div()
@@ -914,12 +916,12 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                                     st_env_add.update(cx, |st, cx| st.add_mcp_env(window, cx));
                                 }
                             })
-                            .child(dict::settings::add_env()),
+                            .child(t!("settings.add_env")),
                     ),
             );
         }
         card = card.child(field_input(
-            dict::settings::timeout_ms_mcp(),
+            t!("settings.timeout_ms_mcp"),
             "mcp-timeout-input",
             &detail.form_timeout,
         ));
@@ -939,9 +941,9 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                             theme::CAPTION()
                         })
                         .child(if detail.form_enabled {
-                            dict::settings::enabled()
+                            t!("settings.enabled")
                         } else {
-                            dict::settings::disabled()
+                            t!("settings.disabled")
                         }),
                 )
                 .child(
@@ -978,7 +980,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 .on_click(move |_, _, cx| {
                     st_uninstall.update(cx, |st, cx| st.uninstall_mcp_detail(cx));
                 })
-                .child(dict::common::uninstall()),
+                .child(t!("common.uninstall")),
         );
     }
     footer = footer.child(div().flex_1()).child(
@@ -999,7 +1001,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             .on_click(move |_, _, cx| {
                 st_save.update(cx, |st, cx| st.save_mcp_detail(cx));
             })
-            .child(dict::common::save()),
+            .child(t!("common.save")),
     );
     footer = footer.child(
         div()
@@ -1016,7 +1018,7 @@ fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             .on_click(move |_, _, cx| {
                 st_cancel.update(cx, |st, cx| st.close_mcp_detail(cx));
             })
-            .child(dict::common::cancel()),
+            .child(t!("common.cancel")),
     );
     card = card.child(footer);
     card.into_any_element()
@@ -1039,7 +1041,7 @@ fn models_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let mut col = div()
         .v_flex()
         .gap(px(12.))
-        .child(section_title(dict::settings::models_section()))
+        .child(section_title(t!("settings.models_section")))
         .children(
             st.settings
                 .saved_provider_notice
@@ -1069,7 +1071,7 @@ fn models_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     // 行卡列表(与标题块之间 extra 12 空气,gap 8)
     let mut rows = div().v_flex().gap(px(8.)).mt(px(12.));
     if providers.is_empty() {
-        rows = rows.child(caption_line(dict::settings::registry_empty()));
+        rows = rows.child(caption_line(t!("settings.registry_empty")));
     }
     for p in &providers {
         let id = p["id"].as_str().unwrap_or_default();
@@ -1090,7 +1092,7 @@ fn saved_notice(name: &str) -> impl IntoElement {
         .id("provider-saved-notice")
         .text_size(px(12.))
         .text_color(theme::SUCCESS())
-        .child(dict::settings::saved(name))
+        .child(t!("settings.saved", name = name))
 }
 
 /// 单个 provider 卡片:圆标 avatar + 名称 + URL 链接行;
@@ -1164,7 +1166,7 @@ fn provider_row_card(
                                             .border_color(theme::BORDER())
                                             .text_size(px(11.))
                                             .text_color(theme::LABEL_3())
-                                            .child(dict::settings::default_badge()),
+                                            .child(t!("settings.default_badge")),
                                     )
                                 })
                                 .child(credential_dot(cred_ready)),
@@ -1272,7 +1274,7 @@ fn billing_value_line(cache: &serde_json::Value) -> Option<impl IntoElement> {
             let amount = cache["amount"].as_str()?;
             let currency = cache["currency"].as_str().unwrap_or("");
             Some(
-                row.child(dict::settings::remaining())
+                row.child(t!("settings.remaining"))
                     .child(
                         div()
                             .text_color(theme::SUCCESS())
@@ -1293,8 +1295,8 @@ fn billing_value_line(cache: &serde_json::Value) -> Option<impl IntoElement> {
             let mut col = div().v_flex().items_end().gap(px(4.));
             let mut any = false;
             for (label, pct) in [
-                (dict::settings::quota_5h(), cache["pct_5h"].as_u64()),
-                (dict::settings::quota_7d(), cache["pct_7d"].as_u64()),
+                (t!("settings.quota_5h"), cache["pct_5h"].as_u64()),
+                (t!("settings.quota_7d"), cache["pct_7d"].as_u64()),
             ] {
                 let Some(v) = pct else { continue };
                 any = true;
@@ -1329,7 +1331,7 @@ fn billing_value_line(cache: &serde_json::Value) -> Option<impl IntoElement> {
                         .text_size(px(11.))
                         .text_color(theme::CAPTION())
                         .child(fixed(LiumaIcon::Clock, 11.))
-                        .child(dict::settings::resets_in(cd)),
+                        .child(t!("settings.resets_in", cd = cd)),
                 );
             }
             any.then(|| col.into_any_element())
@@ -1370,14 +1372,25 @@ pub(crate) fn resets_countdown(resets: &str) -> Option<String> {
         .as_millis() as u64;
     let mins = ts.saturating_sub(now) / 60_000;
     if mins >= 60 * 24 {
-        Some(dict::settings::quota_expiry(
-            mins / (60 * 24),
-            (mins % (60 * 24)) / 60,
-        ))
+        Some(
+            t!(
+                "settings.quota_expiry",
+                days = mins / (60 * 24),
+                hours = (mins % (60 * 24)) / 60
+            )
+            .into_owned(),
+        )
     } else if mins >= 60 {
-        Some(dict::settings::quota_expiry_hm(mins / 60, mins % 60))
+        Some(
+            t!(
+                "settings.quota_expiry_hm",
+                hours = mins / 60,
+                mins = mins % 60
+            )
+            .into_owned(),
+        )
     } else if mins > 0 {
-        Some(dict::settings::quota_expiry_m(mins))
+        Some(t!("settings.quota_expiry_m", mins = mins).into_owned())
     } else {
         None
     }
@@ -1391,11 +1404,11 @@ fn relative_time(ms: u64) -> String {
         .as_millis() as u64;
     let mins = now.saturating_sub(ms) / 60_000;
     if mins < 60 {
-        dict::time::rel_mins_ago(mins)
+        t!("time.rel_mins_ago", n = mins).into_owned()
     } else if mins < 60 * 24 {
-        dict::time::rel_hours_ago(mins / 60)
+        t!("time.rel_hours_ago", n = mins / 60).into_owned()
     } else {
-        dict::time::rel_days_ago(mins / (60 * 24))
+        t!("time.rel_days_ago", n = mins / (60 * 24)).into_owned()
     }
 }
 
@@ -1433,7 +1446,7 @@ fn row_edit_button(store: &Entity<AppStore>, id: &str) -> impl IntoElement {
         .text_size(px(12.))
         .text_color(theme::LABEL_2())
         .hover(|s| s.bg(theme::DOCK()))
-        .child(dict::common::edit())
+        .child(t!("common.edit"))
         .on_click(move |_, window, cx| {
             let pid = pid.clone();
             s.update(cx, |st, cx| {
@@ -1464,7 +1477,7 @@ fn row_remove_button(store: &Entity<AppStore>, id: &str) -> impl IntoElement {
         .text_size(px(12.))
         .text_color(theme::DANGER())
         .hover(|s| s.bg(theme::DOCK()))
-        .child(dict::common::remove())
+        .child(t!("common.remove"))
         .on_click(move |_, _, cx| {
             let pid = pid.clone();
             s.update(cx, |st, cx| st.ask_delete_provider(&pid, cx));
@@ -1505,7 +1518,7 @@ fn add_block(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
                 div()
                     .v_flex()
                     .gap(px(6.))
-                    .child(field_label(dict::settings::provider_id_label()))
+                    .child(field_label(t!("settings.provider_id_label")))
                     .children(
                         st.settings
                             .set_form_id
@@ -1539,7 +1552,7 @@ fn add_block(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
                 .text_color(theme::LABEL_3())
                 .hover(|s| s.bg(theme::LAYER()).text_color(theme::LABEL_2()))
                 .child(fixed(IconName::Plus, 14.))
-                .child(dict::settings::add_provider())
+                .child(t!("settings.add_provider"))
                 .on_click(move |_, window, cx| {
                     s_catalog.update(cx, |st, cx| st.open_provider_add_builtin(window, cx));
                 }),
@@ -1563,7 +1576,7 @@ fn add_block(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
                 .text_color(theme::LABEL_3())
                 .hover(|s| s.bg(theme::LAYER()).text_color(theme::LABEL_2()))
                 .child(fixed(IconName::Plus, 14.))
-                .child(dict::settings::add_custom_provider())
+                .child(t!("settings.add_custom_provider"))
                 .on_click(move |_, window, cx| {
                     s_custom.update(cx, |st, cx| st.open_provider_add(window, cx));
                 }),
@@ -1661,7 +1674,7 @@ fn provider_editor(store: &Entity<AppStore>, cx: &App, id: &str, setup: bool) ->
                 div()
                     .v_flex()
                     .gap(px(6.))
-                    .child(field_label(dict::settings::provider_label()))
+                    .child(field_label(t!("settings.provider_label")))
                     .children(st.settings.builtin_select.as_ref().map(|s| {
                         div()
                             .w(px(260.))
@@ -1673,12 +1686,12 @@ fn provider_editor(store: &Entity<AppStore>, cx: &App, id: &str, setup: bool) ->
         })
         .when(!builtin, |el| {
             el.child(input_row(
-                dict::settings::name(),
+                &t!("settings.name"),
                 &st.settings.set_form_name,
                 "field-name".into(),
             ))
             .child(input_row(
-                "Base URL",
+                &t!("settings.provider_field_base_url"),
                 &st.settings.set_form_url,
                 "field-url".into(),
             ))
@@ -1688,11 +1701,11 @@ fn provider_editor(store: &Entity<AppStore>, cx: &App, id: &str, setup: bool) ->
                 .v_flex()
                 .gap(px(6.))
                 .child(field_label(if builtin {
-                    dict::settings::api_key()
+                    t!("settings.api_key")
                 } else if setup {
-                    dict::settings::api_key_required()
+                    t!("settings.api_key_required")
                 } else {
-                    dict::settings::api_key_plain()
+                    t!("settings.api_key_plain")
                 }))
                 .children(st.settings.key_input.as_ref().map(|e| {
                     div()
@@ -1720,7 +1733,7 @@ fn provider_editor(store: &Entity<AppStore>, cx: &App, id: &str, setup: bool) ->
                     } else {
                         fixed(IconName::ChevronRight, 13.)
                     })
-                    .child(dict::settings::advanced_section())
+                    .child(t!("settings.advanced_section"))
                     .on_mouse_down(gpui_kit::MouseButton::Left, {
                         let s = store.clone();
                         move |_, _, cx| {
@@ -1734,21 +1747,24 @@ fn provider_editor(store: &Entity<AppStore>, cx: &App, id: &str, setup: bool) ->
             )
             .when(st.settings.builtin_advanced_open, |el| {
                 if let Some(entry) = &picked {
-                    el.child(info_line("Base URL", entry.base_url.clone()))
-                        .child(info_line(dict::settings::adapter(), entry.dialect.clone()))
-                        // 模型清单可编辑草稿(目录预填打底,端点拉取更新,
-                        // 随「应用」落盘——模型列表会更新,不锁目录契约)
-                        .child(editor_models_block(store, cx, fetch_pid.clone()).into_any_element())
-                        .child(info_line(
-                            dict::settings::billing_preset(),
-                            if entry.billing.is_some() {
-                                dict::settings::billing_builtin().to_string()
-                            } else {
-                                dict::settings::billing_none().to_string()
-                            },
-                        ))
+                    el.child(info_line(
+                        t!("settings.provider_field_base_url"),
+                        entry.base_url.clone(),
+                    ))
+                    .child(info_line(t!("settings.adapter"), entry.dialect.clone()))
+                    // 模型清单可编辑草稿(目录预填打底,端点拉取更新,
+                    // 随「应用」落盘——模型列表会更新,不锁目录契约)
+                    .child(editor_models_block(store, cx, fetch_pid.clone()).into_any_element())
+                    .child(info_line(
+                        t!("settings.billing_preset"),
+                        if entry.billing.is_some() {
+                            t!("settings.billing_builtin").to_string()
+                        } else {
+                            t!("settings.billing_none").to_string()
+                        },
+                    ))
                 } else {
-                    el.child(caption_line(dict::settings::catalog_missing()))
+                    el.child(caption_line(t!("settings.catalog_missing")))
                 }
             })
         })
@@ -1757,7 +1773,7 @@ fn provider_editor(store: &Entity<AppStore>, cx: &App, id: &str, setup: bool) ->
                 div()
                     .v_flex()
                     .gap(px(6.))
-                    .child(field_label(dict::settings::api_format()))
+                    .child(field_label(t!("settings.api_format")))
                     .children(st.settings.dialect_select.as_ref().map(|s| {
                         div()
                             .w(px(260.))
@@ -1790,7 +1806,7 @@ fn provider_editor(store: &Entity<AppStore>, cx: &App, id: &str, setup: bool) ->
                     .text_size(px(14.))
                     .text_color(theme::LABEL_2())
                     .hover(|s| s.bg(theme::DOCK()))
-                    .child(dict::common::cancel())
+                    .child(t!("common.cancel"))
                     .on_click(move |_, _, cx| {
                         let id = close_id.clone();
                         s_cancel.update(cx, |st, cx| st.close_provider_editor(&id, cx));
@@ -1810,7 +1826,7 @@ fn provider_editor(store: &Entity<AppStore>, cx: &App, id: &str, setup: bool) ->
                     .text_size(px(14.))
                     .text_color(theme::LABEL())
                     .hover(|s| s.bg(theme::BUBBLE()))
-                    .child(dict::common::apply())
+                    .child(t!("common.apply"))
                     .on_click(move |_, _, cx| {
                         s_apply.update(cx, |st, cx| st.apply_provider_editor(cx));
                     }),
@@ -1826,7 +1842,7 @@ fn editor_models_block(store: &Entity<AppStore>, cx: &App, fetch_pid: String) ->
     div()
         .v_flex()
         .gap(px(8.))
-        .child(field_label(dict::settings::model_list()))
+        .child(field_label(t!("settings.model_list")))
         .child(if st.settings.set_form_models.is_empty() {
             div()
                 .flex()
@@ -1841,7 +1857,7 @@ fn editor_models_block(store: &Entity<AppStore>, cx: &App, fetch_pid: String) ->
                 .text_size(px(13.))
                 .text_color(theme::CAPTION())
                 .child(fixed(IconName::Info, 14.))
-                .child(dict::settings::models_empty())
+                .child(t!("settings.models_empty"))
                 .into_any_element()
         } else {
             div()
@@ -1886,7 +1902,7 @@ fn editor_models_block(store: &Entity<AppStore>, cx: &App, fetch_pid: String) ->
                         .text_color(theme::LABEL_2())
                         .hover(|s| s.bg(theme::DOCK()))
                         .child(fixed(IconName::Plus, 13.))
-                        .child(dict::settings::add_model())
+                        .child(t!("settings.add_model"))
                         .on_click(move |_, window, cx| {
                             s_add_model.update(cx, |st, cx| {
                                 st.add_model_manual(window, cx);
@@ -1911,7 +1927,7 @@ fn editor_models_block(store: &Entity<AppStore>, cx: &App, fetch_pid: String) ->
                             el.text_color(theme::ONGOING())
                         })
                         .child(fixed(IconName::Globe, 13.))
-                        .child(dict::settings::fetch_from_endpoint())
+                        .child(t!("settings.fetch_from_endpoint"))
                         .on_click(move |_, _, cx| {
                             let pid = fetch_pid.clone();
                             s_fetch.update(cx, |st, cx| {
@@ -1920,7 +1936,7 @@ fn editor_models_block(store: &Entity<AppStore>, cx: &App, fetch_pid: String) ->
                         }),
                 ),
         )
-        .child(caption_line(dict::settings::ctx_hint()))
+        .child(caption_line(t!("settings.ctx_hint")))
 }
 
 /// 计费端点块(开关 + 形态 + URL + JSON 路径)
@@ -1957,7 +1973,7 @@ fn editor_billing_block(
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(field_label(dict::settings::billing_endpoint()))
+                .child(field_label(t!("settings.billing_endpoint")))
                 .child(
                     div()
                         .flex()
@@ -1970,9 +1986,9 @@ fn editor_billing_block(
                             theme::CAPTION()
                         })
                         .child(if st.settings.set_form_billing_enabled {
-                            dict::settings::enabled()
+                            t!("settings.enabled")
                         } else {
-                            dict::settings::disabled()
+                            t!("settings.disabled")
                         })
                         .child(
                             Switch::new("billing-enabled")
@@ -1995,36 +2011,36 @@ fn editor_billing_block(
                     .gap(px(6.))
                     .child(billing_kind_chip(
                         store,
-                        dict::settings::billing_balance(),
+                        t!("settings.billing_balance"),
                         "balance",
                         &st.settings.set_form_billing_kind,
                     ))
                     .child(billing_kind_chip(
                         store,
-                        dict::settings::billing_usage(),
+                        t!("settings.billing_usage"),
                         "usage",
                         &st.settings.set_form_billing_kind,
                     )),
             )
             .child(input_row(
-                dict::settings::query_url(),
+                &t!("settings.query_url"),
                 &st.settings.set_form_billing_url,
                 "field-billing-url".into(),
             ))
             .children(if st.settings.set_form_billing_kind == "usage" {
                 vec![
                     input_row(
-                        dict::settings::usage_path_5h(),
+                        &t!("settings.usage_path_5h"),
                         &st.settings.set_form_path_5h,
                         "field-p5h".into(),
                     ),
                     input_row(
-                        dict::settings::usage_path_7d(),
+                        &t!("settings.usage_path_7d"),
                         &st.settings.set_form_path_7d,
                         "field-p7d".into(),
                     ),
                     input_row(
-                        dict::settings::reset_path(),
+                        &t!("settings.reset_path"),
                         &st.settings.set_form_path_resets,
                         "field-presets".into(),
                     ),
@@ -2032,12 +2048,12 @@ fn editor_billing_block(
             } else {
                 vec![
                     input_row(
-                        dict::settings::balance_path(),
+                        &t!("settings.balance_path"),
                         &st.settings.set_form_path_balance,
                         "field-pbal".into(),
                     ),
                     input_row(
-                        dict::settings::currency_path(),
+                        &t!("settings.currency_path"),
                         &st.settings.set_form_path_currency,
                         "field-pcur".into(),
                     ),
@@ -2067,9 +2083,9 @@ fn editor_billing_block(
                         .hover(|s| s.bg(theme::DOCK()))
                         .child(
                             if st.settings.billing_refreshing.as_deref() == Some(id.as_str()) {
-                                dict::settings::billing_refreshing()
+                                t!("settings.billing_refreshing")
                             } else {
-                                dict::settings::refresh_now()
+                                t!("settings.refresh_now")
                             },
                         )
                         .on_click(move |_, _, cx| {
@@ -2092,8 +2108,8 @@ fn model_draft_row(store: &Entity<AppStore>, cx: &App, ix: usize, model: &str) -
         .settings
         .set_form_context_windows
         .get(model)
-        .map(|v| dict::settings::ctx_window(grouped_tokens(*v)))
-        .unwrap_or_else(|| dict::settings::ctx_window_default().to_string());
+        .map(|v| t!("settings.ctx_window", value = grouped_tokens(*v)).into_owned())
+        .unwrap_or_else(|| t!("settings.ctx_window_default").to_string());
     let s_chip = store.clone();
     let s_remove = store.clone();
     let chip_model = model.to_string();
@@ -2209,7 +2225,7 @@ fn context_window_edit_row(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyE
                         .text_size(px(12.))
                         .text_color(theme::LABEL())
                         .hover(|s| s.bg(theme::BUBBLE()))
-                        .child(dict::common::apply())
+                        .child(t!("common.apply"))
                         .on_click(move |_, _, cx| {
                             s_apply.update(cx, |st, cx| {
                                 st.commit_context_window_edit(cx);
@@ -2232,7 +2248,7 @@ fn context_window_edit_row(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyE
                         .text_size(px(12.))
                         .text_color(theme::LABEL_2())
                         .hover(|s| s.bg(theme::DOCK()))
-                        .child(dict::common::cancel())
+                        .child(t!("common.cancel"))
                         .on_click(move |_, _, cx| {
                             s_cancel.update(cx, |st, cx| st.cancel_context_window_edit(cx));
                         }),
@@ -2243,7 +2259,7 @@ fn context_window_edit_row(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyE
                 div()
                     .text_size(px(11.))
                     .text_color(theme::DANGER())
-                    .child(dict::settings::ctx_invalid_hint()),
+                    .child(t!("settings.ctx_invalid_hint")),
             )
         })
         .into_any_element()
@@ -2252,10 +2268,11 @@ fn context_window_edit_row(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyE
 /// 计费形态 chip(余额 / 用量)
 fn billing_kind_chip(
     store: &Entity<AppStore>,
-    label: &'static str,
+    label: impl Into<gpui_kit::SharedString>,
     kind: &'static str,
     selected: &str,
 ) -> impl IntoElement {
+    let label = label.into();
     let s = store.clone();
     let active = kind == selected;
     div()
@@ -2287,7 +2304,8 @@ fn billing_kind_chip(
 }
 
 /// 字段标签(12/500 secondary)
-fn field_label(text: &str) -> impl IntoElement {
+fn field_label(text: impl Into<gpui_kit::SharedString>) -> impl IntoElement {
+    let text = text.into();
     div()
         .text_size(px(12.))
         .font_weight(gpui_kit::FontWeight::MEDIUM)
@@ -2302,9 +2320,9 @@ fn about_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     div()
         .v_flex()
         .gap(px(12.))
-        .child(section_title(dict::settings::about()))
-        .child(info_line(dict::settings::version(), info.version.clone()))
-        .child(intro_line(dict::settings::about_intro()))
+        .child(section_title(t!("settings.about")))
+        .child(info_line(t!("settings.version"), info.version.clone()))
+        .child(intro_line(t!("settings.about_intro")))
 }
 
 /// 通用区(行序与形态按 settings.general.item):
@@ -2336,10 +2354,10 @@ fn general_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                     .filter_map(|p| {
                         let id = p.as_str()?;
                         let label = match id {
-                            "read-only" => dict::settings::perm_read_only(),
-                            "workspace-write" => dict::settings::perm_workspace_write(),
-                            "full-access" => dict::settings::perm_full_access(),
-                            other => other,
+                            "read-only" => t!("settings.perm_read_only"),
+                            "workspace-write" => t!("settings.perm_workspace_write"),
+                            "full-access" => t!("settings.perm_full_access"),
+                            other => other.into(),
                         };
                         Some((id.to_string(), label.to_string()))
                     })
@@ -2347,51 +2365,39 @@ fn general_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             })
             .unwrap_or_default();
     let busy_options = vec![
-        (
-            "queue".to_string(),
-            dict::settings::busy_queue().to_string(),
-        ),
-        (
-            "steer".to_string(),
-            dict::settings::busy_steer().to_string(),
-        ),
+        ("queue".to_string(), t!("settings.busy_queue").to_string()),
+        ("steer".to_string(), t!("settings.busy_steer").to_string()),
     ];
-    // 语言下拉:显示名 = 原文名恒定(两语言同值);与 store
-    // 侧构建同源(id = settings.yaml `language` 词汇)
-    let language_options: Vec<(String, String)> = vec![
-        (
-            Lang::Zh.id().to_string(),
-            dict::settings::lang_zh().to_string(),
-        ),
-        (
-            Lang::En.id().to_string(),
-            dict::settings::lang_en().to_string(),
-        ),
-    ];
+    // 语言下拉:与 store 侧构建同源(id = settings.yaml `language` =
+    // locale,显示名 = `LOCALES` 原文名)
+    let language_options: Vec<(String, String)> = i18n::LOCALES
+        .iter()
+        .map(|(id, name)| (id.to_string(), name.to_string()))
+        .collect();
     div()
         .v_flex()
-        .child(section_title(dict::settings::general()))
+        .child(section_title(t!("settings.general")))
         .mt(px(12.))
         // 行序:Agent 预设 / 权限 / 语言 / 外观 / 繁忙时 Enter 键行为
         .child(selector_row(
             "agent-preset",
-            dict::settings::preset_title(),
-            dict::settings::preset_desc(),
+            t!("settings.preset_title"),
+            t!("settings.preset_desc"),
             &preset_options,
             preset,
             st.settings.preset_select.as_ref(),
         ))
         .child(selector_row(
             "permission",
-            dict::settings::permission_title(),
-            dict::settings::permission_desc(),
+            t!("settings.permission_title"),
+            t!("settings.permission_desc"),
             &permission_options,
             permission,
             st.settings.permission_select.as_ref(),
         ))
         .child(selector_row(
             "language",
-            dict::settings::language(),
+            t!("settings.language"),
             "",
             &language_options,
             language,
@@ -2400,8 +2406,8 @@ fn general_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .child(appearance_group(store, appearance))
         .child(selector_row(
             "busy-enter",
-            dict::settings::busy_title(),
-            dict::settings::busy_desc(),
+            t!("settings.busy_title"),
+            t!("settings.busy_desc"),
             &busy_options,
             busy,
             st.settings.busy_enter_select.as_ref(),
@@ -2427,12 +2433,14 @@ fn snapshot_options(v: &serde_json::Value) -> Vec<(String, String)> {
 /// 选择器行(左 title+desc,右 Select 下拉[gpui-component])
 fn selector_row(
     id: &'static str,
-    title: &str,
-    desc: &str,
+    title: impl Into<gpui_kit::SharedString>,
+    desc: impl Into<gpui_kit::SharedString>,
     options: &[(String, String)],
     current: &str,
     select: Option<&Entity<SelectState<Vec<gpui_kit::SharedString>>>>,
 ) -> impl IntoElement {
+    let title = title.into();
+    let desc = desc.into();
     let _ = options;
     let _ = current;
     let row_sel = sid("pref-row", id);
@@ -2479,20 +2487,24 @@ fn selector_row(
 /// 外观组(标题 + cube 行;cube = 图标上文字下,
 /// r16,选中 = 模块填充 + 描边)
 fn appearance_group(store: &Entity<AppStore>, current: &str) -> impl IntoElement {
-    let cubes: [(&str, &str, gpui_kit::component::Icon); 3] = [
+    let cubes: [(
+        &str,
+        std::borrow::Cow<'static, str>,
+        gpui_kit::component::Icon,
+    ); 3] = [
         (
             "light",
-            dict::settings::appearance_light(),
+            t!("settings.appearance_light"),
             fixed(IconName::Sun, 20.),
         ),
         (
             "dark",
-            dict::settings::appearance_dark(),
+            t!("settings.appearance_dark"),
             fixed(IconName::Moon, 20.),
         ),
         (
             "system",
-            dict::settings::appearance_system(),
+            t!("settings.appearance_system"),
             fixed(LiumaIcon::Monitor, 20.),
         ),
     ];
@@ -2551,13 +2563,17 @@ fn appearance_group(store: &Entity<AppStore>, current: &str) -> impl IntoElement
         .child(
             div()
                 .text_size(px(14.))
-                .child(dict::settings::appearance_title()),
+                .child(t!("settings.appearance_title")),
         )
         .child(row)
 }
 
 /// 信息行(label 11 说明号 + 值 13 正文号)
-fn info_line(label: &str, value: impl Into<String>) -> impl IntoElement {
+fn info_line(
+    label: impl Into<gpui_kit::SharedString>,
+    value: impl Into<String>,
+) -> impl IntoElement {
+    let label = label.into();
     div()
         .flex()
         .items_center()
@@ -2604,7 +2620,7 @@ pub(crate) fn open_fetch_models_dialog(
     let s_close = store.clone();
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .title(dict::settings::fetch_models_title())
+            .title(t!("settings.fetch_models_title"))
             .w(px(440.))
             .bg(theme::LAYER())
             .content({
@@ -2629,7 +2645,7 @@ pub(crate) fn open_fetch_models_dialog(
                             div()
                                 .text_size(px(12.))
                                 .text_color(theme::CAPTION())
-                                .child(dict::settings::picked_count(picked_count)),
+                                .child(t!("settings.picked_count", count = picked_count)),
                         );
                     if loading {
                         card = card.child(
@@ -2641,7 +2657,7 @@ pub(crate) fn open_fetch_models_dialog(
                                 .justify_center()
                                 .text_size(px(13.))
                                 .text_color(theme::CAPTION())
-                                .child(dict::settings::fetching()),
+                                .child(t!("settings.fetching")),
                         );
                     } else {
                         card = card.child(
@@ -2727,7 +2743,7 @@ pub(crate) fn open_fetch_models_dialog(
                                     .text_size(px(12.))
                                     .text_color(theme::LABEL_2())
                                     .hover(|s| s.bg(theme::DOCK()))
-                                    .child(dict::common::cancel())
+                                    .child(t!("common.cancel"))
                                     .on_click(move |_, window, cx| {
                                         s_close.update(cx, |st, cx| st.close_fetch_modal(cx));
                                         window.close_dialog(cx);
@@ -2749,7 +2765,7 @@ pub(crate) fn open_fetch_models_dialog(
                                         .text_size(px(12.))
                                         .text_color(theme::LABEL())
                                         .hover(|s| s.bg(theme::BUBBLE()))
-                                        .child(dict::settings::adopt(picked_count))
+                                        .child(t!("settings.adopt", count = picked_count))
                                         .on_click(move |_, window, cx| {
                                             s_adopt.update(cx, |st, cx| {
                                                 st.adopt_fetched_models(cx);
@@ -2796,19 +2812,19 @@ pub(crate) fn onboarding_modal(store: &Entity<AppStore>, cx: &App) -> gpui_kit::
                 .text_size(px(17.))
                 .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                 .text_color(theme::LABEL())
-                .child(dict::settings::onboarding_title()),
+                .child(t!("settings.onboarding_title")),
         )
         .child(
             div()
                 .text_size(px(13.))
                 .text_color(theme::LABEL_2())
-                .child(dict::settings::onboarding_desc()),
+                .child(t!("settings.onboarding_desc")),
         )
         .child(
             div()
                 .v_flex()
                 .gap(px(6.))
-                .child(field_label(dict::settings::api_key()))
+                .child(field_label(t!("settings.api_key")))
                 .children(st.settings.onboarding_key_input.as_ref().map(|e| {
                     div()
                         .id("onboarding-key")
@@ -2847,7 +2863,7 @@ pub(crate) fn onboarding_modal(store: &Entity<AppStore>, cx: &App) -> gpui_kit::
                     .text_size(px(13.))
                     .text_color(theme::LABEL_2())
                     .hover(|s| s.bg(theme::DOCK()))
-                    .child(dict::settings::onboarding_later())
+                    .child(t!("settings.onboarding_later"))
                     .on_click(move |_, _, cx| {
                         s_later.update(cx, |st, cx| st.onboarding_later(cx));
                     }),
@@ -2866,7 +2882,7 @@ pub(crate) fn onboarding_modal(store: &Entity<AppStore>, cx: &App) -> gpui_kit::
                     .text_size(px(13.))
                     .text_color(theme::LABEL())
                     .hover(|s| s.opacity(0.9))
-                    .child(dict::settings::onboarding_save())
+                    .child(t!("settings.onboarding_save"))
                     .on_click(move |_, _, cx| {
                         s_save.update(cx, |st, cx| st.onboarding_save(cx));
                     }),
@@ -2906,14 +2922,14 @@ pub(crate) fn open_delete_provider_dialog(
         let s_confirm = s_confirm.clone();
         let pid = pid.clone();
         dialog
-            .title(dict::settings::remove_provider(pid.clone()))
+            .title(t!("settings.remove_provider", id = pid.clone()))
             .w(px(420.))
             .bg(theme::LAYER())
             .content(|content, _, _| {
                 content.child(
                     div()
                         .debug_selector(|| "provider-delete-card".to_string())
-                        .child(caption_line(dict::settings::remove_provider_desc())),
+                        .child(caption_line(t!("settings.remove_provider_desc"))),
                 )
             })
             .footer(
@@ -2936,7 +2952,7 @@ pub(crate) fn open_delete_provider_dialog(
                             .text_size(px(12.))
                             .text_color(theme::LABEL_2())
                             .hover(|s| s.bg(theme::DOCK()))
-                            .child(dict::common::cancel())
+                            .child(t!("common.cancel"))
                             .on_click(|_, window, cx| {
                                 window.close_dialog(cx);
                             }),
@@ -2956,7 +2972,7 @@ pub(crate) fn open_delete_provider_dialog(
                             .text_size(px(12.))
                             .text_color(theme::DANGER())
                             .hover(|s| s.bg(theme::DOCK()))
-                            .child(dict::common::remove())
+                            .child(t!("common.remove"))
                             .on_click(move |_, window, cx| {
                                 s_confirm.update(cx, |st, cx| st.confirm_delete_provider(&pid, cx));
                                 window.close_dialog(cx);
@@ -2987,7 +3003,7 @@ pub(crate) fn open_full_access_dialog(store: &Entity<AppStore>, window: &mut Win
                             .text_size(px(16.))
                             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                             .text_color(theme::LABEL())
-                            .child(dict::settings::fa_title()),
+                            .child(t!("settings.fa_title")),
                     ),
             )
             .w(px(440.))
@@ -3003,7 +3019,7 @@ pub(crate) fn open_full_access_dialog(store: &Entity<AppStore>, window: &mut Win
                             div()
                                 .text_size(px(13.))
                                 .text_color(theme::LABEL_2())
-                                .child(dict::settings::fa_body()),
+                                .child(t!("settings.fa_body")),
                         )
                         .child(
                             div()
@@ -3014,27 +3030,27 @@ pub(crate) fn open_full_access_dialog(store: &Entity<AppStore>, window: &mut Win
                                 .bg(theme::DOCK())
                                 .child(risk_row(
                                     fixed(IconName::Folder, 16.),
-                                    dict::settings::fa_files(),
-                                    dict::settings::fa_files_desc(),
+                                    t!("settings.fa_files"),
+                                    t!("settings.fa_files_desc"),
                                 ))
                                 .child(div().w_full().h(px(1.)).bg(theme::BORDER()))
                                 .child(risk_row(
                                     fixed(IconName::SquareTerminal, 16.),
-                                    dict::settings::fa_terminal(),
-                                    dict::settings::fa_terminal_desc(),
+                                    t!("settings.fa_terminal"),
+                                    t!("settings.fa_terminal_desc"),
                                 ))
                                 .child(div().w_full().h(px(1.)).bg(theme::BORDER()))
                                 .child(risk_row(
                                     fixed(IconName::Globe, 16.),
-                                    dict::settings::fa_internet(),
-                                    dict::settings::fa_internet_desc(),
+                                    t!("settings.fa_internet"),
+                                    t!("settings.fa_internet_desc"),
                                 )),
                         )
                         .child(
                             div()
                                 .text_size(px(12.))
                                 .text_color(theme::CAPTION())
-                                .child(dict::settings::fa_risk()),
+                                .child(t!("settings.fa_risk")),
                         ),
                 )
             })
@@ -3059,7 +3075,7 @@ pub(crate) fn open_full_access_dialog(store: &Entity<AppStore>, window: &mut Win
                             .text_size(px(13.))
                             .text_color(theme::LABEL_2())
                             .hover(|s| s.bg(theme::DOCK()))
-                            .child(dict::common::cancel())
+                            .child(t!("common.cancel"))
                             .on_click(move |_, window, cx| {
                                 s_cancel.update(cx, |st, cx| st.cancel_full_access(window, cx));
                                 window.close_dialog(cx);
@@ -3089,7 +3105,7 @@ pub(crate) fn open_full_access_dialog(store: &Entity<AppStore>, window: &mut Win
                                 })
                             })
                             .child(fixed(IconName::TriangleAlert, 13.))
-                            .child(dict::common::confirm())
+                            .child(t!("common.confirm"))
                             .on_click(move |_, window, cx| {
                                 s_confirm.update(cx, |st, cx| st.confirm_full_access(cx));
                                 window.close_dialog(cx);
@@ -3104,7 +3120,13 @@ pub(crate) fn open_full_access_dialog(store: &Entity<AppStore>, window: &mut Win
 
 /// 风险确认弹窗能力行(图标 + 标题 + 灰描述;文本列 flex_1 换行,
 /// 图标顶对齐标题线)
-fn risk_row(icon: gpui_kit::component::Icon, title: &str, desc: &str) -> impl IntoElement {
+fn risk_row(
+    icon: gpui_kit::component::Icon,
+    title: impl Into<gpui_kit::SharedString>,
+    desc: impl Into<gpui_kit::SharedString>,
+) -> impl IntoElement {
+    let title = title.into();
+    let desc = desc.into();
     div()
         .flex()
         .items_start()
@@ -3146,27 +3168,39 @@ pub(crate) fn menu(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let back = store.clone();
     // 「基础设置」组:常规 / 模型设置(模型行名为「模型」);
     // 「Agent 能力」「数据与统计」无已实装项,不渲染空组头
-    let basic: [(SettingsNav, &str, gpui_kit::component::Icon); 5] = [
+    let basic: [(
+        SettingsNav,
+        std::borrow::Cow<'static, str>,
+        gpui_kit::component::Icon,
+    ); 5] = [
         (
             SettingsNav::General,
-            dict::settings::general(),
+            t!("settings.general"),
             fixed(IconName::Settings, 15.),
         ),
         (
             SettingsNav::Models,
-            dict::settings::nav_models(),
+            t!("settings.nav_models"),
             fixed(LiumaIcon::Gauge, 15.),
         ),
-        (SettingsNav::Mcp, "MCP", fixed(LiumaIcon::Infinity, 15.)),
-        (SettingsNav::Hooks, "Hooks", fixed(LiumaIcon::Wrench, 15.)),
+        (
+            SettingsNav::Mcp,
+            t!("settings.nav_mcp"),
+            fixed(LiumaIcon::Infinity, 15.),
+        ),
+        (
+            SettingsNav::Hooks,
+            t!("settings.nav_hooks"),
+            fixed(LiumaIcon::Wrench, 15.),
+        ),
         (
             SettingsNav::Decision,
-            "Decision",
+            t!("settings.nav_decision"),
             fixed(LiumaIcon::Gauge, 15.),
         ),
     ];
     let mut list = div().v_flex().gap(px(4.));
-    list = list.child(nav_group_header(dict::settings::nav_basics()));
+    list = list.child(nav_group_header(t!("settings.nav_basics")));
     for (nav, label, icon) in basic {
         list = list.child(nav_item(store, nav, label, icon, st.settings.settings_nav));
     }
@@ -3204,7 +3238,7 @@ pub(crate) fn menu(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 .text_color(theme::LABEL_2())
                 .hover(|s| s.bg(theme::LAYER()))
                 .child(fixed(IconName::ArrowLeft, 15.))
-                .child(dict::settings::back_workspace())
+                .child(t!("settings.back_workspace"))
                 .on_click(move |_, window, cx| {
                     back.update(cx, |st, cx| st.toggle_settings(window, cx));
                 }),
@@ -3214,14 +3248,15 @@ pub(crate) fn menu(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .child(div().v_flex().gap(px(4.)).child(nav_item(
             store,
             SettingsNav::About,
-            dict::settings::about(),
+            t!("settings.about"),
             fixed(IconName::Info, 15.),
             st.settings.settings_nav,
         )))
 }
 
 /// 分组导航组头(小号说明字)
-fn nav_group_header(text: &str) -> impl IntoElement {
+fn nav_group_header(text: impl Into<gpui_kit::SharedString>) -> impl IntoElement {
+    let text = text.into();
     div()
         .px(px(8.))
         .pt(px(8.))
@@ -3235,17 +3270,16 @@ fn nav_group_header(text: &str) -> impl IntoElement {
 fn nav_item(
     store: &Entity<AppStore>,
     nav: crate::features::settings::SettingsNav,
-    label: &'static str,
+    label: impl Into<gpui_kit::SharedString>,
     icon: gpui_kit::component::Icon,
     current: crate::features::settings::SettingsNav,
 ) -> impl IntoElement {
+    let label = label.into();
     let s = store.clone();
     let active = current == nav;
-    let sel = format!("settings-nav-{label}");
+    let sel = format!("settings-nav-{}", nav.slug());
     div()
-        .id(gpui_kit::SharedString::from(format!(
-            "settings-nav-item-{label}"
-        )))
+        .id(gpui_kit::SharedString::from(sel.clone()))
         .debug_selector(move || sel.clone())
         .flex()
         .h(px(36.))
@@ -3291,7 +3325,7 @@ pub(crate) fn settings_row(store: &Entity<AppStore>) -> impl IntoElement {
         .text_size(px(13.))
         .text_color(theme::LABEL_3())
         .child(fixed(IconName::Settings, 16.))
-        .child(dict::settings::settings_title())
+        .child(t!("settings.settings_title"))
         .on_click(move |_, window, cx| {
             s.update(cx, |st, cx| st.toggle_settings(window, cx));
         })
@@ -3313,12 +3347,12 @@ fn decision_config_block(store: &Entity<AppStore>, cx: &App) -> impl IntoElement
         .v_flex()
         .gap(px(10.))
         .child(field_input(
-            "Base URL",
+            t!("settings.provider_field_base_url"),
             "decision-url-input",
             &st.settings.decision_form_url,
         ))
         .child(field_input(
-            dict::settings::decision_model_label(),
+            t!("settings.decision_model_label"),
             "decision-model-input",
             &st.settings.decision_form_model,
         ))
@@ -3329,7 +3363,7 @@ fn decision_config_block(store: &Entity<AppStore>, cx: &App) -> impl IntoElement
                 .gap(px(8.))
                 // 弹性层持 flex_1:并排时若无此层,输入框会塌成小方块
                 .child(div().flex_1().min_w(px(0.)).child(field_input(
-                    dict::settings::api_key_plain(),
+                    t!("settings.api_key_plain"),
                     "decision-key-input",
                     &st.settings.decision_form_key,
                 )))
@@ -3344,9 +3378,9 @@ fn decision_config_block(store: &Entity<AppStore>, cx: &App) -> impl IntoElement
                         .child(credential_dot(key_configured))
                         .child(div().text_size(px(11.)).text_color(theme::CAPTION()).child(
                             if key_configured {
-                                dict::settings::decision_key_set()
+                                t!("settings.decision_key_set")
                             } else {
-                                dict::settings::decision_key_missing()
+                                t!("settings.decision_key_missing")
                             },
                         )),
                 ),
@@ -3358,7 +3392,7 @@ fn decision_config_block(store: &Entity<AppStore>, cx: &App) -> impl IntoElement
                 .debug_selector(|| "decision-attach-hint".to_string())
                 .text_size(px(11.))
                 .text_color(theme::CAPTION())
-                .child(dict::settings::decision_attach_hint()),
+                .child(t!("settings.decision_attach_hint")),
         )
         .children(st.settings.settings_notice.as_ref().map(|(ok, msg)| {
             div()
@@ -3387,7 +3421,7 @@ fn decision_config_block(store: &Entity<AppStore>, cx: &App) -> impl IntoElement
                     .text_size(px(13.))
                     .text_color(theme::LABEL_2())
                     .hover(|s| s.bg(theme::DOCK()))
-                    .child(dict::common::save())
+                    .child(t!("common.save"))
                     .on_click(move |_, window, cx| {
                         s_save.update(cx, |st, cx| st.apply_decision_form(window, cx));
                     }),
@@ -3406,8 +3440,8 @@ fn decision_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let mut col = div()
         .v_flex()
         .gap(px(12.))
-        .child(section_title("Decision"))
-        .child(intro_line(dict::settings::decision_intro()))
+        .child(section_title(t!("settings.nav_decision")))
+        .child(intro_line(t!("settings.decision_intro")))
         .child(decision_config_block(store, cx));
 
     // 场景行通用形态(标题 + 说明 + 单选组;主开关独立置顶)。
@@ -3426,18 +3460,18 @@ fn decision_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
      -> gpui_kit::AnyElement {
         let st_row = store.clone();
         // 每项挂独立 selector,测试才能点到具体那一项
-        let item = |kind: &'static str, label: &'static str| {
+        let item = |kind: &'static str, label: gpui_kit::SharedString| {
             let sel = format!("decision-mode-{id}-{kind}");
             Radio::new(gpui_kit::SharedString::from(sel.clone()))
                 .debug_selector(move || sel.clone())
                 .label(label)
         };
-        let mut items = vec![item("off", dict::settings::decision_mode_off())];
+        let mut items = vec![item("off", t!("settings.decision_mode_off").into())];
         if has_enforce {
-            items.push(item("shadow", dict::settings::decision_mode_shadow()));
-            items.push(item("block", dict::settings::decision_mode_block()));
+            items.push(item("shadow", t!("settings.decision_mode_shadow").into()));
+            items.push(item("block", t!("settings.decision_mode_block").into()));
         } else {
-            items.push(item("on", dict::settings::decision_mode_on()));
+            items.push(item("on", t!("settings.decision_mode_on").into()));
         }
         div()
             .id(gpui_kit::SharedString::from(format!("decision-row-{id}")))
@@ -3508,7 +3542,7 @@ fn decision_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                     .text_size(px(13.))
                     .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                     .text_color(theme::LABEL())
-                    .child(dict::settings::decision_master()),
+                    .child(t!("settings.decision_master")),
             )
             .child(
                 Switch::new("decision-master-toggle")
@@ -3525,40 +3559,40 @@ fn decision_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .child(scenario_row(
             store,
             "approvals",
-            dict::settings::decision_approvals().to_string(),
-            dict::settings::decision_approvals_desc(),
+            t!("settings.decision_approvals").to_string(),
+            &t!("settings.decision_approvals_desc"),
             scenario_mode(entry.approvals, false),
             false,
         ))
         .child(scenario_row(
             store,
             "stop",
-            dict::settings::decision_stop().to_string(),
-            dict::settings::decision_stop_desc(),
+            t!("settings.decision_stop").to_string(),
+            &t!("settings.decision_stop_desc"),
             scenario_mode(entry.stop, false),
             false,
         ))
         .child(scenario_row(
             store,
             "guard",
-            dict::settings::decision_guard().to_string(),
-            dict::settings::decision_guard_desc(),
+            t!("settings.decision_guard").to_string(),
+            &t!("settings.decision_guard_desc"),
             scenario_mode(entry.guard, entry.guard_enforce),
             true,
         ))
         .child(scenario_row(
             store,
             "context",
-            dict::settings::decision_context().to_string(),
-            dict::settings::decision_context_desc(),
+            t!("settings.decision_context").to_string(),
+            &t!("settings.decision_context_desc"),
             scenario_mode(entry.context, entry.context_enforce),
             true,
         ))
         .child(scenario_row(
             store,
             "fold",
-            dict::settings::decision_fold().to_string(),
-            dict::settings::decision_fold_desc(),
+            t!("settings.decision_fold").to_string(),
+            &t!("settings.decision_fold_desc"),
             scenario_mode(entry.fold, entry.fold_enforce),
             true,
         ));
@@ -3580,8 +3614,8 @@ fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         let mut col = div()
             .v_flex()
             .gap(px(12.))
-            .child(section_title("Hooks"))
-            .child(intro_line(dict::settings::hooks_intro()));
+            .child(section_title(t!("settings.nav_hooks")))
+            .child(intro_line(t!("settings.hooks_intro")));
         let total = bridges.len();
         col = col.child(
             div()
@@ -3596,7 +3630,7 @@ fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         .gap(px(4.))
                         .text_size(px(11.))
                         .text_color(theme::CAPTION())
-                        .child(dict::settings::installed(total)),
+                        .child(t!("settings.installed", total = total)),
                 )
                 .child(div().flex_1())
                 .child(
@@ -3619,12 +3653,12 @@ fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                                 st_open.update(cx, |st, cx| st.open_hooks_add(window, cx));
                             }
                         })
-                        .child(dict::settings::add_new()),
+                        .child(t!("settings.add_new")),
                 ),
         );
         let mut rows = div().v_flex().gap(px(8.));
         if bridges.is_empty() {
-            rows = rows.child(caption_line(dict::settings::hooks_none()));
+            rows = rows.child(caption_line(t!("settings.hooks_none")));
         }
         for (ix, b) in bridges.into_iter().enumerate() {
             let id = b["id"].as_str().unwrap_or_default().to_string();
@@ -3706,7 +3740,7 @@ fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                                     st.open_hooks_edit(&id_ed_click, window, cx)
                                 });
                             })
-                            .child(dict::common::edit()),
+                            .child(t!("common.edit")),
                     )
                     .child(
                         div()
@@ -3725,7 +3759,7 @@ fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                                 st_remove
                                     .update(cx, |st, cx| st.remove_hook_bridge(&id_rm_click, cx));
                             })
-                            .child(dict::common::uninstall()),
+                            .child(t!("common.uninstall")),
                     ),
             );
         }
@@ -3743,9 +3777,9 @@ fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .v_flex()
         .gap(px(12.))
         .child(section_title(if detail.editing.is_some() {
-            dict::settings::hooks_edit_card()
+            t!("settings.hooks_edit_card")
         } else {
-            dict::settings::hooks_new_card()
+            t!("settings.hooks_new_card")
         }))
         .children(st.settings.settings_notice.as_ref().map(|(ok, msg)| {
             div()
@@ -3777,7 +3811,7 @@ fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         st_back.update(cx, |st, cx| st.close_hooks_detail(cx));
                     }
                 })
-                .child(dict::settings::back_arrow()),
+                .child(t!("settings.back_arrow")),
         );
     // 方言
     {
@@ -3786,7 +3820,7 @@ fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             dialect_sel(&detail, "codex"),
         );
         col = col
-            .child(section_title(dict::settings::dialect_section()))
+            .child(section_title(t!("settings.dialect_section")))
             .child(
                 div()
                     .flex()
@@ -3854,7 +3888,7 @@ fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     }
     // 启用开关
     col = col
-        .child(section_title(dict::settings::enable_section()))
+        .child(section_title(t!("settings.enable_section")))
         .child(
             Switch::new("hooks-form-enabled")
                 .checked(detail.form_enabled)
@@ -3868,9 +3902,9 @@ fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         );
     // 字段
     col = col
-        .child(section_title(dict::settings::config_section()))
+        .child(section_title(t!("settings.config_section")))
         .child(field_input(
-            dict::settings::path(),
+            t!("settings.path"),
             "hooks-form-path",
             &detail.form_config_path,
         ))
@@ -3885,7 +3919,7 @@ fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             &detail.form_project_dir,
         ))
         .child(field_input(
-            dict::settings::timeout_ms_hooks(),
+            t!("settings.timeout_ms_hooks"),
             "hooks-form-timeout",
             &detail.form_timeout,
         ))
@@ -3910,7 +3944,7 @@ fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         st_save.update(cx, |st, cx| st.save_hooks(window, cx));
                     }
                 })
-                .child(dict::common::save()),
+                .child(t!("common.save")),
         );
     col.into_any_element()
 }

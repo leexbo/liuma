@@ -17,7 +17,7 @@ use super::face::EntryKind;
 use super::store::RowMeta;
 use crate::kits::filetype::class_icon;
 use crate::kits::filetype::file_class;
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -41,7 +41,7 @@ pub fn render(
                     .p(px(14.))
                     .text_size(px(12.))
                     .text_color(theme::CAPTION())
-                    .child(dict::files::no_workspace()),
+                    .child(t!("files.no_workspace")),
             );
         }
         Some(root) => {

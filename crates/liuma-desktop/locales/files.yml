@@ -1,0 +1,149 @@
+# files 面文案(由 dict/files.rs 搬迁;key 根段 == 文件 stem)。
+# 值一律加引号(YAML 裸标量会被解析成非字符串,rust-i18n 只收字符串叶子)。
+_version: 2
+
+files:
+
+  too_many_images:
+    zh-CN: "一条消息最多添加 %{n} 张图片"
+    en: "Up to %{n} images per message"
+
+  images_total_over:
+    zh-CN: "图片总大小超过 %{limit},请移除部分图片"
+    en: "Images exceed %{limit} in total; remove some first"
+
+  unsupported_image_type:
+    zh-CN: "仅支持 PNG、JPG、WebP、GIF 格式的图片"
+    en: "Only PNG, JPG, WebP, and GIF images are supported"
+
+  image_over:
+    zh-CN: "单张图片不能超过 %{limit}"
+    en: "A single image can't exceed %{limit}"
+
+  pixels_over:
+    zh-CN: "图片分辨率过大,请压缩后重试"
+    en: "Image resolution too large; compress it and retry"
+
+  dims_over:
+    zh-CN: "图片宽高不能超过 %{limit}px,请缩小后重试"
+    en: "Image dimensions can't exceed %{limit}px; shrink it and retry"
+
+  encode_invalid:
+    zh-CN: "图片编码无效"
+    en: "Invalid image encoding"
+
+  model_no_images:
+    zh-CN: "当前模型不支持图片,请切换支持图片的模型"
+    en: "This model doesn't support images — switch to one that does"
+
+  cmd_no_files:
+    zh-CN: "命令不接受文件附件,请先移除文件"
+    en: "Commands don't accept file attachments; remove the files first"
+
+  invalid_file:
+    zh-CN: "文件附件无效,请重新添加后再试"
+    en: "Invalid file attachment — re-add it and retry"
+
+  send_failed:
+    zh-CN: "图片发送失败,请重新添加图片后再试"
+    en: "Couldn't send the images — re-add them and retry"
+
+  drop_add:
+    zh-CN: "松开以添加附件"
+    en: "Release to attach"
+
+  dir_gone:
+    zh-CN: "这个目录不在了。可能已被移动或删除。"
+    en: "This directory is gone. It may have been moved or deleted."
+
+  dir_outside:
+    zh-CN: "这个目录在工作区之外，侧栏不会读取它。"
+    en: "This directory is outside the workspace; the sidebar won't read it."
+
+  dir_not_dir:
+    zh-CN: "这不是一个目录。"
+    en: "This isn't a directory."
+
+  read_failed:
+    zh-CN: "读取失败：%{msg}"
+    en: "Failed to read: %{msg}"
+
+  loading:
+    zh-CN: "正在读取…"
+    en: "Loading…"
+
+  empty_dir:
+    zh-CN: "空目录"
+    en: "Empty directory"
+
+  truncated:
+    zh-CN: "条目太多，只显示了一部分。"
+    en: "Too many entries; showing a subset."
+
+  no_workspace:
+    zh-CN: "这个会话没有工作区目录。"
+    en: "This session has no workspace directory."
+
+  file_gone:
+    zh-CN: "文件不存在，可能已被移动或删除"
+    en: "The file is gone; it may have been moved or deleted"
+
+  file_stale:
+    zh-CN: "文件已更新，当前显示为旧内容"
+    en: "The file changed; showing stale content"
+
+  reload:
+    zh-CN: "重新载入"
+    en: "Reload"
+
+  unsupported_format:
+    zh-CN: "该格式文件暂时无法预览"
+    en: "This format can't be previewed"
+
+  not_regular:
+    zh-CN: "该路径不是普通文件，没有可显示的内容"
+    en: "This path isn't a regular file; nothing to display"
+
+  page_over:
+    zh-CN: "单页内容超过 %{limit} 上限，无法读取"
+    en: "The page exceeds the %{limit} cap; can't read"
+
+  image_failed:
+    zh-CN: "无法显示这张图片"
+    en: "Couldn't display this image"
+
+  pdf_password:
+    zh-CN: "此 PDF 需要密码，暂不支持预览"
+    en: "This PDF is password-protected; preview isn't supported"
+
+  pdf_failed:
+    zh-CN: "无法显示 PDF：%{msg}"
+    en: "Couldn't display the PDF: %{msg}"
+
+  pdf_bitmap_mismatch:
+    zh-CN: "位图尺寸不符"
+    en: "bitmap size mismatch"
+
+  pdf_display_failed:
+    zh-CN: "无法显示这份 PDF"
+    en: "Couldn't display this PDF"
+
+  pdf_invalid:
+    zh-CN: "无法解析这份 PDF"
+    en: "Couldn't parse this PDF"
+
+  pdf_too_large:
+    zh-CN: "PDF 过大(对象 %{objects} / 页 %{pages})"
+    en: "PDF too large (%{objects} objects / %{pages} pages)"
+
+  no_such_page:
+    zh-CN: "没有第 %{page} 页"
+    en: "No page %{page}"
+
+  pdf_drawing:
+    zh-CN: "PDF 第 %{page} 页：正在绘制页面…"
+    en: "PDF page %{page}: rendering…"
+
+  load_more:
+    zh-CN: "加载更多"
+    en: "Load more"

@@ -22,7 +22,7 @@ use gpui_kit::{
 use liuma_core::trajectory::{TrajectoryRecord, TrajectoryRequest, TrajectoryUsage};
 
 use crate::features::trajectory::{InspectTarget, TrajectoryView};
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -107,15 +107,15 @@ fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
 }
 
 /// kind → 台账标签文本
-fn kind_label(kind: &str) -> &'static str {
+fn kind_label(kind: &str) -> std::borrow::Cow<'static, str> {
     match kind {
-        "system" => dict::trajectory::kind_system(),
-        "user" => dict::trajectory::kind_user(),
-        "context" => dict::trajectory::kind_context(),
-        "compacted" => dict::trajectory::kind_compacted(),
-        "message" => dict::trajectory::kind_assistant(),
-        "decision" => dict::trajectory::kind_decision(),
-        _ => dict::trajectory::kind_tool(),
+        "system" => t!("trajectory.kind_system"),
+        "user" => t!("trajectory.kind_user"),
+        "context" => t!("trajectory.kind_context"),
+        "compacted" => t!("trajectory.kind_compacted"),
+        "message" => t!("trajectory.kind_assistant"),
+        "decision" => t!("trajectory.kind_decision"),
+        _ => t!("trajectory.kind_tool"),
     }
 }
 
@@ -208,9 +208,9 @@ fn fmt_clock(ms: i64) -> String {
 /// 否则 Not available)
 fn timing_source(available: bool) -> String {
     if available {
-        dict::trajectory::timing_session().into()
+        t!("trajectory.timing_session").into()
     } else {
-        dict::trajectory::timing_na().into()
+        t!("trajectory.timing_na").into()
     }
 }
 
@@ -756,7 +756,7 @@ fn toolbar(store: &Entity<AppStore>, s: &Snap, cx: &App) -> impl IntoElement {
                 .content(toggle_button(
                     cx,
                     "traj-toolbar-duration",
-                    dict::trajectory::toolbar_duration(),
+                    t!("trajectory.toolbar_duration"),
                     s.duration,
                     fixed(LiumaIcon::Clock, 12.),
                     {
@@ -769,7 +769,7 @@ fn toolbar(store: &Entity<AppStore>, s: &Snap, cx: &App) -> impl IntoElement {
                 .content(action_button(
                     cx,
                     "traj-toolbar-turns",
-                    dict::trajectory::toolbar_turns(),
+                    t!("trajectory.toolbar_turns"),
                     s.collapse.all_turns,
                     {
                         let s = store.clone();
@@ -781,7 +781,7 @@ fn toolbar(store: &Entity<AppStore>, s: &Snap, cx: &App) -> impl IntoElement {
                 .content(action_button(
                     cx,
                     "traj-toolbar-calls",
-                    dict::trajectory::toolbar_calls(),
+                    t!("trajectory.toolbar_calls"),
                     s.collapse.all_calls,
                     {
                         let s = store.clone();
@@ -800,10 +800,11 @@ fn toolbar(store: &Entity<AppStore>, s: &Snap, cx: &App) -> impl IntoElement {
                         .text_size(px(11.))
                         .text_color(theme::CAPTION())
                         .pl(px(8.))
-                        .child(dict::trajectory::counts(
-                            s.view.records.len(),
-                            s.view.total,
-                            s.view.requests.len(),
+                        .child(t!(
+                            "trajectory.counts",
+                            shown = s.view.records.len(),
+                            total = s.view.total,
+                            requests = s.view.requests.len()
                         )),
                 )
                 .contents(input.map(|el| el.into_any_element())),
@@ -820,11 +821,12 @@ fn toolbar(store: &Entity<AppStore>, s: &Snap, cx: &App) -> impl IntoElement {
 fn toggle_button(
     cx: &App,
     id: &'static str,
-    label: &'static str,
+    label: impl Into<gpui_kit::SharedString>,
     pressed: bool,
     icon: Icon,
     on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
+    let label = label.into();
     let sel = id.to_string();
     let label_sel = format!("{id}-label");
     Button::new(id)
@@ -879,10 +881,11 @@ fn toggle_button(
 fn action_button(
     cx: &App,
     id: &'static str,
-    label: &'static str,
+    label: impl Into<gpui_kit::SharedString>,
     all_collapsed: bool,
     on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
+    let label = label.into();
     let sel = id.to_string();
     let label_sel = format!("{id}-label");
     // 图标位是 Menlo 字形而非图标字体,故走 `Button` 的任意子元素槽
@@ -931,9 +934,9 @@ fn timeline(
     bands: &[FoldBand],
 ) -> impl IntoElement {
     let labels = [
-        dict::trajectory::legend_input(),
-        dict::trajectory::legend_model(),
-        dict::trajectory::legend_tools(),
+        t!("trajectory.legend_input"),
+        t!("trajectory.legend_model"),
+        t!("trajectory.legend_tools"),
     ];
     let labels_col = div().w(px(44.)).flex_shrink_0().relative().children(
         labels
@@ -1096,7 +1099,7 @@ fn timeline(
                             .top(px(2.))
                             .text_size(px(8.))
                             .text_color(theme::CAPTION())
-                            .child(dict::trajectory::fold_band_clip().to_string()),
+                            .child(t!("trajectory.fold_band_clip").to_string()),
                     )
                 })
                 .into_any_element(),
@@ -1181,7 +1184,7 @@ fn timeline(
             .justify_center()
             .text_size(px(10.))
             .text_color(theme::CAPTION())
-            .child("No timing data")
+            .child(t!("trajectory.no_timing_data"))
     });
 
     let bounds = track_bounds_cell();
@@ -1303,7 +1306,7 @@ fn timeline(
                 .px(px(6.))
                 .text_size(px(9.))
                 .text_color(theme::CAPTION())
-                .child(dict::trajectory::drag_hint()),
+                .child(t!("trajectory.drag_hint")),
         )
 }
 
@@ -1338,11 +1341,12 @@ fn ledger(
                 .debug_selector(|| "load-earlier".to_string())
                 .when(s.view.loading_older, |el| {
                     el.child(Spinner::new().xsmall())
-                        .child(dict::trajectory::loading_older().to_string())
+                        .child(t!("trajectory.loading_older").to_string())
                 })
                 .when(!s.view.loading_older, |el| {
-                    el.child(dict::trajectory::load_older(
-                        s.view.total.saturating_sub(s.view.records.len() as u64),
+                    el.child(t!(
+                        "trajectory.load_older",
+                        n = s.view.total.saturating_sub(s.view.records.len() as u64)
                     ))
                 })
                 .on_click(move |_, _, cx| {
@@ -1379,7 +1383,7 @@ fn ledger(
                 .text_size(px(12.))
                 .text_color(theme::CAPTION())
                 .child(Spinner::new().xsmall())
-                .child(dict::trajectory::folding())
+                .child(t!("trajectory.folding"))
                 .into_any_element(),
         );
     }
@@ -1399,7 +1403,7 @@ fn ledger(
                 .text_color(theme::CAPTION())
                 .debug_selector(|| "trajectory-empty".to_string())
                 .child(fixed(IconName::Inbox, 16.))
-                .child(dict::trajectory::empty())
+                .child(t!("trajectory.empty"))
                 .into_any_element(),
         );
     }
@@ -1449,7 +1453,7 @@ fn turn_summary_row(
         .text_color(theme::CAPTION())
         .hover(|st| st.text_color(theme::LABEL_3()))
         .debug_selector(move || format!("turn-summary-{turn}"))
-        .child(dict::trajectory::folded_steps(steps, tools))
+        .child(t!("trajectory.folded_steps", steps = steps, tools = tools))
         .on_click(move |_, _, cx| {
             s.update(cx, |st, cx| st.toggle_turn(turn, cx));
         })
@@ -1475,7 +1479,11 @@ fn call_summary_row(
         .text_color(theme::CAPTION())
         .hover(|st| st.text_color(theme::LABEL_3()))
         .debug_selector(move || format!("call-summary-{message_index}"))
-        .child(dict::trajectory::folded_tools(count, names.join(", ")))
+        .child(t!(
+            "trajectory.folded_tools",
+            count = count,
+            names = names.join(", ")
+        ))
         .on_click(move |_, _, cx| {
             s.update(cx, |st, cx| st.toggle_call(message_index, cx));
         })
@@ -1541,7 +1549,7 @@ fn record_row(
                 .font_family("Menlo")
                 .text_size(px(8.))
                 .text_color(theme::LABEL_3())
-                .child(dict::trajectory::turn_n(t)),
+                .child(t!("trajectory.turn_n", t = t)),
         );
     }
     if let Some(n) = rec.request_number {
@@ -1724,7 +1732,7 @@ fn record_row(
                 .text_size(px(12.))
                 .text_color(theme::LABEL_3())
                 .child(match rec.text.as_str() {
-                    "Context compacted" => dict::trajectory::compact_fallback().to_string(),
+                    "Context compacted" => t!("trajectory.compact_fallback").to_string(),
                     _ => rec.text.clone(),
                 }),
         );
@@ -1749,8 +1757,8 @@ fn record_row(
             // liuma-core 自产的展示占位在渲染层词典化(检索面仍用线上
             // 原文,见 filter haystack);其余逐字
             .child(match rec.text.as_str() {
-                "(tool call only)" => dict::trajectory::tool_call_only().to_string(),
-                "Context compacted" => dict::trajectory::compact_fallback().to_string(),
+                "(tool call only)" => t!("trajectory.tool_call_only").to_string(),
+                "Context compacted" => t!("trajectory.compact_fallback").to_string(),
                 _ => rec.text.clone(),
             })
             .into_any_element()
@@ -1922,22 +1930,22 @@ fn inspector(
                     .font_family("Menlo")
                     .text_size(px(12.))
                     .text_color(theme::LABEL_2())
-                    .child(dict::trajectory::request_n(n)),
+                    .child(t!("trajectory.request_n", n = n)),
             )
             .child(
                 div()
                     .font_family("Menlo")
                     .text_size(px(11.))
                     .text_color(theme::CAPTION())
-                    .child(dict::trajectory::turn_n(q.turn)),
+                    .child(t!("trajectory.turn_n", t = q.turn)),
             )
             .into_any_element(),
         (_, Some(r), _) => {
             let (fg, bg) = kind_colors(&r.kind);
             let location = match (&r.turn, r.group.as_str()) {
-                (Some(t), g) if g.starts_with("Step") => dict::trajectory::turn_at(t, g),
-                (Some(t), _) => dict::trajectory::turn_message(t),
-                _ => dict::trajectory::between_turns().into(),
+                (Some(t), g) if g.starts_with("Step") => t!("trajectory.turn_at", t = t, at = g),
+                (Some(t), _) => t!("trajectory.turn_message", t = t),
+                _ => t!("trajectory.between_turns"),
             };
             div()
                 .flex()
@@ -1992,7 +2000,9 @@ fn inspector(
         (Some(r), _, "timing") => timing_body(r).into_any_element(),
         (Some(r), _, _) => summary_body(store, s, r).into_any_element(),
         // 目标数据已不在窗口(翻页/直播后):占位
-        (None, None, _) => div().child(empty_text("Not available")).into_any_element(),
+        (None, None, _) => div()
+            .child(empty_text(t!("trajectory.na")))
+            .into_any_element(),
     };
 
     let resize_store = store.clone();
@@ -2105,29 +2115,30 @@ fn inspector(
     )
 }
 
-fn tab_label(name: &str) -> &'static str {
+fn tab_label(name: &str) -> std::borrow::Cow<'static, str> {
     match name {
-        "payload" => dict::trajectory::tab_payload(),
-        "result" => dict::trajectory::tab_result(),
-        "timing" => dict::trajectory::tab_timing(),
-        "raw" => dict::trajectory::tab_raw(),
-        "usage" => dict::trajectory::tab_usage(),
-        "system" => dict::trajectory::tab_system_prompt(),
-        "preview" => dict::trajectory::tab_preview(),
-        "source" => dict::trajectory::tab_source(),
-        "tools" => dict::trajectory::tab_tools(),
-        "diff" => dict::trajectory::tab_diff(),
-        "schema" => dict::trajectory::tab_schema(),
-        "decision" => dict::trajectory::tab_decision(),
-        "fold" => dict::trajectory::tab_fold(),
-        _ => dict::trajectory::tab_summary(),
+        "payload" => t!("trajectory.tab_payload"),
+        "result" => t!("trajectory.tab_result"),
+        "timing" => t!("trajectory.tab_timing"),
+        "raw" => t!("trajectory.tab_raw"),
+        "usage" => t!("trajectory.tab_usage"),
+        "system" => t!("trajectory.tab_system_prompt"),
+        "preview" => t!("trajectory.tab_preview"),
+        "source" => t!("trajectory.tab_source"),
+        "tools" => t!("trajectory.tab_tools"),
+        "diff" => t!("trajectory.tab_diff"),
+        "schema" => t!("trajectory.tab_schema"),
+        "decision" => t!("trajectory.tab_decision"),
+        "fold" => t!("trajectory.tab_fold"),
+        _ => t!("trajectory.tab_summary"),
     }
 }
 
 // ── 检查器主体(tab 内容)──────────────────────────────────────
 
 /// 信息行(96px 标签列)
-fn dl_row(label: &str, value: impl IntoElement) -> Div {
+fn dl_row(label: impl Into<gpui_kit::SharedString>, value: impl IntoElement) -> Div {
+    let label = label.into();
     div()
         .flex()
         .items_start()
@@ -2153,7 +2164,8 @@ fn dl_row(label: &str, value: impl IntoElement) -> Div {
 }
 
 /// 小节标题(Stateful 供调用方链 on_click)
-fn section(id: &'static str, title: &str) -> gpui_kit::Stateful<Div> {
+fn section(id: &'static str, title: impl Into<gpui_kit::SharedString>) -> gpui_kit::Stateful<Div> {
+    let title = title.into();
     let sel = id.to_string();
     // 标题 + `>` 跳转箭头(点击进完整 tab;调用方挂 on_click)
     div()
@@ -2174,7 +2186,8 @@ fn section(id: &'static str, title: &str) -> gpui_kit::Stateful<Div> {
 }
 
 /// 层级跳转链接(文字 + 小箭头)
-fn nav_link(id: &'static str, text: String) -> gpui_kit::Stateful<Div> {
+fn nav_link(id: &'static str, text: impl Into<gpui_kit::SharedString>) -> gpui_kit::Stateful<Div> {
+    let text = text.into();
     let sel = id.to_string();
     div()
         .id(id)
@@ -2606,25 +2619,27 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
         if let Some(source) = &r.source {
             let s2 = store.clone();
             col = col.child(dl_row(
-                dict::trajectory::row_source(),
+                t!("trajectory.row_source"),
                 nav_link("goto-source", message_source_label(source)).on_click(move |_, _, cx| {
                     s2.update(cx, |st, cx| st.set_inspector_tab("source", cx));
                 }),
             ));
         }
         col = col.child(dl_row(
-            dict::trajectory::row_status(),
-            dict::trajectory::status_completed(),
+            t!("trajectory.row_status"),
+            t!("trajectory.status_completed"),
         ));
         col = col.child(dl_row(
-            dict::trajectory::row_duration(),
+            t!("trajectory.row_duration"),
             fmt_ms(rec_total_ms(r).unwrap_or(0)),
         ));
         let s2 = store.clone();
         col = col
-            .child(section("sec-preview", "Preview").on_click(move |_, _, cx| {
-                s2.update(cx, |st, cx| st.set_inspector_tab("preview", cx));
-            }))
+            .child(
+                section("sec-preview", t!("trajectory.tab_preview")).on_click(move |_, _, cx| {
+                    s2.update(cx, |st, cx| st.set_inspector_tab("preview", cx));
+                }),
+            )
             .child(context_markdown_body(
                 r,
                 &format!("traj-ctx-prev-{}", r.index),
@@ -2645,7 +2660,7 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
             let s2 = store.clone();
             let n = q.number;
             dd = dd.child(
-                nav_link("goto-request", dict::trajectory::request_n(n)).on_click(
+                nav_link("goto-request", t!("trajectory.request_n", n = n)).on_click(
                     move |_, _, cx| {
                         s2.update(cx, |st, cx| st.select_trajectory_request(n, cx));
                     },
@@ -2656,16 +2671,18 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
             let s2 = store.clone();
             let ix = p.index;
             dd = dd.child(
-                nav_link("goto-message", "Assistant Message".into()).on_click(move |_, _, cx| {
-                    s2.update(cx, |st, cx| st.select_trajectory_record(ix, cx));
-                }),
+                nav_link("goto-message", t!("trajectory.nav_assistant_message")).on_click(
+                    move |_, _, cx| {
+                        s2.update(cx, |st, cx| st.select_trajectory_record(ix, cx));
+                    },
+                ),
             );
         }
         // 列名:所属请求在场 = 来源,否则 层级
         let dt = if req.is_some() {
-            dict::trajectory::row_source()
+            t!("trajectory.row_source")
         } else {
-            dict::trajectory::row_hierarchy()
+            t!("trajectory.row_hierarchy")
         };
         col = col.child(dl_row(dt, dd.into_any_element()));
     }
@@ -2673,12 +2690,12 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
     // Status(message:Failed 红 / Completed)
     if r.kind == "message" {
         let (label, color) = if r.is_error {
-            (dict::trajectory::status_failed(), Some(theme::DANGER()))
+            (t!("trajectory.status_failed"), Some(theme::DANGER()))
         } else {
-            (dict::trajectory::status_completed(), None)
+            (t!("trajectory.status_completed"), None)
         };
         col = col.child(dl_row(
-            dict::trajectory::row_status(),
+            t!("trajectory.row_status"),
             div()
                 .when_some(color, |el, c| el.text_color(c))
                 .child(label),
@@ -2690,23 +2707,25 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
     if r.kind == "message" {
         let s2 = store.clone();
         col = col
-            .child(section("sec-preview", "Preview").on_click(move |_, _, cx| {
-                s2.update(cx, |st, cx| st.set_inspector_tab("preview", cx));
-            }))
+            .child(
+                section("sec-preview", t!("trajectory.tab_preview")).on_click(move |_, _, cx| {
+                    s2.update(cx, |st, cx| st.set_inspector_tab("preview", cx));
+                }),
+            )
             .child(assistant_preview_body(store, s, r));
     }
 
     // Status(Failed 红 / Pending 无结果 / Completed)
     if r.kind == "tool" {
         let (label, color) = if r.is_error {
-            (dict::trajectory::status_failed(), Some(theme::DANGER()))
+            (t!("trajectory.status_failed"), Some(theme::DANGER()))
         } else if r.result.is_none() {
-            (dict::trajectory::status_pending(), Some(theme::WARN()))
+            (t!("trajectory.status_pending"), Some(theme::WARN()))
         } else {
-            (dict::trajectory::status_completed(), None)
+            (t!("trajectory.status_completed"), None)
         };
         col = col.child(dl_row(
-            dict::trajectory::row_status(),
+            t!("trajectory.row_status"),
             div()
                 .when_some(color, |el, c| el.text_color(c))
                 .child(label),
@@ -2719,12 +2738,12 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
         let think = r.think.unwrap_or(0);
         col = col
             .child(dl_row(
-                dict::trajectory::row_tokens(),
+                t!("trajectory.row_tokens"),
                 format!("{} tok", fmt_tok(out)),
             ))
-            .child(dl_row(dict::trajectory::row_reasoning(), fmt_tok(think)))
+            .child(dl_row(t!("trajectory.row_reasoning"), fmt_tok(think)))
             .child(dl_row(
-                dict::trajectory::row_content(),
+                t!("trajectory.row_content"),
                 fmt_tok(out.saturating_sub(think)),
             ));
     }
@@ -2733,7 +2752,7 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
         && let Some(sec) = r.time_seconds
     {
         col = col.child(dl_row(
-            dict::trajectory::row_duration(),
+            t!("trajectory.row_duration"),
             fmt_ms((sec * 1000.) as i64),
         ));
     }
@@ -2745,11 +2764,9 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
         let s2 = store.clone();
         col = col
             .child(
-                section("sec-payload", dict::trajectory::tab_payload()).on_click(
-                    move |_, _, cx| {
-                        s2.update(cx, |st, cx| st.set_inspector_tab("payload", cx));
-                    },
-                ),
+                section("sec-payload", t!("trajectory.tab_payload")).on_click(move |_, _, cx| {
+                    s2.update(cx, |st, cx| st.set_inspector_tab("payload", cx));
+                }),
             )
             .child(preview_block(store, s, r, "payload"));
     }
@@ -2758,7 +2775,7 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
         let s2 = store.clone();
         col = col
             .child(
-                section("sec-result", dict::trajectory::tab_result()).on_click(move |_, _, cx| {
+                section("sec-result", t!("trajectory.tab_result")).on_click(move |_, _, cx| {
                     s2.update(cx, |st, cx| st.set_inspector_tab("result", cx));
                 }),
             )
@@ -2767,9 +2784,11 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
     if r.kind == "tool" {
         let s2 = store.clone();
         col = col
-            .child(section("sec-schema", "Schema").on_click(move |_, _, cx| {
-                s2.update(cx, |st, cx| st.set_inspector_tab("schema", cx));
-            }))
+            .child(
+                section("sec-schema", t!("trajectory.tab_schema")).on_click(move |_, _, cx| {
+                    s2.update(cx, |st, cx| st.set_inspector_tab("schema", cx));
+                }),
+            )
             .child(preview_block(store, s, r, "schema"));
     }
 
@@ -2793,37 +2812,31 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
             };
             vec![
                 dl_row(
-                    "Started",
+                    t!("trajectory.row_started"),
                     r.started_at.map(fmt_clock).unwrap_or_else(|| "—".into()),
                 ),
-                dl_row(dict::trajectory::row_total(), fmt_ms(q.duration_ms)),
+                dl_row(t!("trajectory.row_total"), fmt_ms(q.duration_ms)),
                 dl_row("TTFT", r.ttft_ms.map(fmt_ms).unwrap_or_else(|| "—".into())),
-                dl_row(dict::trajectory::row_generation(), generation),
-                dl_row(dict::trajectory::row_throughput(), throughput),
-                dl_row(
-                    dict::trajectory::tab_timing(),
-                    timing_source(total.is_some()),
-                ),
+                dl_row(t!("trajectory.row_generation"), generation),
+                dl_row(t!("trajectory.row_throughput"), throughput),
+                dl_row(t!("trajectory.tab_timing"), timing_source(total.is_some())),
             ]
         } else {
             vec![
                 dl_row(
-                    "Started",
+                    t!("trajectory.row_started"),
                     r.started_at.map(fmt_clock).unwrap_or_else(|| "—".into()),
                 ),
                 dl_row(
-                    dict::trajectory::row_duration(),
+                    t!("trajectory.row_duration"),
                     total.map(fmt_ms).unwrap_or_else(|| "—".into()),
                 ),
-                dl_row(
-                    dict::trajectory::tab_timing(),
-                    timing_source(total.is_some()),
-                ),
+                dl_row(t!("trajectory.tab_timing"), timing_source(total.is_some())),
             ]
         };
         col = col
             .child(
-                section("sec-req-timing", dict::trajectory::sec_request_timing()).on_click(
+                section("sec-req-timing", t!("trajectory.sec_request_timing")).on_click(
                     move |_, _, cx| {
                         s2.update(cx, |st, cx| {
                             st.select_trajectory_request(n, cx);
@@ -2838,20 +2851,24 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
     // Timing 小节(工具;三行:Started / Duration / Timing source)
     if r.kind == "tool" {
         let s2 = store.clone();
-        let timing_sec = section("sec-timing", "Timing").on_click(move |_, _, cx| {
-            s2.update(cx, |st, cx| st.set_inspector_tab("timing", cx));
-        });
+        let timing_sec =
+            section("sec-timing", t!("trajectory.tab_timing")).on_click(move |_, _, cx| {
+                s2.update(cx, |st, cx| st.set_inspector_tab("timing", cx));
+            });
         col = col
             .child(timing_sec)
             .child(dl_row(
-                dict::trajectory::row_started(),
+                t!("trajectory.row_started"),
                 r.started_at.map(fmt_clock).unwrap_or_else(|| "—".into()),
             ))
             .child(dl_row(
-                dict::trajectory::row_duration(),
+                t!("trajectory.row_duration"),
                 total.map(fmt_ms).unwrap_or_else(|| "—".into()),
             ))
-            .child(dl_row("Timing source", timing_source(total.is_some())));
+            .child(dl_row(
+                t!("trajectory.row_timing_source"),
+                timing_source(total.is_some()),
+            ));
     }
     col
 }
@@ -2866,9 +2883,9 @@ fn preview_block(
     tab: &'static str,
 ) -> impl IntoElement {
     let missing = match tab {
-        "payload" => dict::trajectory::no_payload(),
-        "result" => dict::trajectory::no_result(),
-        _ => dict::trajectory::schema_na(),
+        "payload" => t!("trajectory.no_payload"),
+        "result" => t!("trajectory.no_result"),
+        _ => t!("trajectory.schema_na"),
     };
     let text = match tab {
         // SYSTEM:快照在场时预览真实 prompt 头部(字符数行只是信封摘要)
@@ -2922,7 +2939,7 @@ fn preview_block(
                         .text_size(px(11.))
                         .font_weight(gpui_kit::FontWeight::MEDIUM)
                         .text_color(theme::CAPTION())
-                        .child("Parameters"),
+                        .child(t!("trajectory.sec_parameters")),
                 )
                 .child(json_tree_block(store, s, r.index, params));
             return div()
@@ -2958,7 +2975,7 @@ fn preview_block(
 /// Payload tab(JSON 容器 → JsonTree;否则原文等宽)
 fn payload_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
     match &r.payload {
-        None => div().child(empty_text(dict::trajectory::no_payload())),
+        None => div().child(empty_text(t!("trajectory.no_payload"))),
         Some(p) => match serde_json::from_str::<serde_json::Value>(p) {
             Ok(v) if v.is_object() || v.is_array() => {
                 div().child(json_tree_block(store, s, r.index, &v))
@@ -2981,7 +2998,7 @@ fn result_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div 
     };
     let text = match (&r.output_detail, &r.result) {
         (None, None) => {
-            return div().child(empty_text(dict::trajectory::no_result()));
+            return div().child(empty_text(t!("trajectory.no_result")));
         }
         (Some(d), _) => d,
         (None, Some(s)) => s,
@@ -3027,7 +3044,7 @@ fn raw_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
                         .text_size(px(11.))
                         .text_color(theme::CAPTION())
                         .hover(|st| st.text_color(theme::LABEL_3()))
-                        .child("Thinking")
+                        .child(t!("trajectory.thinking"))
                         .child(fixed(
                             if open {
                                 IconName::ChevronDown
@@ -3053,7 +3070,7 @@ fn raw_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
     }
     match &r.output_detail {
         Some(o) => col = col.child(mono_block("mono-raw", o, theme::LABEL_3())),
-        None => col = col.child(empty_text("Not available")),
+        None => col = col.child(empty_text(t!("trajectory.na"))),
     }
     col
 }
@@ -3063,11 +3080,11 @@ fn timing_body(r: &TrajectoryRecord) -> Div {
     let total = rec_total_ms(r);
     let mut col = div().v_flex().gap(px(2.));
     col = col.child(dl_row(
-        dict::trajectory::row_started(),
+        t!("trajectory.row_started"),
         r.started_at.map(fmt_clock).unwrap_or_else(|| "—".into()),
     ));
     col = col.child(dl_row(
-        dict::trajectory::row_duration(),
+        t!("trajectory.row_duration"),
         total.map(fmt_ms).unwrap_or_else(|| "—".into()),
     ));
     if r.kind == "message" {
@@ -3076,7 +3093,7 @@ fn timing_body(r: &TrajectoryRecord) -> Div {
             r.ttft_ms.map(fmt_ms).unwrap_or_else(|| "—".into()),
         ));
         col = col.child(dl_row(
-            dict::trajectory::row_generation(),
+            t!("trajectory.row_generation"),
             match (r.ttft_ms, total) {
                 (Some(t), Some(ms)) if ms > t => fmt_ms(ms - t),
                 _ => "—".into(),
@@ -3084,7 +3101,7 @@ fn timing_body(r: &TrajectoryRecord) -> Div {
         ));
     }
     col.child(dl_row(
-        dict::trajectory::tab_timing(),
+        t!("trajectory.tab_timing"),
         timing_source(total.is_some()),
     ))
 }
@@ -3094,36 +3111,42 @@ fn timing_body(r: &TrajectoryRecord) -> Div {
 fn request_summary_body(store: &Entity<AppStore>, s: &Snap, q: &TrajectoryRequest) -> Div {
     let mut col = div().v_flex().gap(px(2.));
     col = col.child(dl_row(
-        dict::trajectory::row_status(),
+        t!("trajectory.row_status"),
         if q.status == "error" {
             div()
                 .text_color(theme::DANGER())
-                .child(dict::trajectory::status_failed())
+                .child(t!("trajectory.status_failed"))
         } else {
-            div().child("Complete")
+            div().child(t!("trajectory.status_complete"))
         },
     ));
-    col = col.child(dl_row(dict::trajectory::row_provider(), q.provider.clone()));
-    col = col.child(dl_row(dict::trajectory::row_model(), q.model.clone()));
-    col = col.child(dl_row("Tool calls", fmt_tok(q.tool_calls)));
+    col = col.child(dl_row(t!("trajectory.row_provider"), q.provider.clone()));
+    col = col.child(dl_row(t!("trajectory.row_model"), q.model.clone()));
+    col = col.child(dl_row(
+        t!("trajectory.row_tool_calls"),
+        fmt_tok(q.tool_calls),
+    ));
     if let Some(e) = &q.reasoning_effort {
-        col = col.child(dl_row("Reasoning", e.clone()));
+        col = col.child(dl_row(t!("trajectory.row_reasoning"), e.clone()));
     }
-    col = col.child(dl_row("Started", fmt_clock(q.started_at)));
+    col = col.child(dl_row(
+        t!("trajectory.row_started"),
+        fmt_clock(q.started_at),
+    ));
     // Result:该请求产出的记录(message/compacted),`>` 跳转其 Summary
     if let Some(res) = s.view.records.iter().find(|r| {
         r.request_number == Some(q.number) && matches!(r.kind.as_str(), "message" | "compacted")
     }) {
         let label = if res.kind == "compacted" {
-            dict::trajectory::request_result_compacted()
+            t!("trajectory.request_result_compacted")
         } else {
-            dict::trajectory::request_result_assistant()
+            t!("trajectory.request_result_assistant")
         };
         let s2 = store.clone();
         let ix = res.index;
         col = col.child(dl_row(
-            dict::trajectory::row_result(),
-            nav_link("goto-req-result", label.into()).on_click(move |_, _, cx| {
+            t!("trajectory.row_result"),
+            nav_link("goto-req-result", label).on_click(move |_, _, cx| {
                 s2.update(cx, |st, cx| st.select_trajectory_record(ix, cx));
             }),
         ));
@@ -3135,18 +3158,16 @@ fn request_summary_body(store: &Entity<AppStore>, s: &Snap, q: &TrajectoryReques
 fn usage_body(q: &TrajectoryRequest) -> Div {
     let mut col = div().v_flex().gap(px(2.));
     match &q.usage {
-        None => col = col.child(empty_text(dict::trajectory::usage_na())),
-        Some(u) => col = col.child(usage_group(dict::trajectory::usage_this(), u)),
+        None => col = col.child(empty_text(t!("trajectory.usage_na"))),
+        Some(u) => col = col.child(usage_group(t!("trajectory.usage_this"), u)),
     }
-    col.child(section(
-        "sec-cumulative",
-        dict::trajectory::usage_cumulative(),
-    ))
-    .child(usage_group("", &q.cumulative))
+    col.child(section("sec-cumulative", t!("trajectory.usage_cumulative")))
+        .child(usage_group("", &q.cumulative))
 }
 
 /// 用量组(Input/Cached/Other/Output/Reasoning/Content)
-fn usage_group(title: &str, u: &TrajectoryUsage) -> Div {
+fn usage_group(title: impl Into<gpui_kit::SharedString>, u: &TrajectoryUsage) -> Div {
+    let title = title.into();
     div()
         .v_flex()
         .when(!title.is_empty(), |el| {
@@ -3160,23 +3181,17 @@ fn usage_group(title: &str, u: &TrajectoryUsage) -> Div {
             )
         })
         .child(dl_row(
-            dict::trajectory::legend_input(),
+            t!("trajectory.legend_input"),
             format!("{} tok", fmt_tok(u.input)),
         ))
-        .child(dl_row(dict::trajectory::row_cached(), fmt_tok(u.cached)))
-        .child(dl_row(dict::trajectory::row_other(), fmt_tok(u.other)))
+        .child(dl_row(t!("trajectory.row_cached"), fmt_tok(u.cached)))
+        .child(dl_row(t!("trajectory.row_kind_other"), fmt_tok(u.other)))
         .child(dl_row(
-            dict::trajectory::row_output(),
+            t!("trajectory.row_output"),
             format!("{} tok", fmt_tok(u.output)),
         ))
-        .child(dl_row(
-            dict::trajectory::row_reasoning(),
-            fmt_tok(u.reasoning),
-        ))
-        .child(dl_row(
-            dict::trajectory::row_content(),
-            fmt_tok(u.content()),
-        ))
+        .child(dl_row(t!("trajectory.row_reasoning"), fmt_tok(u.reasoning)))
+        .child(dl_row(t!("trajectory.row_content"), fmt_tok(u.content())))
 }
 
 /// Timing tab(请求)
@@ -3184,16 +3199,19 @@ fn request_timing_body(q: &TrajectoryRequest) -> Div {
     div()
         .v_flex()
         .gap(px(2.))
-        .child(dl_row("Started", fmt_clock(q.started_at)))
         .child(dl_row(
-            "Completed",
+            t!("trajectory.row_started"),
+            fmt_clock(q.started_at),
+        ))
+        .child(dl_row(
+            t!("trajectory.row_completed"),
             if q.completed_at > 0 {
                 fmt_clock(q.completed_at)
             } else {
                 "—".into()
             },
         ))
-        .child(dl_row("Total", fmt_ms(q.duration_ms)))
+        .child(dl_row(t!("trajectory.row_total"), fmt_ms(q.duration_ms)))
         .child(dl_row(
             "TTFT",
             q.ttft_ms.map(fmt_ms).unwrap_or_else(|| "—".into()),
@@ -3201,7 +3219,8 @@ fn request_timing_body(q: &TrajectoryRequest) -> Div {
 }
 
 /// 缺失文案
-fn empty_text(text: &str) -> Div {
+fn empty_text(text: impl Into<gpui_kit::SharedString>) -> Div {
+    let text = text.into();
     div()
         .py(px(14.))
         .text_size(px(12.))
@@ -3215,11 +3234,11 @@ fn empty_text(text: &str) -> Div {
 /// 跟随(不猜也不翻)。
 fn decision_scenario_label(scenario: Option<&str>) -> String {
     match scenario {
-        Some("guard") => dict::trajectory::scenario_guard().to_string(),
-        Some("stop") => dict::trajectory::scenario_stop().to_string(),
-        Some("context") => dict::trajectory::scenario_context().to_string(),
-        Some("tool") => dict::trajectory::scenario_tool().to_string(),
-        Some("fold") => dict::trajectory::scenario_fold().to_string(),
+        Some("guard") => t!("trajectory.scenario_guard").to_string(),
+        Some("stop") => t!("trajectory.scenario_stop").to_string(),
+        Some("context") => t!("trajectory.scenario_context").to_string(),
+        Some("tool") => t!("trajectory.scenario_tool").to_string(),
+        Some("fold") => t!("trajectory.scenario_fold").to_string(),
         Some(other) => other.to_string(),
         None => String::new(),
     }
@@ -3238,10 +3257,7 @@ fn decision_scenario_label(scenario: Option<&str>) -> String {
 /// 正常应答说成没结论。调用方见 None 改显答案摘要。
 fn decision_verdict(d: &liuma_core::trajectory::DecisionRecord) -> Option<(String, Rgba)> {
     if d.error.is_some() {
-        return Some((
-            dict::trajectory::verdict_failed().to_string(),
-            theme::DANGER(),
-        ));
+        return Some((t!("trajectory.verdict_failed").to_string(), theme::DANGER()));
     }
     let choice = d.answers.as_ref().and_then(|a| {
         let by_id = &a["verdict"]["choice"];
@@ -3260,13 +3276,10 @@ fn decision_verdict(d: &liuma_core::trajectory::DecisionRecord) -> Option<(Strin
     })?;
     Some(match choice.as_str() {
         "proceed" => (
-            dict::trajectory::verdict_proceed().to_string(),
+            t!("trajectory.verdict_proceed").to_string(),
             theme::SUCCESS(),
         ),
-        "block" => (
-            dict::trajectory::verdict_block().to_string(),
-            theme::DANGER(),
-        ),
+        "block" => (t!("trajectory.verdict_block").to_string(), theme::DANGER()),
         other => (other.to_string(), theme::LABEL_2()),
     })
 }
@@ -3381,9 +3394,14 @@ fn decision_chip(ix: u64, d: &liuma_core::trajectory::DecisionRecord) -> Div {
 
 /// 折叠行 chip(触发来源 + 条数 + prefix token + 已裁条数)
 fn fold_chip(ix: u64, f: &liuma_core::trajectory::FoldRecord) -> Div {
-    let mut text = dict::trajectory::fold_chip(f.items, f.prefix_tokens);
+    let mut text = t!(
+        "trajectory.fold_chip",
+        items = f.items,
+        tokens = f.prefix_tokens
+    )
+    .into_owned();
     if f.pruned_items > 0 {
-        text.push_str(&dict::trajectory::fold_chip_pruned(f.pruned_items));
+        text.push_str(&t!("trajectory.fold_chip_pruned", n = f.pruned_items));
     }
     div()
         .debug_selector(move || format!("traj-fold-chip-{ix}"))
@@ -3409,10 +3427,10 @@ fn fold_chip(ix: u64, f: &liuma_core::trajectory::FoldRecord) -> Div {
 /// 触发来源标签(空串 = 旧日志无此字段)
 fn fold_trigger_label(trigger: &str) -> String {
     match trigger {
-        "auto" => dict::trajectory::trigger_auto().to_string(),
-        "manual" => dict::trajectory::trigger_manual().to_string(),
-        "overflow" => dict::trajectory::trigger_overflow().to_string(),
-        _ => dict::trajectory::trigger_unknown().to_string(),
+        "auto" => t!("trajectory.trigger_auto").to_string(),
+        "manual" => t!("trajectory.trigger_manual").to_string(),
+        "overflow" => t!("trajectory.trigger_overflow").to_string(),
+        _ => t!("trajectory.trigger_unknown").to_string(),
     }
 }
 
@@ -3424,72 +3442,72 @@ fn fold_tab_body(r: &TrajectoryRecord) -> Div {
         .gap(px(2.))
         .debug_selector(|| "inspector-fold-body".to_string());
     let Some(f) = &r.fold else {
-        return col.child(empty_text(dict::trajectory::no_fold()));
+        return col.child(empty_text(t!("trajectory.no_fold")));
     };
     col = col.child(dl_row(
-        dict::trajectory::row_trigger(),
+        t!("trajectory.row_trigger"),
         fold_trigger_label(&f.trigger),
     ));
     if f.pressure_tokens > 0 {
         col = col.child(dl_row(
-            dict::trajectory::row_pressure(),
+            t!("trajectory.row_pressure"),
             format!("{} tok", fmt_tok(f.pressure_tokens)),
         ));
     }
     if let Some(t) = f.threshold_tokens {
         col = col.child(dl_row(
-            dict::trajectory::row_threshold(),
+            t!("trajectory.row_threshold"),
             format!("{} tok", fmt_tok(t)),
         ));
     }
     if f.retain_tokens > 0 {
         col = col.child(dl_row(
-            dict::trajectory::row_retain(),
+            t!("trajectory.row_retain"),
             format!("{} tok", fmt_tok(f.retain_tokens)),
         ));
     }
     if f.shadowed_end > 0 {
         col = col.child(dl_row(
-            dict::trajectory::row_shadowed(),
-            div()
-                .font_family("Menlo")
-                .text_size(px(11.))
-                .child(dict::trajectory::seq_range(
-                    f.shadowed_start.min(f.shadowed_end),
-                    f.shadowed_end,
-                )),
+            t!("trajectory.row_shadowed"),
+            div().font_family("Menlo").text_size(px(11.)).child(t!(
+                "trajectory.seq_range",
+                a = f.shadowed_start.min(f.shadowed_end),
+                b = f.shadowed_end
+            )),
         ));
     }
     col = col.child(dl_row(
-        dict::trajectory::row_fold_items(),
-        dict::trajectory::fold_items_count(f.items),
+        t!("trajectory.row_fold_items"),
+        t!("trajectory.fold_items_count", n = f.items),
     ));
     col = col.child(dl_row(
-        dict::trajectory::row_prefix_tokens(),
+        t!("trajectory.row_prefix_tokens"),
         format!("{} tok", fmt_tok(f.prefix_tokens)),
     ));
     // 价值裁定:候选分母诚实(评估 M / 共 N),裁掉分「已生效」与
     // 「判为无价值」(仅记录档两者不同)
     if f.total_candidates > 0 || f.judged_candidates > 0 {
-        let mut line = dict::trajectory::judge_line(
-            f.judged_candidates,
-            f.total_candidates,
-            f.no_value_candidates,
-            f.pruned_items,
-        );
+        let mut line = t!(
+            "trajectory.judge_line",
+            judged = f.judged_candidates,
+            total = f.total_candidates,
+            no_value = f.no_value_candidates,
+            pruned = f.pruned_items
+        )
+        .into_owned();
         let unjudged = f.total_candidates.saturating_sub(f.judged_candidates);
         if unjudged > 0 {
-            line.push_str(&dict::trajectory::judge_unjudged(unjudged));
+            line.push_str(&t!("trajectory.judge_unjudged", n = unjudged));
         }
-        col = col.child(dl_row(dict::trajectory::row_judge(), line));
+        col = col.child(dl_row(t!("trajectory.row_judge"), line));
     } else {
         col = col.child(dl_row(
-            dict::trajectory::row_judge(),
-            dict::trajectory::judge_none(),
+            t!("trajectory.row_judge"),
+            t!("trajectory.judge_none"),
         ));
     }
     col = col.child(dl_row(
-        dict::trajectory::row_duration(),
+        t!("trajectory.row_duration"),
         rec_total_ms(r).map(fmt_ms).unwrap_or_else(|| "—".into()),
     ));
     col
@@ -3500,31 +3518,31 @@ fn fold_tab_body(r: &TrajectoryRecord) -> Div {
 fn decision_tab_body(r: &TrajectoryRecord) -> Div {
     let mut col = div().v_flex().gap(px(2.));
     let Some(d) = &r.decision else {
-        return col.child(empty_text(dict::trajectory::no_decision()));
+        return col.child(empty_text(t!("trajectory.no_decision")));
     };
     col = col.child(dl_row(
-        dict::trajectory::row_scenario(),
+        t!("trajectory.row_scenario"),
         decision_scenario_label(Some(&d.scenario)),
     ));
-    col = col.child(dl_row(dict::trajectory::row_model(), d.model.clone()));
+    col = col.child(dl_row(t!("trajectory.row_model"), d.model.clone()));
     if let Some((verdict, color)) = decision_verdict(d) {
         col = col.child(dl_row(
-            dict::trajectory::row_verdict(),
+            t!("trajectory.row_verdict"),
             div().text_color(color).child(verdict),
         ));
     }
     let summary = decision_summary(d);
     if !summary.is_empty() {
-        col = col.child(dl_row(dict::trajectory::row_answers(), summary));
+        col = col.child(dl_row(t!("trajectory.row_answers"), summary));
     }
     if !d.questions.is_empty() {
         col = col.child(dl_row(
-            dict::trajectory::row_questions(),
+            t!("trajectory.row_questions"),
             d.questions.join(", "),
         ));
     }
     col = col.child(dl_row(
-        dict::trajectory::row_duration(),
+        t!("trajectory.row_duration"),
         if d.duration_ms > 0 {
             fmt_ms(d.duration_ms)
         } else {
@@ -3533,13 +3551,13 @@ fn decision_tab_body(r: &TrajectoryRecord) -> Div {
     ));
     if let Some(n) = d.pruned {
         col = col.child(dl_row(
-            dict::trajectory::row_pruned(),
-            dict::trajectory::pruned_count(n),
+            t!("trajectory.row_pruned"),
+            t!("trajectory.pruned_count", n = n),
         ));
     }
     if let Some(digest) = &d.state_digest {
         col = col.child(dl_row(
-            dict::trajectory::row_state_digest(),
+            t!("trajectory.row_state_digest"),
             div()
                 .font_family("Menlo")
                 .text_size(px(11.))
@@ -3569,16 +3587,19 @@ fn rec_total_ms(r: &TrajectoryRecord) -> Option<i64> {
 fn message_source_label(source: &serde_json::Value) -> String {
     let kind = source["kind"].as_str().unwrap_or_default();
     match kind {
-        "user" => "User".into(),
+        "user" => t!("trajectory.source_user").into_owned(),
         "plugin" => match source["plugin"].as_str() {
-            Some(p) if !p.is_empty() => format!("Plugin · {p}"),
-            _ => "Plugin".into(),
+            Some(p) if !p.is_empty() => t!("trajectory.source_plugin_named", name = p).into_owned(),
+            _ => t!("trajectory.source_plugin").into_owned(),
         },
         "goal" => match source["round"].as_u64() {
-            Some(round) if round > 0 => format!("Goal · Round {round}"),
-            _ => "Goal".into(),
+            Some(round) if round > 0 => {
+                t!("trajectory.source_goal_round", round = round).into_owned()
+            }
+            _ => t!("trajectory.source_goal").into_owned(),
         },
-        "" => "Unknown".into(),
+        "" => t!("trajectory.source_unknown").into_owned(),
+        // 兜底 = 宿主 kind 原文首字母大写(线上数据逐字,不进文案文件)
         other => format!("{}{}", other[..1].to_uppercase(), &other[1..]),
     }
 }
@@ -3667,7 +3688,7 @@ fn assistant_preview_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryReco
                         .text_size(px(12.))
                         .font_weight(gpui_kit::FontWeight::MEDIUM)
                         .text_color(theme::LABEL_2())
-                        .child("Thinking")
+                        .child(t!("trajectory.thinking"))
                         .child(fixed(
                             if open {
                                 IconName::ChevronDown
@@ -3698,7 +3719,7 @@ fn assistant_preview_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryReco
         )));
     }
     if r.output_detail.is_none() && r.thinking_detail.is_none() {
-        col = col.child(empty_text("No content"));
+        col = col.child(empty_text(t!("trajectory.no_content")));
     }
     for c in step_tool_calls(r, &s.view.records) {
         col = col.child(assistant_tool_call_row(store, c));
@@ -3789,7 +3810,7 @@ fn context_markdown_body(r: &TrajectoryRecord, key: &str) -> Div {
         Some(text) if !text.is_empty() => {
             col = col.child(crate::kits::markdown_tv::tv_static(key.to_string(), text));
         }
-        _ => col = col.child(empty_text("No content")),
+        _ => col = col.child(empty_text(t!("trajectory.no_content"))),
     }
     col
 }
@@ -3805,7 +3826,7 @@ fn preview_tab_body(r: &TrajectoryRecord) -> Div {
                 text,
             ));
         }
-        _ => col = col.child(empty_text("No content")),
+        _ => col = col.child(empty_text(t!("trajectory.no_content"))),
     }
     col
 }
@@ -3814,7 +3835,7 @@ fn preview_tab_body(r: &TrajectoryRecord) -> Div {
 fn context_source_block(r: &TrajectoryRecord) -> Div {
     let mut col = div().v_flex();
     let Some(text) = r.payload.as_deref() else {
-        return col.child(empty_text("No content"));
+        return col.child(empty_text(t!("trajectory.no_content")));
     };
     col = col
         .child(
@@ -3832,7 +3853,7 @@ fn context_source_block(r: &TrajectoryRecord) -> Div {
 fn source_tab_body(r: &TrajectoryRecord) -> Div {
     let mut col = div().v_flex();
     let Some(source) = &r.source else {
-        return col.child(empty_text("Source not recorded"));
+        return col.child(empty_text(t!("trajectory.source_not_recorded")));
     };
     col = col
         .child(
@@ -3840,7 +3861,7 @@ fn source_tab_body(r: &TrajectoryRecord) -> Div {
                 .text_size(px(11.))
                 .text_color(theme::CAPTION())
                 .pb(px(4.))
-                .child("Message JSON"),
+                .child(t!("trajectory.message_json")),
         )
         .child(
             div().child(
@@ -3864,7 +3885,7 @@ fn system_body(r: &TrajectoryRecord) -> Div {
             let key = format!("traj-sys-{}", r.index);
             col = col.child(crate::kits::markdown_tv::tv_static(key.clone(), p));
         }
-        _ => col = col.child(empty_text("No system prompt in this request")),
+        _ => col = col.child(empty_text(t!("trajectory.no_system_prompt"))),
     }
     col
 }
@@ -3893,10 +3914,10 @@ fn spec_name(t: &serde_json::Value) -> String {
 fn tools_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
     let mut col = div().v_flex();
     let Some(catalog) = &r.tools_catalog else {
-        return col.child(empty_text("No tools in this request"));
+        return col.child(empty_text(t!("trajectory.no_tools")));
     };
     if catalog.is_empty() {
-        return col.child(empty_text("No tools in this request"));
+        return col.child(empty_text(t!("trajectory.no_tools")));
     }
     for (ti, t) in catalog.iter().enumerate() {
         let name = spec_name(t);
@@ -4058,7 +4079,7 @@ fn diff_body(s: &Snap, r: &TrajectoryRecord) -> Div {
     let prev = previous_system_snapshot(&s.view.records, r);
     let mut col = div().v_flex().gap(px(8.));
     let Some(prev) = prev else {
-        return col.child(empty_text("Not available"));
+        return col.child(empty_text(t!("trajectory.na")));
     };
     let mut has_diff = false;
     // System Prompt 节
@@ -4067,7 +4088,10 @@ fn diff_body(s: &Snap, r: &TrajectoryRecord) -> Div {
     {
         has_diff = true;
         col = col
-            .child(section("sec-diff-system", "System Prompt"))
+            .child(section(
+                "sec-diff-system",
+                t!("trajectory.tab_system_prompt"),
+            ))
             .child(diff_block("diff-system", a, b));
     }
     // Tools 节(目录 pretty 序列化后行 diff)
@@ -4078,11 +4102,11 @@ fn diff_body(s: &Snap, r: &TrajectoryRecord) -> Div {
         let pa = serde_json::to_string_pretty(a).unwrap_or_default();
         let pb = serde_json::to_string_pretty(b).unwrap_or_default();
         col = col
-            .child(section("sec-diff-tools", "Tools"))
+            .child(section("sec-diff-tools", t!("trajectory.tab_tools")))
             .child(diff_block("diff-tools", &pa, &pb));
     }
     if !has_diff {
-        col = col.child(empty_text("Not available"));
+        col = col.child(empty_text(t!("trajectory.na")));
     }
     col
 }
@@ -4134,9 +4158,7 @@ fn diff_block(id: &'static str, a: &str, b: &str) -> impl IntoElement {
 /// Schema 页(TOOL):name + description + Parameters(高亮)
 fn schema_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
     let Some(raw) = &r.schema_detail else {
-        return div()
-            .v_flex()
-            .child(empty_text(dict::trajectory::schema_na()));
+        return div().v_flex().child(empty_text(t!("trajectory.schema_na")));
     };
     let Ok(spec) = serde_json::from_str::<serde_json::Value>(raw) else {
         return div()
@@ -4178,16 +4200,22 @@ fn schema_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div 
     match parameters {
         Some(p) if p.is_object() || p.is_array() => {
             col = col
-                .child(section("sec-schema-params", "Parameters"))
+                .child(section(
+                    "sec-schema-params",
+                    t!("trajectory.sec_parameters"),
+                ))
                 .child(json_tree_block(store, s, r.index, &p))
         }
         Some(p) => {
             let pretty = serde_json::to_string_pretty(&p).unwrap_or_default();
             col = col
-                .child(section("sec-schema-params", "Parameters"))
+                .child(section(
+                    "sec-schema-params",
+                    t!("trajectory.sec_parameters"),
+                ))
                 .child(code_block("mono-schema-params", &pretty, theme::LABEL_3()))
         }
-        None => col = col.child(empty_text(dict::trajectory::schema_na())),
+        None => col = col.child(empty_text(t!("trajectory.schema_na"))),
     }
     col
 }

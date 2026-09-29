@@ -24,7 +24,7 @@ use gpui_kit::{
     StyleRefinement, Styled, Window, div, px,
 };
 
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use crate::kits::icons::fixed;
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -76,7 +76,7 @@ pub fn render(
     // 填写自定义答案。」
     let error_line = state.read(cx).error(&name).map(|error| match error {
         QuestionnaireValidationError::Message(message) => message.to_string(),
-        _ => dict::ask::err_pick().to_string(),
+        _ => t!("ask.err_pick").to_string(),
     });
     let progress = state.read(cx).progress();
     let counter = format!("{}/{}", progress.current(), progress.total());
@@ -196,19 +196,17 @@ pub fn render(
                             })
                             .child(
                                 QuestionnairePrevious::new(&state)
-                                    .child(dict::ask::prev_q().to_string()),
+                                    .child(t!("ask.prev_q").to_string()),
                             )
                             .child(
-                                QuestionnaireNext::new(&state)
-                                    .child(dict::ask::next_q().to_string()),
+                                QuestionnaireNext::new(&state).child(t!("ask.next_q").to_string()),
                             )
                             .child(
-                                QuestionnaireSkip::new(&state)
-                                    .child(dict::ask::skip_q().to_string()),
+                                QuestionnaireSkip::new(&state).child(t!("ask.skip_q").to_string()),
                             )
                             .child(
                                 QuestionnaireSubmit::new(&state)
-                                    .child(dict::ask::submit_q().to_string()),
+                                    .child(t!("ask.submit_q").to_string()),
                             ),
                     ),
             ),

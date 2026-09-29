@@ -14,7 +14,7 @@ use gpui_kit::{
 };
 
 use crate::features::chat::ChatNode;
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use crate::kits::theme;
 use crate::shell::reducer;
 use crate::shell::store::AppStore;
@@ -206,7 +206,7 @@ impl AppStore {
                         Err(e) => format!("{e}"),
                         _ => String::new(),
                     };
-                    s.push_local_notice(&dict::sessions::history_load_failed(&detail), cx);
+                    s.push_local_notice(t!("sessions.history_load_failed", detail = &detail), cx);
                     return;
                 };
                 let HistoryValue {
@@ -458,9 +458,10 @@ impl AppStore {
             tokio::task::spawn_blocking(move || host.pick_workspace_directory())
                 .await
                 .unwrap_or_else(|e| {
-                    Err(liuma_core::proto::RpcError::internal(
-                        dict::sessions::picker_task_failed(&e),
-                    ))
+                    Err(liuma_core::proto::RpcError::internal(t!(
+                        "sessions.picker_task_failed",
+                        e = &e
+                    )))
                 })
         });
         let store = cx.entity().clone();
@@ -468,7 +469,7 @@ impl AppStore {
             // 内层 Err = 选择失败/取消;外层 = 通道
             let picked = rx.await.unwrap_or_else(|_| {
                 Err(liuma_core::proto::RpcError::internal(
-                    dict::sessions::picker_channel_failed().to_string(),
+                    t!("sessions.picker_channel_failed").to_string(),
                 ))
             });
             match picked {
@@ -482,7 +483,7 @@ impl AppStore {
                             }
                             Err(e) => {
                                 s.push_local_notice(
-                                    &dict::sessions::add_workspace_failed(&e.message),
+                                    t!("sessions.add_workspace_failed", msg = &e.message),
                                     cx,
                                 );
                             }
@@ -494,7 +495,7 @@ impl AppStore {
                 Err(e) if e.code == "bad-request" => {}
                 Err(e) => {
                     store.update(cx, |s, cx| {
-                        s.push_local_notice(&dict::sessions::open_dir_failed(&e.message), cx);
+                        s.push_local_notice(t!("sessions.open_dir_failed", msg = &e.message), cx);
                         cx.notify();
                     });
                 }
@@ -544,7 +545,7 @@ impl AppStore {
             self.sessions.rename_target.is_some() || self.sessions.rename_ws_target.is_some();
         if self.sessions.rename_input.is_none() {
             let input =
-                cx.new(|cx| InputState::new(window, cx).placeholder(dict::sessions::ws_title_ph()));
+                cx.new(|cx| InputState::new(window, cx).placeholder(t!("sessions.ws_title_ph")));
             cx.subscribe(&input, |this, _i, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::PressEnter { shift: false, .. }) {
                     this.confirm_rename(cx);
@@ -593,7 +594,7 @@ impl AppStore {
                 }
                 cx.notify();
             }
-            Err(e) => self.push_local_notice(&dict::sessions::remove_failed(&e.message), cx),
+            Err(e) => self.push_local_notice(t!("sessions.remove_failed", msg = &e.message), cx),
         }
     }
 
@@ -603,9 +604,8 @@ impl AppStore {
         let already_open =
             self.sessions.rename_target.is_some() || self.sessions.rename_ws_target.is_some();
         if self.sessions.rename_input.is_none() {
-            let input = cx.new(|cx| {
-                InputState::new(window, cx).placeholder(dict::sessions::session_title_ph())
-            });
+            let input = cx
+                .new(|cx| InputState::new(window, cx).placeholder(t!("sessions.session_title_ph")));
             cx.subscribe(&input, |this, _i, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::PressEnter { shift: false, .. }) {
                     this.confirm_rename(cx);
@@ -638,9 +638,9 @@ impl AppStore {
         window.open_dialog(cx, move |dialog, _, _| {
             let input = input.clone();
             let title = if ws_mode {
-                dict::misc::rename_workspace()
+                t!("misc.rename_workspace")
             } else {
-                dict::misc::rename_session()
+                t!("misc.rename_session")
             };
             let store_ok = store.clone();
             let store_cancel = store.clone();
@@ -674,7 +674,7 @@ impl AppStore {
                                 .text_size(px(13.))
                                 .text_color(theme::LABEL_2())
                                 .hover(|s| s.bg(theme::DOCK()))
-                                .child(dict::common::cancel())
+                                .child(t!("common.cancel"))
                                 .on_click(|_, window, cx| {
                                     window.close_dialog(cx);
                                 }),
@@ -695,9 +695,9 @@ impl AppStore {
                                 .hover(|s| s.opacity(0.9))
                                 // 确认钮文案 = 动作词(参照:「重命名」)
                                 .child(if ws_mode {
-                                    dict::sessions::rename()
+                                    t!("sessions.rename")
                                 } else {
-                                    dict::misc::rename_session()
+                                    t!("misc.rename_session")
                                 })
                                 .on_click(move |_, window, cx| {
                                     store_ok.update(cx, |st, cx| st.confirm_rename(cx));
@@ -739,7 +739,7 @@ impl AppStore {
                         self.refresh_list(cx);
                     }
                     Err(e) => {
-                        self.push_local_notice(&dict::sessions::rename_failed(&e.message), cx)
+                        self.push_local_notice(t!("sessions.rename_failed", msg = &e.message), cx)
                     }
                 }
             }
@@ -772,7 +772,7 @@ impl AppStore {
                 self.refresh_list(cx);
                 self.open_session(&new_id, cx);
             }
-            Err(e) => self.push_local_notice(&dict::sessions::fork_failed(&e.message), cx),
+            Err(e) => self.push_local_notice(t!("sessions.fork_failed", msg = &e.message), cx),
         }
     }
 
@@ -810,7 +810,7 @@ impl AppStore {
                 let notify_err = |cx: &mut gpui_kit::AsyncWindowContext, msg: String| {
                     let _ = cx.update(|window, cx| {
                         window.push_notification(
-                            Notification::error(msg).title(dict::sessions::export_failed()),
+                            Notification::error(msg).title(t!("sessions.export_failed")),
                             cx,
                         );
                     });
@@ -818,24 +818,29 @@ impl AppStore {
                 let chosen = match rx.await {
                     Ok(Ok(Some(path))) => path,
                     Ok(Ok(None)) => return, // 用户取消:静默
-                    Ok(Err(e)) => return notify_err(cx, dict::sessions::save_dialog_failed(&e)),
+                    Ok(Err(e)) => {
+                        return notify_err(
+                            cx,
+                            t!("sessions.save_dialog_failed", e = &e).into_owned(),
+                        );
+                    }
                     Err(_) => return, // 通道断开(窗口销毁)
                 };
                 let (path, bytes, title) = match host.export_session_zip(&id, true) {
-                    Ok(bytes) => (chosen, bytes, dict::sessions::exported_zip().to_string()),
+                    Ok(bytes) => (chosen, bytes, t!("sessions.exported_zip").to_string()),
                     Err(_) => {
                         let Ok(log) = host.export_session_log(&id) else {
-                            return notify_err(cx, dict::sessions::export_unreadable().to_string());
+                            return notify_err(cx, t!("sessions.export_unreadable").to_string());
                         };
                         (
                             chosen.with_extension("jsonl"),
                             log.into_bytes(),
-                            dict::sessions::exported_single().to_string(),
+                            t!("sessions.exported_single").to_string(),
                         )
                     }
                 };
                 if let Err(e) = std::fs::write(&path, bytes) {
-                    return notify_err(cx, dict::sessions::write_failed(&e));
+                    return notify_err(cx, t!("sessions.write_failed", e = &e).into_owned());
                 }
                 let _ = cx.update(|window, cx| {
                     window.push_notification(
@@ -869,7 +874,7 @@ impl AppStore {
                 .and_then(|v| v.as_str())
             {
                 Some(t) => t.to_string(),
-                None if s.blank => dict::sessions::new_session().into(),
+                None if s.blank => t!("sessions.new_session").into(),
                 None => id.to_string(),
             }
         } else {

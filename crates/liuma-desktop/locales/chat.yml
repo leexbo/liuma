@@ -1,0 +1,581 @@
+# chat 面文案(由 dict/chat.rs 搬迁;key 根段 == 文件 stem)。
+# 值一律加引号(YAML 裸标量会被解析成非字符串,rust-i18n 只收字符串叶子)。
+_version: 2
+
+chat:
+
+  composer_standard:
+    zh-CN: "输入消息,Enter 发送 / Shift+Enter 换行"
+    en: "Message, Enter to send / Shift+Enter for a new line"
+
+  composer_plan:
+    zh-CN: "描述你的任务以生成计划"
+    en: "Describe your task to generate a plan"
+
+  pick_attachment:
+    zh-CN: "选择附件"
+    en: "Choose attachments"
+
+  section_files:
+    zh-CN: "文件与文件夹"
+    en: "Files and folders"
+
+  section_sessions:
+    zh-CN: "Session 对话"
+    en: "Session chats"
+
+  section_commands:
+    zh-CN: "命令"
+    en: "Commands"
+
+  section_skills:
+    zh-CN: "技能"
+    en: "Skills"
+
+  command_plan:
+    zh-CN: "进入或退出计划模式"
+    en: "Enter or leave plan mode"
+
+  command_compact:
+    zh-CN: "压缩以上对话内容"
+    en: "Compact the conversation above"
+
+  command_export:
+    zh-CN: "导出本会话日志为 ZIP 归档"
+    en: "Export this session log as a ZIP archive"
+
+  command_goal:
+    zh-CN: "查看或设置长期任务的目标"
+    en: "View or set the long-term goal"
+
+  command_model:
+    zh-CN: "查看或切换当前模型"
+    en: "View or switch the current model"
+
+  model_label:
+    zh-CN: "模型"
+    en: "Model"
+
+  reasoning_level:
+    zh-CN: "推理等级"
+    en: "Reasoning effort"
+
+  user_only:
+    zh-CN: "仅用户 · %{desc}"
+    en: "User-only · %{desc}"
+
+  ctx_used_pct:
+    zh-CN: "上下文已用 %{percent}%"
+    en: "Context %{percent}% used"
+
+  tok_share:
+    zh-CN: "%{v} · %{pct}%"
+    en: "%{v} · %{pct}%"
+
+  no_models:
+    zh-CN: "各 Provider 尚未配置模型。"
+    en: "No models configured for any provider."
+
+  attach_rejected:
+    zh-CN: "/%{kind} 不接受%{has},请先移除%{remove}"
+    en: "/%{kind} doesn't accept %{has}; remove %{remove} first"
+
+  attach_file_full:
+    zh-CN: "文件附件"
+    en: "file attachments"
+
+  attach_image_full:
+    zh-CN: "图片附件"
+    en: "image attachments"
+
+  attach_file:
+    zh-CN: "文件"
+    en: "file"
+
+  attach_image:
+    zh-CN: "图片"
+    en: "image"
+
+  perm_read_only:
+    zh-CN: "仅可查看"
+    en: "Read-only"
+
+  perm_full_access:
+    zh-CN: "完全权限"
+    en: "Full access"
+
+  perm_workspace_write:
+    zh-CN: "工作区内修改"
+    en: "Workspace edits"
+
+  ctx_system:
+    zh-CN: "系统提示"
+    en: "System prompt"
+
+  ctx_tools:
+    zh-CN: "工具定义"
+    en: "Tool definitions"
+
+  ctx_messages:
+    zh-CN: "会话消息"
+    en: "Session messages"
+
+  copy_menu:
+    zh-CN: "复制"
+    en: "Copy"
+
+  loading_history:
+    zh-CN: "正在加载会话内容…"
+    en: "Loading session…"
+
+  compact_running:
+    zh-CN: "正在压缩…"
+    en: "Compacting…"
+
+  compact_queued:
+    zh-CN: "已排队,回合结束后压缩"
+    en: "Queued — compaction starts after this turn"
+
+  exploring:
+    zh-CN: "深入探索中…"
+    en: "Digging deeper…"
+
+  think_label:
+    zh-CN: "思考"
+    en: "Think"
+
+  tool_calls_count:
+    zh-CN: "%{n} 次工具调用"
+    en: "%{n} tool calls"
+
+  thought_fallback:
+    zh-CN: "已思考"
+    en: "Thought for a while"
+
+  messages_count:
+    zh-CN: "%{n} 条消息"
+    en: "%{n} messages"
+
+  message_stopped:
+    zh-CN: "已停止"
+    en: "Stopped"
+
+  compact_title:
+    zh-CN: "上下文已压缩"
+    en: "Context compacted"
+
+  compact_fallback:
+    zh-CN: "已压缩"
+    en: "Compacted"
+
+  turn_failed:
+    zh-CN: "本轮运行失败"
+    en: "This turn failed"
+
+  recall:
+    zh-CN: "召回·%{label}"
+    en: "Recall · %{label}"
+
+  inject:
+    zh-CN: "注入·%{label}"
+    en: "Inject · %{label}"
+
+  compaction_done:
+    zh-CN: "已压缩 %{n} 条历史记录（约 %{t} tokens）"
+    en: "Compacted %{n} entries (~%{t} tokens)"
+
+  compaction_pruned:
+    zh-CN: "已压缩 %{n} 条历史记录（约 %{t} tokens）· 价值裁定裁掉 %{p} 条"
+    en: "Compacted %{n} entries (~%{t} tokens) · value judge dropped %{p}"
+
+  compact_empty:
+    zh-CN: "暂无可压缩的历史"
+    en: "No compactable history yet."
+
+  compact_phase_judge:
+    zh-CN: "裁定价值"
+    en: "Judging value"
+
+  compact_phase_summarize:
+    zh-CN: "生成摘要"
+    en: "Summarizing"
+
+  compact_phase_commit:
+    zh-CN: "写入检查点"
+    en: "Writing checkpoint"
+
+  compact_running_phase:
+    zh-CN: "正在压缩 · %{phase}"
+    en: "Compacting · %{phase}"
+
+  compact_failed:
+    zh-CN: "压缩未完成"
+    en: "Compaction did not finish"
+
+  compact_progress_tip:
+    zh-CN: "已生成 %{chars} 字符 · 已用 %{secs}s"
+    en: "%{chars} chars generated · %{secs}s elapsed"
+
+  interrupted:
+    zh-CN: "已中断"
+    en: "Interrupted"
+
+  queue_count:
+    zh-CN: "排队消息 %{n} 条"
+    en: "%{n} queued messages"
+
+  queue_steer:
+    zh-CN: "立即投递"
+    en: "Deliver now"
+
+  subagent_message:
+    zh-CN: "子代理·消息"
+    en: "Subagent · message"
+
+  subagent_stopped:
+    zh-CN: "子代理·已停止"
+    en: "Subagent · stopped"
+
+  subagent_resumed:
+    zh-CN: "子代理·已恢复"
+    en: "Subagent · resumed"
+
+  subagent_failed:
+    zh-CN: "子代理·已失败"
+    en: "Subagent · failed"
+
+  subagent_done:
+    zh-CN: "子代理·已完成"
+    en: "Subagent · completed"
+
+  no_closing:
+    zh-CN: "无收尾消息"
+    en: "No closing message"
+
+  view_subsession:
+    zh-CN: "查看子会话"
+    en: "View subagent"
+
+  usage_tok:
+    zh-CN: "用量 %{v} tok"
+    en: "Usage %{v} tok"
+
+  time_run:
+    zh-CN: "用时 %{v}"
+    en: "Time %{v}"
+
+  provider_model:
+    zh-CN: "提供方 / 模型"
+    en: "Provider / model"
+
+  stats_cache_hit:
+    zh-CN: "缓存命中"
+    en: "Cache hit"
+
+  stats_uncached:
+    zh-CN: "未缓存输入"
+    en: "Uncached input"
+
+  stats_cache_read:
+    zh-CN: "缓存读取"
+    en: "Cache read"
+
+  stats_cache_write:
+    zh-CN: "缓存写入"
+    en: "Cache write"
+
+  stats_output:
+    zh-CN: "输出"
+    en: "Output"
+
+  reasoning_suffix:
+    zh-CN: "（其中推理 %{v} tok）"
+    en: " (incl. %{v} reasoning tok)"
+
+  turn_usage:
+    zh-CN: "本轮用量"
+    en: "Turn usage"
+
+  turn_time_speed:
+    zh-CN: "本轮用时和速度"
+    en: "Turn time & speed"
+
+  turn_total_time:
+    zh-CN: "本轮总用时"
+    en: "Total turn time"
+
+  turn_tps:
+    zh-CN: "输出速度（TPS）"
+    en: "Output speed (TPS)"
+
+  turn_ttft:
+    zh-CN: "首 token 用时（TTFT）"
+    en: "Time to first token (TTFT)"
+
+  artifacts:
+    zh-CN: "产物"
+    en: "Artifacts"
+
+  more_files:
+    zh-CN: "+ %{n} 个文件"
+    en: "+%{n} files"
+
+  retry_title:
+    zh-CN: "模型重试"
+    en: "Model retry"
+
+  retry_waiting_live:
+    zh-CN: "正在重试模型请求"
+    en: "Retrying model request"
+
+  retry_waiting:
+    zh-CN: "等待重试模型请求"
+    en: "Waiting to retry model request"
+
+  retry_started:
+    zh-CN: "已重试模型请求"
+    en: "Model request retried"
+
+  retry_cancelled:
+    zh-CN: "模型请求重试已取消"
+    en: "Model request retry cancelled"
+
+  retry_status:
+    zh-CN: "%{label}（%{attempt}/%{max}） · %{seconds}s"
+    en: "%{label} (%{attempt}/%{max}) · %{seconds}s"
+
+  retry_delay:
+    zh-CN: "重试延迟：%{ms}ms"
+    en: "Retry delay: %{ms}ms"
+
+  retry_reason:
+    zh-CN: "失败原因：%{msg}"
+    en: "Failure reason: %{msg}"
+
+  unknown_error:
+    zh-CN: "未知错误"
+    en: "Unknown error"
+
+  todo_done:
+    zh-CN: "%{done}/%{total} 已完成"
+    en: "%{done}/%{total} done"
+
+  todo_write_title:
+    zh-CN: "更新任务清单"
+    en: "Update to-dos"
+
+  generic_tool:
+    zh-CN: "工具调用"
+    en: "Tool call"
+
+  tool_bash:
+    zh-CN: "Bash"
+    en: "Bash"
+
+  tool_read:
+    zh-CN: "读取"
+    en: "Read"
+
+  tool_write:
+    zh-CN: "写入"
+    en: "Write"
+
+  tool_edit:
+    zh-CN: "编辑"
+    en: "Edit"
+
+  tool_grep:
+    zh-CN: "Grep"
+    en: "Grep"
+
+  tool_glob:
+    zh-CN: "Glob"
+    en: "Glob"
+
+  tool_search:
+    zh-CN: "搜索"
+    en: "Search"
+
+  tool_web_search:
+    zh-CN: "网页搜索"
+    en: "Web search"
+
+  tool_web_fetch:
+    zh-CN: "网页获取"
+    en: "Web fetch"
+
+  tool_read_image:
+    zh-CN: "读取图片"
+    en: "Read image"
+
+  tool_code:
+    zh-CN: "代码"
+    en: "Code"
+
+  tool_ask:
+    zh-CN: "提问"
+    en: "Ask"
+
+  tool_jobs:
+    zh-CN: "任务"
+    en: "Jobs"
+
+  tool_goal:
+    zh-CN: "目标"
+    en: "Goal"
+
+  tool_workflow:
+    zh-CN: "工作流"
+    en: "Workflow"
+
+  tool_subagent:
+    zh-CN: "子代理"
+    en: "Subagent"
+
+  tool_subagent_list:
+    zh-CN: "子代理列表"
+    en: "Subagents"
+
+  tool_exit_plan:
+    zh-CN: "退出计划"
+    en: "Exit plan"
+
+  tool_ralph:
+    zh-CN: "Ralph"
+    en: "Ralph"
+
+  empty_output:
+    zh-CN: "(空)"
+    en: "(empty)"
+
+  show_rows:
+    zh-CN: "显示 %{shown} / %{total} 行"
+    en: "Showing %{shown} of %{total} lines"
+
+  more_rows_one:
+    zh-CN: "… 其余 %{hidden} 行"
+    en: "… %{hidden} more line"
+
+  more_rows_other:
+    zh-CN: "… 其余 %{hidden} 行"
+    en: "… %{hidden} more lines"
+
+  show_total:
+    zh-CN: "显示 %{shown} / 共 %{total}"
+    en: "Showing %{shown} of %{total}"
+
+  match_summary:
+    zh-CN: "%{count} 处匹配 · %{files} 个文件"
+    en: "%{count} matches · %{files} files"
+
+  paths_summary:
+    zh-CN: "%{count} 个路径"
+    en: "%{count} paths"
+
+  no_results:
+    zh-CN: "无结果"
+    en: "No results"
+
+  diff_stat_one:
+    zh-CN: "└ +%{added} -%{removed} · %{files} 个文件"
+    en: "└ +%{added} -%{removed} · %{files} file"
+
+  diff_stat_other:
+    zh-CN: "└ +%{added} -%{removed} · %{files} 个文件"
+    en: "└ +%{added} -%{removed} · %{files} files"
+
+  skill_failed:
+    zh-CN: "skill 加载失败"
+    en: "Skill failed to load"
+
+  skill_loading:
+    zh-CN: "正在加载 skill"
+    en: "Loading skill"
+
+  view:
+    zh-CN: "查看"
+    en: "View"
+
+  todo_counts:
+    zh-CN: "%{done} 完成 · %{active} 进行 · %{pending} 待办"
+    en: "%{done} done · %{active} active · %{pending} pending"
+
+  signal:
+    zh-CN: "信号 %{sig}"
+    en: "signal %{sig}"
+
+  exit_code:
+    zh-CN: "退出码 %{c}"
+    en: "exit code %{c}"
+
+  no_output:
+    zh-CN: "无输出"
+    en: "No output"
+
+  mermaid_chart:
+    zh-CN: "图表"
+    en: "Chart"
+
+  mermaid_code:
+    zh-CN: "代码"
+    en: "Code"
+
+  mermaid_download:
+    zh-CN: "下载"
+    en: "Download"
+
+  mermaid_zoom:
+    zh-CN: "放大"
+    en: "Zoom in"
+
+  mermaid_exported:
+    zh-CN: "已导出:%{p}"
+    en: "Exported: %{p}"
+
+  mermaid_export_failed:
+    zh-CN: "导出失败:%{e}"
+    en: "Export failed: %{e}"
+
+  queue_op_failed:
+    zh-CN: "队列操作失败:%{msg}"
+    en: "Queue op failed: %{msg}"
+
+  branch_failed:
+    zh-CN: "分支失败:%{msg}"
+    en: "Branch failed: %{msg}"
+
+  export_decode_failed:
+    zh-CN: "导出数据解码失败"
+    en: "Failed to decode export data"
+
+  exported:
+    zh-CN: "已导出"
+    en: "Exported"
+
+  current_model:
+    zh-CN: "当前: %{m}"
+    en: "Current: %{m}"
+
+  command_failed:
+    zh-CN: "命令失败:%{msg}"
+    en: "Command failed: %{msg}"
+
+  inspect:
+    zh-CN: "检视"
+    en: "Inspect"
+
+  effort_low:
+    zh-CN: "低"
+    en: "Low"
+
+  effort_high:
+    zh-CN: "高"
+    en: "High"
+
+  effort_max:
+    zh-CN: "最高"
+    en: "Max"
+
+  skill_instructions:
+    zh-CN: "指令"
+    en: "Instructions"

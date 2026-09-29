@@ -15,7 +15,7 @@ use gpui_kit::{Context, ListAlignment, ListState, px};
 
 use super::face::{self, ReadError, TextPage};
 use crate::kits::filetype::{self, DocRenderer, LoadMode};
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use crate::shell::panel::{PanelTab, PreviewTab};
 use crate::shell::store::AppStore;
 
@@ -478,7 +478,7 @@ impl AppStore {
         bucket.image =
             format.map(|f| Arc::new(gpui_kit::Image::from_bytes(f, bytes.as_ref().clone())));
         if bucket.image.is_none() {
-            bucket.failure = Some(dict::files::image_failed().to_string());
+            bucket.failure = Some(t!("files.image_failed").to_string());
         }
     }
 
@@ -520,10 +520,10 @@ impl AppStore {
                         s.preview_render_pdf_pages(&rel, cx);
                     }
                     Err(super::pdf::PdfError::Password) => {
-                        bucket.pdf_failed = Some(dict::files::pdf_password().to_string());
+                        bucket.pdf_failed = Some(t!("files.pdf_password").to_string());
                     }
                     Err(super::pdf::PdfError::Invalid(msg)) => {
-                        bucket.pdf_failed = Some(dict::files::pdf_failed(msg));
+                        bucket.pdf_failed = Some(t!("files.pdf_failed", msg = msg).into_owned());
                     }
                 }
                 cx.notify();
@@ -592,16 +592,18 @@ impl AppStore {
                                     )])),
                                 );
                             } else {
-                                bucket.pdf_failed = Some(dict::files::pdf_failed(
-                                    dict::files::pdf_bitmap_mismatch(),
-                                ));
+                                bucket.pdf_failed = Some(
+                                    t!("files.pdf_failed", msg = t!("files.pdf_bitmap_mismatch"))
+                                        .into_owned(),
+                                );
                             }
                         }
                         Err(super::pdf::PdfError::Password) => {
-                            bucket.pdf_failed = Some(dict::files::pdf_password().to_string());
+                            bucket.pdf_failed = Some(t!("files.pdf_password").to_string());
                         }
                         Err(super::pdf::PdfError::Invalid(msg)) => {
-                            bucket.pdf_failed = Some(dict::files::pdf_failed(msg));
+                            bucket.pdf_failed =
+                                Some(t!("files.pdf_failed", msg = msg).into_owned());
                         }
                     }
                     cx.notify();

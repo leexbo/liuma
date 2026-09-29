@@ -23,7 +23,7 @@ use gpui_kit::{
 
 use super::store::PreviewBucket;
 use crate::kits::filetype::{self, DocRenderer};
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::popup::PopTrigger;
 use crate::kits::theme;
@@ -127,7 +127,7 @@ fn preview_loading() -> impl IntoElement {
         .text_size(px(12.))
         .text_color(theme::CAPTION())
         .child(Spinner::new().small())
-        .child(dict::files::loading())
+        .child(t!("files.loading"))
 }
 
 /// 头行:完整路径(目录段灰 + basename 主色)+ 渲染器菜单(候选 > 1)
@@ -173,8 +173,8 @@ fn preview_header(
         let menu_rel = rel.clone();
         let title = snap
             .renderer
-            .map(DocRenderer::title)
-            .unwrap_or_else(|| dict::shell::preview_tab());
+            .map(|r| r.title().to_string())
+            .unwrap_or_else(|| t!("shell.preview_tab").into_owned());
         header = header.child(
             Popover::new("preview-renderer-pop")
                 .appearance(false)
@@ -259,9 +259,9 @@ fn preview_changed_bar(
     let rel = rel.to_path_buf();
     let s_reload = store.clone();
     let text = if meta_failed {
-        dict::files::file_gone()
+        t!("files.file_gone")
     } else {
-        dict::files::file_stale()
+        t!("files.file_stale")
     };
     div()
         .id("preview-changed-bar")
@@ -290,7 +290,7 @@ fn preview_changed_bar(
                 .cursor_pointer()
                 .text_color(theme::BRAND())
                 .hover(|s| s.bg(theme::DOCK()))
-                .child(dict::files::reload())
+                .child(t!("files.reload"))
                 .on_click(move |_, _, cx| {
                     s_reload.update(cx, |st, cx| st.preview_reload(&rel, cx));
                 }),
@@ -307,11 +307,7 @@ fn preview_body(
 ) -> gpui_kit::AnyElement {
     // 不可预览空态(不读取、无菜单)
     if snap.unsupported {
-        return preview_empty_state(
-            "preview-unsupported",
-            dict::files::unsupported_format(),
-            None,
-        );
+        return preview_empty_state("preview-unsupported", t!("files.unsupported_format"), None);
     }
     // 无内容时的整面状态(loading / 失败)
     if !snap.has_content {
@@ -332,7 +328,7 @@ fn preview_body(
                 "preview-failure",
                 &failure,
                 Some((
-                    dict::common::retry(),
+                    t!("common.retry").into_owned(),
                     Box::new(move |cx: &mut App| {
                         s_retry.update(cx, |st, cx| st.preview_reload(&retry_rel, cx));
                     }),
@@ -399,7 +395,8 @@ fn preview_body(
                     "preview-failure",
                     snap.failure
                         .as_deref()
-                        .unwrap_or(dict::files::image_failed()),
+                        .map(str::to_string)
+                        .unwrap_or_else(|| t!("files.image_failed").into_owned()),
                     None,
                 )
             }
@@ -434,7 +431,7 @@ fn preview_body(
                     .map(|(ix, (dim, image))| {
                         let (w, h) = *dim;
                         let sel = format!("preview-pdf-page-{ix}");
-                        let label = dict::files::pdf_drawing(ix + 1);
+                        let label = t!("files.pdf_drawing", page = ix + 1);
                         let body = match image {
                             Some(render) => img(gpui_kit::ImageSource::Render(render))
                                 .size_full()
@@ -490,7 +487,8 @@ fn preview_body(
                     "preview-failure",
                     snap.failure
                         .as_deref()
-                        .unwrap_or(dict::files::pdf_display_failed()),
+                        .map(str::to_string)
+                        .unwrap_or_else(|| t!("files.pdf_display_failed").into_owned()),
                     None,
                 )
             }
@@ -526,7 +524,7 @@ fn preview_body(
                     .text_color(theme::LABEL_2())
                     .hover(|s| s.bg(theme::DOCK()))
                     .when(loading, |this| this.child(Spinner::new().small()))
-                    .child(dict::files::load_more())
+                    .child(t!("files.load_more"))
                     .on_click(move |_, _, cx| {
                         s_more.update(cx, |st, cx| st.preview_load_more(&more_rel, cx));
                     }),
@@ -562,7 +560,7 @@ fn preview_body(
                             .hover(|s| s.bg(theme::DOCK()))
                             .rounded(px(6.))
                             .px(px(8.))
-                            .child(dict::common::retry())
+                            .child(t!("common.retry"))
                             .on_click(move |_, _, cx| {
                                 s_retry.update(cx, |st, cx| st.preview_reload(&retry_rel, cx));
                             }),
@@ -574,13 +572,14 @@ fn preview_body(
 }
 
 /// 居中空态(灰化大图标 + 文案;可选重试钮)
-type RetryAction = (&'static str, Box<dyn Fn(&mut App)>);
+type RetryAction = (String, Box<dyn Fn(&mut App)>);
 
 fn preview_empty_state(
     selector: &str,
-    text: &str,
+    text: impl Into<gpui_kit::SharedString>,
     retry: Option<RetryAction>,
 ) -> gpui_kit::AnyElement {
+    let text = text.into();
     let mut el = div()
         .debug_selector(move || selector.to_string())
         .flex_1()

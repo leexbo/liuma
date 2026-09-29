@@ -14,7 +14,7 @@ use gpui_kit::component::tree::{TreeEvent, TreeItem, TreeState};
 use gpui_kit::{AppContext as _, Context, Entity, Subscription};
 
 use super::face::{self, DirEntryRow, EntryKind, ListError, Listing, MAX_ENTRIES};
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use crate::shell::store::AppStore;
 
 /// 占位行 id 后缀(NUL 不可能出现在路径段,保证与真实行 id 不撞)
@@ -229,7 +229,7 @@ impl AppStore {
         let Some(level) = self.files.levels.get(dir) else {
             return vec![self.files_placeholder_row(
                 dir,
-                dict::files::loading(),
+                t!("files.loading"),
                 RowSpecial::Loading,
                 meta,
             )];
@@ -238,7 +238,7 @@ impl AppStore {
             LevelState::Loading => {
                 vec![self.files_placeholder_row(
                     dir,
-                    dict::files::loading(),
+                    t!("files.loading"),
                     RowSpecial::Loading,
                     meta,
                 )]
@@ -250,7 +250,7 @@ impl AppStore {
                 if listing.entries.is_empty() {
                     return vec![self.files_placeholder_row(
                         dir,
-                        dict::files::empty_dir(),
+                        t!("files.empty_dir"),
                         RowSpecial::EmptyDir,
                         meta,
                     )];
@@ -263,7 +263,7 @@ impl AppStore {
                 if listing.truncated {
                     items.push(self.files_placeholder_row(
                         dir,
-                        dict::files::truncated(),
+                        t!("files.truncated"),
                         RowSpecial::Truncated,
                         meta,
                     ));
@@ -303,10 +303,11 @@ impl AppStore {
     fn files_placeholder_row(
         &self,
         dir: &Path,
-        label: &str,
+        label: impl Into<gpui_kit::SharedString>,
         special: RowSpecial,
         meta: &mut HashMap<String, RowMeta>,
     ) -> TreeItem {
+        let label = label.into();
         let id = format!("{}{PLACEHOLDER_MARK}", dir.display());
         meta.insert(
             id.clone(),

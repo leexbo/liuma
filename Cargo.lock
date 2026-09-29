@@ -5269,6 +5269,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "pdf-render",
  "resvg 0.48.1",
+ "rust-i18n",
  "serde_json",
  "smallvec",
  "syntect",

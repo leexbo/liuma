@@ -9,8 +9,7 @@ use gpui_kit::component::input::{EditorState, InputEvent, InputState};
 use gpui_kit::component::select::{SelectEvent, SelectState};
 use gpui_kit::{AppContext, Context, Entity, Window};
 
-use crate::kits::i18n::dict;
-use crate::kits::i18n::{self, Lang};
+use crate::kits::i18n::{self, t};
 use crate::shell::store::AppStore;
 
 /// 解析上下文窗口草稿:空串 = 不覆盖(None);接受 1 以上的整数,可带
@@ -79,6 +78,23 @@ pub enum SettingsNav {
     Decision,
     /// 关于
     About,
+}
+
+impl SettingsNav {
+    /// 稳定 ASCII slug:debug selector / 测试寻址用。
+    ///
+    /// selector **不得**从可见文案派生——文案随语言切换,selector 会跟着变
+    /// (旧实现用标签拼 `settings-nav-{label}`,切成中文后测试全部寻址失败)。
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::General => "General",
+            Self::Models => "Models",
+            Self::Mcp => "Mcp",
+            Self::Hooks => "Hooks",
+            Self::Decision => "Decision",
+            Self::About => "About",
+        }
+    }
 }
 
 /// 通用区偏好下拉菜单种类(根级坐标锚定,同行菜单模式)
@@ -206,9 +222,9 @@ pub(crate) struct SettingsStore {
     pub language_select: Option<Entity<SelectState<Vec<gpui_kit::SharedString>>>>,
     /// 繁忙时 Enter 键行为下拉
     pub busy_enter_select: Option<Entity<SelectState<Vec<gpui_kit::SharedString>>>>,
-    /// 偏好下拉构建时刻的语言档(sync_locale_ui 换档重建判据;
+    /// 偏好下拉构建时刻的 locale id(sync_locale_ui 换档重建判据;
     /// ensure_pref_selects 写入)
-    pub selects_lang: Lang,
+    pub selects_lang: &'static str,
     /// 权限选 full-access 的风险确认。
     /// Some 记录确认来源:设置页默认预设 / composer 会话权限——确认后
     /// 各自落不同的目标(默认预设落盘 / 会话 set_permission)
@@ -281,7 +297,7 @@ impl Default for SettingsStore {
             permission_select: None,
             language_select: None,
             busy_enter_select: None,
-            selects_lang: Lang::default(),
+            selects_lang: i18n::DEFAULT,
             full_access_confirm: None,
         }
     }
@@ -297,9 +313,10 @@ impl AppStore {
     ) {
         // 设置页 provider 表单三输入(Enter 提交;同 id = 更新)
         if self.settings.set_form_id.is_none() {
-            self.settings.set_form_id = Some(cx.new(|cx| {
-                InputState::new(window, cx).placeholder(dict::settings::id_placeholder())
-            }));
+            self.settings.set_form_id =
+                Some(cx.new(|cx| {
+                    InputState::new(window, cx).placeholder(t!("settings.id_placeholder"))
+                }));
         }
         if self.settings.set_form_url.is_none() {
             self.settings.set_form_url =
@@ -309,49 +326,51 @@ impl AppStore {
         }
         if self.settings.set_form_model.is_none() {
             self.settings.set_form_model = Some(cx.new(|cx| {
-                InputState::new(window, cx).placeholder(dict::settings::optional_placeholder())
+                InputState::new(window, cx).placeholder(t!("settings.optional_placeholder"))
             }));
         }
         if self.settings.set_form_name.is_none() {
             self.settings.set_form_name = Some(cx.new(|cx| {
-                InputState::new(window, cx).placeholder(dict::settings::name_placeholder())
+                InputState::new(window, cx).placeholder(t!("settings.name_placeholder"))
             }));
         }
         if self.settings.set_form_model_input.is_none() {
             self.settings.set_form_model_input = Some(cx.new(|cx| {
-                InputState::new(window, cx).placeholder(dict::settings::model_id_placeholder())
+                InputState::new(window, cx).placeholder(t!("settings.model_id_placeholder"))
             }));
         }
         if self.settings.context_window_input.is_none() {
-            self.settings.context_window_input = Some(cx.new(|cx| {
-                InputState::new(window, cx).placeholder(dict::settings::ctx_placeholder())
-            }));
+            self.settings.context_window_input =
+                Some(cx.new(|cx| {
+                    InputState::new(window, cx).placeholder(t!("settings.ctx_placeholder"))
+                }));
         }
         if self.settings.set_form_billing_url.is_none() {
-            self.settings.set_form_billing_url = Some(cx.new(|cx| {
-                InputState::new(window, cx).placeholder(dict::settings::url_placeholder())
-            }));
+            self.settings.set_form_billing_url =
+                Some(cx.new(|cx| {
+                    InputState::new(window, cx).placeholder(t!("settings.url_placeholder"))
+                }));
         }
         for (slot, ph) in [
             (
                 &mut self.settings.set_form_path_balance,
-                dict::settings::balance_path_placeholder(),
+                t!("settings.balance_path_placeholder"),
             ),
             (
                 &mut self.settings.set_form_path_currency,
-                dict::settings::currency_path_placeholder(),
+                t!("settings.currency_path_placeholder"),
             ),
             (
                 &mut self.settings.set_form_path_5h,
-                dict::settings::usage5h_path_placeholder(),
+                t!("settings.usage5h_path_placeholder"),
             ),
             (
                 &mut self.settings.set_form_path_7d,
-                dict::settings::usage7d_path_placeholder(),
+                t!("settings.usage7d_path_placeholder"),
             ),
             (
                 &mut self.settings.set_form_path_resets,
-                dict::settings::reset_path_placeholder(),
+                t!("settings.reset_path_placeholder"),
             ),
         ] {
             if slot.is_none() {
@@ -392,7 +411,7 @@ impl AppStore {
     /// 语言档记入 `selects_lang`,换档后由 [`AppStore::sync_locale_ui`]
     /// 据此整组重建(标签词典化,Confirm 按标签映射 id)
     pub(crate) fn ensure_pref_selects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.settings.selects_lang = i18n::lang();
+        self.settings.selects_lang = i18n::current_locale();
         let snapshot = self.settings.settings_snapshot.clone();
         let preset_options: Vec<(String, String)> = snapshot["presetOptions"]
             .as_array()
@@ -414,37 +433,26 @@ impl AppStore {
                     .filter_map(|p| {
                         let id = p.as_str()?;
                         let label = match id {
-                            "read-only" => dict::settings::perm_read_only(),
-                            "workspace-write" => dict::settings::perm_workspace_write(),
-                            "full-access" => dict::settings::perm_full_access(),
-                            other => other,
+                            "read-only" => t!("settings.perm_read_only"),
+                            "workspace-write" => t!("settings.perm_workspace_write"),
+                            "full-access" => t!("settings.perm_full_access"),
+                            other => other.into(),
                         };
                         Some((id.to_string(), label.to_string()))
                     })
                     .collect()
             })
             .unwrap_or_default();
-        // 语言下拉:显示名 = 原文名恒定(两语言同值);
-        // id = settings.yaml `language` 词汇
-        let language_options: Vec<(String, String)> = vec![
-            (
-                Lang::Zh.id().to_string(),
-                dict::settings::lang_zh().to_string(),
-            ),
-            (
-                Lang::En.id().to_string(),
-                dict::settings::lang_en().to_string(),
-            ),
-        ];
+        // 语言下拉:id = settings.yaml `language` 值 = locale,显示名取
+        // `LOCALES` 的原文名(两档同显中文/English)——语言选项不进文案
+        // 文件,显示名恒定的政策由常量表构造保证
+        let language_options: Vec<(String, String)> = i18n::LOCALES
+            .iter()
+            .map(|(id, name)| (id.to_string(), name.to_string()))
+            .collect();
         let busy_options = vec![
-            (
-                "queue".to_string(),
-                dict::settings::busy_queue().to_string(),
-            ),
-            (
-                "steer".to_string(),
-                dict::settings::busy_steer().to_string(),
-            ),
+            ("queue".to_string(), t!("settings.busy_queue").to_string()),
+            ("steer".to_string(), t!("settings.busy_steer").to_string()),
         ];
         self.settings.preset_select = Some(Self::build_pref_select(
             preset_options,
@@ -464,7 +472,8 @@ impl AppStore {
         ));
         self.settings.language_select = Some(Self::build_pref_select(
             language_options,
-            snapshot["language"].as_str().unwrap_or("zh"),
+            // 手改/历史配置的档位先归一(`zh` → `zh-CN`),免得下拉选不中而空显
+            i18n::normalize(snapshot["language"].as_str().unwrap_or(i18n::DEFAULT)),
             PrefMenuKind::Language,
             window,
             cx,
@@ -636,8 +645,7 @@ impl AppStore {
             .map(|i| i.read(cx).value().trim().to_string())
             .unwrap_or_default();
         if key.is_empty() {
-            self.settings.onboarding_key_error =
-                Some(dict::settings::onboarding_key_empty().into());
+            self.settings.onboarding_key_error = Some(t!("settings.onboarding_key_empty").into());
             cx.notify();
             return;
         }
@@ -674,7 +682,7 @@ impl AppStore {
                 self.settings_refresh(cx);
             }
             Err(e) => {
-                self.set_settings_notice(false, dict::settings::save_failed(&e.message), cx);
+                self.set_settings_notice(false, t!("settings.save_failed", msg = &e.message), cx);
             }
         }
     }
@@ -696,7 +704,7 @@ impl AppStore {
                 self.settings_refresh(cx);
             }
             Err(e) => {
-                self.set_settings_notice(false, dict::settings::save_failed(&e.message), cx);
+                self.set_settings_notice(false, t!("settings.save_failed", msg = &e.message), cx);
             }
         }
     }
@@ -714,7 +722,7 @@ impl AppStore {
             .host()
             .set_default_permission_preset("full-access")
         {
-            self.push_local_notice(&dict::settings::save_failed(&e.message), cx);
+            self.push_local_notice(t!("settings.save_failed", msg = &e.message), cx);
             return;
         }
         self.settings_refresh(cx);
@@ -728,10 +736,10 @@ impl AppStore {
             .as_str()
             .unwrap_or("workspace-write");
         let label = match actual {
-            "read-only" => dict::settings::perm_read_only(),
-            "workspace-write" => dict::settings::perm_workspace_write(),
-            "full-access" => dict::settings::perm_full_access(),
-            other => other,
+            "read-only" => t!("settings.perm_read_only"),
+            "workspace-write" => t!("settings.perm_workspace_write"),
+            "full-access" => t!("settings.perm_full_access"),
+            other => other.into(),
         };
         if let Some(select) = &self.settings.permission_select {
             let v = gpui_kit::SharedString::from(label.to_string());
@@ -745,11 +753,11 @@ impl AppStore {
     pub fn set_language(&mut self, id: &str, cx: &mut Context<Self>) {
         match self.bridge.host().set_language(id) {
             Ok(()) => {
-                i18n::apply(Lang::parse(id), cx);
+                i18n::apply(id, cx);
                 self.settings_refresh(cx);
             }
             Err(e) => {
-                self.set_settings_notice(false, dict::settings::save_failed(&e.message), cx);
+                self.set_settings_notice(false, t!("settings.save_failed", msg = &e.message), cx);
             }
         }
     }
@@ -762,7 +770,7 @@ impl AppStore {
     /// 无需处理)。渲染期同步块调用(sync_composer_placeholder 同通道;
     /// 档位未变即零开销早退)
     pub(crate) fn sync_locale_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let lang = i18n::lang();
+        let lang = i18n::current_locale();
         if self.settings.selects_lang == lang {
             return;
         }
@@ -798,7 +806,7 @@ impl AppStore {
                 true
             }
             Err(e) => {
-                self.set_settings_notice(false, dict::settings::save_failed(&e.message), cx);
+                self.set_settings_notice(false, t!("settings.save_failed", msg = &e.message), cx);
                 false
             }
         }
@@ -811,7 +819,7 @@ impl AppStore {
                 self.settings_refresh(cx);
             }
             Err(e) => {
-                self.set_settings_notice(false, dict::settings::save_failed(&e.message), cx);
+                self.set_settings_notice(false, t!("settings.save_failed", msg = &e.message), cx);
             }
         }
     }
@@ -868,7 +876,7 @@ impl AppStore {
     /// 打开行内编辑卡(编辑卡在行卡内展开;预填自定义字段,key 清空)
     pub fn open_provider_editor(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.fill_provider_form(Some(id), window, cx);
-        self.ensure_key_input(dict::settings::key_keep_placeholder(), window, cx);
+        self.ensure_key_input(t!("settings.key_keep_placeholder"), window, cx);
         // 目录内厂商 = 内置卡(适配器与目录绑定);其余 = 自定义卡
         let builtin = liuma_core::settings::provider_catalog()
             .iter()
@@ -927,7 +935,7 @@ impl AppStore {
     /// 打开自定义供应商添加卡(空表单;API 格式三选)
     pub fn open_provider_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.fill_provider_form(None, window, cx);
-        self.ensure_key_input(dict::settings::key_enter_placeholder(), window, cx);
+        self.ensure_key_input(t!("settings.key_enter_placeholder"), window, cx);
         self.settings.editing_provider = None;
         self.settings.adding_provider = true;
         self.settings.builtin_mode = false;
@@ -941,7 +949,7 @@ impl AppStore {
     /// 模型草稿清单按目录条目预填,折叠区可拉端点更新)
     pub fn open_provider_add_builtin(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.fill_provider_form(None, window, cx);
-        self.ensure_key_input(dict::settings::key_env_placeholder(), window, cx);
+        self.ensure_key_input(t!("settings.key_env_placeholder"), window, cx);
         self.settings.editing_provider = None;
         self.settings.adding_provider = true;
         self.settings.builtin_mode = true;
@@ -960,11 +968,17 @@ impl AppStore {
 
     /// API key 输入惰建(编辑卡主字段;write-only;占位随卡片模式,
     /// 已建且占位一致则保留原输入)
-    fn ensure_key_input(&mut self, placeholder: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let matches = self.settings.key_input_placeholder == placeholder;
+    fn ensure_key_input(
+        &mut self,
+        placeholder: impl Into<gpui_kit::SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let placeholder: gpui_kit::SharedString = placeholder.into();
+        let matches = self.settings.key_input_placeholder == placeholder.as_ref();
         if !matches {
             self.settings.key_input =
-                Some(cx.new(|cx| InputState::new(window, cx).placeholder(placeholder)));
+                Some(cx.new(|cx| InputState::new(window, cx).placeholder(placeholder.clone())));
             self.settings.key_input_placeholder = placeholder.to_string();
         }
         if let Some(input) = &self.settings.key_input {
@@ -990,7 +1004,7 @@ impl AppStore {
     pub fn apply_provider_editor(&mut self, cx: &mut Context<Self>) {
         // 展开中的窗口编辑先提交;非法则拒绝保存(不静默丢弃输入)
         if self.settings.context_window_edit.is_some() && !self.commit_context_window_edit(cx) {
-            self.push_local_notice(dict::settings::ctx_invalid_notice(), cx);
+            self.push_local_notice(t!("settings.ctx_invalid_notice"), cx);
             return;
         }
         let id = if let Some(id) = &self.settings.editing_provider {
@@ -1010,7 +1024,7 @@ impl AppStore {
             return;
         };
         if id.is_empty() {
-            self.push_local_notice(dict::settings::provider_id_empty(), cx);
+            self.push_local_notice(t!("settings.provider_id_empty"), cx);
             return;
         }
         // 新增时查重:ID 是路由键,遮蔽既有条目
@@ -1020,7 +1034,7 @@ impl AppStore {
                 .as_array()
                 .is_some_and(|ps| ps.iter().any(|p| p["id"].as_str() == Some(id.as_str())));
             if taken {
-                self.push_local_notice(dict::settings::provider_id_dup(), cx);
+                self.push_local_notice(t!("settings.provider_id_dup"), cx);
                 return;
             }
         }
@@ -1135,7 +1149,7 @@ impl AppStore {
                 self.probe_models_quietly(&id, cx);
             }
             Err(e) => {
-                self.set_settings_notice(false, dict::settings::save_failed(&e.message), cx);
+                self.set_settings_notice(false, t!("settings.save_failed", msg = &e.message), cx);
             }
         }
     }
@@ -1350,7 +1364,7 @@ impl AppStore {
             None => form_url,
         };
         if base_url.is_empty() {
-            self.set_settings_notice(false, dict::settings::billing_need_url(), cx);
+            self.set_settings_notice(false, t!("settings.billing_need_url"), cx);
             return;
         }
         let dialect = match &catalog {
@@ -1548,12 +1562,14 @@ impl AppStore {
                 s.settings.billing_refreshing = None;
                 match result {
                     Ok(()) => {
-                        s.set_settings_notice(true, dict::settings::billing_updated(), cx);
+                        s.set_settings_notice(true, t!("settings.billing_updated"), cx);
                         s.settings_refresh(cx);
                     }
-                    Err(msg) => {
-                        s.set_settings_notice(false, dict::settings::billing_query_failed(msg), cx)
-                    }
+                    Err(msg) => s.set_settings_notice(
+                        false,
+                        t!("settings.billing_query_failed", msg = msg),
+                        cx,
+                    ),
                 }
             });
             Ok::<(), anyhow::Error>(())
@@ -1640,7 +1656,7 @@ impl AppStore {
                 self.settings.saved_provider_notice = None;
                 self.settings_refresh(cx);
             }
-            Err(e) => self.push_local_notice(&dict::settings::delete_failed(&e.message), cx),
+            Err(e) => self.push_local_notice(t!("settings.delete_failed", msg = &e.message), cx),
         }
     }
 
@@ -1825,14 +1841,15 @@ impl AppStore {
     /// 打开详情页(新增模式:id 可输入;JSON 页签不激活)
     pub fn open_mcp_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let form_id = Some(cx.new(|cx| {
-            InputState::new(window, cx).placeholder(dict::settings::mcp_name_placeholder())
+            InputState::new(window, cx).placeholder(t!("settings.mcp_name_placeholder"))
         }));
         let form_command = Some(cx.new(|cx| {
-            InputState::new(window, cx).placeholder(dict::settings::mcp_command_placeholder())
+            InputState::new(window, cx).placeholder(t!("settings.mcp_command_placeholder"))
         }));
-        let form_cwd = Some(cx.new(|cx| {
-            InputState::new(window, cx).placeholder(dict::settings::mcp_cwd_placeholder())
-        }));
+        let form_cwd =
+            Some(cx.new(|cx| {
+                InputState::new(window, cx).placeholder(t!("settings.mcp_cwd_placeholder"))
+            }));
         let form_timeout = Some(cx.new(|cx| InputState::new(window, cx).placeholder("60000")));
         self.settings.mcp_detail = Some(McpDetailState {
             editing: None,
@@ -1865,16 +1882,14 @@ impl AppStore {
         else {
             return;
         };
-        let form_id = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(dict::settings::mcp_name_placeholder())
-        });
+        let form_id = cx
+            .new(|cx| InputState::new(window, cx).placeholder(t!("settings.mcp_name_placeholder")));
         let form_command = cx.new(|cx| InputState::new(window, cx));
         form_command.update(cx, |s, cx| {
             s.set_value(entry.command.clone(), window, cx);
         });
-        let form_cwd = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(dict::settings::mcp_cwd_placeholder())
-        });
+        let form_cwd = cx
+            .new(|cx| InputState::new(window, cx).placeholder(t!("settings.mcp_cwd_placeholder")));
         if let Some(cwd) = &entry.cwd {
             form_cwd.update(cx, |s, cx| {
                 s.set_value(cwd.clone(), window, cx);
@@ -2010,7 +2025,7 @@ impl AppStore {
         let Some(detail) = self.settings.mcp_detail.as_mut() else {
             return;
         };
-        let k = cx.new(|cx| InputState::new(window, cx).placeholder("Header"));
+        let k = cx.new(|cx| InputState::new(window, cx).placeholder(t!("settings.mcp_header_key")));
         let v = cx.new(|cx| InputState::new(window, cx).placeholder("VALUE"));
         detail.form_headers.push((k, v));
         cx.notify();
@@ -2093,7 +2108,8 @@ impl AppStore {
         match self.bridge.host().import_mcp_servers_json(&text) {
             Ok(n) => {
                 self.settings.mcp_detail = None;
-                self.settings.settings_notice = Some((true, dict::settings::mcp_imported(n)));
+                self.settings.settings_notice =
+                    Some((true, t!("settings.mcp_imported", n = n).into_owned()));
                 self.settings_refresh(cx);
             }
             Err(e) => {
@@ -2150,7 +2166,7 @@ impl AppStore {
                 .unwrap_or_default(),
         };
         if id.is_empty() {
-            self.push_mcp_form_notice(dict::settings::mcp_id_empty(), cx);
+            self.push_mcp_form_notice(t!("settings.mcp_id_empty"), cx);
             return;
         }
         let timeout = match detail
@@ -2162,7 +2178,7 @@ impl AppStore {
             Some(t) => match t.parse::<u64>() {
                 Ok(ms) => Some(ms),
                 Err(_) => {
-                    self.push_mcp_form_notice(dict::settings::mcp_timeout_invalid(), cx);
+                    self.push_mcp_form_notice(t!("settings.mcp_timeout_invalid"), cx);
                     return;
                 }
             },
@@ -2175,7 +2191,7 @@ impl AppStore {
                 .map(|i| i.read(cx).value().trim().to_string())
                 .unwrap_or_default();
             if url.is_empty() {
-                self.push_mcp_form_notice(dict::settings::mcp_need_url(), cx);
+                self.push_mcp_form_notice(t!("settings.mcp_need_url"), cx);
                 return;
             }
             let mut header_map = std::collections::BTreeMap::new();
@@ -2200,7 +2216,7 @@ impl AppStore {
             };
             let command = cmd_in.read(cx).value().trim().to_string();
             if command.is_empty() {
-                self.push_mcp_form_notice(dict::settings::mcp_need_command(), cx);
+                self.push_mcp_form_notice(t!("settings.mcp_need_command"), cx);
                 return;
             }
             let args: Vec<String> = detail
@@ -2254,7 +2270,12 @@ impl AppStore {
         }
     }
 
-    fn push_mcp_form_notice(&mut self, msg: &str, cx: &mut Context<Self>) {
+    fn push_mcp_form_notice(
+        &mut self,
+        msg: impl Into<gpui_kit::SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        let msg: gpui_kit::SharedString = msg.into();
         if let Some(detail) = self.settings.mcp_detail.as_mut() {
             detail.json_preview = Some(Err(msg.to_string()));
         }
@@ -2270,13 +2291,13 @@ impl AppStore {
             form_enabled: true,
             form_dialect: "claude-code".to_string(),
             form_config_path: Some(cx.new(|cx| {
-                InputState::new(window, cx).placeholder(dict::settings::hooks_path_placeholder())
+                InputState::new(window, cx).placeholder(t!("settings.hooks_path_placeholder"))
             })),
             form_plugin_root: Some(cx.new(|cx| {
-                InputState::new(window, cx).placeholder(dict::settings::hooks_root_placeholder())
+                InputState::new(window, cx).placeholder(t!("settings.hooks_root_placeholder"))
             })),
             form_project_dir: Some(cx.new(|cx| {
-                InputState::new(window, cx).placeholder(dict::settings::hooks_cwd_placeholder())
+                InputState::new(window, cx).placeholder(t!("settings.hooks_cwd_placeholder"))
             })),
             form_timeout: Some(cx.new(|cx| InputState::new(window, cx).placeholder("600000"))),
         });
@@ -2449,9 +2470,10 @@ impl AppStore {
         cx: &mut Context<Self>,
     ) {
         if self.settings.decision_form_url.is_none() {
-            self.settings.decision_form_url = Some(cx.new(|cx| {
-                InputState::new(window, cx).placeholder(dict::settings::url_placeholder())
-            }));
+            self.settings.decision_form_url =
+                Some(cx.new(|cx| {
+                    InputState::new(window, cx).placeholder(t!("settings.url_placeholder"))
+                }));
         }
         if self.settings.decision_form_model.is_none() {
             self.settings.decision_form_model =
@@ -2459,7 +2481,7 @@ impl AppStore {
         }
         if self.settings.decision_form_key.is_none() {
             self.settings.decision_form_key = Some(cx.new(|cx| {
-                InputState::new(window, cx).placeholder(dict::settings::decision_key_placeholder())
+                InputState::new(window, cx).placeholder(t!("settings.decision_key_placeholder"))
             }));
         }
     }
@@ -2506,15 +2528,15 @@ impl AppStore {
             .map(|i| i.read(cx).value().trim().to_string())
             .unwrap_or_default();
         if base_url.is_empty() {
-            self.set_settings_notice(false, dict::settings::decision_url_empty(), cx);
+            self.set_settings_notice(false, t!("settings.decision_url_empty"), cx);
             return;
         }
         if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
-            self.set_settings_notice(false, dict::settings::decision_url_invalid(), cx);
+            self.set_settings_notice(false, t!("settings.decision_url_invalid"), cx);
             return;
         }
         if model.is_empty() {
-            self.set_settings_notice(false, dict::settings::decision_model_empty(), cx);
+            self.set_settings_notice(false, t!("settings.decision_model_empty"), cx);
             return;
         }
         let mut entry = self.decision_entry();
@@ -2525,14 +2547,14 @@ impl AppStore {
             entry.api_key = Some(key);
         }
         if let Err(e) = self.bridge.host().upsert_decision_settings(entry) {
-            self.set_settings_notice(false, dict::settings::save_failed(&e.message), cx);
+            self.set_settings_notice(false, t!("settings.save_failed", msg = &e.message), cx);
             return;
         }
         // 明文不留在控件里(也避免下次保存把同一 key 再提交一遍)
         if let Some(input) = &self.settings.decision_form_key {
             input.update(cx, |s, cx| s.set_value("", window, cx));
         }
-        self.set_settings_notice(true, dict::settings::decision_saved(), cx);
+        self.set_settings_notice(true, t!("settings.decision_saved"), cx);
         self.settings_refresh(cx);
     }
 

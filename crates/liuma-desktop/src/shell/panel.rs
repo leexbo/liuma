@@ -56,16 +56,16 @@ impl PanelTab {
 
     /// 标签标题(Preview = 文件名)
     pub fn title(&self) -> String {
-        use crate::kits::i18n::dict;
+        use crate::kits::i18n::t;
         match self {
-            PanelTab::Plan => dict::shell::plan_tab().to_string(),
-            PanelTab::Trajectory => dict::shell::trajectory_tab().to_string(),
-            PanelTab::Files => dict::shell::files_tab().to_string(),
+            PanelTab::Plan => t!("shell.plan_tab").to_string(),
+            PanelTab::Trajectory => t!("shell.trajectory_tab").to_string(),
+            PanelTab::Files => t!("shell.files_tab").to_string(),
             PanelTab::Preview(p) => p
                 .path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| dict::shell::preview_tab().to_string()),
+                .unwrap_or_else(|| t!("shell.preview_tab").to_string()),
         }
     }
 
@@ -580,16 +580,16 @@ fn panel_plan_content(latest: Option<(String, PlanStatus)>) -> impl IntoElement 
                     .py(px(20.))
                     .text_size(px(12.))
                     .text_color(theme::CAPTION())
-                    .child(crate::kits::i18n::dict::shell::plan_empty()),
+                    .child(crate::kits::i18n::t!("shell.plan_empty")),
             );
         }
         Some((plan, status)) => {
-            use crate::kits::i18n::dict;
+            use crate::kits::i18n::t;
             let (status_text, status_color) = match status {
-                PlanStatus::Pending => (dict::shell::plan_pending(), theme::WARN()),
-                PlanStatus::Approved => (dict::shell::plan_approved(), theme::SUCCESS()),
-                PlanStatus::Declined => (dict::shell::plan_declined(), theme::CAPTION()),
-                PlanStatus::Cancelled => (dict::shell::plan_cancelled(), theme::CAPTION()),
+                PlanStatus::Pending => (t!("shell.plan_pending"), theme::WARN()),
+                PlanStatus::Approved => (t!("shell.plan_approved"), theme::SUCCESS()),
+                PlanStatus::Declined => (t!("shell.plan_declined"), theme::CAPTION()),
+                PlanStatus::Cancelled => (t!("shell.plan_cancelled"), theme::CAPTION()),
             };
             col = col
                 .child(
@@ -602,7 +602,7 @@ fn panel_plan_content(latest: Option<(String, PlanStatus)>) -> impl IntoElement 
                                 .text_size(px(12.))
                                 .font_weight(gpui_kit::FontWeight::MEDIUM)
                                 .text_color(theme::LABEL_2())
-                                .child(crate::kits::i18n::dict::shell::plan_tab()),
+                                .child(crate::kits::i18n::t!("shell.plan_tab")),
                         )
                         .child(
                             div()

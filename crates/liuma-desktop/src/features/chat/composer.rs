@@ -15,7 +15,7 @@ use gpui_kit::{
 };
 
 use crate::features::attachments;
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use crate::kits::icons::{self, LiumaIcon, fixed};
 use crate::kits::popup::PopTrigger;
 use crate::kits::theme;
@@ -290,7 +290,7 @@ fn bottom_row(
                     files: true,
                     directories: false,
                     multiple: true,
-                    prompt: Some(dict::chat::pick_attachment().into()),
+                    prompt: Some(t!("chat.pick_attachment").into()),
                 });
                 // Fn 闭包不能 move 出捕获:异步块内用克隆体
                 let s2 = s.clone();
@@ -433,7 +433,7 @@ fn at_completion_card(
 ) -> gpui_kit::AnyElement {
     let mut rows: Vec<gpui_kit::AnyElement> = vec![];
     if !at.files.is_empty() {
-        rows.push(section_label(dict::chat::section_files()).into_any_element());
+        rows.push(section_label(t!("chat.section_files")).into_any_element());
         for (i, f) in at.files.iter().enumerate() {
             let idx = i; // 高亮索引:文件占 0..files.len
             let s = store.clone();
@@ -469,7 +469,7 @@ fn at_completion_card(
         if !rows.is_empty() {
             rows.push(menu_separator().into_any_element());
         }
-        rows.push(section_label(dict::chat::section_sessions()).into_any_element());
+        rows.push(section_label(t!("chat.section_sessions")).into_any_element());
         let file_count = at.files.len();
         for (i, s) in at.sessions.iter().enumerate() {
             let idx = file_count + i;
@@ -572,7 +572,7 @@ fn plan_chip(store: &Entity<AppStore>, hovered: bool) -> impl IntoElement {
         } else {
             fixed(LiumaIcon::ListChecks, 14.)
         })
-        .child(dict::shell::plan_tab())
+        .child(t!("shell.plan_tab"))
         // 测试钩子(release 空操作)
         .debug_selector(|| "chip-plan".to_string())
         .on_click(move |_, _, cx| {
@@ -595,7 +595,7 @@ fn commands_card(
     let pop_rows = pop.clone();
     let mut rows: Vec<gpui_kit::AnyElement> = vec![];
     if !cmds.is_empty() {
-        rows.push(section_label(dict::chat::section_commands()).into_any_element());
+        rows.push(section_label(t!("chat.section_commands")).into_any_element());
         for cmd in cmds {
             let s = store.clone();
             let name = cmd.name.to_string();
@@ -623,7 +623,7 @@ fn commands_card(
         }
     }
     if !skills.is_empty() {
-        rows.push(section_label(dict::chat::section_skills()).into_any_element());
+        rows.push(section_label(t!("chat.section_skills")).into_any_element());
         for sk in skills {
             let s = store.clone();
             let pop = pop_rows.clone();
@@ -631,7 +631,7 @@ fn commands_card(
             let desc = if sk.model_invocable {
                 sk.description.clone()
             } else {
-                dict::chat::user_only(&sk.description)
+                t!("chat.user_only", desc = &sk.description).into_owned()
             };
             let chip_name: &'static str = Box::leak(name.clone().into_boxed_str());
             rows.push(
@@ -663,11 +663,11 @@ fn commands_card(
 /// 在词典取当前语言值;未登记的命令回落宿主原文(扩展命令零改动)。
 fn command_desc(name: &str, host: &str) -> String {
     match name {
-        "plan" => dict::chat::command_plan(),
-        "compact" => dict::chat::command_compact(),
-        "export" => dict::chat::command_export(),
-        "goal" => dict::chat::command_goal(),
-        "model" => dict::chat::command_model(),
+        "plan" => t!("chat.command_plan"),
+        "compact" => t!("chat.command_compact"),
+        "export" => t!("chat.command_export"),
+        "goal" => t!("chat.command_goal"),
+        "model" => t!("chat.command_model"),
         _ => return host.to_string(),
     }
     .to_string()
@@ -761,7 +761,7 @@ fn context_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
                         div()
                             .text_size(px(13.))
                             .text_color(theme::LABEL())
-                            .child(dict::chat::ctx_used_pct(percent)),
+                            .child(t!("chat.ctx_used_pct", percent = percent)),
                     )
                     .child(
                         div()
@@ -819,9 +819,16 @@ fn context_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
                 .child(div().size(px(8.)).rounded_full().bg(color))
                 .child(label)
                 .child(div().flex_1())
-                .child(div().text_size(px(11.)).text_color(theme::CAPTION()).child(
-                    dict::chat::tok_share(fmt_tok(v), format!("{:.0}", share * 100.0)),
-                ))
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(theme::CAPTION())
+                        .child(t!(
+                            "chat.tok_share",
+                            v = fmt_tok(v),
+                            pct = format!("{:.0}", share * 100.0)
+                        )),
+                )
                 .into_any_element(),
         );
     }
@@ -922,7 +929,7 @@ fn model_card(
     let pop_sub = pop.clone();
     // ── 一级卡:模型入口行 + 推理强度平铺(不改)──
     let mut rows: Vec<gpui_kit::AnyElement> = vec![];
-    rows.push(section_label(dict::chat::model_label()).into_any_element());
+    rows.push(section_label(t!("chat.model_label")).into_any_element());
     rows.push(
         div()
             .id("model-entry")
@@ -939,7 +946,7 @@ fn model_card(
                 div()
                     .text_size(px(13.))
                     .text_color(theme::LABEL())
-                    .child(dict::chat::model_label()),
+                    .child(t!("chat.model_label")),
             )
             .child(div().flex_1())
             .child(
@@ -969,7 +976,7 @@ fn model_card(
             .into_any_element(),
     );
     rows.push(menu_separator().into_any_element());
-    rows.push(section_label(dict::chat::reasoning_level()).into_any_element());
+    rows.push(section_label(t!("chat.reasoning_level")).into_any_element());
     for (ix, e) in efforts.iter().enumerate() {
         let s = store.clone();
         let pop = pop_sub.clone();
@@ -1012,7 +1019,7 @@ fn model_card(
                 .py(px(4.))
                 .text_size(px(11.))
                 .text_color(theme::CAPTION())
-                .child(dict::chat::model_label())
+                .child(t!("chat.model_label"))
                 .into_any_element(),
         );
         for (pid, name, models, _d) in &groups {
@@ -1063,7 +1070,7 @@ fn model_card(
                     .py(px(6.))
                     .text_size(px(12.))
                     .text_color(theme::CAPTION())
-                    .child(dict::chat::no_models())
+                    .child(t!("chat.no_models"))
                     .into_any_element(),
             );
         }
@@ -1131,10 +1138,11 @@ fn menu_card(children: Vec<gpui_kit::AnyElement>, max_w: Option<f32>) -> gpui_ki
 fn menu_row(
     id: impl Into<gpui_kit::ElementId>,
     icon: Icon,
-    label: &str,
+    label: impl Into<gpui_kit::SharedString>,
     checked: bool,
     on_click: impl Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    let label = label.into();
     let sel = label.to_string();
     div()
         .id(id)
@@ -1161,7 +1169,8 @@ fn menu_row(
 }
 
 /// 分区小标题(左缩进与菜单行 px12 对齐)
-fn section_label(text: &str) -> impl IntoElement {
+fn section_label(text: impl Into<gpui_kit::SharedString>) -> impl IntoElement {
+    let text = text.into();
     div()
         .px(px(12.))
         .py(px(4.))
@@ -1256,7 +1265,12 @@ fn round_button(id: &'static str, icon: Icon) -> gpui_kit::Stateful<gpui_kit::Di
 
 /// 药丸 chip(权限/模型触发;图标经 icons 映射)。素底,hover 才显
 /// 灰底(常驻底=灰蒙蒙)
-fn chip(id: &'static str, label: &str, icon: Icon) -> gpui_kit::Stateful<gpui_kit::Div> {
+fn chip(
+    id: &'static str,
+    label: impl Into<gpui_kit::SharedString>,
+    icon: Icon,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let label = label.into();
     let sel = id;
     div()
         .id(id)
@@ -1279,20 +1293,21 @@ fn chip(id: &'static str, label: &str, icon: Icon) -> gpui_kit::Stateful<gpui_ki
 
 /// 权限中文文案(statusbar
 /// 徽标共用):仅可查看 / 工作区内修改 / 完全权限
-pub(crate) fn permission_label(mode: &str) -> &'static str {
+pub(crate) fn permission_label(mode: &str) -> std::borrow::Cow<'static, str> {
     match mode {
-        "read-only" => dict::chat::perm_read_only(),
-        "full-access" => dict::chat::perm_full_access(),
-        _ => dict::chat::perm_workspace_write(),
+        "read-only" => t!("chat.perm_read_only"),
+        "full-access" => t!("chat.perm_full_access"),
+        _ => t!("chat.perm_workspace_write"),
     }
 }
 
-/// 思考等级展示文案(low/high/max → Low/High/Max;statusbar 共用)
+/// 思考等级展示文案(low/high/max → 低/高/最高;statusbar 共用)
 pub(crate) fn effort_label(effort: &str) -> String {
     match effort {
-        "low" => "Low".into(),
-        "high" => "High".into(),
-        "max" => "Max".into(),
+        "low" => t!("chat.effort_low").into_owned(),
+        "high" => t!("chat.effort_high").into_owned(),
+        "max" => t!("chat.effort_max").into_owned(),
+        // 未知档位 = 宿主原文逐字(线上数据,不进文案文件)
         other => other.to_string(),
     }
 }

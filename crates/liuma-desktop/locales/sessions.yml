@@ -1,0 +1,189 @@
+# sessions 面文案(由 dict/sessions.rs 搬迁;key 根段 == 文件 stem)。
+# 值一律加引号(YAML 裸标量会被解析成非字符串,rust-i18n 只收字符串叶子)。
+_version: 2
+
+sessions:
+
+  new_session:
+    zh-CN: "新会话"
+    en: "New session"
+
+  group_flat:
+    zh-CN: "会话"
+    en: "Sessions"
+
+  group_by_ws:
+    zh-CN: "工作区"
+    en: "Workspaces"
+
+  search_ph:
+    zh-CN: "搜索会话"
+    en: "Search sessions"
+
+  view_options:
+    zh-CN: "视图选项"
+    en: "View options"
+
+  add_workspace:
+    zh-CN: "添加工作区"
+    en: "Add workspace"
+
+  tip_archive:
+    zh-CN: "归档聊天"
+    en: "Archive chat"
+
+  rename:
+    zh-CN: "重命名"
+    en: "Rename"
+
+  archive:
+    zh-CN: "归档"
+    en: "Archive"
+
+  fork:
+    zh-CN: "分叉"
+    en: "Fork"
+
+  export_log:
+    zh-CN: "导出日志"
+    en: "Export log"
+
+  delete_workspace:
+    zh-CN: "删除工作区"
+    en: "Delete workspace"
+
+  pin:
+    zh-CN: "置顶"
+    en: "Pin"
+
+  ws_actions:
+    zh-CN: "工作区操作"
+    en: "Workspace actions"
+
+  ws_task_count:
+    zh-CN: "%{n} 个任务"
+    en: "%{n} tasks"
+
+  edit_project:
+    zh-CN: "编辑项目"
+    en: "Edit project"
+
+  unpin:
+    zh-CN: "取消置顶"
+    en: "Unpin"
+
+  pinned_section:
+    zh-CN: "置顶"
+    en: "Pinned"
+
+  projects_section:
+    zh-CN: "项目"
+    en: "Projects"
+
+  expand_show_more:
+    zh-CN: "展开显示 (剩余 %{hidden} 条)"
+    en: "Show more (%{hidden} remaining)"
+
+  collapse_show:
+    zh-CN: "收起显示"
+    en: "Show less"
+
+  empty_chats:
+    zh-CN: "暂无聊天"
+    en: "No chats"
+
+  group_label:
+    zh-CN: "分组方式"
+    en: "Group by"
+
+  by_workspace:
+    zh-CN: "按工作区"
+    en: "By workspace"
+
+  single_list:
+    zh-CN: "单列表"
+    en: "Single list"
+
+  sort_label:
+    zh-CN: "排序方式"
+    en: "Sort by"
+
+  recent_updates:
+    zh-CN: "最近更新"
+    en: "Recently updated"
+
+  manual_sort:
+    zh-CN: "手动排序"
+    en: "Manual"
+
+  subagents_one:
+    zh-CN: "%{n} 个子代理"
+    en: "%{n} subagent"
+
+  subagents_other:
+    zh-CN: "%{n} 个子代理"
+    en: "%{n} subagents"
+
+  history_load_failed:
+    zh-CN: "历史加载失败:%{detail}"
+    en: "Failed to load history: %{detail}"
+
+  picker_task_failed:
+    zh-CN: "选择器任务失败:%{e}"
+    en: "Picker task failed: %{e}"
+
+  picker_channel_failed:
+    zh-CN: "选择器通道失败"
+    en: "Picker channel failure"
+
+  add_workspace_failed:
+    zh-CN: "添加工作区失败:%{msg}"
+    en: "Failed to add workspace: %{msg}"
+
+  open_dir_failed:
+    zh-CN: "无法打开目录选择:%{msg}"
+    en: "Couldn't open the directory picker: %{msg}"
+
+  ws_title_ph:
+    zh-CN: "工作区标题"
+    en: "Workspace title"
+
+  remove_failed:
+    zh-CN: "移除失败:%{msg}"
+    en: "Remove failed: %{msg}"
+
+  session_title_ph:
+    zh-CN: "会话标题"
+    en: "Session title"
+
+  rename_failed:
+    zh-CN: "重命名失败:%{msg}"
+    en: "Rename failed: %{msg}"
+
+  fork_failed:
+    zh-CN: "分叉失败:%{msg}"
+    en: "Fork failed: %{msg}"
+
+  export_failed:
+    zh-CN: "导出失败"
+    en: "Export failed"
+
+  save_dialog_failed:
+    zh-CN: "保存对话框打开失败:%{e}"
+    en: "Failed to open the save dialog: %{e}"
+
+  exported_zip:
+    zh-CN: "已导出(含分叉后代)"
+    en: "Exported (with fork descendants)"
+
+  export_unreadable:
+    zh-CN: "导出失败:会话日志不可读"
+    en: "Export failed: session log unreadable"
+
+  exported_single:
+    zh-CN: "已导出(单文件)"
+    en: "Exported (single file)"
+
+  write_failed:
+    zh-CN: "写入失败:%{e}"
+    en: "Write failed: %{e}"

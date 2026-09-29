@@ -1,433 +1,285 @@
-//! 界面文案 i18n(zh / en):零依赖词典 + 全局语言盘。
+//! 桌面 UI 文案:**唯一系统 = rust-i18n**(与 `gpui-component` 共用同一个
+//! 进程级 locale,故库自产文案——输入框右键菜单 `Input.Cut/Copy/Paste/
+//! Select All`、`Select.placeholder`、`Questionnaire.*` 等——随同一档位切换)。
 //!
 //! 设计政策(形态为本仓约定):
 //! - **locale-owned copy**:只翻译产品 chrome;用户/模型/线上数据逐字
-//!   渲染,永不进词典(轨迹 `Step N`、宿主错误串、会话内容等);
-//! - **zh 键集权威**:`entries!` 一键一行,zh/en 相邻声明——缺 en =
-//!   编译错,键拼错 = 编译错,双语对齐由构造保证;
+//!   渲染,永不进文案文件(轨迹 `Step N`、宿主错误串、会话内容等);
 //! - **整句成键**:模板带全部占位一次性翻译,禁拼接翻译碎片(设计指南
 //!   `Internationalization` 节);复数为手动 `_one`/`_other` 键对,调用方
 //!   按 `n == 1` 择一,不做 CLDR;
 //! - **唯一切换面 = 设置页**:初始档读 settings.yaml `language`(缺省
-//!   zh),不做 OS locale 探测;切换经 [`apply`] 全窗即时生效。
+//!   `zh-CN`),不做 OS locale 探测;切换经 [`apply`] 全窗即时生效。
 //!
-//! 语言盘镜像 [`crate::kits::theme`] 的进程级原子范式:渲染热路径 =
-//! 一次 Relaxed load(纯键返回 `&'static str`,零分配;模板键分配量与
-//! 迁移前 `format!` 持平)。渲染是状态纯函数,词典取值随盘自动换档,
-//! [`apply`] 以 `refresh_windows` 一步生效,无需逐实体 notify。
-//! 测试零装配即 zh——既有中文断言与布局测试不迁移;并发测试不触语言
-//! 盘(同 theme 先例,切换路径由 liuma-core 回归锁 + 手动冒烟覆盖)。
+//! 文案存 `crates/liuma-desktop/locales/*.yml`(文件 stem 即 key 根段),
+//! 取值唯一入口是本模块再导出的 [`t!`](rust_i18n::t)。rust-i18n 的缺省
+//! locale 是内建 `"en"`,而本仓缺省档是 `zh-CN`,故 `t!` 包装了一层
+//! [`ensure_locale`]:进程内首次取文案前把缺省档落进全局(测试零装配即
+//! `zh-CN`,与迁移前的中文断言一致)。
+//!
+//! 渲染是状态纯函数,文案取值随全局 locale 自动换档,[`apply`] 以
+//! `refresh_windows` 一步生效,无需逐实体 notify;并发测试不触语言盘
+//! (同 theme 先例),切换路径由门禁 + 手动冒烟覆盖。
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Once;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui_kit::App;
 
-pub(crate) mod dict;
+pub(crate) mod backend;
 
-// ── 语言档位(与 registry settings.yaml `language` 字段同词汇)──
+// ── 语言档位(locale id 即 settings.yaml `language` 取值)──
 
-/// 界面语言(判别值即声明序 as u8,勿重排)
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Lang {
-    /// 中文(缺省)
-    #[default]
-    Zh = 0,
-    /// English
-    En = 1,
+/// 支持的界面语言:`(locale id, 原文名)`。
+///
+/// 显示名恒为原文名(`中文` / `English`,两档同显),故不进文案文件——
+/// 语言选项的"双语同值条目"这一畸形由本表的构造消除。
+pub(crate) const LOCALES: &[(&str, &str)] = &[("zh-CN", "中文"), ("en", "English")];
+
+/// 缺省语言(settings.yaml `language` 缺省值同此)
+pub(crate) const DEFAULT: &str = "zh-CN";
+
+/// 是否已显式配置档位(`init` / `apply`);置位后 [`ensure_locale`] 空转
+static CONFIGURED: AtomicBool = AtomicBool::new(false);
+
+/// locale 标签的主语言段(小写;`zh-Hant-TW` → `zh`)
+fn primary(tag: &str) -> String {
+    tag.split(['-', '_'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
 }
 
-impl Lang {
-    /// settings 值 → 档位(未知值回落中文,与缺省一致;写入侧由
-    /// registry 白名单校验,读入侧回落即可,无需启动清洗)
-    pub fn parse(s: &str) -> Self {
-        if s.eq_ignore_ascii_case("en") {
-            Self::En
-        } else {
-            Self::Zh
-        }
-    }
-
-    /// 档位 → settings 值
-    pub fn id(self) -> &'static str {
-        match self {
-            Self::Zh => "zh",
-            Self::En => "en",
-        }
-    }
+/// locale id 归一:精确命中 → 原始 id;否则按 rfc4647 主语言段前缀回退
+/// (`zh` / `zh-Hans` / `zh-Hant-TW` → `zh-CN`,`en-US` → `en`);不识别 →
+/// [`DEFAULT`]。这是对历史/手改配置的防御,不是兼容层。
+pub(crate) fn normalize(id: &str) -> &'static str {
+    let want = primary(id);
+    LOCALES
+        .iter()
+        .find(|(loc, _)| primary(loc) == want)
+        .map_or(DEFAULT, |(loc, _)| loc)
 }
 
-/// 语言盘(0 = zh 缺省 / 1 = en)。测试零装配即 zh。
-static LANG: AtomicU8 = AtomicU8::new(0);
+/// 缺省档落地(进程内首次取文案前一次)。
+///
+/// rust-i18n 的全局 locale 内建缺省是 `"en"`;测试与任何未经 [`init`] 的
+/// 路径都必须看到 [`DEFAULT`]。`Once` 同时给出与后续读取的 happens-before:
+/// 所有取值入口(本模块的 `t!` 包装与 [`pick`])先经此处,故不可能读到
+/// 内建缺省。
+pub(crate) fn ensure_locale() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        if !CONFIGURED.load(Ordering::Relaxed) {
+            rust_i18n::set_locale(DEFAULT);
+        }
+    });
+}
 
-/// 当前语言档
-#[inline]
-pub(crate) fn lang() -> Lang {
-    if LANG.load(Ordering::Relaxed) == 1 {
-        Lang::En
-    } else {
-        Lang::Zh
-    }
+/// 当前 locale id(归一后,恒为 [`LOCALES`] 之一;零分配)。
+///
+/// 读档薄包装(`kits/fmt.rs` 等)用它把全局档位显式传给 `_l` 档核:先
+/// [`ensure_locale`] 再读,故首个取值点也不会读到 rust-i18n 的内建 `"en"`。
+pub(crate) fn current_locale() -> &'static str {
+    ensure_locale();
+    normalize(&rust_i18n::locale())
 }
 
 /// 启动装配:开窗前读 settings.yaml 持久化档(main.rs run 闭包内,
 /// 与 theme::apply 并排)
 pub(crate) fn init(id: &str) {
-    LANG.store(Lang::parse(id) as u8, Ordering::Relaxed);
+    CONFIGURED.store(true, Ordering::Relaxed);
+    rust_i18n::set_locale(normalize(id));
 }
 
 /// 切换语言并全窗即时生效(档位未变幂等)。切换后由渲染期
 /// `sync_locale_ui` 回写挂窗态(偏好下拉标签重建等,见 settings store)。
-pub(crate) fn apply(l: Lang, cx: &mut App) {
-    if LANG.load(Ordering::Relaxed) == l as u8 {
+pub(crate) fn apply(id: &str, cx: &mut App) {
+    let id = normalize(id);
+    CONFIGURED.store(true, Ordering::Relaxed);
+    if &*rust_i18n::locale() == id {
         return;
     }
-    LANG.store(l as u8, Ordering::Relaxed);
+    rust_i18n::set_locale(id);
     cx.refresh_windows();
 }
 
-// ── 取值 ──
-
-/// 纯分派锚点(测试直测;[`pick`] 即「读盘 + 本函数」)
-#[inline]
-pub(crate) fn pick_lang(l: Lang, zh: &'static str, en: &'static str) -> &'static str {
-    match l {
-        Lang::Zh => zh,
-        Lang::En => en,
-    }
-}
-
-/// 双语取值(词典纯键生成 fn 的底层):一次 Relaxed load
-#[inline]
-pub(crate) fn pick(zh: &'static str, en: &'static str) -> &'static str {
-    pick_lang(lang(), zh, en)
-}
-
-/// `{name}` 命名占位插值(词典模板键生成 fn 的底层;`{{` 转义字面
-/// `{`)。debug 构建断言「模板占位名集合 == 实参名集合」——调用点占位
-/// 拼错在测试期暴露;release 只按命中替换,未命中占位原样保留。
-pub(crate) fn fmt(
-    template: &'static str,
-    args: &[(&'static str, &dyn std::fmt::Display)],
-) -> String {
-    #[cfg(debug_assertions)]
-    {
-        let mut names = template_placeholders(template);
-        names.sort_unstable();
-        let mut provided: Vec<&str> = args.iter().map(|(n, _)| *n).collect();
-        provided.sort_unstable();
-        assert_eq!(names, provided, "i18n 模板占位与实参不一致:{template:?}");
-    }
-    let mut out = String::with_capacity(template.len());
-    let mut rest = template;
-    while let Some(open) = rest.find('{') {
-        out.push_str(&rest[..open]);
-        let after = &rest[open..];
-        if let Some(tail) = after.strip_prefix("{{") {
-            out.push('{');
-            rest = tail;
-            continue;
-        }
-        let Some(close) = after.find('}') else {
-            out.push_str(after);
-            rest = "";
-            break;
-        };
-        let name = &after[1..close];
-        match args.iter().find(|(n, _)| *n == name) {
-            Some((_, value)) => {
-                use std::fmt::Write as _;
-                let _ = write!(out, "{value}");
-            }
-            // 未命中:原样保留(调用点拼错在 debug 测试期已拦截)
-            None => out.push_str(&after[..=close]),
-        }
-        rest = &after[close + 1..];
-    }
-    out.push_str(rest);
-    out
-}
-
-/// 模板占位名提取(`{name}`;`{{` 转义不计;debug 断言与词典对齐测试用)
-#[cfg(debug_assertions)]
-fn template_placeholders(template: &str) -> Vec<&str> {
-    let mut names = Vec::new();
-    let mut rest = template;
-    while let Some(open) = rest.find('{') {
-        let after = &rest[open..];
-        if let Some(tail) = after.strip_prefix("{{") {
-            rest = tail;
-            continue;
-        }
-        let Some(close) = after.find('}') else {
-            break;
-        };
-        names.push(&after[1..close]);
-        rest = &after[close + 1..];
-    }
-    names
-}
-
-// ── 词典宏(条目 = 取值 fn;键名即 fn 名)──
-
-/// 词典条目宏:一键一行,zh/en 相邻声明。
+/// 取文案的唯一入口:`t!("chat.composer.standard", cut = key)`。
 ///
-/// - 纯文案:`title => ["语言", "Language"]` → `fn title() -> &'static str`
-/// - 模板:`save_failed(msg) => ["保存失败:{msg}", "Save failed: {msg}"]`
-///   → `fn save_failed(msg: impl Display) -> String`(占位名 = 参数名)
-/// - 每词典同时生成 `l` 子模块(同名 fn,首参 `Lang`):显式语言纯分派,
-///   格式函数的显式语言核与双语言测试用,不触进程级语言盘(并发测试
-///   无竞争)。
-///
-/// 约束:zh/en 只接受字面量(同入 `TEMPLATES` 元数据表,供占位对齐
-/// 测试);键名须为合法 fn 标识符;zh 值与迁移前字面量逐字节一致;键名
-/// 避开保留字(必要时 `_title`/`_label` 后缀区分)。
-macro_rules! entries {
-    ($(
-        $(#[$doc:meta])*
-        $name:ident $(($($ph:ident),+))? => [$zh:expr, $en:expr] $(,)?
-    )+) => {
-        $(
-            $crate::kits::i18n::entry! {
-                $(#[$doc])*
-                $name $(($($ph),+))? => [$zh, $en]
-            }
-        )+
-        /// 显式语言变体(同名 fn,首参 [`Lang`];测试与格式函数 `_l` 核用)。
-        /// 生成面整体豁免 dead_code:变体随调用点按需取用(双语言测试、
-        /// 格式函数核),未接线的词典**主键**仍照常报 dead——漏迁移压力
-        /// 不减免。
-        #[allow(dead_code)]
-        pub(crate) mod l {
-            $(
-                $crate::kits::i18n::entry_l! {
-                    $(#[$doc])*
-                    $name $(($($ph),+))? => [$zh, $en]
-                }
-            )+
-        }
-        /// 词典元数据:(键名, zh 模板, en 模板)。占位对齐测试与
-        /// 完整性门禁的数据源;勿手写。
-        #[allow(dead_code)]
-        pub(crate) const TEMPLATES: &[(&str, &str, &str)] = &[
-            $((stringify!($name), $zh, $en)),+
-        ];
-    };
+/// 包装 `rust_i18n::t!` 只为在取值前落地缺省档(见 [`ensure_locale`]);
+/// `Once` 完成后是纯原子读,无分配。键/占位与 locale 文件的闭环由
+/// `scripts/verify-desktop-i18n` 门禁守(缺键会被 rust-i18n 原样显示为
+/// 键名,故合入前必须拦下)。
+macro_rules! t {
+    ($($args:tt)*) => {{
+        $crate::kits::i18n::ensure_locale();
+        rust_i18n::t!($($args)*)
+    }};
 }
 
-/// 单条目展开·读盘形态(纯文案 / 模板两形态;仅由 [`entries!`] 内部分派)
-macro_rules! entry {
-    ($(#[$doc:meta])* $name:ident => [$zh:expr, $en:expr]) => {
-        $(#[$doc])*
-        #[inline]
-        pub fn $name() -> &'static str {
-            $crate::kits::i18n::pick($zh, $en)
-        }
-    };
-    ($(#[$doc:meta])* $name:ident ($($ph:ident),+) => [$zh:expr, $en:expr]) => {
-        $(#[$doc])*
-        #[inline]
-        pub fn $name($($ph: impl core::fmt::Display),+) -> String {
-            $crate::kits::i18n::fmt(
-                $crate::kits::i18n::pick($zh, $en),
-                &[$((stringify!($ph), &$ph)),+],
-            )
-        }
-    };
-}
-
-/// 单条目展开·显式语言形态(生成进各词典 `l` 子模块)
-macro_rules! entry_l {
-    ($(#[$doc:meta])* $name:ident => [$zh:expr, $en:expr]) => {
-        $(#[$doc])*
-        #[inline]
-        pub fn $name(l: $crate::kits::i18n::Lang) -> &'static str {
-            $crate::kits::i18n::pick_lang(l, $zh, $en)
-        }
-    };
-    ($(#[$doc:meta])* $name:ident ($($ph:ident),+) => [$zh:expr, $en:expr]) => {
-        $(#[$doc])*
-        pub fn $name(
-            l: $crate::kits::i18n::Lang,
-            $($ph: impl core::fmt::Display),+
-        ) -> String {
-            $crate::kits::i18n::fmt(
-                $crate::kits::i18n::pick_lang(l, $zh, $en),
-                &[$((stringify!($ph), &$ph)),+],
-            )
-        }
-    };
-}
-
-pub(crate) use entries;
-pub(crate) use entry;
-pub(crate) use entry_l;
+pub(crate) use t;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// 档位解析与 registry settings.yaml 词汇一致,未知值回落中文
-    #[test]
-    fn lang_parse_matches_registry() {
-        assert_eq!(Lang::parse("zh"), Lang::Zh);
-        assert_eq!(Lang::parse("en"), Lang::En);
-        assert_eq!(Lang::parse("EN"), Lang::En, "大小写不敏感");
-        assert_eq!(Lang::parse("fr"), Lang::Zh, "未知值回落中文");
-        assert_eq!(Lang::parse(""), Lang::Zh);
+    /// 按 locale 取真实译文(走本 crate 的 rust-i18n backend)
+    fn translate(locale: &str, key: &str) -> String {
+        crate::kits::i18n::backend::_rust_i18n_translate(locale, key).into_owned()
     }
 
-    /// 档位 ↔ settings 值往返
+    /// 语言表:缺省档在场、id 唯一、显示名非空
     #[test]
-    fn lang_id_roundtrip() {
-        for l in [Lang::Zh, Lang::En] {
-            assert_eq!(Lang::parse(l.id()), l);
-        }
-    }
-
-    /// 纯分派:档位取对应语言,两语言同键
-    #[test]
-    fn pick_lang_dispatches() {
-        assert_eq!(pick_lang(Lang::Zh, "中文", "English"), "中文");
-        assert_eq!(pick_lang(Lang::En, "中文", "English"), "English");
-    }
-
-    /// 缺省盘 = zh:零装配读取纯键得 zh 值(不触盘写,与并发测试无竞争)
-    #[test]
-    fn default_lang_is_zh() {
-        assert_eq!(lang(), Lang::Zh);
-    }
-
-    /// 插值:命名占位按名替换,实参顺序与模板顺序无关
-    #[test]
-    fn fmt_substitutes_by_name() {
-        let out = fmt(
-            "已压缩 {n} 条(约 {t} tokens)",
-            &[("t", &12u64), ("n", &3u64)],
+    fn locales_table_is_wellformed() {
+        assert_eq!(LOCALES.len(), 2);
+        assert!(
+            LOCALES.iter().any(|(id, _)| *id == DEFAULT),
+            "缺省档须在语言表内"
         );
-        assert_eq!(out, "已压缩 3 条(约 12 tokens)");
-        let en = fmt("Compacted {n} entries", &[("n", &1u64)]);
-        assert_eq!(en, "Compacted 1 entries");
+        for (id, name) in LOCALES {
+            assert!(!id.is_empty() && !name.is_empty(), "空 id / 空显示名");
+        }
+        let mut ids: Vec<&str> = LOCALES.iter().map(|(id, _)| *id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), LOCALES.len(), "locale id 重复");
     }
 
-    /// 插值:`{{` 转义字面 `{`,`}}` 无需转义(不在扫描面)
+    /// 归一:精确命中 / rfc4647 主语言段回退 / 未知回落缺省
     #[test]
-    fn fmt_escapes_literal_braces() {
-        let out = fmt("{{name}}: {name}", &[("name", &"值".to_string())]);
-        assert_eq!(out, "{name}}: 值");
+    fn normalize_by_primary_subtag() {
+        assert_eq!(normalize("zh-CN"), "zh-CN");
+        assert_eq!(normalize("zh"), "zh-CN");
+        assert_eq!(normalize("zh-Hans"), "zh-CN");
+        assert_eq!(normalize("zh-Hant-TW"), "zh-CN");
+        assert_eq!(normalize("ZH_cn"), "zh-CN");
+        assert_eq!(normalize("en"), "en");
+        assert_eq!(normalize("en-US"), "en");
+        assert_eq!(normalize("EN"), "en");
+        assert_eq!(normalize("fr"), DEFAULT);
+        assert_eq!(normalize(""), DEFAULT);
     }
 
-    /// 插值:占位集与实参集不一致 → debug 构建断言拦截
-    #[cfg(debug_assertions)]
+    /// 缺省档 = zh-CN:零装配(测试进程未调 init)即中文;en 侧经
+    /// `locale =` 显式档断言,不写全局 locale(并发测试无竞争)
     #[test]
-    #[should_panic(expected = "i18n 模板占位与实参不一致")]
-    fn fmt_asserts_placeholder_set_parity() {
-        let _ = fmt("共 {n} 条", &[("count", &1u64)]);
+    fn default_locale_is_zh_cn() {
+        ensure_locale();
+        assert_eq!(t!("common.cancel", locale = DEFAULT), "取消");
+        assert_eq!(t!("common.save"), "保存");
+        assert_eq!(t!("common.save", locale = "en"), "Save");
     }
 
-    /// release 语义:未命中占位原样保留(debug 断言另有专测,故此测
-    /// 仅 release 编入)
-    #[cfg(not(debug_assertions))]
+    /// 库层文案契约(缺陷回归锁):库自产文案与产品文案共用同一个
+    /// rust-i18n 全局 locale。此前 liuma 从不调用 `set_locale`,库自产
+    /// 文案恒英文(最可见的是输入框右键菜单 Cut/Copy/Paste/Select All)。
+    /// 逐个断言 liuma 暴露的库 key 在 zh-CN / en 两侧都有译文,且不是
+    /// "缺键回落键名"——上游改名/漏译即红。
     #[test]
-    fn fmt_keeps_unmatched_placeholder_verbatim() {
-        let out = fmt("共 {n} 条", &[("count", &1u64)]);
-        assert_eq!(out, "共 {n} 条");
-    }
-
-    /// 词典对齐门禁:每个切片词典内,模板键的 zh/en 占位名集合逐一相等
-    /// (新切片词典落地时登记到本表)。附带断言两语言值均非空。
-    #[test]
-    fn dict_templates_placeholder_parity() {
-        type Tpl = (&'static str, &'static str, &'static str);
-        let dicts: &[(&str, &[Tpl])] = &[
-            ("ask", dict::ask::TEMPLATES),
-            ("chat", dict::chat::TEMPLATES),
-            ("common", dict::common::TEMPLATES),
-            ("files", dict::files::TEMPLATES),
-            ("misc", dict::misc::TEMPLATES),
-            ("sessions", dict::sessions::TEMPLATES),
-            ("settings", dict::settings::TEMPLATES),
-            ("shell", dict::shell::TEMPLATES),
-            ("time", dict::time::TEMPLATES),
-            ("trajectory", dict::trajectory::TEMPLATES),
+    fn library_copy_contract_both_locales() {
+        use gpui_kit::component::_rust_i18n_translate as lib;
+        const KEYS: &[&str] = &[
+            "Input.Cut",
+            "Input.Copy",
+            "Input.Paste",
+            "Input.Select All",
+            "Select.placeholder",
+            "Questionnaire.progress",
+            "Questionnaire.previous",
+            "Questionnaire.next",
+            "Questionnaire.skip",
+            "Questionnaire.submit",
+            "List.search_placeholder",
         ];
-        for &(module, entries) in dicts {
-            for (key, zh, en) in entries {
-                assert!(!zh.is_empty() && !en.is_empty(), "{module}.{key} 空文案");
-                // 槽位反序签名:zh 槽纯 ASCII 而 en 槽含 CJK(批次 5 的
-                // trajectory 词典曾整表反序)。合法例外 = 两槽同形(双语
-                // 中立键)或 zh 槽含 CJK;en 槽含 CJK 无合理场景。
-                let zh_has_cjk = zh.chars().any(|c| {
-                    ('一'..='鿿').contains(&c)
-                        || ('　'..='〿').contains(&c)
-                        || ('＀'..='￯').contains(&c)
-                });
-                let en_has_cjk = en.chars().any(|c| {
-                    ('一'..='鿿').contains(&c)
-                        || ('　'..='〿').contains(&c)
-                        || ('＀'..='￯').contains(&c)
-                });
+        for key in KEYS {
+            for locale in [DEFAULT, "en"] {
+                let text = lib(locale, key);
                 assert!(
-                    zh == en || zh_has_cjk || !en_has_cjk,
-                    "{module}.{key} 疑似 zh/en 槽位反序: {zh:?} vs {en:?}"
+                    !text.is_empty() && text.as_ref() != *key,
+                    "库 key {key} 在 {locale} 档缺译文(回落键名)"
                 );
-                let mut zp = template_placeholders(zh);
-                let mut ep = template_placeholders(en);
-                zp.sort_unstable();
-                ep.sort_unstable();
-                assert_eq!(zp, ep, "{module}.{key} zh/en 占位不一致: {zh:?} vs {en:?}");
             }
+            assert_ne!(
+                lib(DEFAULT, key).as_ref(),
+                lib("en", key).as_ref(),
+                "库 key {key} 两档译文相同,疑似档位未生效"
+            );
         }
     }
 
-    /// 轨迹页 zh/en 关键标签(冒烟反馈回归锁:批次 5 曾整表槽位反序,
-    /// zh 档工具栏显示英文原字面;经 l:: 纯分派双语言断言,不触语言盘)
+    /// 轨迹页 zh/en 关键标签(回归锁:旧词典切片曾整表槽位反序,zh 档
+    /// 工具栏显示英文原字面;经真实 backend 双档断言)
     #[test]
     fn trajectory_labels_dispatch_both_langs() {
-        use dict::trajectory::l;
-        assert_eq!(l::toolbar_duration(Lang::Zh), "时长");
-        assert_eq!(l::toolbar_duration(Lang::En), "Duration");
-        assert_eq!(l::toolbar_turns(Lang::Zh), "轮次");
-        assert_eq!(l::kind_tool(Lang::Zh), "工具");
-        assert_eq!(l::kind_assistant(Lang::Zh), "助手");
-        assert_eq!(l::kind_assistant(Lang::En), "ASSISTANT");
-        assert_eq!(l::counts(Lang::Zh, 56, 56, 25), "56 / 56 条 · 25 次请求");
+        assert_eq!(translate(DEFAULT, "trajectory.toolbar_duration"), "时长");
+        assert_eq!(translate("en", "trajectory.toolbar_duration"), "Duration");
+        assert_eq!(translate(DEFAULT, "trajectory.toolbar_turns"), "轮次");
+        assert_eq!(translate(DEFAULT, "trajectory.kind_tool"), "工具");
+        assert_eq!(translate(DEFAULT, "trajectory.kind_assistant"), "助手");
+        assert_eq!(translate("en", "trajectory.kind_assistant"), "ASSISTANT");
         assert_eq!(
-            l::counts(Lang::En, 56, 56, 25),
-            "56 / 56 entries · 25 requests"
+            translate(DEFAULT, "trajectory.counts"),
+            "%{shown} / %{total} 条 · %{requests} 次请求"
         );
-        assert_eq!(l::tool_call_only(Lang::Zh), "(仅工具调用)");
-        assert_eq!(l::tool_call_only(Lang::En), "(tool call only)");
+        assert_eq!(
+            translate("en", "trajectory.counts"),
+            "%{shown} / %{total} entries · %{requests} requests"
+        );
+        assert_eq!(
+            translate(DEFAULT, "trajectory.tool_call_only"),
+            "(仅工具调用)"
+        );
+        assert_eq!(
+            translate("en", "trajectory.tool_call_only"),
+            "(tool call only)"
+        );
     }
 
     /// 压缩链路文案 zh/en(回归锁:宿主 compaction/error kind=empty 的
-    /// 英文常量曾逐字直显在中文界面;现渲染期换词典。命令描述同理——
-    /// 宿主 builtin_commands 是中文原文,en 档由此处映射)
+    /// 英文常量曾逐字直显在中文界面;命令描述同理——宿主 builtin_commands
+    /// 是中文原文,en 档由文案文件映射)
     #[test]
     fn compaction_and_command_copy_dispatch_both_langs() {
-        use dict::chat::l as cl;
-        use dict::trajectory::l as tl;
-        assert_eq!(cl::compact_empty(Lang::Zh), "暂无可压缩的历史");
-        assert_eq!(cl::compact_empty(Lang::En), "No compactable history yet.");
-        assert_eq!(cl::compact_running(Lang::Zh), "正在压缩…");
-        assert_eq!(cl::compact_title(Lang::En), "Context compacted");
-        // 命令描述:zh 槽 = 宿主原文(逐字),en 槽无 CJK
-        assert_eq!(cl::command_compact(Lang::Zh), "压缩以上对话内容");
-        for desc in [
-            cl::command_compact(Lang::En),
-            cl::command_plan(Lang::En),
-            cl::command_export(Lang::En),
-            cl::command_goal(Lang::En),
-            cl::command_model(Lang::En),
+        assert_eq!(translate(DEFAULT, "chat.compact_empty"), "暂无可压缩的历史");
+        assert_eq!(
+            translate("en", "chat.compact_empty"),
+            "No compactable history yet."
+        );
+        assert_eq!(translate(DEFAULT, "chat.compact_running"), "正在压缩…");
+        assert_eq!(translate("en", "chat.compact_title"), "Context compacted");
+        // 命令描述:zh = 宿主原文(逐字),en 侧不得残留中文
+        assert_eq!(
+            translate(DEFAULT, "chat.command_compact"),
+            "压缩以上对话内容"
+        );
+        for key in [
+            "chat.command_compact",
+            "chat.command_plan",
+            "chat.command_export",
+            "chat.command_goal",
+            "chat.command_model",
         ] {
+            let desc = translate("en", key);
             assert!(
-                !desc.chars().any(|c| ('一'..='鿿').contains(&c)),
+                !desc.chars().any(|ch| ('一'..='鿿').contains(&ch)),
                 "en 档命令描述不得含中文: {desc:?}"
             );
         }
-        // 轨迹:压缩兜底行与请求 Result 标签
-        assert_eq!(tl::compact_fallback(Lang::Zh), "上下文已压缩");
-        assert_eq!(tl::compact_fallback(Lang::En), "Context compacted");
-        assert_eq!(tl::request_result_compacted(Lang::En), "Compacted");
-        assert_eq!(tl::request_result_assistant(Lang::Zh), "助手回复");
+        assert_eq!(
+            translate(DEFAULT, "trajectory.compact_fallback"),
+            "上下文已压缩"
+        );
+        assert_eq!(
+            translate("en", "trajectory.compact_fallback"),
+            "Context compacted"
+        );
+        assert_eq!(
+            translate("en", "trajectory.request_result_compacted"),
+            "Compacted"
+        );
+        assert_eq!(
+            translate(DEFAULT, "trajectory.request_result_assistant"),
+            "助手回复"
+        );
     }
 }

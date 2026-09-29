@@ -114,7 +114,10 @@ pub fn title_bar_row(store: &Entity<AppStore>, window: &mut Window, cx: &App) ->
                             .flex_shrink_0()
                             .text_size(px(13.))
                             .text_color(theme::CAPTION())
-                            .child(crate::kits::i18n::dict::shell::run_label_suffix(label))
+                            .child(crate::kits::i18n::t!(
+                                "shell.run_label_suffix",
+                                label = label
+                            ))
                             .into_any_element()
                     })),
                 )
@@ -166,9 +169,9 @@ fn sidebar_fold_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         // 命中收集,拖拽盒不进集合,点击才回到钮上(macOS 无此机制,
         // 遮挡无副作用)。标题栏内**每个可点元素**都必须带这一行
         .occlude()
-        .tooltip(crate::shell::tip(
-            crate::kits::i18n::dict::shell::tip_toggle_sidebar(),
-        ))
+        .tooltip(crate::shell::tip(crate::kits::i18n::t!(
+            "shell.tip_toggle_sidebar"
+        )))
         .child(fixed(icon, 14.))
         .on_click(move |_, _, cx| {
             s.update(cx, |st, cx| st.toggle_sidebar(cx));
@@ -253,9 +256,9 @@ fn panel_toggle_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .hover(|s| s.bg(theme::LAYER()).text_color(theme::LABEL()))
         // 拖拽区豁免,见 sidebar_fold_button 的说明
         .occlude()
-        .tooltip(crate::shell::tip(
-            crate::kits::i18n::dict::shell::tip_toggle_panel(),
-        ))
+        .tooltip(crate::shell::tip(crate::kits::i18n::t!(
+            "shell.tip_toggle_panel"
+        )))
         .child(fixed(IconName::PanelRight, 14.))
         .on_click(move |_, _, cx| {
             s.update(cx, |st, cx| st.toggle_panel(cx));

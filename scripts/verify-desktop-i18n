@@ -1,38 +1,59 @@
 #!/usr/bin/env python3
-"""verify-desktop-i18n:桌面 crate 硬编码文案门禁(棘轮)。
+"""verify-desktop-i18n:桌面文案门禁(唯一文案系统 = rust-i18n)。
 
-规则:
-- 扫描 crates/liuma-desktop/src/**/*.rs **字符串字面量**中的 CJK 字符;
-  注释/文档不扫(中文注释是仓库惯例)。
-- 豁免:kits/i18n/ 词典文件;`*_tests.rs` 整文件(本仓测试模块命名
-  约定,`#[cfg(test)]` 外挂在声明处)与文件内 `#[cfg(test)]` 区段
-  (测试断言/夹具文案);开发者向宏(eprintln!/println!/assert*/
-  panic! 等)的参数。
-- 基线 scripts/desktop-i18n-baseline 登记 i18n 迁移完成前的存量
-  (每文件允许的违规上限次数);超基线或未登记文件出现违规 = FAIL。
-  迁移批次清零一个文件就从基线删一行;基线只减不增。
-- 字符面量不扫(separator 单字符如 '·' 属渲染逻辑而非文案)。
+文案住 `crates/liuma-desktop/locales/*.yml`,代码里只许出现 `t!("键")`。
+本脚本是「编译期保证的替代品」:rust-i18n 的键是运行时字符串,缺键会
+把键名原样显示到界面上,故以下五条全部零容忍,违规即 FAIL:
 
-CJK 判定:CJK 标点(U+3000-303F)/汉字(U+4E00-9FFF、兼容区)/全角
-形式(U+FF00-FFEF),及 UI 文案惯用的 ''""(U+2018-201D)。
-不判的双语中立字形:间隔号 ·(分隔胶水,如 "http · {host}")、省略号
-…(截断胶水,format!("{cut}…"))、破折号 —(缺席值占位,如 "—".into()
-的 N/A 槽);含汉字的句子仍由汉字区间命中)。
+1. 生产代码区 **CJK 文案零容忍** —— 代码内联中文文案(注释/文档不扫,
+   中文注释是仓库惯例;`_tests.rs` 与 `#[cfg(test)]` 区段豁免)。
+2. 生产代码区 **ASCII UI 文案零容忍** —— 豁免面是本文件的 `EXEMPT_CALLS` /
+   `EXEMPT_TEXT` 显式清单(element id / debug selector、wire-JSON 键、
+   宿主数据匹配串、字体族、路径片段、技术标识与文件类型徽章……)。
+   这条锁的是「英文 chrome 漏网」缺陷(本仓已复发两次):CJK 门禁对
+   英文文案天然失明,必须另有一条规则盯住。
+   迁移已完成,无存量基线:任何新增英文文案候选都直接 FAIL。
+3. **locale 文件键齐备** —— 每个叶子必须同时有 `zh-CN` 与 `en`,且值一律
+   加引号(YAML 裸标量会被解析成非字符串,rust-i18n 只收字符串叶子,漏引
+   = 该键静默消失)。同形值(双语中立键)须登记在 `SAME_VALUE_KEYS`。
+4. **键闭环** —— 源码 `t!("字面键")` 集合 == locale 文件键集合(双向);
+   动态键(非字面量)直接拒绝。缺键/死键都在此拦下。
+5. **占位闭环** —— `t!("k", a = …, b = …)` 的实参名集合 == 该键 zh-CN/en
+   模板的 `%{…}` 名集合、zh/en 占位集合互等、`_one`/`_other` 键成对。
+   (rust-i18n 对未命中占位是静默原样保留,故必须有这道门。)
 
-已知边界(启发式门禁,漏判可容忍,误判以「把文案搬进词典」消解):
-- 字符串拼接(隐式相邻字面量)按多个字面量分别判定;
-- `b"..."` 字节串不扫(非 ASCII 本就无法编译);
-- 宏栈按括号深度近似,跨宏边界的嵌套误判以豁免清单消解。
+外加 `--self-test`:用夹具逐条验证 2/3/4/5 的正反例,保证门禁自身不假绿
+(AGENTS「假绿」禁令)。
+
+用法:
+    python3 scripts/verify-desktop-i18n              # 门禁
+    python3 scripts/verify-desktop-i18n --self-test  # 门禁自测
+    python3 scripts/verify-desktop-i18n --audit      # 列出规则 2 全部候选(调豁免用)
 """
+import re
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "crates" / "liuma-desktop" / "src"
-BASELINE = REPO / "scripts" / "desktop-i18n-baseline"
-DICT_DIR = SRC / "kits" / "i18n"
+LOCALES = REPO / "crates" / "liuma-desktop" / "locales"
 
-# CJK 码点区间与单字(见模块 docstring)
+REQUIRED_LOCALES = ("zh-CN", "en")
+
+# 同形值登记:zh-CN 与 en 逐字相同的键(双语中立:缩写/专名/单位)。
+SAME_VALUE_KEYS = {
+    "settings.nav_mcp",     # MCP:三字母缩写(产品名,两档同形)
+    "chat.tool_bash",       # 工具专名:模型面命令名,两档逐字同形
+    "chat.tool_glob",
+    "chat.tool_grep",
+    "chat.tool_ralph",
+    "chat.tok_share",       # `数 · 百分数`:两语言同形,无实词
+    "trajectory.seq_range",  # `seq %{a}–%{b}`:数据标签,两语言同形
+    "settings.url_placeholder",  # 占位示例 URL,两语言同形
+}
+
+# ── 规则 1/2 的判定面 ──
+
 CJK_RANGES = [
     (0x3000, 0x303F),
     (0x4E00, 0x9FFF),
@@ -41,16 +62,65 @@ CJK_RANGES = [
 ]
 CJK_CHARS = set("‘’“”")
 
-# 开发者向宏(诊断/断言文案不进 UI;用户可见文案必须走词典)
+# 规则 1 豁免:逐字登记的非文案中文字面量
+# - `中文` = `LOCALES` 常量表的语言原文名(两档同显,政策即"原文名恒定")
+# - syntect 主题元数据 author = 开发者署名(非 UI 文案)
+EXEMPT_CJK_TEXT = {
+    "中文",
+    "liuma-desktop 自写(VSCode Dark+/Light+ 近似)",
+}
+
+# 开发者向宏(诊断/断言文案不进 UI;用户可见文案必须走文案系统)
 DEV_MACROS = {
     "eprintln", "println", "eprint", "print",
     "assert", "assert_eq", "assert_ne",
     "debug_assert", "debug_assert_eq", "debug_assert_ne",
     "panic", "unreachable", "todo", "unimplemented",
-    "anyhow",  # 内部不变式/日志错误串(经 ImageCacheError 等落日志)
+    "anyhow",
 }
-# 开发者向方法(不变式消息;值回退类如 unwrap_or 的实参常是文案,不豁免)
 DEV_METHODS = {"expect"}
+
+# 规则 2 豁免:这些调用位的字符串常量不是界面文案(标识/协议/宿主数据)
+EXEMPT_CALLS = {
+    # element id / debug selector / 键名
+    "id", "debug_selector", "ElementId", "key", "name", "tag", "lang", "language",
+    # 路径/环境/进程
+    "join", "var", "var_os", "args", "arg", "parse", "starts_with", "ends_with",
+    "contains", "split", "split_once", "trim_start_matches", "trim_end_matches",
+    "is_some_and", "unwrap_or", "get",
+    # 宿主/wire 错误载荷(错误码与错误串是协议面数据,不进文案文件)
+    "Err", "Ok", "RpcError", "RpcResult",
+    # 字体族(渲染栈名,非文案)
+    "set_sans_serif_family", "set_serif_family", "set_monospace_family", "family",
+    # 语种注册表 / 高亮
+    "language_for", "register", "scope", "mime", "extension",
+    # 宿主/wire 字段与调试
+    "eprintln", "println", "debug_assert",
+}
+
+# 规则 2 豁免:逐字登记的技术标识(协议/文件类型/工具专名/目录名)
+EXEMPT_TEXT = {
+    # 宿主(liuma-core)自产的载荷哨兵值:渲染层按值匹配后换文案,值本身
+    # 是线上数据,永不进文案文件(见 locale-owned copy 政策)
+    "No output",          # trajectory.rs:空工具结果
+    "Context compacted",  # trajectory.rs:压缩后请求的 result
+    "English",  # `LOCALES` 的语言原文名(两档同显)
+    "PDF", "JSON", "HTTP", "TOML", "Markdown", "Mermaid", "PPT", "IMG", "FILE",
+    "OUT", "IN", "HEAD", "HOME", "Downloads", "Skill",
+    # 稳定 ASCII slug(debug selector 用,非文案;见 SettingsNav::slug)
+    "General", "Models", "Mcp", "Hooks", "Decision", "About",
+    "system-ui, sans-serif", "Helvetica", "Times New Roman", "Menlo",
+    "PingFang SC", "Step",
+}
+# 规则 2 豁免:形态(全大写缩写/技术标识符/路径/点分键)
+EXEMPT_SHAPES = [
+    re.compile(r"^[A-Z0-9][A-Z0-9/+._-]{0,7}$"),        # PDF / HTTP / JSON
+    re.compile(r"^[a-z][a-z0-9_]*$"),                     # snake_case 标识
+    re.compile(r"^[a-z][a-z0-9-]*$"),                     # kebab 选择器
+    re.compile(r"^[a-z]+([A-Z][A-Za-z0-9]*)+$"),          # camelCase wire 键
+    re.compile(r"^[A-Za-z0-9._-]+\.[A-Za-z0-9._-]+$"),    # 文件名 / MIME
+]
+CHROME_SHAPE = re.compile(r"^[A-Za-z][A-Za-z0-9 ,'\-\.\?!:&%]*$")
 
 
 def is_cjk(ch: str) -> bool:
@@ -60,120 +130,7 @@ def is_cjk(ch: str) -> bool:
     return ch in CJK_CHARS
 
 
-def scan_file(path: Path) -> list[int]:
-    """返回含 CJK 的字符串字面量行号列表(词法级:串/字符/注释/宏分轨)。"""
-    if path.name.endswith("_tests.rs"):
-        return []  # 测试模块整文件(*_tests.rs 命名约定,见模块 docstring)
-    text = path.read_text(encoding="utf-8")
-    i, n = 0, len(text)
-    line = 1
-    hits: list[int] = []
-    depth = 0  # 代码态括号深度
-    macro_stack: list[tuple[str, int]] = []  # [(宏名, 开括号时深度)]
-    test_scopes: list[int] = []  # #[cfg(test)] 进入时深度栈
-    last_ident = ""
-    while i < n:
-        ch = text[i]
-        if ch == "\n":
-            line += 1
-            i += 1
-            continue
-        # ── 注释 ──
-        if ch == "/" and i + 1 < n and text[i + 1] in "/":
-            while i < n and text[i] != "\n":
-                i += 1
-            continue
-        if ch == "/" and i + 1 < n and text[i + 1] == "*":
-            nest = 0
-            i += 2
-            while i < n and (nest > 0 or text[i : i + 2] != "*/"):
-                if text[i] == "\n":
-                    line += 1
-                if text[i : i + 2] == "/*":
-                    nest += 1
-                    i += 2
-                elif text[i : i + 2] == "*/":
-                    nest -= 1
-                    i += 2
-                else:
-                    i += 1
-            i += 2
-            continue
-        # ── 字符串字面量(普通 " 与 raw r#"…"#;字节串同形一并读入,
-        # 非 ASCII 字节串本就无法编译,误检不存在)──
-        if ch == '"' or (ch == "r" and _raw_start(text, i)):
-            start_line = line
-            content, i, line = _read_string(text, i, line)
-            allowed = (
-                bool(test_scopes)
-                or any(
-                    m in DEV_MACROS or m in DEV_METHODS
-                    for m, _ in macro_stack
-                )
-            )
-            if not allowed and any(is_cjk(c) for c in content):
-                hits.append(start_line)
-            continue
-        # ── 字符面量 / 生命周期(不扫内容)──
-        if ch == "'":
-            i, added_lines = _skip_char_or_lifetime(text, i)
-            line += added_lines
-            continue
-        # ── 代码态 ──
-        if ch in "([{":
-            depth += 1
-            # 宏调用识别:ident ! ws 开括号('!' 分支保持 last_ident);
-            # 方法形态:.expect( 等开发者向不变式消息(回看须先越过
-            # 标识符本体再找 '.' / '!')
-            if last_ident in DEV_MACROS or last_ident in DEV_METHODS:
-                j = i - 1
-                while j >= 0 and text[j] in " \t":
-                    j -= 1
-                if j >= 0 and (text[j].isalnum() or text[j] == "_"):
-                    while j >= 0 and (text[j].isalnum() or text[j] == "_"):
-                        j -= 1
-                    while j >= 0 and text[j] in " \t":
-                        j -= 1
-                if j >= 0 and (text[j] == "!" or text[j] == "."):
-                    macro_stack.append((last_ident, depth))
-            last_ident = ""
-            i += 1
-            continue
-        if ch in ")]}":
-            depth -= 1
-            while macro_stack and depth < macro_stack[-1][1]:
-                macro_stack.pop()
-            while test_scopes and depth <= test_scopes[-1]:
-                test_scopes.pop()
-            last_ident = ""
-            i += 1
-            continue
-        if ch.isalnum() or ch == "_":
-            j = i
-            while j < n and (text[j].isalnum() or text[j] == "_"):
-                j += 1
-            last_ident = text[i:j]
-            i = j
-            continue
-        if ch == "#":
-            if text.startswith("#[cfg(test)]", i):
-                test_scopes.append(depth)
-                i += len("#[cfg(test)]")
-                last_ident = ""
-                continue
-            last_ident = ""
-            i += 1
-            continue
-        if ch == "!":
-            pass  # 宏bang:保持 last_ident 供开括号分支回看
-        else:
-            last_ident = ""
-        i += 1
-    return hits
-
-
 def _raw_start(text: str, i: int) -> bool:
-    """`r` 起点的 raw string(r#"…"# / r##"…"##;裸标识符 r 开头不误判)。"""
     j = i + 1
     hashes = 0
     while j < len(text) and text[j] == "#":
@@ -182,7 +139,7 @@ def _raw_start(text: str, i: int) -> bool:
     return hashes > 0 and j < len(text) and text[j] == '"'
 
 
-def _read_string(text: str, i: int, line: int) -> tuple[str, int, int]:
+def _read_string(text: str, i: int, line: int):
     """读一个字符串字面量(i 指向 `r` 或开引号),返回(内容, 终点后下标, 终行)。"""
     hashes = 0
     if text[i] == "r":
@@ -191,8 +148,8 @@ def _read_string(text: str, i: int, line: int) -> tuple[str, int, int]:
             hashes += 1
             j += 1
         i = j
-    i += 1  # 开引号
-    out: list[str] = []
+    i += 1
+    out = []
     n = len(text)
     while i < n:
         ch = text[i]
@@ -202,33 +159,26 @@ def _read_string(text: str, i: int, line: int) -> tuple[str, int, int]:
             if text.startswith('"' + "#" * hashes, i):
                 return "".join(out), i + 1 + hashes, line
         if hashes == 0 and ch == "\\":
-            if text[i + 1 : i + 2] == "\n":
-                line += 1  # 行尾续行
-            out.append(text[i : i + 2])
+            if text[i + 1:i + 2] == "\n":
+                line += 1
+            out.append(text[i:i + 2])
             i += 2
             continue
         if ch == "\n":
             line += 1
         out.append(ch)
         i += 1
-    return "".join(out), i, line  # 未闭合(畸形容忍)
+    return "".join(out), i, line
 
 
-def _skip_char_or_lifetime(text: str, i: int) -> tuple[int, int]:
-    """越过字符面量或生命周期标注,返回(新下标, 跨行数)。
-
-    消歧:`'ident` 无闭引号 = 生命周期(&'static / <'a>);其余按字符
-    面量逐字符走到闭引号(转义体:`\\u{...}` / `\\xNN` / 两字符转义;
-    失同步会把它处之后的注释误读为字符串,必须精确)。
-    """
+def _skip_char_or_lifetime(text: str, i: int):
+    """越过字符面量或生命周期标注(消歧同旧门禁:`'ident` 无闭引号 = 生命周期)。"""
     j = i + 1
     n = len(text)
     if j < n and (text[j].isalpha() or text[j] == "_"):
         k = j
         while k < n and (text[k].isalnum() or text[k] == "_"):
             k += 1
-        # 标识符后紧跟闭引号 = 单字母/短字符字面量('K' / 'ab' 不存在,
-        # 'K' 是字符 K),落回字符面量通道;否则 = 生命周期('static / 'a)
         if k >= n or text[k] != "'":
             return k, 0
     lines = 0
@@ -241,8 +191,8 @@ def _skip_char_or_lifetime(text: str, i: int) -> tuple[int, int]:
             j += 1
             continue
         if c == "\\":
-            nxt = text[j + 1 : j + 2]
-            if nxt == "u" and text[j + 2 : j + 3] == "{":
+            nxt = text[j + 1:j + 2]
+            if nxt == "u" and text[j + 2:j + 3] == "{":
                 k = text.find("}", j + 3)
                 j = k + 1 if k != -1 else j + 3
             elif nxt == "x":
@@ -251,49 +201,512 @@ def _skip_char_or_lifetime(text: str, i: int) -> tuple[int, int]:
                 j += 2
             continue
         j += 1
-    return j, lines  # 未闭合(畸形容忍)
+    return j, lines
 
 
-def load_baseline() -> dict[str, int]:
-    baseline: dict[str, int] = {}
-    if BASELINE.exists():
-        for raw in BASELINE.read_text(encoding="utf-8").splitlines():
-            raw = raw.strip()
-            if not raw or raw.startswith("#"):
+class RsScan:
+    """一次词法扫描的产物(串/`t!` 调用/规则 1、2 命中)。"""
+
+    def __init__(self, path: Path, whole_test: bool = False):
+        self.path = path
+        self.whole_test = whole_test
+        self.strings = []   # (line, content, exempt_as_dev)
+        self.t_calls = []   # (line, 调用原文)
+        self.cjk = []       # (line, content)
+        self.ascii = []     # (line, content)
+
+    def scan(self, text: str) -> None:
+        i, n, line = 0, len(text), 1
+        depth = 0
+        test_scopes = []
+        dev_stack = []          # (宏名, 深度)
+        calls = []              # (ident, 深度)
+        pending_t = []          # [(起点下标, 深度, 起始行)]:支持嵌套 `t!`
+        bang = False            # 上一个 token 是 `!`(宏调用限定)
+        last_ident = ""
+        while i < n:
+            ch = text[i]
+            if ch == "\n":
+                line += 1
+                i += 1
                 continue
-            path, _, count = raw.rpartition(" ")
-            baseline[path] = int(count)
-    return baseline
+            # ── 注释 ──
+            if ch == "/" and i + 1 < n and text[i + 1] == "/":
+                while i < n and text[i] != "\n":
+                    i += 1
+                continue
+            if ch == "/" and i + 1 < n and text[i + 1] == "*":
+                nest = 0
+                i += 2
+                while i < n and (nest > 0 or text[i:i + 2] != "*/"):
+                    if text[i] == "\n":
+                        line += 1
+                    if text[i:i + 2] == "/*":
+                        nest += 1
+                        i += 2
+                    elif text[i:i + 2] == "*/":
+                        nest -= 1
+                        i += 2
+                    else:
+                        i += 1
+                i += 2
+                continue
+            # ── 字符串 ──
+            if ch == '"' or (ch == "r" and _raw_start(text, i)):
+                start_line = line
+                content, i, line = _read_string(text, i, line)
+                in_test = self.whole_test or bool(test_scopes)
+                in_dev = any(m in DEV_MACROS or m in DEV_METHODS for m, _ in dev_stack)
+                self.strings.append((start_line, content, in_dev))
+                if not in_test:
+                    if (not in_dev and content not in EXEMPT_CJK_TEXT
+                            and any(is_cjk(c) for c in content)):
+                        self.cjk.append((start_line, content))
+                    if (not in_dev and ch in ('"', "r")
+                            and self._is_ascii_candidate(content, calls)):
+                        self.ascii.append((start_line, content))
+                continue
+            # ── 字符面量 / 生命周期 ──
+            if ch == "'":
+                i, added = _skip_char_or_lifetime(text, i)
+                line += added
+                continue
+            # ── 代码态 ──
+            if ch in "([{":
+                if bang and last_ident == "t" and ch == "(":
+                    pending_t.append((i, depth, line))
+                depth += 1
+                if last_ident and ch in "([":
+                    calls.append((last_ident, depth))
+                if last_ident in DEV_MACROS or last_ident in DEV_METHODS:
+                    j = i - 1
+                    while j >= 0 and text[j] in " \t":
+                        j -= 1
+                    if j >= 0 and (text[j].isalnum() or text[j] == "_"):
+                        while j >= 0 and (text[j].isalnum() or text[j] == "_"):
+                            j -= 1
+                        while j >= 0 and text[j] in " \t":
+                            j -= 1
+                    if j >= 0 and text[j] in "!.":
+                        dev_stack.append((last_ident, depth))
+                last_ident = ""
+                bang = False
+                i += 1
+                continue
+            if ch in ")]}":
+                depth -= 1
+                while pending_t and depth == pending_t[-1][1]:
+                    start, _, start_line = pending_t.pop()
+                    self.t_calls.append((start_line, text[start:i + 1]))
+                while dev_stack and depth < dev_stack[-1][1]:
+                    dev_stack.pop()
+                while test_scopes and depth <= test_scopes[-1]:
+                    test_scopes.pop()
+                while calls and depth < calls[-1][1]:
+                    calls.pop()
+                last_ident = ""
+                bang = False
+                i += 1
+                continue
+            if ch.isalnum() or ch == "_":
+                j = i
+                while j < n and (text[j].isalnum() or text[j] == "_"):
+                    j += 1
+                last_ident = text[i:j]
+                i = j
+                continue
+            if ch == "#":
+                if text.startswith("#[cfg(test)]", i):
+                    test_scopes.append(depth)
+                    i += len("#[cfg(test)]")
+                    last_ident = ""
+                    continue
+                last_ident = ""
+                i += 1
+                continue
+            if ch == "!":
+                bang = True  # 保持 last_ident:开括号分支据此认定宏调用
+            else:
+                last_ident = ""
+                bang = False
+            i += 1
+
+    @staticmethod
+    def _is_ascii_candidate(content: str, calls) -> bool:
+        """规则 2 判定:像英文 UI 文案的纯 ASCII 字面量。"""
+        call = calls[-1][0] if calls else ""
+        if call in EXEMPT_CALLS:
+            return False
+        text = content.strip()
+        if not text or text in EXEMPT_TEXT:
+            return False
+        if not CHROME_SHAPE.match(text):
+            return False
+        if any(rx.match(text) for rx in EXEMPT_SHAPES):
+            return False
+        # 首词全大写且含空格 = 数据/日志串(如 "USER cancelled the question")
+        head = text.split(" ", 1)[0]
+        if " " in text and head.isupper():
+            return False
+        # 「英文 chrome」形态:含空格的句子,或首字母大写的单词/短语
+        return " " in text or text[:1].isupper()
+
+
+# ── locale 文件解析(v2 格式;stdlib-only,不引 PyYAML)──
+
+LEAF_RE = re.compile(r"^([A-Za-z0-9_.\-]+):\s*(.*)$")
+LOCALE_LINE_RE = re.compile(r"^([A-Za-z][A-Za-z0-9-]*):\s*(.*)$")
+
+
+def collect_locale_leaves(locales_dir: Path, repo: Path):
+    """逐行扫描 locales/*.yml,返回 (叶子键 -> {locale: 原始值}, 格式问题)。
+
+    只认本仓定式:顶层 `_version: 2`,键按缩进嵌套,叶子 = 只含
+    `zh-CN:` / `en:` 两行的节点。值必须加引号(YAML 裸标量可能被解析成
+    非字符串,rust-i18n 只收字符串叶子,漏引 = 键静默消失)。
+    """
+    leaves = {}
+    problems = []
+    for path in sorted(locales_dir.glob("*.yml")):
+        rel = str(path.relative_to(repo)).replace("\\", "/")
+        stack = []  # [(缩进, 键)]
+        lines = path.read_text(encoding="utf-8").splitlines()
+        ix = 0
+        while ix < len(lines):
+            raw = lines[ix]
+            if not raw.strip() or raw.lstrip().startswith("#"):
+                ix += 1
+                continue
+            indent = len(raw) - len(raw.lstrip(" "))
+            body = raw.strip()
+            if indent == 0 and body.startswith("_version:"):
+                if body.split(":", 1)[1].strip() != "2":
+                    problems.append(f"{rel}:{ix + 1} `_version` 必须是 2")
+                ix += 1
+                continue
+            m = LEAF_RE.match(body)
+            if not m:
+                problems.append(f"{rel}:{ix + 1} 无法解析:{body!r}")
+                ix += 1
+                continue
+            key, rest = m.group(1), m.group(2).strip()
+            if rest:
+                problems.append(
+                    f"{rel}:{ix + 1} 叶子必须写成 `locale:` 换行给值(键 `{key}` 同行带值)"
+                )
+                ix += 1
+                continue
+            while stack and stack[-1][0] >= indent:
+                stack.pop()
+            # 收拢紧随的更深的非空行
+            j = ix + 1
+            subs = []
+            while j < len(lines):
+                nxt = lines[j]
+                if not nxt.strip() or nxt.lstrip().startswith("#"):
+                    j += 1
+                    continue
+                ind = len(nxt) - len(nxt.lstrip(" "))
+                if ind <= indent:
+                    break
+                subs.append(nxt.strip())
+                j += 1
+            locale_lines = []
+            for sub in subs:
+                lm = LOCALE_LINE_RE.match(sub)
+                if lm and lm.group(1) in REQUIRED_LOCALES:
+                    locale_lines.append((lm.group(1), sub.split(":", 1)[1].strip()))
+                else:
+                    locale_lines = []
+                    break
+            if locale_lines:
+                path_key = ".".join([k for _, k in stack] + [key])
+                slot = leaves.setdefault(path_key, {})
+                for loc, value in locale_lines:
+                    slot[loc] = value
+                ix = j
+                continue
+            if not subs:
+                problems.append(f"{rel}:{ix + 1} 键 `{key}` 无子节点")
+            stack.append((indent, key))
+            ix += 1
+    return leaves, problems
+
+
+# ── 占位与 `t!` 调用解析 ──
+
+PLACEHOLDER_RE = re.compile(r"%\{([^}]*)\}")
+
+
+def split_args(inner: str):
+    """按顶层逗号切分宏实参(尊重嵌套括号/字符串)。"""
+    parts, depth, cur, i = [], 0, [], 0
+    while i < len(inner):
+        ch = inner[i]
+        if ch == '"':
+            while i < len(inner):
+                cur.append(inner[i])
+                if inner[i] == "\\":
+                    i += 2
+                    continue
+                if inner[i] == '"' and len(cur) > 1:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+            i += 1
+            continue
+        cur.append(ch)
+        i += 1
+    if cur:
+        parts.append("".join(cur))
+    return [p.strip() for p in parts if p.strip()]
+
+
+def parse_t_call(raw: str):
+    """`(...)` 原文 → (键字面量 or None, [实参名])。"""
+    inner = raw.strip()
+    if inner.startswith("(") and inner.endswith(")"):
+        inner = inner[1:-1]
+    parts = split_args(inner)
+    if not parts:
+        return None, []
+    first = parts[0]
+    key = None
+    if first.startswith('"') and first.endswith('"') and len(first) > 1:
+        key = first[1:-1]
+    args = []
+    for part in parts[1:]:
+        name = part.split("=", 1)[0].strip()
+        if name == "locale":
+            continue
+        if name:
+            args.append(name)
+    return key, args
+
+
+# ── 规则实现 ──
+
+
+def scan_rs_tree(repo: Path):
+    """扫 `crates/liuma-desktop/src/**/*.rs`,返回规则 1/2 命中与全部 `t!` 调用。
+
+    `kits/i18n/dict/**` 是迁移源(文案正逐切片搬进 locales/),规则 1/2
+    对它豁免;该目录在收尾批次整体删除,豁免随之消失。
+    """
+    src = repo / "crates" / "liuma-desktop" / "src"
+    dict_dir = src / "kits" / "i18n" / "dict"
+    cjk, ascii_hits, t_calls = [], [], []
+    for path in sorted(src.rglob("*.rs")):
+        if path.is_relative_to(dict_dir):
+            continue
+        rs = RsScan(path, whole_test=path.name.endswith("_tests.rs"))
+        rs.scan(path.read_text(encoding="utf-8"))
+        rel = str(path.relative_to(repo)).replace("\\", "/")
+        cjk += [(rel, ln, txt) for ln, txt in rs.cjk]
+        ascii_hits += [(rel, ln, txt) for ln, txt in rs.ascii]
+        t_calls += [(rel, ln, raw) for ln, raw in rs.t_calls]
+    return cjk, ascii_hits, t_calls
+
+
+def check(repo: Path):
+    """跑完五条规则,返回 (problems, ascii_by_file)。"""
+    problems = []
+    locales_dir = repo / "crates" / "liuma-desktop" / "locales"
+    cjk, ascii_hits, t_calls = scan_rs_tree(repo)
+    leaves, fmt_problems = collect_locale_leaves(locales_dir, repo)
+
+    # ── 规则 1:CJK 文案零容忍 ──
+    for rel, lineno, text in cjk:
+        problems.append(f"[1] {rel}:{lineno} 代码内联中文文案:{text[:40]!r}(搬进 locales/*.yml)")
+
+    # ── 规则 2:ASCII UI 文案零容忍 ──
+    ascii_by_file = {}
+    for rel, lineno, text in ascii_hits:
+        ascii_by_file.setdefault(rel, []).append((lineno, text))
+    for rel, hits in sorted(ascii_by_file.items()):
+        lineno, sample = hits[0]
+        problems.append(
+            f"[2] {rel}: {len(hits)} 处英文 UI 文案(首处行 {lineno}:{sample[:40]!r})"
+            "——搬进 locales/*.yml,或登记进 EXEMPT_CALLS/EXEMPT_TEXT/EXEMPT_SHAPES"
+        )
+
+    # ── 规则 3:locale 文件键齐备 ──
+    problems += [f"[3] {p}" for p in fmt_problems]
+    for key, slot in sorted(leaves.items()):
+        for loc in REQUIRED_LOCALES:
+            if loc not in slot:
+                problems.append(f"[3] locales: 键 `{key}` 缺 {loc}")
+        for loc in slot:
+            if loc not in REQUIRED_LOCALES:
+                problems.append(f"[3] locales: 键 `{key}` 用了未支持 locale `{loc}`")
+        for loc, raw in slot.items():
+            if not (raw.startswith('"') and raw.endswith('"') and len(raw) > 1):
+                problems.append(f"[3] locales: 键 `{key}` 的 {loc} 值未加引号:{raw[:30]!r}")
+        if len(slot) == len(REQUIRED_LOCALES):
+            vals = {slot[loc] for loc in REQUIRED_LOCALES}
+            if len(vals) == 1 and key not in SAME_VALUE_KEYS:
+                problems.append(f"[3] locales: 键 `{key}` 两档同形且未登记 SAME_VALUE_KEYS")
+
+    # ── 规则 4:键闭环(双向)──
+    used = {}
+    for rel, lineno, raw in t_calls:
+        key, args = parse_t_call(raw)
+        if key is None:
+            if raw.lstrip("(").lstrip().startswith("$"):
+                continue  # `t!` 包装宏定义里的转写(`rust_i18n::t!($($args)*)`)
+            problems.append(f"[4] {rel}:{lineno} 动态键(键必须是字面量):{raw[:50]!r}")
+            continue
+        used.setdefault(key, []).append(f"{rel}:{lineno}")
+    for key in sorted(used):
+        if key not in leaves:
+            problems.append(f"[4] locales 缺键 `{key}`(调用点 {used[key][0]})")
+    for key in sorted(leaves):
+        if key not in used:
+            problems.append(f"[4] locales 死键 `{key}`(无任何 `t!` 引用)")
+
+    # ── 规则 5:占位闭环 ──
+    for rel, lineno, raw in t_calls:
+        key, args = parse_t_call(raw)
+        if key is None or key not in leaves:
+            continue
+        slot = leaves.get(key, {})
+        want = {
+            loc: sorted(PLACEHOLDER_RE.findall(slot.get(loc, "")))
+            for loc in REQUIRED_LOCALES
+        }
+        if want["zh-CN"] != want["en"]:
+            problems.append(
+                f"[5] locales: 键 `{key}` zh-CN/en 占位不一致 {want['zh-CN']} vs {want['en']}"
+            )
+        if sorted(args) != want["zh-CN"]:
+            problems.append(
+                f"[5] {rel}:{lineno} `{key}` 实参 {sorted(args)} != 模板占位 {want['zh-CN']}"
+            )
+    # 复数键对(库无 CLDR,调用方按 n == 1 择键):出现 `<base>_one` 就必须
+    # 有 `<base>_other`(反之亦然);单侧命名才算复数意图,`*_other` 单独出现
+    # 视为普通键名
+    for key in sorted(leaves):
+        if key.endswith("_one") and key[:-4] + "_other" not in leaves:
+            problems.append(f"[5] locales: 复数键 `{key}` 缺配对的 `_other`")
+        if key.endswith("_other") and key[:-6] + "_one" in leaves and key not in leaves:
+            pass  # 由上一支覆盖
+
+    return problems, ascii_by_file
+
+
+# ── 门禁自测(假绿禁令:夹具正反例都必须被抓住)──
+
+SELFTEST_FILES = {
+    "crates/liuma-desktop/src/chrome.rs": (
+        'fn f() {\n'
+        '    div().child("Save changes").id("session-row")\n'
+        '        .debug_selector(|| "x".to_string()).child("PDF")\n'
+        '        .child("MCP");\n'
+        '}\n'
+        '#[cfg(test)]\n'
+        'mod tests { fn t() { let _ = "测试里的中文"; } }\n'
+    ),
+    "crates/liuma-desktop/src/cjk.rs": 'fn f() { let _ = "中文文案"; }\n',
+    "crates/liuma-desktop/src/keys.rs": (
+        'fn f() {\n'
+        '    let _ = t!("a.b");\n'
+        '    let _ = t!("a.c");\n'
+        '    let _ = t!(dynamic);\n'
+        '}\n'
+    ),
+    "crates/liuma-desktop/src/placeholders.rs": (
+        'fn f() { let _ = t!("a.b", x = 1); }\n'
+    ),
+    "crates/liuma-desktop/locales/x.yml": (
+        "_version: 2\n"
+        "a:\n"
+        "  b:\n"
+        '    zh-CN: "%{y}"\n'
+        '    en: "%{y} %{z}"\n'
+        "  d:\n"
+        '    zh-CN: "同"\n'
+        '    en: "同"\n'
+        "e:\n"
+        "  f:\n"
+        '    en: "Only en"\n'
+        '    zh-CN: 裸值\n'
+    ),
+}
+
+
+def self_test(tmp_root: Path) -> list:
+    """夹具正反例;返回失败说明(空 = 自测通过)。"""
+    for rel, text in SELFTEST_FILES.items():
+        path = tmp_root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    (tmp_root / "scripts").mkdir(parents=True, exist_ok=True)
+    problems, ascii_by_file = check(tmp_root)
+    joined = "\n".join(problems)
+    failures = []
+
+    def expect(tag: str, needle: str):
+        if needle not in joined:
+            failures.append(f"夹具漏报:{tag}(期望命中 {needle!r})")
+
+    def expect_absent(tag: str, needle: str):
+        if needle in joined:
+            failures.append(f"夹具误报:{tag}(不该命中 {needle!r})")
+
+    expect("规则1 CJK", 'src/cjk.rs:1 代码内联中文文案')
+    expect_absent("规则1 不扫测试区", 'chrome.rs:8')
+    expect("规则2 英文 chrome", "chrome.rs: 1 处英文 UI 文案")
+    expect_absent("规则2 豁免 id/技术标识", 'session-row')
+    expect_absent("规则2 豁免 PDF", ':2 英文文案候选: "PDF"')
+    expect("规则4 缺键", "locales 缺键 `a.c`")
+    expect("规则4 死键", "locales 死键 `a.d`")
+    expect("规则4 动态键", "动态键")
+    expect("规则3 值未加引号", "键 `e.f` 的 zh-CN 值未加引号")
+    expect("规则3 同形未登记", "键 `a.d` 两档同形且未登记")
+    expect("规则5 占位实参不符", "实参 ['x'] != 模板占位 ['y']")
+    expect("规则5 两档占位不一致", "键 `a.b` zh-CN/en 占位不一致")
+    expect("规则2 英文 chrome 零容忍", "英文 UI 文案")
+    if not ascii_by_file:
+        failures.append("夹具漏报:规则 2 未产出任何候选(扫描面失效)")
+    return failures
 
 
 def main() -> int:
-    baseline = load_baseline()
-    problems: list[str] = []
-    counts: dict[str, int] = {}
-    for path in sorted(SRC.rglob("*.rs")):
-        if path.is_relative_to(DICT_DIR):
-            continue
-        rel = str(path.relative_to(REPO))
-        hits = scan_file(path)
-        if not hits:
-            continue
-        counts[rel] = len(hits)
-        allowed = baseline.get(rel)
-        if allowed is None:
-            problems.append(
-                f"{rel}: {len(hits)} 处硬编码文案(未登记基线),首处行 {hits[0]}"
-            )
-        elif len(hits) > allowed:
-            problems.append(
-                f"{rel}: {len(hits)} 处超基线 {allowed},首处行 {hits[0]}"
-            )
-    # 棘轮只减不增:基线行对应的文件已零违规 → 提示删行
-    for rel in baseline:
-        if rel not in counts:
-            problems.append(f"scripts/desktop-i18n-baseline: {rel} 已零违规,删除该行")
+    if "--self-test" in sys.argv:
+        import shutil
+        import tempfile
+        root = Path(tempfile.mkdtemp(prefix="i18n-selftest-"))
+        try:
+            failures = self_test(root)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+        for f in failures:
+            print(f"self-test: {f}")
+        print(f"verify-desktop-i18n --self-test: {'FAILED' if failures else 'OK'}")
+        return 1 if failures else 0
 
+    if "--audit" in sys.argv:
+        _, ascii_by_file = check(REPO)
+        total = 0
+        for rel, hits in sorted(ascii_by_file.items()):
+            print(f"{rel}: {len(hits)}")
+            for lineno, text in hits:
+                print(f"    {lineno}: {text!r}")
+            total += len(hits)
+        print(f"audit: {total} 处英文文案候选")
+        return 0
+
+    problems, _ = check(REPO)
     for p in problems:
-        print(f"hardcoded copy: {p}")
+        print(f"desktop copy: {p}")
     print(f"verify-desktop-i18n: {'FAILED' if problems else 'OK'}")
     return 1 if problems else 0
 

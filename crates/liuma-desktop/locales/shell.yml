@@ -1,0 +1,137 @@
+# shell 面文案(由 dict/shell.rs 搬迁;key 根段 == 文件 stem)。
+# 值一律加引号(YAML 裸标量会被解析成非字符串,rust-i18n 只收字符串叶子)。
+_version: 2
+
+shell:
+
+  run_label_suffix:
+    zh-CN: "｜%{label}"
+    en: " | %{label}"
+
+  tip_toggle_sidebar:
+    zh-CN: "切换侧边栏"
+    en: "Toggle sidebar"
+
+  tip_toggle_panel:
+    zh-CN: "显示/隐藏侧边面板"
+    en: "Show or hide the side panel"
+
+  plan_tab:
+    zh-CN: "计划"
+    en: "Plan"
+
+  trajectory_tab:
+    zh-CN: "轨迹"
+    en: "Trajectory"
+
+  files_tab:
+    zh-CN: "文件"
+    en: "Files"
+
+  preview_tab:
+    zh-CN: "预览"
+    en: "Preview"
+
+  plan_empty:
+    zh-CN: "当前会话暂无计划。"
+    en: "No plan for this session yet."
+
+  plan_pending:
+    zh-CN: "待批准"
+    en: "Pending"
+
+  plan_approved:
+    zh-CN: "已批准"
+    en: "Approved"
+
+  plan_declined:
+    zh-CN: "已拒绝"
+    en: "Declined"
+
+  plan_cancelled:
+    zh-CN: "已取消"
+    en: "Cancelled"
+
+  hero_tagline:
+    zh-CN: "木牛流马,替你驮活"
+    en: "The wooden ox that hauls your work"
+
+  hero_no_key:
+    zh-CN: "尚未配置 API key——前往设置"
+    en: "No API key yet — open Settings"
+
+  api_key_input:
+    zh-CN: "输入 API 密钥"
+    en: "Enter API key"
+
+  search_ph:
+    zh-CN: "搜索"
+    en: "Search"
+
+  mode_switch_failed:
+    zh-CN: "模式切换失败:%{msg}"
+    en: "Failed to switch mode: %{msg}"
+
+  mode_channel_failed:
+    zh-CN: "模式切换:通道失败"
+    en: "Mode switch: channel failure"
+
+  switch_failed:
+    zh-CN: "切换失败:%{msg}"
+    en: "Switch failed: %{msg}"
+
+  permission_channel_failed:
+    zh-CN: "权限切换:通道失败"
+    en: "Permission switch: channel failure"
+
+  stats_counts:
+    zh-CN: "%{turns} 轮 %{steps} 步"
+    en: "%{turns} turns %{steps} steps"
+
+  stats_cache_hit_pct:
+    zh-CN: " · 缓存命中 %{hit}%"
+    en: " · cache hit %{hit}%"
+
+  stats_title:
+    zh-CN: "会话统计"
+    en: "Session stats"
+
+  stats_model_time:
+    zh-CN: "模型用时"
+    en: "Model time"
+
+  stats_tool_time:
+    zh-CN: "工具调用用时"
+    en: "Tool time"
+
+  stats_ttft:
+    zh-CN: "首 token 平均（TTFT）"
+    en: "Average TTFT"
+
+  stats_tps:
+    zh-CN: "输出速度（TPS）"
+    en: "Output speed (TPS)"
+
+  stats_cache_hit:
+    zh-CN: "缓存命中"
+    en: "Cache hit"
+
+  stats_uncached:
+    zh-CN: "未缓存输入"
+    en: "Uncached input"
+
+  stats_cache_read:
+    zh-CN: "缓存读取"
+    en: "Cache read"
+
+  stats_cache_write:
+    zh-CN: "缓存写入"
+    en: "Cache write"
+
+  stats_output:
+    zh-CN: "输出"
+    en: "Output"
+
+  stats_token_usage:
+    zh-CN: "Token 用量"
+    en: "Token usage"

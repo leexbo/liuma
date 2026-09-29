@@ -40,10 +40,11 @@ e2e:
 links:
     {{python}} scripts/verify-links
 
-# 桌面硬编码文案门禁(棘轮基线 scripts/desktop-i18n-baseline;
-# 迁移批次清零一个文件即从基线删行。批次计划见 docs/plans/i18n.md)
+# 桌面文案门禁(唯一文案系统 = rust-i18n;五条规则:CJK 零容忍 / 英文 chrome
+# 零容忍 / locale 键齐备 / 键闭环 / 占位闭环)+ 门禁自测(夹具正反例,防假绿)
 desktop-i18n:
     {{python}} scripts/verify-desktop-i18n
+    {{python}} scripts/verify-desktop-i18n --self-test
 
 fmt-check:
     cargo fmt --all --check

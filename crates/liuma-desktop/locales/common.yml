@@ -1,0 +1,53 @@
+# 跨面通用词汇(通用按钮/状态;两处以上复用才上浮到这里)。
+# 专有文案进所属面文件:key 根段 == 文件名(跨文件键重复会静默覆盖,
+# 由根段约定 + 门禁排除)。
+#
+# 值一律加引号:YAML 会把 No/Yes/On/Off 之类裸标量解析成布尔/字符串以外
+# 的类型,rust-i18n 只收字符串叶子,漏引 = 该键静默消失。
+_version: 2
+
+common:
+
+  save:
+    zh-CN: "保存"
+    en: "Save"
+
+  cancel:
+    zh-CN: "取消"
+    en: "Cancel"
+
+  apply:
+    zh-CN: "应用"
+    en: "Apply"
+
+  edit:
+    zh-CN: "编辑"
+    en: "Edit"
+
+  remove:
+    zh-CN: "移除"
+    en: "Remove"
+
+  uninstall:
+    zh-CN: "卸载"
+    en: "Uninstall"
+
+  confirm:
+    zh-CN: "确认"
+    en: "Confirm"
+
+  copy:
+    zh-CN: "复制"
+    en: "Copy"
+
+  copied:
+    zh-CN: "复制成功"
+    en: "Copied"
+
+  collapse:
+    zh-CN: "收起"
+    en: "Collapse"
+
+  retry:
+    zh-CN: "重试"
+    en: "Retry"

@@ -36,9 +36,12 @@ use crate::shell::store::AppStore;
 
 /// 统一 tooltip 构造:字号 12px(组件库默认 text_sm = 14px,相对本
 /// 应用 13px 正文偏大)。全站 tooltip 一律经此构造,别直接 build。
-pub(crate) fn tip(text: &'static str) -> impl Fn(&mut Window, &mut App) -> gpui_kit::AnyView {
+pub(crate) fn tip(
+    text: impl Into<gpui_kit::SharedString>,
+) -> impl Fn(&mut Window, &mut App) -> gpui_kit::AnyView {
+    let text = text.into();
     move |window, cx| {
-        gpui_kit::component::tooltip::Tooltip::new(text)
+        gpui_kit::component::tooltip::Tooltip::new(text.clone())
             .text_size(px(12.))
             .build(window, cx)
     }

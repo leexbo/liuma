@@ -1,0 +1,525 @@
+# trajectory 面文案(由 dict/trajectory.rs 搬迁;key 根段 == 文件 stem)。
+# 值一律加引号(YAML 裸标量会被解析成非字符串,rust-i18n 只收字符串叶子)。
+_version: 2
+
+trajectory:
+
+  toolbar_duration:
+    zh-CN: "时长"
+    en: "Duration"
+
+  toolbar_turns:
+    zh-CN: "轮次"
+    en: "Turns"
+
+  toolbar_calls:
+    zh-CN: "调用"
+    en: "Calls"
+
+  kind_system:
+    zh-CN: "系统"
+    en: "SYSTEM"
+
+  kind_user:
+    zh-CN: "用户"
+    en: "USER"
+
+  kind_context:
+    zh-CN: "上下文"
+    en: "CONTEXT"
+
+  kind_compacted:
+    zh-CN: "已压缩"
+    en: "COMPACTED"
+
+  kind_assistant:
+    zh-CN: "助手"
+    en: "ASSISTANT"
+
+  kind_tool:
+    zh-CN: "工具"
+    en: "TOOL"
+
+  kind_decision:
+    zh-CN: "决策"
+    en: "DECISION"
+
+  tool_call_only:
+    zh-CN: "(仅工具调用)"
+    en: "(tool call only)"
+
+  compact_fallback:
+    zh-CN: "上下文已压缩"
+    en: "Context compacted"
+
+  request_result_compacted:
+    zh-CN: "已压缩"
+    en: "Compacted"
+
+  request_result_assistant:
+    zh-CN: "助手回复"
+    en: "Assistant Message"
+
+  request_n:
+    zh-CN: "请求 #%{n}"
+    en: "Request #%{n}"
+
+  legend_input:
+    zh-CN: "输入"
+    en: "Input"
+
+  legend_model:
+    zh-CN: "模型"
+    en: "Model"
+
+  legend_tools:
+    zh-CN: "工具"
+    en: "Tools"
+
+  drag_hint:
+    zh-CN: "拖选筛选 · 滚轮缩放 · 右键清除"
+    en: "Drag to filter · scroll to zoom · right-click to clear"
+
+  counts:
+    zh-CN: "%{shown} / %{total} 条 · %{requests} 次请求"
+    en: "%{shown} / %{total} entries · %{requests} requests"
+
+  loading_older:
+    zh-CN: "正在加载更早记录…"
+    en: "Loading earlier events…"
+
+  load_older:
+    zh-CN: "加载更早记录(还有 %{n} 条)"
+    en: "Load %{n} earlier entries"
+
+  folding:
+    zh-CN: "正在折叠轨迹…"
+    en: "Folding trajectory…"
+
+  empty:
+    zh-CN: "会话尚无事件——发送首条消息后生成轨迹"
+    en: "No events yet — the trajectory appears after the first message"
+
+  folded_steps:
+    zh-CN: "… %{steps} 步 · %{tools} 个工具调用"
+    en: "… %{steps} steps · %{tools} tool calls"
+
+  folded_tools:
+    zh-CN: "… %{count} 个工具调用 · %{names}"
+    en: "… %{count} tool calls · %{names}"
+
+  turn_n:
+    zh-CN: "第 %{t} 轮"
+    en: "Turn %{t}"
+
+  turn_at:
+    zh-CN: "第 %{t} 轮 · %{at}"
+    en: "Turn %{t} · %{at}"
+
+  turn_message:
+    zh-CN: "第 %{t} 轮 · 消息"
+    en: "Turn %{t} · Message"
+
+  between_turns:
+    zh-CN: "轮间"
+    en: "Between turns"
+
+  tab_payload:
+    zh-CN: "调用参数"
+    en: "Payload"
+
+  tab_result:
+    zh-CN: "结果"
+    en: "Result"
+
+  tab_timing:
+    zh-CN: "计时"
+    en: "Timing"
+
+  tab_raw:
+    zh-CN: "原始"
+    en: "Raw"
+
+  tab_usage:
+    zh-CN: "用量"
+    en: "Usage"
+
+  tab_system_prompt:
+    zh-CN: "系统提示词"
+    en: "System Prompt"
+
+  tab_preview:
+    zh-CN: "预览"
+    en: "Preview"
+
+  tab_source:
+    zh-CN: "来源"
+    en: "Source"
+
+  tab_tools:
+    zh-CN: "工具"
+    en: "Tools"
+
+  tab_diff:
+    zh-CN: "差异"
+    en: "Diff"
+
+  tab_schema:
+    zh-CN: "模式"
+    en: "Schema"
+
+  tab_summary:
+    zh-CN: "摘要"
+    en: "Summary"
+
+  tab_decision:
+    zh-CN: "决策"
+    en: "Decision"
+
+  tab_fold:
+    zh-CN: "折叠"
+    en: "Fold"
+
+  scenario_guard:
+    zh-CN: "守卫"
+    en: "Guard"
+
+  scenario_stop:
+    zh-CN: "哨兵"
+    en: "Stop"
+
+  scenario_context:
+    zh-CN: "裁判"
+    en: "Context"
+
+  scenario_tool:
+    zh-CN: "咨询"
+    en: "Ask"
+
+  scenario_fold:
+    zh-CN: "折叠裁定"
+    en: "Fold judge"
+
+  verdict_proceed:
+    zh-CN: "放行"
+    en: "Proceed"
+
+  verdict_block:
+    zh-CN: "拦下"
+    en: "Block"
+
+  verdict_failed:
+    zh-CN: "已失败"
+    en: "Failed"
+
+  row_scenario:
+    zh-CN: "场景"
+    en: "Scenario"
+
+  row_verdict:
+    zh-CN: "裁决"
+    en: "Verdict"
+
+  row_questions:
+    zh-CN: "问题"
+    en: "Questions"
+
+  row_answers:
+    zh-CN: "应答"
+    en: "Answers"
+
+  row_state_digest:
+    zh-CN: "状态摘要"
+    en: "State digest"
+
+  row_pruned:
+    zh-CN: "已修剪"
+    en: "Pruned"
+
+  pruned_count:
+    zh-CN: "%{n} 条工具输出"
+    en: "%{n} tool outputs"
+
+  no_decision:
+    zh-CN: "未记录决策"
+    en: "No decision recorded"
+
+  row_trigger:
+    zh-CN: "触发"
+    en: "Trigger"
+
+  trigger_auto:
+    zh-CN: "自动"
+    en: "Auto"
+
+  trigger_manual:
+    zh-CN: "手动"
+    en: "Manual"
+
+  trigger_overflow:
+    zh-CN: "溢出"
+    en: "Overflow"
+
+  trigger_unknown:
+    zh-CN: "未知"
+    en: "Unknown"
+
+  row_pressure:
+    zh-CN: "压力"
+    en: "Pressure"
+
+  row_threshold:
+    zh-CN: "门槛"
+    en: "Threshold"
+
+  row_retain:
+    zh-CN: "保留尾"
+    en: "Retain tail"
+
+  row_shadowed:
+    zh-CN: "遮蔽范围"
+    en: "Shadowed"
+
+  seq_range:
+    zh-CN: "seq %{a}–%{b}"
+    en: "seq %{a}–%{b}"
+
+  row_fold_items:
+    zh-CN: "折叠条目"
+    en: "Items"
+
+  fold_items_count:
+    zh-CN: "%{n} 条"
+    en: "%{n} items"
+
+  row_judge:
+    zh-CN: "价值裁定"
+    en: "Value judge"
+
+  judge_none:
+    zh-CN: "未裁定"
+    en: "Not judged"
+
+  row_prefix_tokens:
+    zh-CN: "前缀 Token"
+    en: "Prefix tokens"
+
+  judge_line:
+    zh-CN: "评估 %{judged}/%{total} · 判无价值 %{no_value} · 已裁 %{pruned}"
+    en: "Judged %{judged}/%{total} · disposable %{no_value} · dropped %{pruned}"
+
+  judge_unjudged:
+    zh-CN: "（另有 %{n} 条未评估）"
+    en: " (%{n} unjudged)"
+
+  no_fold:
+    zh-CN: "未记录折叠"
+    en: "No fold recorded"
+
+  fold_chip:
+    zh-CN: "%{items} 条 · %{tokens} tok"
+    en: "%{items} items · %{tokens} tok"
+
+  fold_chip_pruned:
+    zh-CN: " · 裁 %{n}"
+    en: " · %{n} dropped"
+
+  fold_band_clip:
+    zh-CN: "更早"
+    en: "earlier"
+
+  row_source:
+    zh-CN: "来源"
+    en: "Source"
+
+  row_hierarchy:
+    zh-CN: "层级"
+    en: "Hierarchy"
+
+  row_status:
+    zh-CN: "状态"
+    en: "Status"
+
+  status_completed:
+    zh-CN: "已完成"
+    en: "Completed"
+
+  row_duration:
+    zh-CN: "时长"
+    en: "Duration"
+
+  row_tokens:
+    zh-CN: "Token"
+    en: "Tokens"
+
+  row_reasoning:
+    zh-CN: "   推理"
+    en: "   Reasoning"
+
+  row_content:
+    zh-CN: "   内容"
+    en: "   Content"
+
+  row_total:
+    zh-CN: "总计"
+    en: "Total"
+
+  row_generation:
+    zh-CN: "生成"
+    en: "Generation"
+
+  row_throughput:
+    zh-CN: "吞吐"
+    en: "Throughput"
+
+  timing_session:
+    zh-CN: "会话时间戳"
+    en: "Session timestamps"
+
+  timing_na:
+    zh-CN: "不可用"
+    en: "Not available"
+
+  row_started:
+    zh-CN: "开始"
+    en: "Started"
+
+  row_output:
+    zh-CN: "输出"
+    en: "Output"
+
+  row_cached:
+    zh-CN: "   缓存"
+    en: "   Cached"
+
+  row_kind_other:
+    zh-CN: "   其他"
+    en: "   Other"
+
+  row_result:
+    zh-CN: "结果"
+    en: "Result"
+
+  row_provider:
+    zh-CN: "提供方"
+    en: "Provider"
+
+  row_model:
+    zh-CN: "模型"
+    en: "Model"
+
+  status_failed:
+    zh-CN: "失败"
+    en: "Failed"
+
+  status_pending:
+    zh-CN: "进行中"
+    en: "Pending"
+
+  sec_request_timing:
+    zh-CN: "请求计时"
+    en: "Request Timing"
+
+  no_payload:
+    zh-CN: "未捕获请求载荷"
+    en: "No payload captured"
+
+  no_result:
+    zh-CN: "未捕获结果"
+    en: "No result captured"
+
+  schema_na:
+    zh-CN: "无模式定义"
+    en: "Schema unavailable"
+
+  usage_na:
+    zh-CN: "未上报用量"
+    en: "Usage not reported"
+
+  usage_this:
+    zh-CN: "本次请求"
+    en: "This request"
+
+  usage_cumulative:
+    zh-CN: "会话累计"
+    en: "Session cumulative"
+
+  no_timing_data:
+    zh-CN: "无计时数据"
+    en: "No timing data"
+
+  na:
+    zh-CN: "不可用"
+    en: "Not available"
+
+  nav_assistant_message:
+    zh-CN: "助手消息"
+    en: "Assistant Message"
+
+  row_timing_source:
+    zh-CN: "计时来源"
+    en: "Timing source"
+
+  sec_parameters:
+    zh-CN: "参数"
+    en: "Parameters"
+
+  thinking:
+    zh-CN: "推理"
+    en: "Thinking"
+
+  status_complete:
+    zh-CN: "已完成"
+    en: "Complete"
+
+  row_tool_calls:
+    zh-CN: "工具调用"
+    en: "Tool calls"
+
+  row_completed:
+    zh-CN: "完成"
+    en: "Completed"
+
+  source_user:
+    zh-CN: "用户"
+    en: "User"
+
+  source_plugin:
+    zh-CN: "插件"
+    en: "Plugin"
+
+  source_goal:
+    zh-CN: "目标"
+    en: "Goal"
+
+  source_unknown:
+    zh-CN: "未知"
+    en: "Unknown"
+
+  source_plugin_named:
+    zh-CN: "插件 · %{name}"
+    en: "Plugin · %{name}"
+
+  source_goal_round:
+    zh-CN: "目标 · 第 %{round} 轮"
+    en: "Goal · Round %{round}"
+
+  no_content:
+    zh-CN: "无内容"
+    en: "No content"
+
+  source_not_recorded:
+    zh-CN: "未记录来源"
+    en: "Source not recorded"
+
+  message_json:
+    zh-CN: "消息 JSON"
+    en: "Message JSON"
+
+  no_system_prompt:
+    zh-CN: "本次请求无系统提示词"
+    en: "No system prompt in this request"
+
+  no_tools:
+    zh-CN: "本次请求无工具"
+    en: "No tools in this request"

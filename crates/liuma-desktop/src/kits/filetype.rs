@@ -11,7 +11,7 @@
 
 use gpui_kit::component::{Icon, IconName};
 
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use crate::kits::icons::{LiumaIcon, fixed};
 
 // ── 类型分类 ─────────────────────────────────────────────────
@@ -217,13 +217,14 @@ impl DocRenderer {
     }
 
     /// 菜单名
-    pub fn title(self) -> &'static str {
+    pub fn title(self) -> std::borrow::Cow<'static, str> {
         match self {
-            DocRenderer::Text => dict::misc::renderer_text(),
-            DocRenderer::Markdown => "Markdown",
-            DocRenderer::Image => dict::misc::renderer_image(),
-            DocRenderer::Pdf => "PDF",
-            DocRenderer::Code => dict::misc::renderer_code(),
+            DocRenderer::Text => t!("misc.renderer_text"),
+            // Markdown / PDF = 格式专名(两语言同形,逐字)
+            DocRenderer::Markdown => "Markdown".into(),
+            DocRenderer::Image => t!("misc.renderer_image"),
+            DocRenderer::Pdf => "PDF".into(),
+            DocRenderer::Code => t!("misc.renderer_code"),
         }
     }
 

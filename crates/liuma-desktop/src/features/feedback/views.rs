@@ -12,7 +12,7 @@ use gpui_kit::{
     StatefulInteractiveElement, Styled, div, px,
 };
 
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use crate::kits::icons::fixed;
 use crate::kits::popup::PopTrigger;
 use crate::kits::theme;
@@ -103,7 +103,7 @@ pub fn actions(store: &Entity<AppStore>, message_id: &str, cx: &App) -> Vec<gpui
                 .child(if note.is_some() {
                     note.clone().unwrap_or_default()
                 } else {
-                    dict::misc::supplement().to_string()
+                    t!("misc.supplement").to_string()
                 }),
         ))
         .content(move |_, window, cx| {
@@ -231,7 +231,7 @@ fn note_editor_card(
                             pop_save.update(cx, |state, cx| state.dismiss(window, cx));
                             save.update(cx, |st, cx| st.commit_feedback_note(cx));
                         })
-                        .child(dict::common::save()),
+                        .child(t!("common.save")),
                 )
                 .child(
                     div()
@@ -249,7 +249,7 @@ fn note_editor_card(
                             pop.update(cx, |state, cx| state.dismiss(window, cx));
                             close.update(cx, |st, cx| st.close_feedback_note(cx));
                         })
-                        .child(dict::common::cancel()),
+                        .child(t!("common.cancel")),
                 ),
         )
 }

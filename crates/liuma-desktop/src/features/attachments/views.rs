@@ -21,7 +21,7 @@ use gpui_kit::{
 };
 
 use crate::features::attachments::store::{DraftAttachment, image_size_text};
-use crate::kits::i18n::dict;
+use crate::kits::i18n::t;
 use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::theme;
 use crate::shell::store::AppStore;
@@ -624,6 +624,6 @@ pub fn drop_overlay(store: &Entity<AppStore>) -> impl IntoElement {
                 .text_color(theme::LABEL())
                 .text_size(px(14.))
                 .child(fixed(LiumaIcon::Paperclip, 16.))
-                .child(dict::files::drop_add()),
+                .child(t!("files.drop_add")),
         )
 }
