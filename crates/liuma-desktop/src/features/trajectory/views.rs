@@ -217,7 +217,9 @@ fn timing_source(available: bool) -> String {
 // ── 台账行模型(折叠/摘要/边界重建)──────────────
 
 /// 一行台账(渲染模型)
-enum LedgerRow<'a> {
+pub(crate) enum LedgerRow {
+    /// 「加载更早」行(30px)
+    LoadEarlier,
     /// Turn 折叠摘要行(20px)
     TurnSummary {
         turn: u64,
@@ -230,11 +232,21 @@ enum LedgerRow<'a> {
         count: usize,
         names: Vec<String>,
     },
-    /// 记录行(30px);turn_start 为过滤后重算的轮首
-    Record {
-        rec: &'a TrajectoryRecord,
-        turn_start: bool,
-    },
+    /// 记录行(30px);turn_start 为过滤后重算的轮首。
+    /// `rec_ix` = records 下标:行描述不持借用,虚拟列表按 index 解引用
+    Record { rec_ix: usize, turn_start: bool },
+}
+
+impl LedgerRow {
+    /// 行型(定高行:类型序列相同 = 总内容高不变,列表可零操作)
+    fn kind(&self) -> u8 {
+        match self {
+            LedgerRow::LoadEarlier => 0,
+            LedgerRow::TurnSummary { .. } => 1,
+            LedgerRow::CallSummary { .. } => 2,
+            LedgerRow::Record { .. } => 3,
+        }
+    }
 }
 
 /// 搜索命中(空格分词 AND、大小写不敏感)
@@ -282,11 +294,11 @@ impl CollapseState {
 }
 
 /// 可见记录 → 渲染行(搜索/时间线选区过滤 + turn/calls 折叠 + 轮首重算)
-fn build_rows<'a>(
-    records: &'a [TrajectoryRecord],
+fn build_rows(
+    records: &[TrajectoryRecord],
     visible: &[bool],
     collapse: &CollapseState,
-) -> Vec<LedgerRow<'a>> {
+) -> Vec<LedgerRow> {
     let mut rows: Vec<LedgerRow> = Vec::new();
     let mut seen_turns: HashSet<u64> = HashSet::new();
     let mut i = 0;
@@ -320,7 +332,10 @@ fn build_rows<'a>(
                 }
                 j += 1;
             }
-            rows.push(LedgerRow::Record { rec, turn_start });
+            rows.push(LedgerRow::Record {
+                rec_ix: i,
+                turn_start,
+            });
             rows.push(LedgerRow::TurnSummary {
                 turn: t,
                 steps,
@@ -354,7 +369,10 @@ fn build_rows<'a>(
                 count += 1;
                 j += 1;
             }
-            rows.push(LedgerRow::Record { rec, turn_start });
+            rows.push(LedgerRow::Record {
+                rec_ix: i,
+                turn_start,
+            });
             if count > 0 {
                 rows.push(LedgerRow::CallSummary {
                     message_index: rec.index,
@@ -365,7 +383,10 @@ fn build_rows<'a>(
             i = j;
             continue;
         }
-        rows.push(LedgerRow::Record { rec, turn_start });
+        rows.push(LedgerRow::Record {
+            rec_ix: i,
+            turn_start,
+        });
         i += 1;
     }
     rows
@@ -520,8 +541,15 @@ fn span_color(span: &TlSpan) -> Rgba {
 // ── 渲染期快照 ─────────────────────────────────────────────────
 
 /// store 一次性读出(避免借用交叉;同 chat_pane 的预取模式)
-struct Snap {
-    view: TrajectoryView,
+struct Snap<'a> {
+    /// 台账(**借用**;此前为每帧 `clone()`——大会话下含 payload /
+    /// thinking / system_prompt 的整表深拷贝是滚动卡顿与分配抖动之源)
+    view: &'a TrajectoryView,
+    /// 记录集派生索引(检查器查找用)
+    index: Option<&'a RecordIndex>,
+    /// 检查器选中记录所属轮(每帧算一次;此前 `record_row` **每行**重扫
+    /// 全表找选中记录 —— 虚拟化后是「可视行数 × 记录数」的每帧成本)
+    inspector_turn: Option<u64>,
     duration: bool,
     collapse: CollapseState,
     inspector: Option<InspectTarget>,
@@ -532,17 +560,315 @@ struct Snap {
     expanded_tools: HashSet<String>,
     selection: Option<(f64, f64)>,
     viewport: Option<(f64, f64)>,
-    /// 拖拽锚点(track 原始分数 0..1,非视口映射域分数)
-    drag: Option<f64>,
     draft: Option<(f64, f64)>,
-    search: String,
     inspector_width: f32,
 }
 
-fn snap(store: &Entity<AppStore>, cx: &App) -> Snap {
-    let st = store.read(cx);
+/// 记录集派生索引(记录变化时一次遍历建齐)。
+///
+/// 检查器此前三处查找都靠全表扫(`previous_system_snapshot` /
+/// `parent_message` / `step_tool_calls`),台账行内还有一处「选中轮」全表扫
+/// ——虚拟化后每帧每可视行各扫一遍全表(可视 50 行 × 2000 记录 = 十万级)。
+/// 本索引把三者降为 O(1)/O(k)(k = 该步工具数)
+pub(crate) struct RecordIndex {
+    /// 记录 index → 显示序下标
+    pos_of: std::collections::HashMap<u64, usize>,
+    /// 每行:此前最近一条「带 System Prompt 快照的 SYSTEM 记录」下标
+    prev_system: Vec<Option<usize>>,
+    /// 每行:同 (turn, group) 内此前最近一条 message 下标
+    parent_msg: Vec<Option<usize>>,
+    /// (turn, group) → 该步全部工具记录下标(显示序)
+    tool_sibs: std::collections::HashMap<(Option<u64>, String), Vec<usize>>,
+}
+
+impl RecordIndex {
+    fn build(records: &[TrajectoryRecord]) -> Self {
+        let mut pos_of = std::collections::HashMap::with_capacity(records.len());
+        let mut prev_system = Vec::with_capacity(records.len());
+        let mut parent_msg = Vec::with_capacity(records.len());
+        let mut tool_sibs: std::collections::HashMap<(Option<u64>, String), Vec<usize>> =
+            std::collections::HashMap::new();
+        // 前一个「带快照 SYSTEM」下标 / 同步前一条 message 下标(前向扫描)
+        let mut last_system: Option<usize> = None;
+        let mut last_msg: std::collections::HashMap<(Option<u64>, String), usize> =
+            std::collections::HashMap::new();
+        for (i, r) in records.iter().enumerate() {
+            pos_of.insert(r.index, i);
+            prev_system.push(last_system);
+            let key = (r.turn, r.group.clone());
+            // 严格早于本行:先取后写(message 自身不作自己的父)
+            parent_msg.push(
+                last_msg
+                    .get(&key)
+                    .copied()
+                    .filter(|j| records[*j].index < r.index),
+            );
+            if r.kind == "message" {
+                last_msg.insert(key.clone(), i);
+            }
+            if r.kind == "system" && r.system_prompt.is_some() {
+                last_system = Some(i);
+            }
+            if r.kind == "tool" {
+                tool_sibs.entry(key).or_default().push(i);
+            }
+        }
+        Self {
+            pos_of,
+            prev_system,
+            parent_msg,
+            tool_sibs,
+        }
+    }
+
+    /// 前一个带 System Prompt 快照的 SYSTEM 记录(Diff 页左侧)
+    fn previous_system_snapshot<'r>(
+        &self,
+        records: &'r [TrajectoryRecord],
+        r: &TrajectoryRecord,
+    ) -> Option<&'r TrajectoryRecord> {
+        let i = *self.pos_of.get(&r.index)?;
+        self.prev_system
+            .get(i)
+            .copied()
+            .flatten()
+            .map(|j| &records[j])
+    }
+
+    /// 同 (turn, group) 内此前最近一条 message
+    fn parent_message<'r>(
+        &self,
+        records: &'r [TrajectoryRecord],
+        r: &TrajectoryRecord,
+    ) -> Option<&'r TrajectoryRecord> {
+        let i = *self.pos_of.get(&r.index)?;
+        self.parent_msg
+            .get(i)
+            .copied()
+            .flatten()
+            .map(|j| &records[j])
+    }
+
+    /// 该步全部工具记录(显示序)
+    fn step_tool_calls<'r, 'i>(
+        &'i self,
+        records: &'r [TrajectoryRecord],
+        r: &TrajectoryRecord,
+    ) -> impl Iterator<Item = &'r TrajectoryRecord> + 'i
+    where
+        'r: 'i,
+    {
+        self.tool_sibs
+            .get(&(r.turn, r.group.clone()))
+            .into_iter()
+            .flatten()
+            .map(move |j| &records[*j])
+    }
+
+    /// 按记录 index 取记录(检查器选中的那一行)
+    fn get<'r>(&self, records: &'r [TrajectoryRecord], index: u64) -> Option<&'r TrajectoryRecord> {
+        self.pos_of.get(&index).map(|i| &records[*i])
+    }
+}
+
+/// 行槽/投影缓存签名:任一项变化都会改变行集合或投影条,故变化即重建
+#[derive(Clone, PartialEq)]
+struct LedgerSig {
+    /// 台账数据版本(拉取/翻页/增量各 +1)
+    version: u64,
+    /// 数据指纹(O(1) 派生量)。版本号由各写入点维护,指纹兜住「忘了 +1」
+    /// 的路径(测试直接替换 records、外部直接改折叠集合等):缓存键必须由
+    /// 依赖的数据派生,不能只信手工计数器
+    records: usize,
+    first_index: Option<u64>,
+    last_index: Option<u64>,
+    total: u64,
+    has_older: bool,
+    requests: usize,
+    /// 折叠态版本(折叠切换单调 +1)
+    collapse_ver: u64,
+    /// 折叠形状(覆盖绕过版本号的直接改动:搜索页会直接改折叠集合)
+    all_turns: bool,
+    turns: usize,
+    all_calls: bool,
+    calls: usize,
+    /// 搜索串(空 = 不过滤)
+    search: String,
+    /// 时间线 duration 模式
+    duration: bool,
+    /// 时间线选区(域归一化;None = 全览)
+    selection: Option<(f64, f64)>,
+    /// 时间线拖拽草稿选区
+    draft: Option<(f64, f64)>,
+}
+
+/// 行槽与投影行缓存(签名守卫)。虚拟列表每帧按 index 直读本缓存,故
+/// `build_spans` / `build_fold_bands` / 可见性过滤 / `build_rows` 只在签名
+/// 变化时跑——稳态帧与滚动帧免除全部 O(n) 预计算
+pub(crate) struct LedgerCache {
+    sig: LedgerSig,
+    /// 时间线投影条
+    spans: Vec<TlSpan>,
+    /// 投影条上的折叠带
+    bands: Vec<FoldBand>,
+    /// 台账行槽(「加载更早」前缀 + 数据行)
+    pub(crate) rows: Vec<LedgerRow>,
+    /// 记录集派生索引(检查器 O(1) 查找)
+    index: RecordIndex,
+}
+
+/// 可见性 = 搜索 ∧ 时间线选区(选区按投影条重叠;无条目记录被移出)
+fn visible_records(
+    records: &[TrajectoryRecord],
+    spans: &[TlSpan],
+    search: &str,
+    range: Option<(f64, f64)>,
+) -> Vec<bool> {
+    let searching = !search.trim().is_empty();
+    records
+        .iter()
+        .map(|r| {
+            let ok_search = !searching || search_hit(r, search);
+            let ok_range = match range {
+                None => true,
+                Some((a, b)) => spans
+                    .iter()
+                    .any(|sp| sp.record_index == r.index && sp.x1 > a && sp.x0 < b),
+            };
+            ok_search && ok_range
+        })
+        .collect()
+}
+
+/// 重建行槽/投影缓存(签名命中即返回)。渲染前调用
+pub(crate) fn refresh_view_cache(st: &mut AppStore, cx: &App) {
+    let search = st
+        .trajectory
+        .trajectory_search
+        .as_ref()
+        .map(|e| e.read(cx).value().to_string())
+        .unwrap_or_default();
+    let view = &st.trajectory.trajectory;
+    let sig = LedgerSig {
+        version: st.trajectory.trajectory_version,
+        records: view.records.len(),
+        first_index: view.records.first().map(|r| r.index),
+        last_index: view.records.last().map(|r| r.index),
+        total: view.total,
+        has_older: view.has_older,
+        requests: view.requests.len(),
+        collapse_ver: st.trajectory.collapse_ver,
+        all_turns: st.trajectory.all_turns_collapsed,
+        turns: st.trajectory.collapsed_turns.len(),
+        all_calls: st.trajectory.all_calls_collapsed,
+        calls: st.trajectory.collapsed_calls.len(),
+        search,
+        duration: st.trajectory.trajectory_duration,
+        selection: st.trajectory.timeline_selection,
+        draft: st.trajectory.timeline_draft,
+    };
+    if st
+        .trajectory
+        .view_cache
+        .as_ref()
+        .is_some_and(|c| c.sig == sig)
+    {
+        return;
+    }
+    // 形状变化前的可视锚:当前顶行所在记录(折叠/搜索后据此复位视口,
+    // 免长台账跳回顶部)
+    let anchor_rec_ix = st.trajectory.view_cache.as_ref().and_then(|c| {
+        let top = st.trajectory.trajectory_list.logical_scroll_top();
+        c.rows.get(top.item_ix..)?.iter().find_map(|r| match r {
+            LedgerRow::Record { rec_ix, .. } => Some(*rec_ix),
+            _ => None,
+        })
+    });
+
+    let records = &st.trajectory.trajectory.records;
+    let spans = build_spans(records, sig.duration);
+    let bands = build_fold_bands(records, &spans);
+    let collapse = CollapseState {
+        all_turns: st.trajectory.all_turns_collapsed,
+        turns: st.trajectory.collapsed_turns.clone(),
+        calls: st.trajectory.collapsed_calls.clone(),
+        all_calls: st.trajectory.all_calls_collapsed,
+    };
+    let visible = visible_records(records, &spans, &sig.search, sig.selection.or(sig.draft));
+    let mut rows: Vec<LedgerRow> = Vec::new();
+    if st.trajectory.trajectory.has_older {
+        rows.push(LedgerRow::LoadEarlier);
+    }
+    rows.extend(build_rows(records, &visible, &collapse));
+
+    st.trajectory.view_cache = Some(LedgerCache {
+        sig,
+        spans,
+        bands,
+        rows,
+        index: RecordIndex::build(records),
+    });
+    sync_trajectory_rows(st, anchor_rec_ix);
+}
+
+/// 行槽对齐 ListState。行高按型定值(记录 30px;摘要行 20px;「加载更早」
+/// 30px),故只按**行型序列**判变化,不做无谓重排:
+/// - 序列同长同型 = 纯内容更新(流式 upsert / 状态翻转),列表零操作;
+/// - 纯追加 → `splice(old..old, added)`(新项 Unmeasured,入视口才测高);
+/// - 纯前插 → `splice(0..0, added)`:list 内部把 `logical_scroll_top` 的
+///   `item_ix` 平移 +added 且保留已测高度,「加载更早」不跳视口;
+/// - 形状变化(折叠/搜索/换会话)→ `reset` + 按锚记录复位视口
+fn sync_trajectory_rows(st: &mut AppStore, anchor_rec_ix: Option<usize>) {
+    let Some(cache) = st.trajectory.view_cache.as_ref() else {
+        return;
+    };
+    let kinds: Vec<u8> = cache.rows.iter().map(LedgerRow::kind).collect();
+    let old = std::mem::replace(&mut st.trajectory.row_kinds, kinds.clone());
+    if old == kinds {
+        return; // 行型未变 = 总高未变
+    }
+    let list = st.trajectory.trajectory_list.clone();
+    let (old_len, new_len) = (old.len(), kinds.len());
+    if old_len < new_len {
+        let added = new_len - old_len;
+        if kinds[..old_len] == old[..] {
+            list.splice(old_len..old_len, added); // 纯追加
+            return;
+        }
+        if kinds[added..] == old[..] {
+            list.splice(0..0, added); // 纯前插(滚动位自动平移)
+            return;
+        }
+    }
+    // 形状变化:重建 + 复位到原可视记录。reset 会清掉 logical_scroll_top,
+    // 位置自此不可信(见 store::scroll_pos_known),须等下一次真滚动
+    st.trajectory.scroll_pos_known = false;
+    list.reset(new_len);
+    if let Some(target) = anchor_rec_ix
+        && let Some(ix) = cache
+            .rows
+            .iter()
+            .position(|r| matches!(r, LedgerRow::Record { rec_ix, .. } if *rec_ix == target))
+    {
+        list.scroll_to(gpui_kit::ListOffset {
+            item_ix: ix,
+            offset_in_item: px(0.),
+        });
+    }
+}
+
+fn snap(st: &AppStore) -> Snap<'_> {
+    let index = st.trajectory.view_cache.as_ref().map(|c| &c.index);
+    let inspector_turn = match st.trajectory.inspector {
+        Some(InspectTarget::Record(ix)) => index
+            .and_then(|i| i.get(&st.trajectory.trajectory.records, ix))
+            .and_then(|r| r.turn),
+        _ => None,
+    };
     Snap {
-        view: st.trajectory.trajectory.clone(),
+        view: &st.trajectory.trajectory,
+        index,
+        inspector_turn,
         duration: st.trajectory.trajectory_duration,
         collapse: CollapseState {
             all_turns: st.trajectory.all_turns_collapsed,
@@ -558,14 +884,7 @@ fn snap(store: &Entity<AppStore>, cx: &App) -> Snap {
         expanded_tools: st.trajectory.expanded_inspector_tools.clone(),
         selection: st.trajectory.timeline_selection,
         viewport: st.trajectory.timeline_viewport,
-        drag: st.trajectory.timeline_drag,
         draft: st.trajectory.timeline_draft,
-        search: st
-            .trajectory
-            .trajectory_search
-            .as_ref()
-            .map(|e| e.read(cx).value().to_string())
-            .unwrap_or_default(),
         inspector_width: st.trajectory.inspector_width,
     }
 }
@@ -590,30 +909,29 @@ fn local_frac(cell: &Rc<Cell<Option<Bounds<Pixels>>>>, window_x: Pixels) -> Opti
 
 /// 轨迹视图根:工具栏 + 时间线 + (台账表 | 检查器)
 pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> impl IntoElement {
-    let resizing = store.read(cx).trajectory.inspector_resize_anchor.is_some();
-    let s = snap(store, cx);
-    let records = &s.view.records;
-    let spans = build_spans(records, s.duration);
-    let bands = build_fold_bands(records, &spans);
-    let searching = !s.search.trim().is_empty();
-    let range = s.selection.or(s.draft);
-
-    // 可见性 = 搜索 ∧ 时间线选区(选区按投影条重叠;无条目记录被移出)
-    let visible: Vec<bool> = records
-        .iter()
-        .map(|r| {
-            let ok_search = !searching || search_hit(r, &s.search);
-            let ok_range = match range {
-                None => true,
-                Some((a, b)) => spans
-                    .iter()
-                    .any(|sp| sp.record_index == r.index && sp.x1 > a && sp.x0 < b),
-            };
-            ok_search && ok_range
-        })
-        .collect();
-
-    let rows = build_rows(records, &visible, &s.collapse);
+    // 行槽/投影行按签名缓存:命中即免本帧全部 O(n) 预计算;台账滚动由
+    // ListState 托管(回调只装一次)
+    store.update(cx, |st, cx| {
+        refresh_view_cache(st, cx);
+        st.install_trajectory_scroll_handler(cx);
+    });
+    // 小状态一次取净(借用即刻结束):长借 `&AppStore` 会与下方各段所需的
+    // `&mut App` 冲突,故快照在各段内按需构建
+    let (resizing, drag_active, spans, bands) = {
+        let st = store.read(cx);
+        let (spans, bands) = match st.trajectory.view_cache.as_ref() {
+            Some(c) => (c.spans.clone(), c.bands.clone()),
+            None => (Vec::new(), Vec::new()),
+        };
+        (
+            st.trajectory.inspector_resize_anchor.is_some(),
+            st.trajectory.timeline_drag.is_some(),
+            spans,
+            bands,
+        )
+    };
+    // 拖拽监听需要 spans 的自持副本(下方 timeline 取走所有权)
+    let listeners_spans = spans.clone();
 
     div()
         .id("trajectory-view")
@@ -622,21 +940,21 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         .min_h(px(0.))
         .overflow_hidden()
         .debug_selector(|| "trajectory-view".to_string())
-        .child(toolbar(store, &s, cx))
-        .child(timeline(store, &s, &spans, &bands))
+        .child(toolbar(store, cx))
+        .child(timeline(store, cx, spans, bands))
         .child(
             div()
                 .flex()
                 .flex_1()
                 .min_h(px(0.))
-                .child(ledger(store, &s, rows, cx))
-                .children(inspector(store, &s, window, cx)),
+                .child(ledger(store, cx))
+                .children(inspector(store, window, cx)),
         )
         // 拖宽/时间线拖拽进行中:窗口级 move/up 经 canvas.paint(Paint
         // 相位)注册——render 在 Prepaint 相位跑,直接 on_mouse_event
         // 会 panic(与 sessions::drag_overlay 同款惯例)
-        .when(resizing || s.drag.is_some(), |el| {
-            el.child(window_listeners(store, spans.clone()))
+        .when(resizing || drag_active, |el| {
+            el.child(window_listeners(store, listeners_spans))
         })
 }
 
@@ -723,7 +1041,9 @@ fn window_listeners(store: &Entity<AppStore>, spans: Vec<TlSpan>) -> impl IntoEl
 
 // ── 工具栏─────────────────────────────
 
-fn toolbar(store: &Entity<AppStore>, s: &Snap, cx: &App) -> impl IntoElement {
+fn toolbar(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
+    let st = store.read(cx);
+    let s = snap(st);
     let input = store
         .read(cx)
         .trajectory
@@ -929,10 +1249,13 @@ fn action_button(
 
 fn timeline(
     store: &Entity<AppStore>,
-    s: &Snap,
-    spans: &[TlSpan],
-    bands: &[FoldBand],
+    cx: &App,
+    spans: Vec<TlSpan>,
+    bands: Vec<FoldBand>,
 ) -> impl IntoElement {
+    let st = store.read(cx);
+    let s = snap(st);
+    let (spans, bands) = (spans.as_slice(), bands.as_slice());
     let labels = [
         t!("trajectory.legend_input"),
         t!("trajectory.legend_model"),
@@ -1312,125 +1635,137 @@ fn timeline(
 
 // ── 台账表────────────────────────────────
 
-fn ledger(
-    store: &Entity<AppStore>,
-    s: &Snap,
-    rows: Vec<LedgerRow<'_>>,
-    cx: &App,
-) -> impl IntoElement {
-    let scroll = store.read(cx).trajectory.trajectory_scroll.clone();
-    let loading_initial = s.view.loading && s.view.records.is_empty();
-    let empty_table = !loading_initial && s.view.records.is_empty();
-
-    let mut children: Vec<gpui_kit::AnyElement> = Vec::new();
-    if s.view.has_older {
-        let s2 = store.clone();
-        children.push(
-            div()
-                .id("load-earlier")
-                .flex()
-                .h(px(30.))
-                .flex_shrink_0()
-                .items_center()
-                .justify_center()
-                .gap(px(6.))
-                .cursor_pointer()
-                .text_size(px(12.))
-                .text_color(theme::LABEL_3())
-                .hover(|st| st.bg(theme::LAYER()).text_color(theme::LABEL_2()))
-                .debug_selector(|| "load-earlier".to_string())
-                .when(s.view.loading_older, |el| {
-                    el.child(Spinner::new().xsmall())
-                        .child(t!("trajectory.loading_older").to_string())
-                })
-                .when(!s.view.loading_older, |el| {
-                    el.child(t!(
-                        "trajectory.load_older",
-                        n = s.view.total.saturating_sub(s.view.records.len() as u64)
-                    ))
-                })
-                .on_click(move |_, _, cx| {
-                    s2.update(cx, |st, cx| st.load_earlier_trajectory(cx));
-                })
-                .into_any_element(),
-        );
+/// 台账表:内建 `list()` 虚拟化——只有可视 + overdraw 行被构建。
+///
+/// 行槽由 [`LedgerCache`] 按签名预计算,item 闭包按 index 直读(与消息列
+/// 同款)。此前每帧构建全部行、且 `snap()` 深拷贝整份台账(含 payload /
+/// thinking / system_prompt):大会话滚动是 MB 级分配 + O(n²) 逐行全表扫
+fn ledger(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
+    let st = store.read(cx);
+    let list_state = st.trajectory.trajectory_list.clone();
+    let loading_initial =
+        st.trajectory.trajectory.loading && st.trajectory.trajectory.records.is_empty();
+    let empty_table = !loading_initial && st.trajectory.trajectory.records.is_empty();
+    let row_count = st
+        .trajectory
+        .view_cache
+        .as_ref()
+        .map(|c| c.rows.len())
+        .unwrap_or(0);
+    // 空态/首拉态不入列表:整面占位(与定高数据行不同型,单独渲染)
+    if empty_table || loading_initial || row_count == 0 {
+        return div()
+            .id("trajectory-scroll")
+            .debug_selector(|| "trajectory-scroll".to_string())
+            .v_flex()
+            .flex_1()
+            .min_w(px(0.))
+            .min_h(px(0.))
+            .items_center()
+            .justify_center()
+            .gap(px(8.))
+            .py(px(40.))
+            .text_size(px(12.))
+            .text_color(theme::CAPTION())
+            .when(loading_initial, |el| {
+                el.child(Spinner::new().xsmall())
+                    .child(t!("trajectory.folding"))
+            })
+            .when(empty_table, |el| {
+                el.child(fixed(IconName::Inbox, 16.))
+                    .child(t!("trajectory.empty"))
+            })
+            .when(empty_table, |el| {
+                el.debug_selector(|| "trajectory-empty".to_string())
+            })
+            .when(loading_initial, |el| {
+                el.debug_selector(|| "trajectory-loading".to_string())
+            })
+            .into_any_element();
     }
-    for row in &rows {
-        children.push(match row {
+
+    // 逐项闭包持 store 实体:虚拟化下只有可视(+overdraw)项被构建,
+    // 每项单次 read 借用
+    let item_store = store.clone();
+    let list = gpui_kit::list(list_state, move |ix, _window, cx| {
+        let st = item_store.read(cx);
+        let s = snap(st);
+        let Some(cache) = st.trajectory.view_cache.as_ref() else {
+            return div().into_any_element();
+        };
+        let Some(row) = cache.rows.get(ix) else {
+            return div().into_any_element();
+        };
+        match row {
+            LedgerRow::LoadEarlier => load_earlier_row(st, &item_store).into_any_element(),
             LedgerRow::TurnSummary { turn, steps, tools } => {
-                turn_summary_row(store, *turn, *steps, *tools).into_any_element()
+                turn_summary_row(&item_store, *turn, *steps, *tools).into_any_element()
             }
             LedgerRow::CallSummary {
                 message_index,
                 count,
                 names,
-            } => call_summary_row(store, *message_index, *count, names).into_any_element(),
-            LedgerRow::Record { rec, turn_start } => {
-                record_row(store, s, rec, *turn_start).into_any_element()
-            }
-        });
-    }
-    if loading_initial {
-        children.push(
-            div()
-                .id("trajectory-loading")
-                .flex()
-                .h(px(40.))
-                .flex_shrink_0()
-                .items_center()
-                .justify_center()
-                .gap(px(8.))
-                .text_size(px(12.))
-                .text_color(theme::CAPTION())
-                .child(Spinner::new().xsmall())
-                .child(t!("trajectory.folding"))
-                .into_any_element(),
-        );
-    }
-    if empty_table {
-        children.push(
-            div()
-                .id("trajectory-empty")
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_h(px(120.))
-                .items_center()
-                .justify_center()
-                .gap(px(8.))
-                .py(px(40.))
-                .text_size(px(12.))
-                .text_color(theme::CAPTION())
-                .debug_selector(|| "trajectory-empty".to_string())
-                .child(fixed(IconName::Inbox, 16.))
-                .child(t!("trajectory.empty"))
-                .into_any_element(),
-        );
-    }
+            } => call_summary_row(&item_store, *message_index, *count, names).into_any_element(),
+            LedgerRow::Record { rec_ix, turn_start } => match s.view.records.get(*rec_ix) {
+                Some(rec) => record_row(&item_store, &s, rec, *turn_start).into_any_element(),
+                None => div().into_any_element(),
+            },
+        }
+    });
 
+    // 点表空白:关检查器 + 清时间线选区(行内点击已 stop_propagation,
+    // 到达此处的必是背景点击,一并清空选中态)
     let s2 = store.clone();
-    let s3 = store.clone();
     div()
         .id("trajectory-scroll")
-        .track_scroll(&scroll)
+        .debug_selector(|| "trajectory-scroll".to_string())
         .v_flex()
         .flex_1()
         .min_w(px(0.))
         .min_h(px(0.))
-        .overflow_y_scroll()
-        .debug_selector(|| "trajectory-scroll".to_string())
-        .on_scroll_wheel(move |_, _, cx| {
-            s3.update(cx, |st, cx| st.on_trajectory_scroll(cx));
-        })
-        // 点表空白:关检查器 + 清时间线选区(行内点击已 stop_propagation,
-        // 到达此处的必是背景点击,一并清空选中态)
         .on_click(move |_, _, cx| {
             s2.update(cx, |st, cx| {
                 st.close_inspector(cx);
                 st.set_timeline_selection(None, cx);
             });
         })
-        .children(children)
+        // 列表须显式占满包裹层(taffy 下 auto 尺寸会塌成 0 高 → 零行)
+        .child(list.h_full().w_full())
+        .into_any_element()
+}
+
+/// 「加载更早」行(30px;has_older 时置行首)
+fn load_earlier_row(st: &AppStore, store: &Entity<AppStore>) -> impl IntoElement {
+    let loading = st.trajectory.trajectory.loading_older;
+    let remaining = st
+        .trajectory
+        .trajectory
+        .total
+        .saturating_sub(st.trajectory.trajectory.records.len() as u64);
+    let s2 = store.clone();
+    div()
+        .id("load-earlier")
+        .flex()
+        .h(px(30.))
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .gap(px(6.))
+        .cursor_pointer()
+        .text_size(px(12.))
+        .text_color(theme::LABEL_3())
+        .hover(|st| st.bg(theme::LAYER()).text_color(theme::LABEL_2()))
+        .debug_selector(|| "load-earlier".to_string())
+        .when(loading, |el| {
+            el.child(Spinner::new().xsmall())
+                .child(t!("trajectory.loading_older").to_string())
+        })
+        .when(!loading, |el| {
+            el.child(t!("trajectory.load_older", n = remaining))
+        })
+        .on_click(move |_, _, cx| {
+            s2.update(cx, |st, cx| st.load_earlier_trajectory(cx));
+        })
 }
 
 /// Turn 折叠摘要行(20px)
@@ -1493,21 +1828,13 @@ fn call_summary_row(
 /// content 列(摘要 / 工具双栏)
 fn record_row(
     store: &Entity<AppStore>,
-    s: &Snap,
+    s: &Snap<'_>,
     rec: &TrajectoryRecord,
     turn_start: bool,
 ) -> impl IntoElement {
     let selected = s.inspector == Some(InspectTarget::Record(rec.index));
-    let selected_turn = match s.inspector {
-        Some(InspectTarget::Record(ix)) => s
-            .view
-            .records
-            .iter()
-            .find(|r| r.index == ix)
-            .and_then(|r| r.turn)
-            .is_some_and(|t| Some(t) == rec.turn),
-        _ => false,
-    };
+    // 选中轮由 `snap()` 每帧算一次(原为每行全表扫)
+    let selected_turn = s.inspector_turn.is_some_and(|t| Some(t) == rec.turn);
 
     let rail_color = if rec.is_error {
         mix(theme::DANGER(), theme::BASE(), 0.22)
@@ -1863,25 +2190,15 @@ fn inspector_tabs_for(rec: Option<&TrajectoryRecord>, diff_available: bool) -> V
     }
 }
 
-/// 前一 SYSTEM 快照(Diff 页左侧;更新记录按行序向前找带快照的 system)
-fn previous_system_snapshot<'a>(
-    records: &'a [TrajectoryRecord],
-    current: &TrajectoryRecord,
-) -> Option<&'a TrajectoryRecord> {
-    records
-        .iter()
-        .rfind(|r| r.kind == "system" && r.index < current.index && r.system_prompt.is_some())
-}
-
 fn inspector(
     store: &Entity<AppStore>,
-    s: &Snap,
     _window: &mut Window,
-    _cx: &mut App,
+    cx: &mut App,
 ) -> Option<impl IntoElement> {
+    let s = snap(store.read(cx));
     let target = s.inspector?;
     let record = match target {
-        InspectTarget::Record(ix) => s.view.records.iter().find(|r| r.index == ix),
+        InspectTarget::Record(ix) => s.index.and_then(|i| i.get(&s.view.records, ix)),
         InspectTarget::Request(_) => None,
     };
     let request = match target {
@@ -1894,7 +2211,8 @@ fn inspector(
     let diff_available = record.is_some_and(|r| {
         r.kind == "system"
             && r.text != "Initial System Prompt"
-            && previous_system_snapshot(&s.view.records, r).is_some()
+            && s.index
+                .is_some_and(|i| i.previous_system_snapshot(&s.view.records, r).is_some())
     });
     let tabs = inspector_tabs_for(record, diff_available);
     let active = s
@@ -1981,24 +2299,24 @@ fn inspector(
         // ── 请求 ──
         (None, Some(q), "usage") => usage_body(q).into_any_element(),
         (None, Some(q), "timing") => request_timing_body(q).into_any_element(),
-        (None, Some(q), _) => request_summary_body(store, s, q).into_any_element(),
+        (None, Some(q), _) => request_summary_body(store, &s, q).into_any_element(),
         // ── 记录 ──
-        (Some(r), _, "payload") => payload_body(store, s, r).into_any_element(),
-        (Some(r), _, "result") => result_body(store, s, r).into_any_element(),
-        (Some(r), _, "raw") => raw_body(store, s, r).into_any_element(),
+        (Some(r), _, "payload") => payload_body(store, &s, r).into_any_element(),
+        (Some(r), _, "result") => result_body(store, &s, r).into_any_element(),
+        (Some(r), _, "raw") => raw_body(store, &s, r).into_any_element(),
         (Some(r), _, "preview") => match r.kind.as_str() {
-            "message" => assistant_preview_body(store, s, r).into_any_element(),
+            "message" => assistant_preview_body(store, &s, r).into_any_element(),
             _ => preview_tab_body(r).into_any_element(),
         },
         (Some(r), _, "source") => source_tab_body(r).into_any_element(),
         (Some(r), _, "system") => system_body(r).into_any_element(),
-        (Some(r), _, "tools") => tools_body(store, s, r).into_any_element(),
-        (Some(r), _, "diff") => diff_body(s, r).into_any_element(),
-        (Some(r), _, "schema") => schema_body(store, s, r).into_any_element(),
+        (Some(r), _, "tools") => tools_body(store, &s, r).into_any_element(),
+        (Some(r), _, "diff") => diff_body(&s, r).into_any_element(),
+        (Some(r), _, "schema") => schema_body(store, &s, r).into_any_element(),
         (Some(r), _, "decision") => decision_tab_body(r).into_any_element(),
         (Some(r), _, "fold") => fold_tab_body(r).into_any_element(),
         (Some(r), _, "timing") => timing_body(r).into_any_element(),
-        (Some(r), _, _) => summary_body(store, s, r).into_any_element(),
+        (Some(r), _, _) => summary_body(store, &s, r).into_any_element(),
         // 目标数据已不在窗口(翻页/直播后):占位
         (None, None, _) => div()
             .child(empty_text(t!("trajectory.na")))
@@ -2425,9 +2743,9 @@ fn json_preview_tokens(value: &serde_json::Value, depth: usize) -> Vec<(Rgba, St
 }
 
 /// JSON 树渲染上下文(store/记录索引随递归不变)
-struct JtCtx<'a> {
+struct JtCtx<'a, 'b> {
     store: &'a Entity<AppStore>,
-    s: &'a Snap,
+    s: &'a Snap<'b>,
     ix: u64,
 }
 
@@ -2517,7 +2835,12 @@ fn json_tree_rows(
 }
 
 /// JSON 树整体(顶层 `{` / children / `}`;调用方保证 object/array)
-fn json_tree_block(store: &Entity<AppStore>, s: &Snap, ix: u64, value: &serde_json::Value) -> Div {
+fn json_tree_block(
+    store: &Entity<AppStore>,
+    s: &Snap<'_>,
+    ix: u64,
+    value: &serde_json::Value,
+) -> Div {
     let ctx = JtCtx { store, s, ix };
     let is_array = value.is_array();
     let entries = json_entries(value);
@@ -2595,20 +2918,10 @@ fn owning_request<'a>(
         .find(|q| q.turn == r.turn.unwrap_or(0) && q.step == step)
 }
 
-/// 工具的发起消息(同轮同步中、更早的 assistant message)
-fn parent_message<'a>(
-    r: &TrajectoryRecord,
-    records: &'a [TrajectoryRecord],
-) -> Option<&'a TrajectoryRecord> {
-    records.iter().rfind(|m| {
-        m.kind == "message" && m.turn == r.turn && m.group == r.group && m.index < r.index
-    })
-}
-
 /// Summary tab(记录):
 /// Hierarchy 跳转 → Status(工具含 Pending)→ Tokens/Duration →
 /// Payload/Result 预览 → Request Timing / Timing 小节
-fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
+fn summary_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
     let requests = &s.view.requests;
     let req = owning_request(r, requests);
     let mut col = div().v_flex().gap(px(2.));
@@ -2650,7 +2963,7 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
     // Hierarchy:Request #N(所属请求)+ Assistant Message(工具发起消息;
     // 无子工具调用数据,不渲染嵌套链接)
     let parent = if r.kind == "tool" {
-        parent_message(r, &s.view.records)
+        s.index.and_then(|i| i.parent_message(&s.view.records, r))
     } else {
         None
     };
@@ -2878,7 +3191,7 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
 /// JSON 容器内容走 JsonTree 紧凑形态
 fn preview_block(
     store: &Entity<AppStore>,
-    s: &Snap,
+    s: &Snap<'_>,
     r: &TrajectoryRecord,
     tab: &'static str,
 ) -> impl IntoElement {
@@ -2973,7 +3286,7 @@ fn preview_block(
 }
 
 /// Payload tab(JSON 容器 → JsonTree;否则原文等宽)
-fn payload_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
+fn payload_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
     match &r.payload {
         None => div().child(empty_text(t!("trajectory.no_payload"))),
         Some(p) => match serde_json::from_str::<serde_json::Value>(p) {
@@ -2990,7 +3303,7 @@ fn payload_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div
 }
 
 /// Result tab(错误全套红;JSON 容器 → JsonTree)
-fn result_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
+fn result_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
     let color = if r.is_error {
         theme::DANGER()
     } else {
@@ -3012,7 +3325,7 @@ fn result_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div 
 }
 
 /// Raw tab(ASSISTANT:Thinking 折叠 + 输出全文)
-fn raw_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
+fn raw_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
     let mut col = div().v_flex().gap(px(8.));
     // CONTEXT:注入文本为单 text 块,「Block #1 text」头 + 等宽原文
     if r.kind == "context" {
@@ -3108,7 +3421,7 @@ fn timing_body(r: &TrajectoryRecord) -> Div {
 
 /// Summary tab(请求):Status/Provider/Model/Tool calls/
 /// …/Result 跳转行——链到该请求产出的助手消息或压缩记录)
-fn request_summary_body(store: &Entity<AppStore>, s: &Snap, q: &TrajectoryRequest) -> Div {
+fn request_summary_body(store: &Entity<AppStore>, s: &Snap<'_>, q: &TrajectoryRequest) -> Div {
     let mut col = div().v_flex().gap(px(2.));
     col = col.child(dl_row(
         t!("trajectory.row_status"),
@@ -3606,18 +3919,6 @@ fn message_source_label(source: &serde_json::Value) -> String {
 
 // ── ASSISTANT(message)详情(Summary / Preview / Raw)──
 
-/// 本消息(同 turn + Step)发起的工具调用记录
-/// (由记录分组反查,不另存块)
-fn step_tool_calls<'a>(
-    r: &TrajectoryRecord,
-    records: &'a [TrajectoryRecord],
-) -> Vec<&'a TrajectoryRecord> {
-    records
-        .iter()
-        .filter(|t| t.kind == "tool" && t.turn == r.turn && t.group == r.group)
-        .collect()
-}
-
 /// 工具调用行(单行形态:扳手 + name + 空格 + args 同行截断——
 /// args 取 text 的紧凑段,payload 是 pretty 多行 JSON 不可用;
 /// 12px Menlo,名称 LABEL_2 / 参数 LABEL_3。点击跳工具记录)
@@ -3663,7 +3964,7 @@ fn assistant_tool_call_row(store: &Entity<AppStore>, call: &TrajectoryRecord) ->
 
 /// Preview 页(Summary 小节同款):Thinking 折叠(默认收)+ 正文
 /// markdown + 工具调用行
-fn assistant_preview_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
+fn assistant_preview_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
     let mut col = div()
         .debug_selector(move || format!("traj-preview-{}", r.index))
         .v_flex();
@@ -3721,7 +4022,11 @@ fn assistant_preview_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryReco
     if r.output_detail.is_none() && r.thinking_detail.is_none() {
         col = col.child(empty_text(t!("trajectory.no_content")));
     }
-    for c in step_tool_calls(r, &s.view.records) {
+    for c in s
+        .index
+        .map(|i| i.step_tool_calls(&s.view.records, r).collect::<Vec<_>>())
+        .unwrap_or_default()
+    {
         col = col.child(assistant_tool_call_row(store, c));
     }
     col
@@ -3768,7 +4073,7 @@ fn source_block_header(
 
 /// Raw 页块形态:thinking / text / tool-call 按模型
 /// 输出序连续编号;块序 = reasoning → 正文 → 同步工具调用
-fn assistant_source_blocks(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
+fn assistant_source_blocks(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
     let mut col = div().v_flex().gap(px(6.));
     let mut n = 0usize;
     if let Some(t) = &r.thinking_detail {
@@ -3789,7 +4094,11 @@ fn assistant_source_blocks(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRec
             .child(source_block_header(store, n, "text", None))
             .child(mono_block(("mono-block", n), &r.text, theme::LABEL()));
     }
-    for c in step_tool_calls(r, &s.view.records) {
+    for c in s
+        .index
+        .map(|i| i.step_tool_calls(&s.view.records, r).collect::<Vec<_>>())
+        .unwrap_or_default()
+    {
         n += 1;
         col = col
             .child(source_block_header(store, n, "tool-call", Some(c.index)))
@@ -3911,7 +4220,7 @@ fn spec_name(t: &serde_json::Value) -> String {
 /// Tools 页:工具目录(扁平行 + 底部分隔线;折叠行 =
 /// chevron + 图标 + mono 名称 + 内联灰描述单行截断;展开 = 完整描述 +
 /// 参数 JSON)
-fn tools_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
+fn tools_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
     let mut col = div().v_flex();
     let Some(catalog) = &r.tools_catalog else {
         return col.child(empty_text(t!("trajectory.no_tools")));
@@ -4075,8 +4384,10 @@ fn line_diff(a: &[&str], b: &[&str]) -> Vec<(DiffOp, String)> {
 
 /// Diff 页:对照前一 SYSTEM 快照,分 System Prompt / Tools 两节
 /// (行级 LCS diff)
-fn diff_body(s: &Snap, r: &TrajectoryRecord) -> Div {
-    let prev = previous_system_snapshot(&s.view.records, r);
+fn diff_body(s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
+    let prev = s
+        .index
+        .and_then(|i| i.previous_system_snapshot(&s.view.records, r));
     let mut col = div().v_flex().gap(px(8.));
     let Some(prev) = prev else {
         return col.child(empty_text(t!("trajectory.na")));
@@ -4156,7 +4467,7 @@ fn diff_block(id: &'static str, a: &str, b: &str) -> impl IntoElement {
 }
 
 /// Schema 页(TOOL):name + description + Parameters(高亮)
-fn schema_body(store: &Entity<AppStore>, s: &Snap, r: &TrajectoryRecord) -> Div {
+fn schema_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
     let Some(raw) = &r.schema_detail else {
         return div().v_flex().child(empty_text(t!("trajectory.schema_na")));
     };
@@ -4419,9 +4730,10 @@ mod tests {
         let kinds: Vec<String> = rows
             .iter()
             .map(|r| match r {
-                LedgerRow::Record { rec, .. } => rec.index.to_string(),
+                LedgerRow::Record { rec_ix, .. } => records[*rec_ix].index.to_string(),
                 LedgerRow::TurnSummary { turn, .. } => format!("sum:{turn}"),
                 LedgerRow::CallSummary { .. } => "call".into(),
+                LedgerRow::LoadEarlier => "load".into(),
             })
             .collect();
         assert_eq!(
@@ -4452,12 +4764,13 @@ mod tests {
         let shape: Vec<&str> = rows
             .iter()
             .filter_map(|r| match r {
-                LedgerRow::Record { rec, .. } => Some(match rec.kind.as_str() {
+                LedgerRow::Record { rec_ix, .. } => Some(match records[*rec_ix].kind.as_str() {
                     "tool" => "tool",
                     _ => "rec",
                 }),
                 LedgerRow::CallSummary { .. } => Some("call"),
                 LedgerRow::TurnSummary { .. } => None,
+                LedgerRow::LoadEarlier => None,
             })
             .collect();
         assert_eq!(shape, vec!["rec", "rec", "call", "rec"]);
@@ -4588,27 +4901,53 @@ mod tests {
         assert!(owning_request(&user, &requests).is_none());
     }
 
-    /// 工具的发起消息 = 同轮同步中更早的 assistant message
+    /// 记录派生索引:父消息 / 前一个带快照 SYSTEM / 同步工具(检查器三处
+    /// 查找的生产路径;此前是逐次全表扫)
     #[test]
-    fn parent_message_lookup() {
+    fn record_index_lookups() {
+        let mut sys1 = rec(1, "system", None, "Message");
+        sys1.system_prompt = Some("提示词 v1".into());
+        let mut sys2 = rec(6, "system", None, "Message");
+        sys2.system_prompt = None; // 无快照:不作 Diff 左值
         let records = vec![
-            rec(1, "user", Some(1), "Message"),
-            rec(2, "message", Some(1), "Step 1"),
-            rec(3, "tool", Some(1), "Step 1"),
-            rec(4, "message", Some(1), "Step 2"),
-            rec(5, "tool", Some(1), "Step 2"),
+            sys1,
+            rec(2, "user", Some(1), "Message"),
+            rec(3, "message", Some(1), "Step 1"),
+            rec(4, "tool", Some(1), "Step 1"),
+            rec(5, "tool", Some(1), "Step 1"),
+            sys2,
+            rec(7, "message", Some(1), "Step 2"),
         ];
-        // Step 2 的工具 → 消息 4;Step 1 的工具 → 消息 2
+        let ix = RecordIndex::build(&records);
+        // 工具的发起消息 = 同轮同步中更早的 assistant message
         assert_eq!(
-            parent_message(&records[4], &records).map(|r| r.index),
-            Some(4)
+            ix.parent_message(&records, &records[4]).map(|r| r.index),
+            Some(3)
         );
         assert_eq!(
-            parent_message(&records[2], &records).map(|r| r.index),
-            Some(2)
+            ix.parent_message(&records, &records[6]).map(|r| r.index),
+            None
         );
-        // 消息自身无父
-        assert!(parent_message(&records[3], &records).is_none());
+        // 消息自身无父(records[2] = 该 message 本身)
+        assert!(ix.parent_message(&records, &records[2]).is_none());
+        // 前一个带快照 SYSTEM:sys2 无快照 → 不遮蔽 sys1
+        assert_eq!(
+            ix.previous_system_snapshot(&records, &records[6])
+                .map(|r| r.index),
+            Some(1)
+        );
+        // sys1 自身之前没有 SYSTEM → 无
+        assert!(ix.previous_system_snapshot(&records, &records[0]).is_none());
+        // 同 (turn, group) 的工具齐出(Step 1 两个;Step 2 无工具)
+        let sibs: Vec<u64> = ix
+            .step_tool_calls(&records, &records[3])
+            .map(|r| r.index)
+            .collect();
+        assert_eq!(sibs, vec![4, 5]);
+        assert_eq!(ix.step_tool_calls(&records, &records[6]).count(), 0);
+        // 按 index 直取(检查器选中记录)
+        assert_eq!(ix.get(&records, 5).map(|r| r.index), Some(5));
+        assert!(ix.get(&records, 99).is_none());
     }
 
     /// JSON 分词:键/字符串/数字/关键字/标点,转义引号不截断

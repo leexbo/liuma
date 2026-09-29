@@ -117,11 +117,16 @@ pub(crate) enum DriveOutcome {
 /// 流式驱动注册表(挂 ChatStore;渲染前 flush 驱动,渲染闭包只读)
 #[derive(Default)]
 pub(crate) struct TvStreamRegistry {
-    /// 节点 key → (state, 已同步文本记账, 正文版本号;TextViewState 无
-    /// text getter,记账由本层维护。ver 来自 ChatNode::Assistant.text_ver,
-    /// 未变节点 O(1) 短路——原稳态帧逐节点全文 memcmp,大会话每帧
-    /// O(全部正文字节))
-    map: HashMap<String, (Entity<TextViewState>, String, u32)>,
+    /// 节点 key → (state, 已同步文本记账, 正文版本号)。TextViewState 无
+    /// text getter,记账由本层维护。ver 来自 `ChatNode::Assistant.text_ver`,
+    /// 未变节点 O(1) 短路(原稳态帧逐节点全文 memcmp,大会话每帧 O(全部
+    /// 正文字节))。
+    ///
+    /// 记账是 `Option`:**定稿节点置 `None` = 释放这份重复全文**。前缀记账
+    /// 只在流式增长期需要,而定稿正文与 `ChatNode::Assistant.text` 逐字节
+    /// 相同——每节点存两份是长会话内存的直接翻倍;此后若定稿正文再变
+    /// (回退/重写)走 `set_text` 全量,语义不变
+    map: HashMap<String, (Entity<TextViewState>, Option<String>, u32)>,
 }
 
 impl TvStreamRegistry {
@@ -134,6 +139,7 @@ impl TvStreamRegistry {
         key: &str,
         text: &str,
         text_ver: u32,
+        streaming: bool,
         cx: &mut App,
     ) -> DriveOutcome {
         match self.map.get_mut(key) {
@@ -141,27 +147,43 @@ impl TvStreamRegistry {
                 // 稳态帧:版本号未动 = 文本未变(版本号只在 text 突变点
                 // 自增,O(1);len 判等不可靠,等长漂移会漏)
                 if *last_ver == text_ver {
+                    // 但「停止流式」不改变版本号:定稿释放仍须在此发生,
+                    // 否则重复全文会一直挂到下次文本突变(可能永不到来)
+                    if !streaming && last.is_some() {
+                        *last = None;
+                    }
                     return DriveOutcome::None;
                 }
-                if text.len() > last.len() && text.starts_with(last.as_str()) {
-                    let delta = text[last.len()..].to_string();
-                    state.update(cx, |s, cx| s.push_str(&delta, cx));
-                    last.push_str(&delta);
-                    *last_ver = text_ver;
-                    return DriveOutcome::Updated;
+                match last.as_deref() {
+                    Some(prev) if text.len() > prev.len() && text.starts_with(prev) => {
+                        let delta = text[prev.len()..].to_string();
+                        state.update(cx, |s, cx| s.push_str(&delta, cx));
+                    }
+                    // 无记账(已定稿释放)或文本漂移 → 全量重设
+                    _ => state.update(cx, |s, cx| s.set_text(text, cx)),
                 }
-                state.update(cx, |s, cx| s.set_text(text, cx));
-                *last = text.to_string();
                 *last_ver = text_ver;
+                // 流式期维持记账;定稿即释放(重复全文不再常驻)
+                *last = streaming.then(|| text.to_string());
                 DriveOutcome::Updated
             }
             None => {
                 let state = cx.new(|cx| TextViewState::markdown(text, cx));
-                self.map
-                    .insert(key.to_string(), (state.clone(), text.to_string(), text_ver));
+                self.map.insert(
+                    key.to_string(),
+                    (state.clone(), streaming.then(|| text.to_string()), text_ver),
+                );
                 DriveOutcome::Created(state)
             }
         }
+    }
+
+    /// 逐出不在 `keep` 内的条目(节点被折叠/裁窗/换会话后,其视图与记账
+    /// 都无消费者)。返回逐出条数(测试与探针用)
+    pub(crate) fn retain(&mut self, keep: impl Fn(&str) -> bool) -> usize {
+        let before = self.map.len();
+        self.map.retain(|k, _| keep(k.as_str()));
+        before - self.map.len()
     }
 
     /// 带组合的挂载(state 缺失 = flush 未及,兜底 keyed 静态;插件等
@@ -185,6 +207,19 @@ impl TvStreamRegistry {
     /// 会话切换清理(state 随旧会话焚毁,重开重解析一次)
     pub(crate) fn clear(&mut self) {
         self.map.clear();
+    }
+
+    /// 条目数(逐出断言 / 探针)
+    pub(crate) fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    /// 重复记账字节合计(探针:定稿节点释放后应趋近「仅流式中的那几条」)
+    pub(crate) fn accounting_bytes(&self) -> usize {
+        self.map
+            .values()
+            .map(|(_, last, _)| last.as_ref().map_or(0, |s| s.len()))
+            .sum()
     }
 }
 
@@ -529,7 +564,9 @@ mod tests {
         let mut prev_h = 0.0f32;
         for (round, want) in [8usize, 20, 45, 70, target.len()].into_iter().enumerate() {
             let part = target[..pick(want)].to_string();
-            view.update(cx, |v, cx| v.reg.drive("k", &part, round as u32 + 1, cx));
+            view.update(cx, |v, cx| {
+                v.reg.drive("k", &part, round as u32 + 1, true, cx)
+            });
             cx.refresh().expect("刷新失败");
             cx.run_until_parked();
             let h = cx
@@ -619,7 +656,7 @@ mod tests {
             // text_ver 从 1 起:0 在 drive 里是「初始记账」语义,逐字喂用递增序
             let ver = ix as u32 + 1;
             let part = sent.clone();
-            view.update(cx, |v, cx| v.reg.drive("f", &part, ver, cx));
+            view.update(cx, |v, cx| v.reg.drive("f", &part, ver, true, cx));
             cx.refresh().expect("刷新失败");
             cx.run_until_parked();
         }
@@ -630,5 +667,62 @@ mod tests {
                 .unwrap_or(px(0.)),
         );
         assert!(h > 0., "闭合后视图应有高度(未崩且渲染完成),实得 {h}");
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+    use gpui_kit::TestAppContext;
+
+    fn init(cx: &mut TestAppContext) {
+        cx.update(|app| {
+            gpui_kit::component::init(app);
+            crate::kits::theme::init(app);
+        });
+    }
+
+    /// 定稿释放重复记账:流式期维持前缀记账,定稿即释放(正文与
+    /// `ChatNode::Assistant.text` 逐字节相同,每节点存两份 = 长会话直接
+    /// 翻倍);释放后若定稿正文再变,走 set_text 全量,语义不变
+    #[gpui_kit::test]
+    fn finalized_node_releases_text_accounting(cx: &mut TestAppContext) {
+        init(cx);
+        let reg = cx.new(|_| TvStreamRegistry::default());
+        reg.update(cx, |r, cx| {
+            r.drive("a:1", "第一段", 1, true, cx);
+            assert_eq!(r.accounting_bytes(), "第一段".len(), "流式期应有记账");
+            r.drive("a:1", "第一段第二段", 2, true, cx);
+            assert_eq!(r.accounting_bytes(), "第一段第二段".len());
+            // 定稿:记账释放
+            r.drive("a:1", "第一段第二段", 2, false, cx);
+            assert_eq!(r.accounting_bytes(), 0, "定稿后不应保留重复全文");
+            assert_eq!(r.len(), 1, "条目本身保留(视图仍在用)");
+            // 定稿后再变(回退/重写):无记账 → 全量重设,不 panic 不串文
+            r.drive("a:1", "改写后的正文", 3, false, cx);
+            assert_eq!(r.accounting_bytes(), 0);
+        });
+    }
+
+    /// 逐出:不在活节点集内的条目连同视图一起释放(此前只增不减)
+    #[gpui_kit::test]
+    fn retain_drops_absent_nodes(cx: &mut TestAppContext) {
+        init(cx);
+        let reg = cx.new(|_| TvStreamRegistry::default());
+        reg.update(cx, |r, cx| {
+            r.drive("a:1", "一", 1, true, cx);
+            r.drive("a:2", "二", 1, true, cx);
+            r.drive("a:3", "三", 1, false, cx);
+            assert_eq!(r.len(), 3);
+            r.retain(|k| k != "a:2");
+            assert_eq!(r.len(), 2);
+            // 保留者仍是同一视图(记账与状态不重建)
+            assert!(matches!(
+                r.drive("a:1", "一", 1, true, cx),
+                DriveOutcome::None
+            ));
+            r.retain(|_| false);
+            assert_eq!(r.len(), 0);
+        });
     }
 }

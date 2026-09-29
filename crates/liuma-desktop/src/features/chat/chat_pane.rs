@@ -2725,6 +2725,49 @@ fn copy_button(
         })
 }
 
+/// 复制钮(正文延迟取):调用方只给节点 key,点击时经 store 现取正文。
+/// 回合收尾行用它替代 `copy_button`——后者要求把正文传进来,而渲染期
+/// 克隆整段助手正文在大会话下是每帧每尾行一份
+fn reply_copy_button(
+    store: &Entity<AppStore>,
+    cx: &App,
+    id: impl Into<gpui_kit::ElementId>,
+    sel_ns: &str,
+    key: &str,
+) -> impl IntoElement {
+    let copied = store.read(cx).chat.copied_key.as_deref() == Some(key);
+    let s = store.clone();
+    let k = key.to_string();
+    let sel = format!("{sel_ns}-{key}");
+    div()
+        .id(id)
+        .flex()
+        .flex_shrink_0()
+        .size(px(20.))
+        .items_center()
+        .justify_center()
+        .rounded(px(4.))
+        .cursor_pointer()
+        .text_color(theme::CAPTION())
+        .hover(|st| st.bg(theme::LAYER()).text_color(theme::LABEL_2()))
+        .child(if copied {
+            fixed(IconName::Check, 13.)
+                .text_color(theme::BRAND())
+                .into_any_element()
+        } else {
+            fixed(IconName::Copy, 13.).into_any_element()
+        })
+        // 测试钩子:按消息 key 稳定检索(release 空操作)
+        .debug_selector(move || sel.clone())
+        .on_click(move |_, _, cx| {
+            let k = k.clone();
+            s.update(cx, |st, cx| {
+                let text = st.reply_text_of(&k);
+                st.copy_message(&k, &text, cx);
+            });
+        })
+}
+
 /// 回合收尾行:复制/赞/踩/
 /// 分支 + 用量 pill + 用时 pill + 时钟,同一行;中断轮保留警示标。
 /// 详情卡根级渲染,点击坐标锚定)+ 产物行
@@ -2742,7 +2785,9 @@ fn turn_tail(
 ) -> impl IntoElement {
     let st = store.read(cx);
     let session = st.state.current_id.clone().unwrap_or_default();
-    // 本轮最后一条真实 assistant 消息(动作行的作用对象,同源动作行语义)
+    // 本轮最后一条真实 assistant 消息(动作行的作用对象,同源动作行语义)。
+    // 只带 key / message_id / 有无正文——正文本身在点击时现取(渲染期克隆
+    // 整段正文是大会话每帧的分配源)
     let last_reply = st.state.chats.get(&session).and_then(|c| {
         c.nodes[..ix.min(c.nodes.len())]
             .iter()
@@ -2754,7 +2799,7 @@ fn turn_tail(
                     message_id,
                     ..
                 } if !message_id.is_empty() => {
-                    Some((key.clone(), text.clone(), message_id.clone()))
+                    Some((key.clone(), message_id.clone(), !text.is_empty()))
                 }
                 _ => None,
             })
@@ -2783,23 +2828,25 @@ fn turn_tail(
         .gap(px(6.))
         // 复制(作用本轮最终答复)
         .when_some(
-            last_reply.clone().filter(|(_, text, _)| !text.is_empty()),
-            |el, (rkey, text, _)| {
-                el.child(copy_button(
+            last_reply
+                .as_ref()
+                .filter(|(_, _, has_text)| *has_text)
+                .map(|(rkey, _, _)| rkey.clone()),
+            |el, rkey| {
+                el.child(reply_copy_button(
                     store,
                     cx,
                     gpui_kit::SharedString::from(format!("tail-copy-{key}")),
                     "tail-copy",
                     &rkey,
-                    &text,
                 ))
             },
         )
         // 赞/踩(有评分后追加「补充说明」,与消息动作行同源)
         .when_some(
             last_reply
-                .clone()
-                .map(|(_, _, mid)| mid)
+                .as_ref()
+                .map(|(_, mid, _)| mid.clone())
                 .filter(|m| !m.is_empty()),
             |el, message_id| {
                 el.children(crate::features::feedback::actions(store, &message_id, cx))

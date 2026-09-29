@@ -150,8 +150,9 @@ impl AppStore {
         self.chat.tv_streams.clear();
         self.chat.tv_subs.clear();
         // 旧会话晚到落地的重测标记一并焚毁:新列表刚吃 60px uniform
-        // hint,残留脏标记会在下一帧触发 0..n 全量重测 = 打开优化破功
-        self.chat.tv_remeasure_dirty = false;
+        // hint,残留脏标记会在下一帧触发对旧会话槽位的重测 = 打开优化破功
+        self.chat.tv_remeasure_keys.clear();
+        self.chat.node_slot.clear();
         self.chat.nav_anchors_cache = None;
         self.chat.anchor_index.clear();
         self.chat.row_slots.clear();
@@ -217,8 +218,16 @@ impl AppStore {
                 let page_events: Vec<liuma_core::proto::SessionEvent> =
                     events.into_iter().map(|e| e.event).collect();
                 {
+                    // 会话是否仍在运行(运行中不冻结:交给 live 事件收尾)
+                    let live = s.state.running_by_id.get(&id).copied().unwrap_or(false);
                     let chat = s.state.chats.entry(id.clone()).or_default();
                     chat.merge_history(page_events);
+                    if !live {
+                        // 日志停在回合中途(被杀回合)时,未落定的调用会永久
+                        // 停在 Running —— 渲染层的运行扫光是 repeat 动画,
+                        // 会让整窗 60fps 永久重绘
+                        chat.freeze_unfinished_calls();
+                    }
                     // 历史消息含 image 块 → 收集 aid,异步拉取缓存
                     // (与实时帧同路径;避免 chat 可变借用与 s 再借用冲突)
                     let mut aids: Vec<String> = Vec::new();

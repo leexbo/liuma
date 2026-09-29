@@ -159,6 +159,26 @@ impl HostBridge {
         rx
     }
 
+    /// **同步重活**上桥:在 tokio 的 **blocking 池**执行,不占 worker。
+    ///
+    /// `trajectory_page` / `session_anchor_index` 这类接口内部是同步的全量
+    /// 折叠(实测大会话 1.2s);经 [`Self::call`] 跑会在 worker 上阻塞满一个
+    /// 线程 —— runtime 只有 4 个 worker,几路并发(history / anchors / 轨迹)
+    /// 即互相饿死,回包迟迟不到,调用方的 loading 标志一直挂着,而挂着的
+    /// loading 会渲染成 Spinner(`repeat()` 动画)= **整窗永久 60fps 重绘**
+    /// (实测:40 帧里 39 帧被动画请求)
+    pub fn call_blocking<T, F>(&self, f: F) -> oneshot::Receiver<T>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        let (tx, rx) = oneshot::channel();
+        self.runtime.spawn_blocking(move || {
+            let _ = tx.send(f());
+        });
+        rx
+    }
+
     /// host.describe 等价(直连组装;字段来源对齐 `proto` 描述面与 `registry` 各 getter)
     pub fn describe(&self) -> DescribeValue {
         let info = self.host.provider_info();

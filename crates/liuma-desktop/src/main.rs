@@ -163,6 +163,24 @@ fn main() {
             })
             .detach();
 
+            // 常驻占用探针(LIUMA_PROBE 在场时每 5s 打印一次 footprint;
+            // 与帧耗时探针配合回答「内存为什么涨/涨在哪」)
+            if std::env::var_os("LIUMA_PROBE").is_some() {
+                let fp_store = store.clone();
+                cx.spawn(async move |cx| {
+                    let mut tick = 0u32;
+                    loop {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(5))
+                            .await;
+                        tick += 1;
+                        let line = fp_store.read_with(cx, |s, _| s.footprint());
+                        eprintln!("[fp] t={}s {line}", tick * 5);
+                    }
+                })
+                .detach();
+            }
+
             // 自绘标题栏(隐系统标题,交通灯悬浮;见 ui 根布局 TitleBar)。
             // 必须以 TitleBar::window_options() 打底:app_owns_titlebar_drag
             // 压掉系统原生「双击标题栏缩放」——组件在 macOS 分支已自挂

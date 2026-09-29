@@ -5949,6 +5949,685 @@ fn trajectory_toolbar_geometry_and_roving_focus(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// TextView 驱动窗口锁:只为**可视窗口附近**的助手节点建视图。
+///
+/// 每个助手节点的 TextView 会发起一次异步 markdown 解析、落地时 notify
+/// 一次。无窗口时按全量建:真机大会话实测 1179 个(可视仅约 30 行)= 上千次
+/// 无谓解析 + 上千次落地重绘。本锁:建出的视图数应远小于节点数,且随会话
+/// 长度增长(不是线性跟随)
+#[gpui_kit::test]
+fn textview_views_are_limited_to_the_visible_window(cx: &mut TestAppContext) {
+    use crate::features::chat::projection::{ChatNode, ChatState};
+
+    let (store, _wcx, root) = menu_harness(cx, "tv-window");
+    const N: usize = 1200;
+    let tv_count = |store: &Entity<AppStore>, cx: &mut TestAppContext| {
+        cx.update(|app| {
+            store.update(app, |st, cx| {
+                let id = st.state.current_id.clone().expect("当前会话");
+                let mut chat = ChatState::default();
+                for i in 0..N {
+                    chat.nodes.push(ChatNode::Assistant {
+                        key: format!("a:{i}"),
+                        text: format!("正文 {i}"),
+                        text_ver: 1,
+                        reasoning: String::new(),
+                        streaming: false,
+                        usage: None,
+                        message_id: format!("m{i}"),
+                    });
+                }
+                st.state.chats.insert(id, chat);
+                st.chat.row_slots_sig = None;
+                st.sync_chat_list(cx);
+                st.sync_chat_list(cx);
+                st.chat.tv_streams.len()
+            })
+        })
+    };
+    let built = tv_count(&store, cx);
+    assert!(built > 0, "窗口内应建出视图");
+    assert!(
+        built < N / 4,
+        "视图数应受可视窗口约束,实际 {built} / 节点 {N}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 流式重测范围锁:**尾部变更不得触发远端槽位重测**。
+///
+/// 原消费点是 `remeasure_items(0..n)` —— gpui 把该范围项目全部换回
+/// `Unmeasured`(重建元素 + 重新文本布局),流式期每帧重排整个会话,长会话
+/// 即「发一条消息卡顿数秒」。本锁钉住:变更行收窄到真实节点,远端零触碰
+#[gpui_kit::test]
+fn streaming_remeasure_touches_only_changed_rows(cx: &mut TestAppContext) {
+    use crate::features::chat::projection::{ChatNode, ChatState};
+
+    let (store, _wcx, root) = menu_harness(cx, "remeasure");
+    const TAIL: usize = 200;
+
+    // 播种 200 条助手节点(键 a:<i>):尾节点变更时只有它所在槽位该重测
+    let rows = cx.update(|app| {
+        let mut rows = 0usize;
+        store.update(app, |st, cx| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            let mut chat = ChatState::default();
+            for i in 0..TAIL {
+                chat.nodes.push(ChatNode::Assistant {
+                    key: format!("a:{i}"),
+                    text: format!("正文 {i}"),
+                    text_ver: 1,
+                    reasoning: String::new(),
+                    streaming: i + 1 == TAIL,
+                    usage: None,
+                    message_id: format!("m{i}"),
+                });
+            }
+            st.state.chats.insert(id, chat);
+            // 行槽 + key→槽位映射建齐(经生产路径);连跑两帧让 TextView 视图
+            // 建齐并进入稳态(首帧全建 = 全表重测是应当的)
+            st.chat.row_slots_sig = None;
+            st.sync_chat_list(cx);
+            st.sync_chat_list(cx);
+            rows = st.chat.row_slots.len();
+            let head = *st.chat.node_slot.get("a:0").expect("头节点槽位");
+            let tail = *st
+                .chat
+                .node_slot
+                .get(&format!("a:{}", TAIL - 1))
+                .expect("尾节点槽位");
+            // 稳态后清零观测面,只量「尾节点变更」这一帧
+            st.chat.last_remeasure_ranges.clear();
+            st.chat.tv_remeasure_keys.insert(format!("a:{}", TAIL - 1));
+            st.sync_chat_list(cx);
+            // ① 精确收窄:单行变更 = 单行区间(原实现是 0..n)
+            assert_eq!(
+                st.chat.last_remeasure_ranges,
+                vec![tail..tail + 1],
+                "尾节点变更应只重测该行(不是整表)"
+            );
+            assert!(!st.chat.last_remeasure_ranges[0].contains(&head));
+        });
+        rows
+    });
+    assert_eq!(rows, TAIL, "行槽数应等于节点数");
+
+    // ② 帧内后续重测(异步 markdown 解析落地)同样不得触碰远端:落地只发生
+    //    在「已挂载过的可视行」上,故区间应全落在可视窗内(头节点除外)
+    cx.update(|app| {
+        let st = store.read(app);
+        let ranges = &st.chat.last_remeasure_ranges;
+        assert!(
+            ranges.iter().all(|r| !r.contains(&0)),
+            "任一帧都不得重测远端首行: {ranges:?}"
+        );
+        assert!(
+            ranges.iter().all(|r| r.start >= TAIL / 2),
+            "重测区间应限于可视窗(远窗行零触碰): {ranges:?}"
+        );
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 长会话常驻面锁:定稿节点的重复正文不常驻(注入型用例,量化面见
+/// 测试输出 `[meas]`)。3000 条助手节点下:
+/// - `body`(正文 + 推理)= 10.8 MB(这是必要的展示数据);
+/// - TextView 注册表的**重复记账**在「全部按流式驱动」时 = 7.2 MB
+///   (改动前形态:每节点一份与 `ChatNode` 逐字节相同的副本);
+/// - 全部定稿后应为 **0 B**——释放生效,且条目(视图)本身不丢。
+/// 这是「长会话内存随正文线性翻倍」的回归锁
+#[gpui_kit::test]
+fn finalized_nodes_do_not_retain_duplicate_bodies(cx: &mut TestAppContext) {
+    use crate::features::chat::projection::{ChatNode, ChatState};
+    const N: usize = 3000;
+    const BODY: &str = "正文内容";
+
+    let (store, _wcx, root) = menu_harness(cx, "probe-fp");
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            let node = |i: usize, streaming: bool| ChatNode::Assistant {
+                key: format!("a:{i}"),
+                text: BODY.repeat(200),
+                text_ver: 1,
+                reasoning: BODY.repeat(100),
+                streaming,
+                usage: None,
+                message_id: format!("m{i}"),
+            };
+            let mut chat = ChatState::default();
+            // 改动前形态:全部按流式驱动 → 每节点都留一份重复记账
+            for i in 0..N {
+                chat.nodes.push(node(i, true));
+            }
+            st.state.chats.insert(id, chat);
+            st.sync_chat_list(cx);
+            st.sync_chat_list(cx);
+            // 视图只为可视窗口内的节点建(见 tv_slot_window),故按已建条目
+            // 断言;要点是「每条目一份重复记账」,不是条目总数
+            let built = st.chat.tv_streams.len();
+            assert!(built > 0, "窗口内应建出视图");
+            let per_node = BODY.len() * 200;
+            assert_eq!(
+                st.chat.tv_streams.accounting_bytes(),
+                per_node * built,
+                "流式期每条目一份重复记账(改动前即此形态)"
+            );
+            eprintln!("[meas] 全流式 {}", st.footprint());
+
+            // 全部定稿:重复正文释放,条目(视图)保留
+            for c in st.state.chats.values_mut() {
+                for n in &mut c.nodes {
+                    if let ChatNode::Assistant { streaming, .. } = n {
+                        *streaming = false;
+                    }
+                }
+            }
+            st.sync_chat_list(cx);
+            assert_eq!(
+                st.chat.tv_streams.accounting_bytes(),
+                0,
+                "定稿节点的重复正文必须释放(否则长会话内存翻倍)"
+            );
+            assert_eq!(st.chat.tv_streams.len(), built, "条目本身保留(视图仍在用)");
+            eprintln!("[meas] 全定稿 {}", st.footprint());
+        });
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 轨迹台账滚轮回归锁:**回调内不得回读 ListState**。
+///
+/// gpui 在 `StateInner::scroll` 里持 `borrow_mut` 调用 scroll_handler,故
+/// handler 内任何 `logical_scroll_top()` / `max_offset_for_scrollbar()` 回读
+/// 都会 `already mutably borrowed` panic——真机表现为「打开轨迹面板一滚就
+/// 崩」。本锁派发真实滚轮事件走通该路径(崩了即失败),并覆盖跟随态与
+/// 近顶翻页两条派生路径
+#[gpui_kit::test]
+fn trajectory_wheel_scroll_does_not_reenter_list_state(cx: &mut TestAppContext) {
+    use crate::features::trajectory::TrajectoryView;
+    use gpui_kit::{ScrollDelta, ScrollWheelEvent};
+    use liuma_core::trajectory::TrajectoryRecord;
+
+    let (store, mut wcx, root) = menu_harness(cx, "traj-wheel");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+    };
+
+    const N: u64 = 200;
+    let rec = |index: u64| TrajectoryRecord {
+        index,
+        seq: index,
+        kind: "message".into(),
+        turn: Some(1),
+        group: "Message".into(),
+        turn_start: index == 1,
+        text: format!("记录 {index}"),
+        result: None,
+        is_error: false,
+        time_seconds: Some(0.01),
+        started_at: Some(1000 + index as i64),
+        request_number: None,
+        input: None,
+        output: Some(1),
+        think: None,
+        ttft_ms: None,
+        payload: None,
+        output_detail: None,
+        thinking_detail: None,
+        system_prompt: None,
+        tools_catalog: None,
+        schema_detail: None,
+        source: None,
+        decision: None,
+        fold: None,
+    };
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            st.trajectory.trajectory = TrajectoryView {
+                records: (1..=N).map(rec).collect(),
+                requests: vec![],
+                // 有更早记录:near-top 触发翻页这条路径也要走通
+                has_older: true,
+                total: N,
+                loading: false,
+                loading_older: false,
+            };
+            st.trajectory.trajectory_session = Some(id);
+            st.trajectory.trajectory_version += 1;
+            st.panel_open = true;
+            st.panel_tabs = vec![crate::shell::panel::PanelTab::Trajectory];
+            st.panel_active_tab = Some(crate::shell::panel::PanelTab::Trajectory);
+        });
+    });
+    redraw(cx, &mut wcx);
+    redraw(cx, &mut wcx);
+
+    let bounds = wcx
+        .debug_bounds("trajectory-scroll")
+        .expect("台账滚动区缺失");
+    let center = gpui_kit::point(
+        bounds.origin.x + bounds.size.width / 2.,
+        bounds.origin.y + bounds.size.height / 2.,
+    );
+    let wheel = |wcx: &mut gpui_kit::VisualTestContext, dy: f32| {
+        // 崩溃点:handler 里回读 ListState 时此调用直接 panic
+        wcx.simulate_event(ScrollWheelEvent {
+            position: center,
+            delta: ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(dy))),
+            ..Default::default()
+        });
+        wcx.run_until_parked();
+    };
+
+    // ① 上滚即时停跟(库内 follow_state 由滚动事件更新)
+    wheel(&mut wcx, 600.);
+    assert!(
+        !cx.update(|app| store
+            .read(app)
+            .trajectory
+            .trajectory_list
+            .is_following_tail()),
+        "上滚后 list 应停跟"
+    );
+
+    // ② 连续上滚到首行(虚拟列表按需测高,单次大幅滚动到不了顶——与真实
+    //    用户一致地逐段滚)→ 渲染期 flush 触发「加载更早」,该路径亦须无 panic
+    let mut reached_top = false;
+    for _ in 0..200 {
+        wheel(&mut wcx, 400.);
+        if cx.update(|app| {
+            store
+                .read(app)
+                .trajectory
+                .trajectory_list
+                .logical_scroll_top()
+                .item_ix
+        }) == 0
+        {
+            reached_top = true;
+            break;
+        }
+    }
+    assert!(reached_top, "连续上滚应能到达首行");
+    // 翻页已发出并落地:假宿主对无日志会话返回空页(total 归零)→ 应用后
+    // 窗内的 total 不再是注入的 N
+    assert_ne!(
+        cx.update(|app| store.read(app).trajectory.trajectory.total),
+        N,
+        "到达首行应触发「加载更早」并应用回包"
+    );
+
+    // ③ 滚回底部:库在布局期自动重挂跟随
+    for _ in 0..200 {
+        wheel(&mut wcx, -400.);
+        if cx.update(|app| {
+            store
+                .read(app)
+                .trajectory
+                .trajectory_list
+                .is_following_tail()
+        }) {
+            break;
+        }
+    }
+    assert!(
+        cx.update(|app| store
+            .read(app)
+            .trajectory
+            .trajectory_list
+            .is_following_tail()),
+        "滚回底部应自动恢复跟随"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 常驻重绘回归锁:**没有在途加载时,界面不得持续请求动画帧**。
+///
+/// gpui 的 `repeat()` 动画(spinner / 扫光 / 呼吸)每帧请求下一帧,而重绘
+/// 粒度是**整个窗口**——只要有一个在转的动画,整窗就永久 60fps(实测真机
+/// renders 以 16.7ms 间隔持续数百帧,CPU 60%+)。加载态最容易被忘掉的就是
+/// 「标志没被清」:任务掉线/失败/超时后 Spinner 仍挂着。
+///
+/// 本锁用 `Window::simulate_next_frame` 直接量「还有没有动画在请求帧」:
+/// ① 静态视图(有数据、无加载态)= 不该持续请求;
+/// ② 加载态 = 应当持续请求(对照,证明探针真的能感知动画);
+/// ③ 加载标志被清回 = 立刻停止(这一类回归的正面锁)
+#[gpui_kit::test]
+fn idle_view_requests_no_animation_frames(cx: &mut TestAppContext) {
+    use crate::features::trajectory::TrajectoryView;
+    use liuma_core::trajectory::TrajectoryRecord;
+
+    let (store, mut wcx, root) = menu_harness(cx, "anim-idle");
+    let rec = |index: u64| TrajectoryRecord {
+        index,
+        seq: index,
+        kind: "message".into(),
+        turn: Some(1),
+        group: "Message".into(),
+        turn_start: index == 1,
+        text: format!("记录 {index}"),
+        result: None,
+        is_error: false,
+        time_seconds: Some(0.01),
+        started_at: Some(1000 + index as i64),
+        request_number: None,
+        input: None,
+        output: Some(1),
+        think: None,
+        ttft_ms: None,
+        payload: None,
+        output_detail: None,
+        thinking_detail: None,
+        system_prompt: None,
+        tools_catalog: None,
+        schema_detail: None,
+        source: None,
+        decision: None,
+        fold: None,
+    };
+    // 静置若干帧,返回「仍被动画请求」的帧数
+    let anim_frames = |wcx: &mut gpui_kit::VisualTestContext, cx: &mut TestAppContext| {
+        let mut n = 0;
+        for _ in 0..30 {
+            let requested = wcx.update(|window, cx| window.simulate_next_frame(cx));
+            cx.run_until_parked();
+            if requested > 0 {
+                n += 1;
+            }
+        }
+        n
+    };
+
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            st.trajectory.trajectory = TrajectoryView {
+                records: (1..=5).map(rec).collect(),
+                requests: vec![],
+                has_older: false,
+                total: 5,
+                loading: false,
+                loading_older: false,
+            };
+            st.trajectory.trajectory_session = Some(id);
+            st.panel_open = true;
+            st.panel_tabs = vec![crate::shell::panel::PanelTab::Trajectory];
+            st.panel_active_tab = Some(crate::shell::panel::PanelTab::Trajectory);
+        });
+    });
+    wcx.refresh().expect("刷新");
+    cx.run_until_parked();
+
+    // ① 无加载态:不得持续请求帧
+    let idle = anim_frames(&mut wcx, cx);
+    assert!(
+        idle <= 3,
+        "静态视图仍被动画持续请求({idle}/30)——有 repeat 动画挂着"
+    );
+
+    // ② 对照:加载态应持续请求帧(证明该度量确实能观测到动画)
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            st.trajectory.trajectory.loading = true;
+            st.trajectory.trajectory.records.clear();
+        });
+    });
+    wcx.refresh().expect("刷新");
+    cx.run_until_parked();
+    let loading = anim_frames(&mut wcx, cx);
+    assert!(loading >= 20, "加载态应持续请求帧(探针失效?{loading}/30)");
+
+    // ③ 清回加载位:必须立刻停(加载标志被忘掉 = 永久 60fps)
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            st.trajectory.trajectory.loading = false;
+            st.trajectory.trajectory.records = (1..=5).map(rec).collect();
+        });
+    });
+    wcx.refresh().expect("刷新");
+    cx.run_until_parked();
+    let cleared = anim_frames(&mut wcx, cx);
+    assert!(
+        cleared <= 3,
+        "清回加载位后仍在请求帧({cleared}/30)——loading 标志没被清"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 轨迹翻页**不得自触发**回归锁。
+///
+/// `ListAlignment::Top` 下 `logical_scroll_top()` 在「未滚动 / 被 reset」时
+/// 返回 `item_ix: 0`,与「真的在顶部」不可区分。而台账行槽形状变化必调
+/// `reset` —— 于是每次 reset 都被误判成「在顶部」→ 触发「加载更早」→ 又
+/// 要 reset → 翻页级联(实测记录数 200→700→…→2000,期间翻页行 Spinner
+/// 常转 = 整窗 60fps 十余秒)。本锁:有更早记录但不滚动,不得触发翻页
+#[gpui_kit::test]
+fn trajectory_paging_is_not_self_triggered(cx: &mut TestAppContext) {
+    use crate::features::trajectory::TrajectoryView;
+    use liuma_core::trajectory::TrajectoryRecord;
+
+    let (store, mut wcx, root) = menu_harness(cx, "traj-page");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+    };
+    let rec = |index: u64| TrajectoryRecord {
+        index,
+        seq: index,
+        kind: "message".into(),
+        turn: Some(1),
+        group: "Message".into(),
+        turn_start: index == 1,
+        text: format!("记录 {index}"),
+        result: None,
+        is_error: false,
+        time_seconds: Some(0.01),
+        started_at: Some(1000 + index as i64),
+        request_number: None,
+        input: None,
+        output: Some(1),
+        think: None,
+        ttft_ms: None,
+        payload: None,
+        output_detail: None,
+        thinking_detail: None,
+        system_prompt: None,
+        tools_catalog: None,
+        schema_detail: None,
+        source: None,
+        decision: None,
+        fold: None,
+    };
+    const WINDOW: u64 = 200;
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            st.trajectory.trajectory = TrajectoryView {
+                records: (1..=WINDOW).map(rec).collect(),
+                requests: vec![],
+                has_older: true,
+                total: 5000,
+                loading: false,
+                loading_older: false,
+            };
+            st.trajectory.trajectory_session = Some(id);
+            st.trajectory.trajectory_version += 1;
+            st.panel_open = true;
+            st.panel_tabs = vec![crate::shell::panel::PanelTab::Trajectory];
+            st.panel_active_tab = Some(crate::shell::panel::PanelTab::Trajectory);
+        });
+    });
+    redraw(cx, &mut wcx);
+    redraw(cx, &mut wcx);
+    // 多帧静置:位置被 reset 清掉后不得被读成「在顶部」
+    for _ in 0..3 {
+        redraw(cx, &mut wcx);
+    }
+    cx.update(|app| {
+        let st = store.read(app);
+        assert_eq!(
+            st.trajectory.trajectory.records.len(),
+            WINDOW as usize,
+            "未滚动不得触发翻页"
+        );
+        assert!(!st.trajectory.scroll_pos_known, "未滚动时位置不可信");
+    });
+
+    // 关键:reset 清掉位置后,**小幅下滚**不得被误判成「在顶部」
+    // (Top 对齐把 None 读成 item_ix 0;下滚 ≤48px 时 offset 也很小 → 误触发)
+    let bounds = wcx
+        .debug_bounds("trajectory-scroll")
+        .expect("台账滚动区缺失");
+    let center = gpui_kit::point(
+        bounds.origin.x + bounds.size.width / 2.,
+        bounds.origin.y + bounds.size.height / 2.,
+    );
+    wcx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: center,
+        // 负 delta = 向下滚(离开顶部)
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(-20.))),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+    redraw(cx, &mut wcx);
+    cx.update(|app| {
+        let st = store.read(app);
+        assert!(
+            !st.trajectory.trajectory.loading_older,
+            "向下滚不得触发「加载更早」(位置被清后误判在顶部)"
+        );
+        assert_eq!(
+            st.trajectory.trajectory.records.len(),
+            WINDOW as usize,
+            "向下滚不得让记录数增长(翻页级联)"
+        );
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 轨迹台账**虚拟化**回归锁:长台账只构建可视(+overdraw)行。
+///
+/// 此前台账是自绘滚动区 + `.children(全部行)`,且每帧 `snap()` 深拷贝整份
+/// 台账——千行会话滚动是 MB 级分配 + O(n²) 逐行全表扫。本锁钉两件事:
+/// ① 远端行**无** bounds(证明未构建)、近端行有 bounds;
+/// ② 行槽对齐 ListState 的条数 == 行槽数(虚拟列表长度不失配)。
+/// 夹具 7–9 行的既有用例全在可视区,不受虚拟化影响(见上一条用例)
+#[gpui_kit::test]
+fn trajectory_ledger_virtualizes_rows(cx: &mut TestAppContext) {
+    use crate::features::trajectory::TrajectoryView;
+    use liuma_core::trajectory::TrajectoryRecord;
+
+    let (store, mut wcx, root) = menu_harness(cx, "traj-virt");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+    };
+
+    // 300 行(远超可视窗):全部 message 行,无折叠
+    const N: u64 = 300;
+    let rec = |index: u64| TrajectoryRecord {
+        index,
+        seq: index,
+        kind: "message".into(),
+        turn: Some(1),
+        group: "Message".into(),
+        turn_start: index == 1,
+        text: format!("记录 {index}"),
+        result: None,
+        is_error: false,
+        time_seconds: Some(0.01),
+        started_at: Some(1000 + index as i64),
+        request_number: None,
+        input: None,
+        output: Some(1),
+        think: None,
+        ttft_ms: None,
+        payload: None,
+        output_detail: None,
+        thinking_detail: None,
+        system_prompt: None,
+        tools_catalog: None,
+        schema_detail: None,
+        source: None,
+        decision: None,
+        fold: None,
+    };
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            st.trajectory.trajectory = TrajectoryView {
+                records: (1..=N).map(rec).collect(),
+                requests: vec![],
+                has_older: false,
+                total: N,
+                loading: false,
+                loading_older: false,
+            };
+            st.trajectory.trajectory_session = Some(id);
+            st.trajectory.trajectory_version += 1;
+            st.panel_open = true;
+            st.panel_tabs = vec![crate::shell::panel::PanelTab::Trajectory];
+            st.panel_active_tab = Some(crate::shell::panel::PanelTab::Trajectory);
+        });
+    });
+    // 两遍:list 首帧建立视口(测高),第二帧才铺开可视行
+    redraw(cx, &mut wcx);
+    redraw(cx, &mut wcx);
+
+    // ① 台账默认跟尾(新记录在下):可视窗在尾部 → 尾部行构建、头部行不构建
+    assert!(
+        wcx.debug_bounds("trajectory-row-300").is_some(),
+        "尾部可视行应构建"
+    );
+    assert!(
+        wcx.debug_bounds("trajectory-row-1").is_none(),
+        "远端头部行不应构建(虚拟化失效:整表 {N} 行全建)"
+    );
+
+    // ② 滚到顶:可视窗随之切换(说明构建范围跟视口走,而非定窗)
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            // 停跟(库内 follow_state):否则下一帧布局会把视口拉回尾部
+            st.trajectory.trajectory_list.pause_following_tail();
+            st.trajectory
+                .trajectory_list
+                .scroll_to(gpui_kit::ListOffset {
+                    item_ix: 0,
+                    offset_in_item: gpui_kit::px(0.),
+                });
+        });
+    });
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("trajectory-row-1").is_some(),
+        "滚到顶后头部行应构建"
+    );
+
+    // ③ 行槽与 ListState 条数一致(对齐失效会出现行缺失/错位)
+    cx.update(|app| {
+        let st = store.read(app);
+        let rows = st
+            .trajectory
+            .view_cache
+            .as_ref()
+            .map(|c| c.rows.len())
+            .unwrap_or(0);
+        assert_eq!(rows as u64, N, "行槽数应等于记录数");
+        assert_eq!(
+            st.trajectory.trajectory_list.item_count(),
+            rows,
+            "ListState 条数应与行槽对齐"
+        );
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 轨迹(右栏面板标签):空会话空态;has_older 加载钮;Turns 全局折叠
 #[gpui_kit::test]
 fn trajectory_empty_load_earlier_and_turn_collapse(cx: &mut TestAppContext) {
@@ -11252,7 +11931,7 @@ fn tv_wrap_width_matches_container(cx: &mut TestAppContext) {
                 message_id: "m1".into(),
             });
             // 走 drive 装配 TextViewState
-            st.chat.tv_streams.drive(key, md, 1, cx);
+            st.chat.tv_streams.drive(key, md, 1, false, cx);
         });
     });
     let mut body = None;

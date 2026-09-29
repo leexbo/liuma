@@ -350,9 +350,12 @@ impl Render for WorkspaceView {
             }
         }
         // 渲染期窗口态回写:composer 延迟清空 + 消息列虚拟化对齐
-        // (splice/reset 记账)+ 跟随滚底 + 轨迹滚动冲洗(prepend
-        // 锚定/跟随滚底)(订阅/帧泵回调无窗口句柄或无滚动时机;
-        // 见 store 字段注释)
+        // (splice/reset 记账)+ 跟随滚底 + 轨迹滚动冲洗(订阅/帧泵回调无
+        // 窗口句柄或无滚动时机;见 store 字段注释)
+        //
+        // 探针:这段是渲染期的**主线程固定成本**(行槽重建、流式重测、
+        // 轨迹缓存/跟底),帧耗时探针据此区分「重绘慢」与「本段重活慢」
+        let flush_t0 = std::time::Instant::now();
         self.store.update(cx, |s, cx| {
             // 面板/侧栏让位协商(优先级:对话列 > 面板下限 > 侧栏;
             // 见 sync_yield_negotiation)。必须先于 col_w/面板渲染宽计算
@@ -361,7 +364,8 @@ impl Render for WorkspaceView {
             s.sync_composer_placeholder(window, cx);
             // 语言档切换回写(偏好下拉标签重建;档位未变零开销早退)
             s.sync_locale_ui(window, cx);
-            s.flush_trajectory_scroll();
+            s.install_trajectory_scroll_handler(cx);
+            s.flush_trajectory_scroll(cx);
             s.sync_chat_list(cx);
             s.sync_retry_tick(cx);
             // 列宽变化通知(宽变失效 → settle 全量重测;见 chat/store 注释)
@@ -387,6 +391,12 @@ impl Render for WorkspaceView {
                 s.chat.rendered_version = s.chat.chat_version;
             }
         });
+        if std::env::var_os("LIUMA_PROBE").is_some() {
+            let ms = flush_t0.elapsed().as_secs_f64() * 1000.;
+            if ms >= 2. {
+                eprintln!("[t3] flush {ms:.1}ms (行槽/流式重测/轨迹)");
+            }
+        }
         let st = self.store.read(cx);
         let hero = st.hero();
         let sidebar_collapsed = st.sidebar_collapsed;

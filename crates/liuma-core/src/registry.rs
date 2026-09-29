@@ -1176,31 +1176,51 @@ fn sync_trajectory_from_log(
     traj: &Mutex<crate::trajectory::TrajectoryFolder>,
     mux: &broadcast::Sender<ServerRequest>,
 ) {
-    let last = traj.lock_recover().last_seq();
-    let events: Vec<EventEnvelope> = log
-        .lock_recover()
-        .iter()
-        .filter(|e| e.seq > last)
-        .cloned()
-        .collect();
-    let mut out = Vec::new();
-    {
-        let mut t = traj.lock_recover();
-        for ev in &events {
-            if t.feed(ev) {
-                let changes = t.take_changes();
-                out.push(trajectory_delta_frame(
-                    session_id,
-                    &changes,
-                    t.total(),
-                    t.last_seq(),
-                ));
+    // 按批喂:**原先一次性 clone 全部待喂事件**(暖机时 last=0 = 整份日志)
+    // ——大会话下是一份与日志等量级的瞬时分配(实测 29 万事件 ≈ 300MB)。
+    // 每批取完即释放 log 锁再拿 traj 锁,保持「不嵌套持锁」的既有约束。
+    //
+    // 变更**累积后只发一帧**:原先每有一条变更就发一个 `trajectory/delta`,
+    // 桌面侧每帧一次 `notify()` ——29 万事件重放会产生约 2000 帧,把主线程
+    // 钉在「逐帧重绘」上(实测 render 以 16.7ms 间隔持续 20 秒以上)。
+    // 桌面按 index/number upsert,合并语义等价;载荷量级 = 驻留窗(≤2000 条)
+    const BATCH: usize = 256;
+    let mut merged = crate::trajectory::TrajectoryChanges::default();
+    let mut total = 0;
+    let mut last_seq = 0;
+    let mut cursor = traj.lock_recover().last_seq();
+    loop {
+        // 锁内只做「取值 + 释放」:不得跨到 traj 锁(锁序安全)
+        let batch: Vec<EventEnvelope> = {
+            let l = log.lock_recover();
+            let slice = l.iter().as_slice();
+            // 二分定位:seq 与下标同序(append 强制连续),故 O(log n) 找起点
+            // ——若用 `filter` 从头扫,每批 O(n) → 整段 O(n²/BATCH)
+            let start = slice.partition_point(|e| e.seq <= cursor);
+            let end = (start + BATCH).min(slice.len());
+            slice[start..end].to_vec()
+        };
+        let Some(last_ev) = batch.last() else {
+            break;
+        };
+        cursor = last_ev.seq;
+        {
+            let mut t = traj.lock_recover();
+            for ev in &batch {
+                if t.feed(ev) {
+                    let changes = t.take_changes();
+                    merged.records.extend(changes.records);
+                    merged.requests.extend(changes.requests);
+                }
             }
+            total = t.total();
+            last_seq = t.last_seq();
         }
     }
-    for f in out {
-        let _ = mux.send(f);
+    if merged.is_empty() {
+        return;
     }
+    let _ = mux.send(trajectory_delta_frame(session_id, &merged, total, last_seq));
 }
 
 /// 迁移旧布局会话文件到 `~/.liuma/sessions/<key>/<id>/session.jsonl`
@@ -4287,21 +4307,23 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             },
             &ws_root.join("liuma.toml"),
         )
-        .map_err(|e| RpcError::internal(format!("session 装配失败:{e}")))?;
+        // `{e:#}` = anyhow 全链:裸 `{e}` 只显最外层 context,
+        // 会把真正的 OS 原因(如 Too many open files)吞掉,线上无法归因
+        .map_err(|e| RpcError::internal(format!("session 装配失败:{e:#}")))?;
         let parts = liuma_app::prompt_parts(&resolved, true);
         // AGENTS.md 基线不在此注入:per-step 指令重扫的 compose 首步发现
         // 日志无基线时自动整段载入,时序天然排在用户消息之后(pre-step
         // 语义);attach 时注入会插到用户消息之前,导致注入行
         // 被折叠组吞掉。
         let backend = liuma_app::open_backend(&resolved.session)
-            .map_err(|e| RpcError::internal(format!("打开会话日志失败:{e}")))?;
+            .map_err(|e| RpcError::internal(format!("打开会话日志失败:{e:#}")))?;
         let log = {
             // attach 装配(建日志+装配持久化汇)与冷路径追加互斥
             // (见 AppendLocks):冷读尾→append 不得落进装配窗口
             let append_lock = self.append_locks.lock_for(id);
             let _guard = append_lock.lock_recover();
             let log = liuma_app::load_log(&resolved.session)
-                .map_err(|e| RpcError::internal(format!("会话日志重载失败:{e}")))?;
+                .map_err(|e| RpcError::internal(format!("会话日志重载失败:{e:#}")))?;
             let log = Arc::new(Mutex::new(log));
             // 持久化汇 = 日志锁内定 seq 即写盘(单写权威;此后任何
             // log.append 都不允许再手动 backend.append,否则双写)
@@ -8848,6 +8870,41 @@ mod tests {
                 other => panic!("目录出现未覆盖计费预设的厂商:{other}"),
             }
         }
+    }
+
+    /// 轨迹增量**只发一帧** `trajectory/delta`(无论本批有多少条变更)。
+    ///
+    /// 原先每有一条变更就发一帧:29 万事件重放 ≈ 2000 帧,桌面每帧一次
+    /// `notify()` → 主线程被钉在逐帧重绘上(实测 render 以 16.7ms 间隔持续
+    /// 20 秒以上,CPU 高企)。合并后语义等价(桌面按 index/number upsert,
+    /// 同键取末次)
+    #[tokio::test]
+    async fn trajectory_sync_emits_single_delta_frame() {
+        let host = temp_host("traj-delta-coalesce");
+        let id = host.create_session(None, None, None);
+        let slot = host.attach(&id).expect("attach");
+        let inner = slot.inner().expect("inner");
+        // attach 已暖机;这里追加「每条都产生台账变更」的事件
+        {
+            let mut l = inner.log.lock_recover();
+            for i in 0..5 {
+                l.append(liuma_session::EventEnvelope::new(
+                    "user/message",
+                    0,
+                    json!({ "content": format!("m{i}") }),
+                ))
+                .expect("append");
+            }
+        }
+        let mut rx = host.mux.subscribe();
+        sync_trajectory_from_log(&id, &inner.log, &inner.traj, &host.mux);
+        let mut deltas = 0;
+        while let Ok(f) = rx.try_recv() {
+            if f.method == "trajectory/delta" {
+                deltas += 1;
+            }
+        }
+        assert_eq!(deltas, 1, "整段同步应只发一帧(原先每变更一帧)");
     }
 
     fn temp_host(tag: &str) -> Arc<AppHost> {

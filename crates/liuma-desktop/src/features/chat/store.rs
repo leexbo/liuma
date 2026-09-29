@@ -263,11 +263,24 @@ pub(crate) struct ChatStore {
     /// kits::markdown_tv)
     pub tv_streams: crate::kits::markdown_tv::TvStreamRegistry,
     /// TextView 观察者订阅(异步解析落地 → 置脏标记;随会话清理)
-    pub tv_subs: Vec<gpui_kit::Subscription>,
+    /// 视图观察者订阅(带节点 key:逐出条目时须一并裁——订阅持实体引用,
+    /// 不裁则被逐出的视图不会被释放)
+    pub tv_subs: Vec<(String, gpui_kit::Subscription)>,
     /// 异步解析落地待重测标记(帧合并:同帧 N 次落地只付一次全量重测。
     /// 原观察者每次落地立即 remeasure_items(0..n) + notify——打开初期
     /// 滚动滚过未渲染长文时,每秒几十次全量重臂是掉帧直接来源)
-    pub tv_remeasure_dirty: bool,
+    /// 待重测的**变更节点 key**(流式文本变化 + 异步解析落地)。
+    ///
+    /// 原实现是布尔 + 消费点 `remeasure_items(0..n)`:gpui 会把该范围项目
+    /// 全部换回 `Unmeasured`,即**整个会话重建元素并重新文本布局**——流式
+    /// 期解析持续落地,每帧全表重排,长会话是秒级停顿。改为按真实变更行
+    /// 收窄(经 `node_slot` 映到槽位,相邻合并成区间)
+    pub tv_remeasure_keys: std::collections::BTreeSet<String>,
+    /// 节点 key → 行槽下标(row_slots 重建时同步;重测范围映射用)
+    pub(crate) node_slot: std::collections::HashMap<String, usize>,
+    /// 最近一次重测区间(测试观测钩子:「流式只重测变更行」的端到端锁)
+    #[cfg(test)]
+    pub(crate) last_remeasure_ranges: Vec<std::ops::Range<usize>>,
     /// 导航轨全量锚点缓存(签名守卫;nav_anchors_cached 读)。原 chat_pane
     /// 渲染每帧全量重建——遍历全部行槽并为每条用户消息重造 title/preview
     /// 字符串,长会话每帧固定成本随历史线性涨
@@ -279,6 +292,31 @@ pub(crate) struct ChatStore {
     /// 投影:回填 RPC 与投影建立谁先到都不丢(投影重建不焚毁),重开
     /// 会话由冷读 turnList 再灌一次
     pub turn_usage: HashMap<(String, u64), serde_json::Value>,
+}
+
+/// 变更节点 key → 待重测的行槽区间(相邻槽位合并;未知 key 忽略)。
+///
+/// `remeasure_items(range)` 会把该范围的项目换回 `Unmeasured`(gpui 语义:
+/// 必须重新构建元素 + 重新文本布局),故范围要**少且窄**:流式期每帧代价
+/// 从「整个会话」降到「真正变了的那几行」
+fn changed_slot_ranges(
+    keys: &std::collections::BTreeSet<String>,
+    node_slot: &std::collections::HashMap<String, usize>,
+) -> Vec<std::ops::Range<usize>> {
+    let mut slots: Vec<usize> = keys
+        .iter()
+        .filter_map(|k| node_slot.get(k).copied())
+        .collect();
+    slots.sort_unstable();
+    slots.dedup();
+    let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
+    for ix in slots {
+        match ranges.last_mut() {
+            Some(r) if r.end == ix => r.end = ix + 1,
+            _ => ranges.push(ix..ix + 1),
+        }
+    }
+    ranges
 }
 
 /// 导航轨全量锚点缓存条目(签名 = (row_slots_sig, anchor_index.len(),
@@ -360,7 +398,10 @@ impl Default for ChatStore {
             mermaid_cards: HashMap::new(),
             tv_streams: crate::kits::markdown_tv::TvStreamRegistry::default(),
             tv_subs: Vec::new(),
-            tv_remeasure_dirty: false,
+            tv_remeasure_keys: std::collections::BTreeSet::new(),
+            node_slot: std::collections::HashMap::new(),
+            #[cfg(test)]
+            last_remeasure_ranges: Vec::new(),
             nav_anchors_cache: None,
             history_loading: false,
         }
@@ -730,20 +771,25 @@ impl AppStore {
     pub fn sync_chat_list(&mut self, cx: &mut Context<Self>) {
         self.ensure_row_slots();
         // 异步解析落地重测的帧合并消费点(须在任何提前 return 之前):
-        // 同帧 N 次落地只付一次全量重测,下一帧按真实高度布局
-        if self.chat.tv_remeasure_dirty {
-            self.chat.tv_remeasure_dirty = false;
-            let n = self.chat.chat_list.item_count();
-            self.chat.chat_list.remeasure_items(0..n);
+        // 同帧 N 次落地合一次,但**只重测真正变更的行**——原 `0..n` 会把
+        // 整个会话换回 Unmeasured 并重排(流式期每帧一次,长会话秒级停顿)
+        if !self.chat.tv_remeasure_keys.is_empty() {
+            let keys = std::mem::take(&mut self.chat.tv_remeasure_keys);
+            let ranges = changed_slot_ranges(&keys, &self.chat.node_slot);
+            self.remeasure_slots(ranges);
         }
         // TextView 流式驱动(渲染前 flush:前缀匹配 push_str 增量/漂移
         // set_text;幂等,文本未变零开销。须在任何提前 return 之前)。
         // 逐节点直读:整帧克隆全部正文(Vec<(String,String)>)在大会话
         // 是每帧 MB 级分配 = 滚动/流式卡顿源;state(读)与
         // chat.tv_streams(写)字段级不相交,可同帧拆借用
-        let mut tv_touched = false;
-        let mut tv_created: Vec<gpui_kit::Entity<gpui_kit::component::text::TextViewState>> =
-            Vec::new();
+        // 本帧文本变更的节点 key(下面的重测范围由此收窄)
+        let mut touched: Vec<String> = Vec::new();
+        // 新建视图带 key(观察者闭包要记「哪个节点」落了地)
+        let mut tv_created: Vec<(
+            String,
+            gpui_kit::Entity<gpui_kit::component::text::TextViewState>,
+        )> = Vec::new();
         {
             let nodes: &[ChatNode] = match self
                 .state
@@ -754,42 +800,88 @@ impl AppStore {
                 Some(c) => &c.nodes,
                 None => &[],
             };
+            // 只为**可视窗口附近**的助手节点建/更新 TextView。
+            //
+            // 每个助手节点的 TextView 都会发起一次异步 markdown 解析,落地
+            // 时 notify 一次;真机大会话实测建出 1179 个(可视仅约 30 行),
+            // 即上千次无谓解析 + 上千次落地重绘。窗口按滚动锚点取(见
+            // `tv_slot_window`),窗口外不建、已建则逐出
+            let window = self.tv_slot_window();
             for node in nodes {
                 if let ChatNode::Assistant {
                     key,
                     text,
                     text_ver,
+                    streaming,
                     ..
                 } = node
                 {
-                    match self.chat.tv_streams.drive(key, text, *text_ver, cx) {
+                    if let Some(w) = &window
+                        && !self
+                            .chat
+                            .node_slot
+                            .get(key)
+                            .is_some_and(|ix| w.contains(ix))
+                    {
+                        continue;
+                    }
+                    match self
+                        .chat
+                        .tv_streams
+                        .drive(key, text, *text_ver, *streaming, cx)
+                    {
                         crate::kits::markdown_tv::DriveOutcome::Created(state) => {
-                            tv_created.push(state);
-                            tv_touched = true;
+                            tv_created.push((key.clone(), state));
+                            touched.push(key.clone());
                         }
-                        crate::kits::markdown_tv::DriveOutcome::Updated => tv_touched = true,
+                        crate::kits::markdown_tv::DriveOutcome::Updated => {
+                            touched.push(key.clone())
+                        }
                         crate::kits::markdown_tv::DriveOutcome::None => {}
                     }
                 }
             }
         }
         // TextView 驱动 + 行高重测:外层虚拟化列表的行高缓存不会自愈,
-        // 两个重测触发面——①drive 文本变化(流式增长,尾部两行)
-        // ②新视图挂观察者(>4KiB 历史的首轮解析是异步的,落地晚于挂载)
-        if tv_touched {
-            let n = self.chat.chat_list.item_count();
-            let start = n.saturating_sub(2);
-            self.chat.chat_list.remeasure_items(start..n);
+        // 两个重测触发面——①drive 文本变化(流式增长)②新视图挂观察者
+        // (>4KiB 历史的首轮解析是异步的,落地晚于挂载)。两面都按**真实
+        // 变更节点**重测(原 ① 是尾部两行的启发式)
+        if !touched.is_empty() {
+            let keys: std::collections::BTreeSet<String> = touched.into_iter().collect();
+            let ranges = changed_slot_ranges(&keys, &self.chat.node_slot);
+            self.remeasure_slots(ranges);
         }
-        // 新视图挂观察者:异步解析落地 → 置脏 + notify,重测在下一帧
-        // sync_chat_list 帧首合并消费(同帧 N 次落地只付一次全量重测;
-        // 原每次落地立即 remeasure_items(0..n),打开初期滚动是 N 连发)
-        for state in tv_created {
-            let sub = cx.observe(&state, |host, _state, cx| {
-                host.chat.tv_remeasure_dirty = true;
+        // 逐出无消费者的条目(节点被裁窗/换会话/滚出可视窗口)
+        let window = self.tv_slot_window();
+        {
+            // 保留条件 = 节点仍在 **且** 落在可视窗口内(窗口外的不再解析)
+            let live: std::collections::HashSet<&str> = match self
+                .state
+                .current_id
+                .as_deref()
+                .and_then(|id| self.state.chats.get(id))
+            {
+                Some(c) => c.nodes.iter().map(ChatNode::key).collect(),
+                None => std::collections::HashSet::new(),
+            };
+            let keep = |k: &str| {
+                live.contains(k)
+                    && window
+                        .as_ref()
+                        .is_none_or(|w| self.chat.node_slot.get(k).is_some_and(|ix| w.contains(ix)))
+            };
+            self.chat.tv_streams.retain(keep);
+            self.chat.tv_subs.retain(|(k, _)| keep(k.as_str()));
+        }
+        // 新视图挂观察者:异步解析落地 → 记该节点 + notify,重测在下一帧
+        // sync_chat_list 帧首合并消费(观察者须带 key:范围映射靠它)
+        for (key, state) in tv_created {
+            let remeasure_key = key.clone();
+            let sub = cx.observe(&state, move |host, _state, cx| {
+                host.chat.tv_remeasure_keys.insert(remeasure_key.clone());
                 cx.notify();
             });
-            self.chat.tv_subs.push(sub);
+            self.chat.tv_subs.push((key, sub));
         }
         let sid = self.state.current_id.clone();
         // 列表行数 = 行槽 + 流尾插队气泡(伪行;session/queue 帧驱动增减)
@@ -839,8 +931,13 @@ impl AppStore {
 
     /// 重建行槽缓存(签名守卫,见 row_slots_sig;结构未变直接复用)
     pub(crate) fn ensure_row_slots(&mut self) {
-        let nodes = self
-            .current_chat()
+        // 直取 state 字段(不经 `current_chat(&self)`:那会整体借用 self,
+        // 与下方 `self.chat.row_slots` 赋值冲突)
+        let nodes: &[ChatNode] = self
+            .state
+            .current_id
+            .as_deref()
+            .and_then(|id| self.state.chats.get(id))
             .map(|c| c.nodes.as_slice())
             .unwrap_or(&[]);
         let sig = (
@@ -853,6 +950,15 @@ impl AppStore {
         }
         self.chat.row_slots = build_row_slots(nodes, &self.chat.open_turns);
         self.chat.row_slots_sig = Some(sig);
+        // key → 槽位映射(重测范围映射用;与行槽同签名,一次建齐)
+        self.chat.node_slot.clear();
+        for (slot_ix, slot) in self.chat.row_slots.iter().enumerate() {
+            if let Some(n) = slot.node_ix()
+                && let Some(node) = nodes.get(n)
+            {
+                self.chat.node_slot.insert(node.key().to_string(), slot_ix);
+            }
+        }
     }
 
     /// 导航轨全量锚点(缓存读;签名 = (row_slots_sig, anchor_index.len(),
@@ -1786,6 +1892,47 @@ impl AppStore {
 
     /// 复制消息文本(剪贴板 + Copy→Check 反馈;1.2s 后清除——空闲期
     /// 定时器可能不唤醒主循环,Check 残留到下次交互,无害)
+    /// TextView 驱动的行窗口(可视锚点 ± 余量)。
+    ///
+    /// ListState 只在渲染期回读(见 `install_scroll_handler` 一类约束,这里
+    /// 由渲染期 flush 调用)。锚点取 `logical_scroll_top().item_ix`:
+    /// Bottom 对齐且未滚动时它即末项,正好是「跟着尾部」的位置。余量给足,
+    /// 滚动时不会刚出窗口就被逐出又重建
+    fn tv_slot_window(&self) -> Option<std::ops::Range<usize>> {
+        let count = self.chat.chat_list.item_count();
+        if count == 0 {
+            return None;
+        }
+        const MARGIN: usize = 150;
+        let top = self.chat.chat_list.logical_scroll_top().item_ix.min(count);
+        let start = top.saturating_sub(MARGIN);
+        let end = (top + MARGIN * 2).min(count);
+        Some(start..end)
+    }
+
+    /// 应用重测区间(唯一出口:测试钩子在此记录「本帧到底重测了哪些行」)
+    fn remeasure_slots(&mut self, ranges: Vec<std::ops::Range<usize>>) {
+        #[cfg(test)]
+        {
+            self.chat.last_remeasure_ranges = ranges.clone();
+        }
+        for range in ranges {
+            self.chat.chat_list.remeasure_items(range);
+        }
+    }
+
+    /// 按节点 key 取助手正文(回合收尾行的复制:正文不在渲染期克隆,
+    /// 点击时现取——大会话下每帧克隆整段正文是渲染热路径的分配源)
+    pub fn reply_text_of(&self, key: &str) -> String {
+        self.current_chat()
+            .and_then(|c| c.nodes.iter().find(|n| n.key() == key))
+            .map(|n| match n {
+                ChatNode::Assistant { text, .. } => text.clone(),
+                _ => String::new(),
+            })
+            .unwrap_or_default()
+    }
+
     pub fn copy_message(&mut self, key: &str, text: &str, cx: &mut Context<Self>) {
         cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text.to_string()));
         self.chat.copied_key = Some(key.to_string());
@@ -2043,5 +2190,48 @@ impl AppStore {
         self.current_chat()
             .map(|c| c.nodes.as_slice())
             .unwrap_or(&[])
+    }
+}
+
+#[cfg(test)]
+mod remeasure_range_tests {
+    use super::changed_slot_ranges;
+    use std::collections::{BTreeSet, HashMap};
+
+    fn slots(pairs: &[(&str, usize)]) -> HashMap<String, usize> {
+        pairs.iter().map(|(k, v)| ((*k).to_string(), *v)).collect()
+    }
+
+    fn keys(ks: &[&str]) -> BTreeSet<String> {
+        ks.iter().map(|k| (*k).to_string()).collect()
+    }
+
+    /// 变更节点 → 重测区间:相邻合并、远隔成段、未知 key 忽略、空集零区间。
+    /// 这是「流式期不再整表重测」的核心:范围越窄,每帧重建+重排的行越少
+    #[test]
+    fn changed_slot_ranges_merges_adjacent() {
+        let map = slots(&[("a", 3), ("b", 4), ("c", 5), ("d", 9)]);
+        // 3,4,5 相邻 → 一段;9 独立
+        assert_eq!(
+            changed_slot_ranges(&keys(&["a", "b", "c", "d"]), &map),
+            vec![3..6, 9..10]
+        );
+        // 只变中间一行 → 单行区间(不再 0..n)
+        assert_eq!(changed_slot_ranges(&keys(&["b"]), &map), vec![4..5]);
+        // 乱序输入同样按槽位升序输出
+        assert_eq!(
+            changed_slot_ranges(&keys(&["d", "a"]), &map),
+            vec![3..4, 9..10]
+        );
+    }
+
+    /// 未知 key(节点已不在行槽:折叠/翻页/换会话后)静默忽略;
+    /// 空集零区间(消费点据此跳过全部重测)
+    #[test]
+    fn changed_slot_ranges_ignores_unknown_and_empty() {
+        let map = slots(&[("a", 1)]);
+        assert_eq!(changed_slot_ranges(&keys(&["a", "gone"]), &map), vec![1..2]);
+        assert!(changed_slot_ranges(&keys(&["gone"]), &map).is_empty());
+        assert!(changed_slot_ranges(&keys(&[]), &map).is_empty());
     }
 }

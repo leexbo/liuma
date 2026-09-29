@@ -10,6 +10,7 @@ use gpui_kit::{Context, Entity};
 
 use liuma_core::trajectory::{TrajectoryRecord, TrajectoryRequest};
 
+use crate::features::trajectory::views::LedgerCache;
 use crate::shell::panel::PanelTab;
 use crate::shell::store::AppStore;
 
@@ -43,6 +44,10 @@ pub struct TrajectoryView {
 pub const TRAJECTORY_WINDOW: usize = 200;
 /// 「加载更早」页大小
 pub const TRAJECTORY_PAGE: usize = 500;
+/// 桌面侧已载记录上限(「加载更早」可反复翻,无上限则窗口随使用时长
+/// 单调增长)。超出丢**最旧**并把 `has_older` 置真——与「加载更早」语义
+/// 自洽(丢掉的正是那批最早的行),可见台账永远是最近 MAX_RETAINED 行
+pub const TRAJECTORY_MAX_RETAINED: usize = 2000;
 
 /// 轨迹功能切片状态(台账缓存与滚动态、检查器与时间线交互态、
 /// turns/calls 折叠与 Inspect 待定位)。
@@ -63,17 +68,35 @@ pub(crate) struct TrajectoryStore {
     pub trajectory_refresh_basis: u64,
     /// 轨迹搜索输入态(挂窗后建;渲染期读值过滤)
     pub trajectory_search: Option<Entity<InputState>>,
-    /// 台账滚动句柄(跟随尾部 / prepend 锚定)
-    pub trajectory_scroll: gpui_kit::ScrollHandle,
-    /// 台账是否跟随尾部(距底 ≤2px;上滚即失跟)
-    pub trajectory_follow: bool,
+    /// 台账虚拟列表状态(内建 list();逐项测高缓存 + 滚动位托管)。
+    /// 条数 = 行槽缓存长度,渲染期由 [`Self::sync_trajectory_rows`] 对齐
+    pub trajectory_list: gpui_kit::ListState,
     /// 台账数据版本(拉取/翻页 +1;渲染侧比对驱动滚动)
     pub trajectory_version: u64,
     /// 渲染侧已消费的台账版本
     pub trajectory_rendered_version: u64,
-    /// prepend 锚定(旧 offset.y / 旧 max 高 / 剩余重试帧;新布局
-    /// 就绪后按高度增量回偏,「加载更早」不跳视口)
-    pub trajectory_anchor: Option<(f32, f32, usize)>,
+    /// 行槽/投影行缓存(签名守卫;虚拟列表每帧按 index 直读,免每帧重建
+    /// 全部行 + 免每帧深拷贝台账)
+    pub view_cache: Option<LedgerCache>,
+    /// 上次同步进 ListState 的行类型序列(定高行:类型序列相同 = 总高不变,
+    /// 无需任何列表操作;增删/形状变化才走 splice/reset)
+    pub row_kinds: Vec<u8>,
+    /// 折叠态版本(行槽缓存签名的一份;折叠切换处 +1)
+    pub collapse_ver: u64,
+    /// 台账滚动回调是否已装(list 生命期只装一次)
+    scroll_handler_installed: bool,
+    /// 本帧发生过台账滚动(handler 只置位;需要回读 ListState 的判断
+    /// 留到渲染期 flush,见 `flush_trajectory_scroll`)
+    pub trajectory_scroll_dirty: bool,
+    /// 列表当前位置是否**可信**。
+    ///
+    /// `ListAlignment::Top` 下 `logical_scroll_top()` 在「未滚动 / 被 reset」
+    /// 时返回 `item_ix: 0` —— 与「真的在顶部」不可区分。而 `reset`(行槽形状
+    /// 变化时必调)会清掉位置,于是每次 reset 后都会被误判成「在顶部」→
+    /// 触发「加载更早」→ 又要 reset → **翻页级联**(实测 200→700→…→2000,
+    /// 期间翻页行 Spinner 常转 = 整窗 60fps 十余秒)。故只在 reset 之后真的
+    /// 滚动过时才认位置
+    pub scroll_pos_known: bool,
     /// Duration 切换(时间线按耗时投影;进程内状态,不持久化)
     pub trajectory_duration: bool,
     /// 折叠的 turn(turn 号)
@@ -111,6 +134,17 @@ pub(crate) struct TrajectoryStore {
     pub timeline_draft: Option<(f64, f64)>,
 }
 
+/// 窗口裁剪:超 [`TRAJECTORY_MAX_RETAINED`] 丢最旧,返回丢弃条数。
+/// 纯函数(调用点与单测共用)
+pub(crate) fn trim_records(records: &mut Vec<TrajectoryRecord>) -> usize {
+    if records.len() <= TRAJECTORY_MAX_RETAINED {
+        return 0;
+    }
+    let drop = records.len() - TRAJECTORY_MAX_RETAINED;
+    records.drain(..drop);
+    drop
+}
+
 /// 已载子集按 index 升序的 upsert(新增插入保序;同 index 覆盖)
 fn upsert_record(records: &mut Vec<TrajectoryRecord>, rec: TrajectoryRecord) {
     match records.binary_search_by_key(&rec.index, |r| r.index) {
@@ -128,11 +162,19 @@ impl Default for TrajectoryStore {
             trajectory_deltas: 0,
             trajectory_refresh_basis: 0,
             trajectory_search: None,
-            trajectory_scroll: gpui_kit::ScrollHandle::new(),
-            trajectory_follow: true,
+            trajectory_list: gpui_kit::ListState::new(
+                0,
+                gpui_kit::ListAlignment::Top,
+                gpui_kit::px(600.),
+            ),
             trajectory_version: 0,
             trajectory_rendered_version: 0,
-            trajectory_anchor: None,
+            view_cache: None,
+            row_kinds: Vec::new(),
+            collapse_ver: 0,
+            scroll_handler_installed: false,
+            trajectory_scroll_dirty: false,
+            scroll_pos_known: false,
             trajectory_duration: false,
             collapsed_turns: HashSet::new(),
             all_turns_collapsed: false,
@@ -263,7 +305,9 @@ impl AppStore {
             return;
         }
         self.trajectory.trajectory_deltas += 1;
-        // has_older 由已载最左 index 推导(基线窗口/翻页语义保持)
+        // 窗口上限:超出丢最旧(丢的正是「加载更早」那批),has_older 由
+        // 已载最左 index 推导(基线窗口/翻页语义保持)
+        self.trim_trajectory_window();
         self.trajectory.trajectory.has_older = self
             .trajectory
             .trajectory
@@ -277,10 +321,9 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 轨迹台账是否钉在底部(2px 阈值)
-    pub fn trajectory_at_bottom(&self) -> bool {
-        let h = &self.trajectory.trajectory_scroll;
-        -h.offset().y >= h.max_offset().y - gpui_kit::px(2.)
+    /// 已载记录超上限时丢最旧(内存有界;窗口语义见 [`TRAJECTORY_MAX_RETAINED`])
+    fn trim_trajectory_window(&mut self) -> usize {
+        trim_records(&mut self.trajectory.trajectory.records)
     }
 
     /// 拉取轨迹台账(尾窗 200;tokio worker 折叠,大日志不卡 UI 线程)。
@@ -293,19 +336,31 @@ impl AppStore {
             return;
         }
         let session_changed = self.trajectory_stale();
-        let follow = self.trajectory_at_bottom() || self.trajectory.trajectory.records.is_empty();
         self.trajectory.trajectory.loading = true;
         self.trajectory.trajectory_refresh_basis = self.trajectory.trajectory_deltas;
-        self.trajectory.trajectory_follow = follow;
+        // 换会话:数据整体替换,跟随态复位为「跟随尾部」——否则会把上一
+        // 会话上滚留下的停跟态带进新会话,台账停在半空的旧偏移上。
+        // 同会话重拉(reload/翻页收敛)不动用户的当前位置
+        if session_changed {
+            self.trajectory
+                .trajectory_list
+                .set_follow_mode(gpui_kit::FollowMode::Tail);
+        }
         cx.notify();
         let host = self.bridge.host().clone();
         let sid_for_call = sid.clone();
         let rx = self
             .bridge
-            .call(async move { host.trajectory_page(&sid_for_call, TRAJECTORY_WINDOW, None) });
+            .call_blocking(move || host.trajectory_page(&sid_for_call, TRAJECTORY_WINDOW, None));
         let store = cx.entity().clone();
         cx.spawn(async move |_this, cx| {
+            // 掉线也要清 loading:否则 Spinner(repeat 动画)永久挂在面板上,
+            // 整窗持续 60fps 重绘
             let Ok(page) = rx.await else {
+                store.update(cx, |s, cx| {
+                    s.trajectory.trajectory.loading = false;
+                    cx.notify();
+                });
                 return Ok::<(), anyhow::Error>(());
             };
             store.update(cx, |s, cx| {
@@ -341,7 +396,6 @@ impl AppStore {
                     s.trajectory.timeline_viewport = None;
                     s.trajectory.timeline_drag = None;
                     s.trajectory.timeline_draft = None;
-                    s.trajectory.trajectory_anchor = None;
                 }
                 s.trajectory.trajectory = TrajectoryView {
                     records: page.records,
@@ -382,20 +436,22 @@ impl AppStore {
             return;
         };
         let before = first.index;
-        // 锚定:记录当前滚动几何,写入新页后按内容高增量回偏
-        let offset_y = f32::from(self.trajectory.trajectory_scroll.offset().y);
-        let max_h = f32::from(self.trajectory.trajectory_scroll.max_offset().y);
         self.trajectory.trajectory.loading_older = true;
         self.trajectory.trajectory_refresh_basis = self.trajectory.trajectory_deltas;
         cx.notify();
         let host = self.bridge.host().clone();
         let sid_for_call = sid.clone();
-        let rx = self.bridge.call(async move {
+        let rx = self.bridge.call_blocking(move || {
             host.trajectory_page(&sid_for_call, TRAJECTORY_PAGE, Some(before))
         });
         let store = cx.entity().clone();
         cx.spawn(async move |_this, cx| {
+            // 掉线也要清位(同上:Spinner 常转会永久烧 CPU)
             let Ok(page) = rx.await else {
+                store.update(cx, |s, cx| {
+                    s.trajectory.trajectory.loading_older = false;
+                    cx.notify();
+                });
                 return Ok::<(), anyhow::Error>(());
             };
             store.update(cx, |s, cx| {
@@ -415,6 +471,9 @@ impl AppStore {
                     s.refresh_trajectory(cx);
                     return;
                 }
+                // 前插:行槽重建后由 sync_trajectory_rows 走 splice(0..0, added)
+                // ——list 内部把 logical_scroll_top 的 item_ix 平移 +added,
+                // 滚动位与已测高度自动保持,无需 px 锚定数学
                 let mut records = page.records;
                 records.extend(std::mem::take(&mut s.trajectory.trajectory.records));
                 s.trajectory.trajectory.records = records;
@@ -422,7 +481,6 @@ impl AppStore {
                 s.trajectory.trajectory.has_older = page.has_older;
                 s.trajectory.trajectory.total = page.total;
                 s.trajectory.trajectory.loading_older = false;
-                s.trajectory.trajectory_anchor = Some((offset_y, max_h, 5));
                 s.trajectory.trajectory_version += 1;
                 cx.notify();
             });
@@ -431,40 +489,69 @@ impl AppStore {
         .detach();
     }
 
-    /// 滚动事件副作用:重估跟随 + 顶部 48px 内自动「加载更早」
-    pub fn on_trajectory_scroll(&mut self, cx: &mut Context<Self>) {
-        self.trajectory.trajectory_follow = self.trajectory_at_bottom();
-        let near_top = self.trajectory.trajectory_scroll.offset().y >= -gpui_kit::px(48.);
-        if near_top && self.trajectory.trajectory.has_older {
-            self.load_earlier_trajectory(cx);
+    /// 装台账滚动回调(list 生命期只装一次)。
+    ///
+    /// 用 list 的 `set_scroll_handler` 而非包裹层 `on_scroll_wheel`:滚轮、
+    /// 触控板、滚动条拖拽三者都触发,且回调在滚动时机(窗口/handler 齐备)
+    /// 内跑。回调闭包持 store 实体(与既有 `tv_subs` 订阅同类,生命期 = 应用)。
+    ///
+    /// 两件事都在此一次备齐:
+    /// - **跟随尾部交给 list 自身**(`FollowMode::Tail`):布局期自动滚底,
+    ///   用户上滚即停跟,滚回底自动重挂(库内 `follow_state` 维护);
+    /// - **回调体内不得回读本 `ListState`**:gpui 在 `StateInner::scroll` 里
+    ///   持 `borrow_mut` 调用 handler,任何 `logical_scroll_top()` /
+    ///   `max_offset_for_scrollbar()` 回读都是 `already mutably borrowed`
+    ///   panic(实测:打开轨迹面板一滚即崩)。且 `ListScrollEvent.visible_range`
+    ///   取的是**滚动前**的位置(gpui 在 `scroll` 内 shadow 了该局部量,
+    ///   出块即失效),不能当判据。故 handler 只落一个「滚过了」的脏标记,
+    ///   真正的判断放到渲染期(`flush_trajectory_scroll`,不在借用内)
+    pub fn install_trajectory_scroll_handler(&mut self, cx: &mut Context<Self>) {
+        if self.trajectory.scroll_handler_installed {
+            return;
         }
+        self.trajectory.scroll_handler_installed = true;
+        let list = self.trajectory.trajectory_list.clone();
+        // 跟随尾部由库托管:新记录到达即滚底,用户上滚停跟、回底自动重挂
+        list.set_follow_mode(gpui_kit::FollowMode::Tail);
+        let store = cx.entity();
+        list.set_scroll_handler(move |ev, _, cx| {
+            // 只落脏标记 + 镜像:需回读 ListState 的判断留到渲染期
+            store.update(cx, |st, _| st.on_trajectory_scroll(ev));
+        });
     }
 
-    /// 渲染期冲洗:prepend 锚定 / 跟随滚底(同 chat flush 模式;
-    /// 订阅回调无窗口/滚动时机,滚动动作只能在渲染期执行)
-    pub fn flush_trajectory_scroll(&mut self) {
-        if let Some((old_y, old_max, retries)) = self.trajectory.trajectory_anchor {
-            let new_max = f32::from(self.trajectory.trajectory_scroll.max_offset().y);
-            // 新布局未就绪(max 未增):留到下一帧,重试上限后放弃
-            if new_max <= old_max + 0.5 {
-                if retries == 0 {
-                    self.trajectory.trajectory_anchor = None;
-                } else {
-                    self.trajectory.trajectory_anchor = Some((old_y, old_max, retries - 1));
-                }
-                return;
-            }
-            self.trajectory.trajectory_anchor = None;
-            let mut p = self.trajectory.trajectory_scroll.offset();
-            p.y = gpui_kit::px(old_y - (new_max - old_max));
-            self.trajectory.trajectory_scroll.set_offset(p);
-        } else if self.trajectory.trajectory_version != self.trajectory.trajectory_rendered_version
+    /// 滚动事件副作用(在 list 的 `borrow_mut` 内被调用:**禁止**回读
+    /// `ListState`,见 [`Self::install_trajectory_scroll_handler`])。
+    /// 只做两件安全的事:同步「跟随尾部」镜像(取自事件字段,库已维护)、
+    /// 落脏标记让渲染期去做需要回读的判断
+    pub fn on_trajectory_scroll(&mut self, _ev: &gpui_kit::ListScrollEvent) {
+        // 滚轮/触控板/滚动条拖拽一律只置位:跟随态与翻页判断都在渲染期
+        // 用当前真实位置算(见 `flush_trajectory_scroll`)
+        self.trajectory.trajectory_scroll_dirty = true;
+        // 真滚动过:gpui 在 scroll 内已把 logical_scroll_top 置为 Some,
+        // 此后读到的位置可信(见 `scroll_pos_known`)
+        self.trajectory.scroll_pos_known = true;
+    }
+
+    /// 渲染期冲洗:滚动副作用收尾(跟随滚底已由 list 的 Tail 模式托管,
+    /// 这里只处理需要**回读 `ListState`** 的判断——渲染期不在 list 借用内,
+    /// 安全)。前插锚定由 list 的 `splice` 自持
+    pub fn flush_trajectory_scroll(&mut self, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.trajectory.trajectory_scroll_dirty)
+            && self.trajectory.scroll_pos_known
         {
-            if self.trajectory.trajectory_follow {
-                self.trajectory.trajectory_scroll.scroll_to_bottom();
+            // 首行入视口即「加载更早」。位置只在 reset 之后滚动过时才可信——
+            // 否则 Top 对齐把「位置被清」读成 item_ix 0,会误判在顶部并形成
+            // 翻页级联(见 `scroll_pos_known`)
+            let top = self.trajectory.trajectory_list.logical_scroll_top();
+            if top.item_ix == 0
+                && f32::from(top.offset_in_item) <= 48.
+                && self.trajectory.trajectory.has_older
+            {
+                self.load_earlier_trajectory(cx);
             }
-            self.trajectory.trajectory_rendered_version = self.trajectory.trajectory_version;
         }
+        self.trajectory.trajectory_rendered_version = self.trajectory.trajectory_version;
     }
 
     /// 选中台账记录(再点同记录 = 取消;开检查器并恢复最近 tab)
@@ -512,6 +599,7 @@ impl AppStore {
     pub fn toggle_all_turns(&mut self, cx: &mut Context<Self>) {
         self.trajectory.all_turns_collapsed = !self.trajectory.all_turns_collapsed;
         self.trajectory.collapsed_turns.clear();
+        self.trajectory.collapse_ver += 1;
         cx.notify();
     }
 
@@ -520,6 +608,7 @@ impl AppStore {
         if !self.trajectory.collapsed_turns.insert(turn) {
             self.trajectory.collapsed_turns.remove(&turn);
         }
+        self.trajectory.collapse_ver += 1;
         cx.notify();
     }
 
@@ -527,6 +616,7 @@ impl AppStore {
     pub fn toggle_all_calls(&mut self, cx: &mut Context<Self>) {
         self.trajectory.all_calls_collapsed = !self.trajectory.all_calls_collapsed;
         self.trajectory.collapsed_calls.clear();
+        self.trajectory.collapse_ver += 1;
         cx.notify();
     }
 
@@ -535,6 +625,7 @@ impl AppStore {
         if !self.trajectory.collapsed_calls.insert(message_index) {
             self.trajectory.collapsed_calls.remove(&message_index);
         }
+        self.trajectory.collapse_ver += 1;
         cx.notify();
     }
 
@@ -617,5 +708,62 @@ impl AppStore {
             self.trajectory.json_expanded.remove(key);
         }
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::{TRAJECTORY_MAX_RETAINED, trim_records};
+    use liuma_core::trajectory::TrajectoryRecord;
+
+    /// 只填测试关心的字段(结构无 Default;逐字段列全)
+    fn recs(n: usize) -> Vec<TrajectoryRecord> {
+        (1..=n)
+            .map(|i| TrajectoryRecord {
+                index: i as u64,
+                seq: i as u64,
+                kind: "tool".into(),
+                turn: Some(1),
+                group: "Step 1".into(),
+                turn_start: false,
+                text: format!("记录 {i}"),
+                result: None,
+                is_error: false,
+                time_seconds: None,
+                started_at: None,
+                request_number: None,
+                input: None,
+                output: None,
+                think: None,
+                ttft_ms: None,
+                payload: None,
+                output_detail: None,
+                thinking_detail: None,
+                system_prompt: None,
+                tools_catalog: None,
+                schema_detail: None,
+                source: None,
+                decision: None,
+                fold: None,
+            })
+            .collect()
+    }
+
+    /// 窗口上限:只丢最旧、保留最近 N 条,且丢的正是「加载更早」那批
+    /// (`has_older` 由已载最左 index > 1 推导,故语义自洽)
+    #[test]
+    fn trims_oldest_beyond_cap() {
+        let mut r = recs(TRAJECTORY_MAX_RETAINED + 7);
+        let dropped = trim_records(&mut r);
+        assert_eq!(dropped, 7);
+        assert_eq!(r.len(), TRAJECTORY_MAX_RETAINED);
+        assert_eq!(r.first().map(|x| x.index), Some(8));
+        assert_eq!(
+            r.last().map(|x| x.index),
+            Some((TRAJECTORY_MAX_RETAINED + 7) as u64)
+        );
+        // 未超上限不动
+        assert_eq!(trim_records(&mut r), 0);
+        assert_eq!(r.len(), TRAJECTORY_MAX_RETAINED);
     }
 }

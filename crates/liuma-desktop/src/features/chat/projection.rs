@@ -390,6 +390,23 @@ impl ChatState {
         self.retry_deadlines
             .retain(|k, _| live.contains(k.as_str()));
     }
+    /// 把仍在「执行中」的调用冻结为「已停止」。
+    ///
+    /// 用于**冷历史**重放后:日志若停在回合中途(被杀/崩溃,没有 `turn/end`),
+    /// 未落定的调用会永远停在 [`ToolState::Running`]——而渲染层为 Running
+    /// 挂的是 `repeat()` 扫光动画,一个这样的节点就会让整窗以 60fps 永久
+    /// 重绘(实测:CPU 60%+ 且空闲不停)。没有 live turn 再驱动它们,故冻结;
+    /// 会话仍在运行时**不要**调用(留给 live 事件收尾)
+    pub fn freeze_unfinished_calls(&mut self) {
+        for n in &mut self.nodes {
+            if let ChatNode::Tool { state, .. } = n
+                && *state == ToolState::Running
+            {
+                *state = ToolState::Stopped;
+            }
+        }
+    }
+
     /// 应用单个客方事件
     pub fn apply(&mut self, ev: &SessionEvent) {
         match ev.ty.as_str() {
@@ -891,6 +908,17 @@ pub enum RowSlot {
     /// 展开态的组成员行(渲染时缩进 + 左侧引导线,表达「属于上方组」
     /// 的层级;与组外平铺节点视觉区分,防展开后迷失)
     GroupMember(usize),
+}
+
+impl RowSlot {
+    /// 本槽位对应的节点下标(组摘要行/组头无单一节点 → None)。
+    /// 变更节点 → 槽位映射用(流式重测范围收窄)
+    pub(crate) fn node_ix(&self) -> Option<usize> {
+        match self {
+            RowSlot::Node(n) | RowSlot::GroupMember(n) => Some(*n),
+            RowSlot::Group { .. } | RowSlot::GroupOpen { .. } => None,
+        }
+    }
 }
 
 /// 每节点「过程项」标记(纯函数,build_row_slots 与 group_counts 共用
@@ -1857,6 +1885,70 @@ mod tests {
             }
             other => panic!("通知应为注入行(通知卡),实际 {other:?}"),
         }
+    }
+
+    /// 被杀回合(日志无 `turn/end`)重放后,未落定的调用必须冻结为
+    /// `Stopped`。
+    ///
+    /// 否则它永远停 `Running`,而渲染层为 Running 挂的是 `repeat()` 扫光
+    /// 动画——一个这样的节点就让整窗 60fps 永久重绘(实测 CPU 60%+、
+    /// 空闲不停)。真机取证:会话日志末尾 `tool/call` 之后直接是
+    /// `decision/answered`,既无 `tool/result` 也无 `turn/end`
+    #[test]
+    fn killed_turn_freezes_unfinished_calls() {
+        let mut st = ChatState::default();
+        st.merge_history(vec![
+            ev("turn/start", 1, json!({ "turn": 1 })),
+            ev("step/start", 2, json!({ "turn": 1, "step": 1 })),
+            ev(
+                "tool/call",
+                3,
+                json!({ "name": "bash", "arguments": {}, "callId": "c1" }),
+            ),
+            // 日志到此为止:没有 tool/result、没有 turn/end
+        ]);
+        let state_of = |st: &ChatState| {
+            st.nodes.iter().find_map(|n| match n {
+                ChatNode::Tool { state, .. } => Some(*state),
+                _ => None,
+            })
+        };
+        assert_eq!(
+            state_of(&st),
+            Some(ToolState::Running),
+            "重放后本就应停在执行中(引擎未收尾)"
+        );
+        st.freeze_unfinished_calls();
+        assert_eq!(
+            state_of(&st),
+            Some(ToolState::Stopped),
+            "冻结后不得再留 Running(否则扫光动画永久烧 CPU)"
+        );
+        // 已有终局的调用不受影响
+        let mut done = ChatState::default();
+        done.merge_history(vec![
+            ev("turn/start", 1, json!({ "turn": 1 })),
+            ev(
+                "tool/call",
+                2,
+                json!({ "turn": 1, "step": 1, "callId": "c9",
+                        "name": "bash", "arguments": "{}" }),
+            ),
+            ev(
+                "tool/result",
+                3,
+                json!({
+                    "turn": 1, "step": 1,
+                    "message": { "id": "m9", "role": "user", "content": [ {
+                        "type": "tool-result", "toolCallId": "c9",
+                        "content": [ { "type": "text", "text": "ok" } ],
+                        "isError": false } ] },
+                }),
+            ),
+        ]);
+        let before = state_of(&done);
+        done.freeze_unfinished_calls();
+        assert_eq!(state_of(&done), before, "已落定的调用不应被改写");
     }
 
     #[test]

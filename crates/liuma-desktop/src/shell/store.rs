@@ -138,6 +138,80 @@ impl Drop for AppStore {
 }
 
 impl AppStore {
+    /// 常驻占用摘要(探针:与帧耗时一起回答「内存为什么涨、涨在哪」)。
+    ///
+    /// 只报**计数与字节**,不遍历不可达对象:报的都是长会话里会单调增长的
+    /// 容器——会话投影 / 助手正文(含 TextView 注册表的重复记账)/ 轨迹驻留
+    /// 窗口与其大字段。`LIUMA_PROBE` 在场时由帧泵周期打印
+    // ZZZ_MARKER_TEST
+    pub fn footprint(&self) -> String {
+        use crate::features::chat::projection::ChatNode;
+        let mut per_session: Vec<(&str, usize)> = self
+            .state
+            .chats
+            .iter()
+            .map(|(id, c)| (id.as_str(), c.nodes.len()))
+            .collect();
+        per_session.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        let nodes: usize = per_session.iter().map(|(_, n)| *n).sum();
+        let (mut body, mut tool_io) = (0usize, 0usize);
+        for c in self.state.chats.values() {
+            for n in &c.nodes {
+                match n {
+                    ChatNode::Assistant {
+                        text, reasoning, ..
+                    } => {
+                        body += text.len() + reasoning.len();
+                    }
+                    ChatNode::Tool {
+                        arguments, output, ..
+                    } => {
+                        tool_io += arguments.len() + output.as_deref().map_or(0, str::len);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let t = &self.trajectory.trajectory;
+        let detail: usize = t
+            .records
+            .iter()
+            .map(|r| {
+                r.payload.as_deref().map_or(0, str::len)
+                    + r.output_detail.as_deref().map_or(0, str::len)
+                    + r.thinking_detail.as_deref().map_or(0, str::len)
+                    + r.system_prompt.as_deref().map_or(0, str::len)
+            })
+            .sum();
+        // 常驻动画的挂载条件(60fps 空转的归因面):任一为真即持续请求重绘
+        // ——gpui 的重绘粒度是整个窗口,一个在转的 Spinner 就够
+        let cur = self.state.current_id.as_deref().unwrap_or("");
+        let anim = format!(
+            "run={} hist_load={} traj_load={} traj_older={} compact={}",
+            self.is_running(cur),
+            self.chat.history_loading,
+            self.trajectory.trajectory.loading,
+            self.trajectory.trajectory.loading_older,
+            self.current_chat().is_some_and(|c| c.compact_running
+                || c.compact_queued
+                || c.compact_progress.is_some()),
+        );
+        format!(
+            "sessions={} max_nodes={} nodes={} body={}B tool_io={}B | tv={}entry/{}B \
+| traj={}rec/{}B chat_rows={} | {anim}",
+            self.state.chats.len(),
+            per_session.first().map_or(0, |(_, n)| *n),
+            nodes,
+            body,
+            tool_io,
+            self.chat.tv_streams.len(),
+            self.chat.tv_streams.accounting_bytes(),
+            t.records.len(),
+            detail,
+            self.chat.chat_list.item_count(),
+        )
+    }
+
     /// 启动序列(describe + 清单 + 自动打开/新建;对齐 web 启动 effect)
     pub fn new(bridge: HostBridge, cx: &mut Context<Self>) -> Self {
         let host_info = bridge.describe();
@@ -647,7 +721,7 @@ impl AppStore {
         let sid_anchors = sid.clone();
         let rx_anchors = self
             .bridge
-            .call(async move { host2.session_anchor_index(&sid_anchors) });
+            .call_blocking(move || host2.session_anchor_index(&sid_anchors));
         let store_a = store.clone();
         let sid_anchors_done = sid.clone();
         cx.spawn(async move |_this, cx| {
