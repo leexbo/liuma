@@ -11,6 +11,7 @@
 //! 组件内禁止直接读时钟/随机——经显式 WASI import(重放确定性前提)。
 
 pub mod audit;
+pub mod chunk_rows;
 pub mod envelope;
 pub mod events;
 pub mod log;
@@ -22,6 +23,10 @@ pub mod bindings;
 pub mod guest;
 
 pub use audit::{Attribution, AuditRecord, attribution_chain, audit_call_event, audit_records};
+pub use chunk_rows::{
+    ChunkRow, DeltaKind, ROW_KEY, ROW_TAG, RowError, StorageRecord, classify, continues, expand,
+    pack,
+};
 pub use envelope::{
     EnvelopeError, EventEnvelope, SESSION_FORMAT_VERSION, decode_envelope, decode_envelope_str,
 };
