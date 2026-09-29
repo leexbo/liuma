@@ -21,7 +21,7 @@ use liuma_agent_loop::CancelToken;
 use liuma_agent_loop::tools::{ToolCallRequest, ToolOutput, ToolPort};
 use liuma_attachment::{ImageAttachmentRef, ImageMediaType};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ClientInfo, ContentBlock, Implementation,
+    CallToolRequestParams, CallToolResult, ClientConfig, ContentBlock, Implementation,
 };
 use rmcp::service::RunningService;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -746,8 +746,8 @@ struct ServerHandler {
 }
 
 impl ClientHandler for ServerHandler {
-    fn get_info(&self) -> ClientInfo {
-        let mut info = ClientInfo::default();
+    fn get_info(&self) -> ClientConfig {
+        let mut info = ClientConfig::default();
         info.client_info = Implementation::new("liuma-mcp", env!("CARGO_PKG_VERSION"));
         info
     }

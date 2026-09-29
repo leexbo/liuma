@@ -8,7 +8,7 @@ rust-version.workspace = true
 liuma-agent-loop.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_norway.workspace = true
+yaml_serde.workspace = true
 sha2.workspace = true
 hex.workspace = true
 

@@ -43,8 +43,8 @@ toml = "1"
 clap = { version = "4", features = ["derive"] }
 wit-parser = "0.259"
 tokio = { version = "1", features = ["full"] }
-wasmtime = { version = "48", features = ["async"] }
-wasmtime-wasi = "48"
+wasmtime = { version = "49", features = ["async"] }
+wasmtime-wasi = "49"
 turso = { version = "0.7.2", features = ["fts"] }
 # /export ZIP 打包(stored 条目 + deflate)
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
@@ -52,11 +52,11 @@ futures = "0.3"
 libc = "0.2"
 # gpui-pre FileDropEvent 载荷构造(与其共用 1.x)
 smallvec = "1"
-reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # preset manifest 解析(serde_yaml 的接棒 fork)
-serde_norway = "0.9"
+yaml_serde = "0.10"
 wit-bindgen = "0.62"
 liuma-app = { path = "crates/liuma-app" }
 liuma-attachment = { path = "crates/liuma-attachment" }
@@ -98,7 +98,7 @@ image = "0.25"
 sha2 = "0.11.0"
 hex = "0.4"
 # MCP client(stdio + streamable-http)
-rmcp = { version = "3.2", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "3.5", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 # 附件 wire 编码(base64 / data URL)
 base64 = "0.23"
 # PDF 预览:pdf-syntax 解析 + 纯 Rust 栅格化(pdf-render 重导出;无 C 交付物)

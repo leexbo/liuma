@@ -206,7 +206,7 @@ pub fn load_decision_entry(path: &std::path::Path) -> DecisionEntry {
     }
     std::fs::read_to_string(path)
         .ok()
-        .and_then(|text| serde_norway::from_str::<Slice>(&text).ok())
+        .and_then(|text| yaml_serde::from_str::<Slice>(&text).ok())
         .map(|s| s.decision)
         .unwrap_or_default()
 }

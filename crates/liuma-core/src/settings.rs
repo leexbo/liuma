@@ -660,7 +660,7 @@ impl SettingsStore {
     /// 读盘解析(启动路径)。损坏/版本不符 → 旁置备份后回落默认
     fn read_file(path: &std::path::Path) -> Option<SettingsFile> {
         match std::fs::read_to_string(path) {
-            Ok(text) => match serde_norway::from_str::<SettingsFile>(&text) {
+            Ok(text) => match yaml_serde::from_str::<SettingsFile>(&text) {
                 Ok(f) if f.version == SETTINGS_VERSION => Some(f),
                 _ => {
                     let backup = path.with_extension(format!(
@@ -711,7 +711,7 @@ impl SettingsStore {
                 return false;
             }
         };
-        match serde_norway::from_str::<SettingsFile>(&text) {
+        match yaml_serde::from_str::<SettingsFile>(&text) {
             Ok(f) if f.version == SETTINGS_VERSION => {
                 *self.inner.lock_recover() = f;
                 *loaded = Some(mtime);
@@ -735,7 +735,7 @@ impl SettingsStore {
             let mut guard = self.inner.lock_recover();
             let mut draft = guard.clone();
             let out = f(&mut draft);
-            let text = serde_norway::to_string(&draft)?;
+            let text = yaml_serde::to_string(&draft)?;
             if let Some(dir) = self.path.parent() {
                 std::fs::create_dir_all(dir)?;
             }
@@ -902,7 +902,7 @@ mod tests {
         let dir = temp_path("ver");
         std::fs::create_dir_all(&dir).expect("建目录");
         let path = dir.join("settings.yaml");
-        let text = serde_norway::to_string(&SettingsFile::default())
+        let text = yaml_serde::to_string(&SettingsFile::default())
             .expect("序列化默认")
             .replace("version: 1", "version: 99");
         std::fs::write(&path, text).expect("写旧版本文件");

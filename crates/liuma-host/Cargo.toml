@@ -17,7 +17,7 @@ liuma-session.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true
-serde_norway.workspace = true
+yaml_serde.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 toml.workspace = true

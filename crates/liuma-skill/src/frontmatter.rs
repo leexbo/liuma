@@ -1,11 +1,11 @@
-//! SKILL.md 解析:手写栅栏扫描 + serde_norway(首行恰 `---`、
+//! SKILL.md 解析:手写栅栏扫描 + yaml_serde(首行恰 `---`、
 //! 逐行找闭合、CRLF 兼容)。
 //!
 //! 失败 warn-and-skip:解析错误以 Err 文案上行,调用方按文件粒度打日志
 //! 跳过,单文件坏不影响其余技能。正文(闭合栅栏之后)仅 trim,无截断
 //! ——技能是可信本地内容。
 
-use serde_norway::Value as Yaml;
+use yaml_serde::Value as Yaml;
 
 /// 解析后的 SKILL.md(frontmatter 字段 + 正文)
 #[derive(Debug, Clone, PartialEq)]
@@ -35,8 +35,8 @@ pub fn parse_skill_source(source: &str) -> Result<ParsedSkill, String> {
     let front_text = lines[1..close_idx].join("\n");
     let body = lines[close_idx + 1..].join("\n").trim().to_string();
 
-    let yaml: Yaml = serde_norway::from_str(&front_text)
-        .map_err(|e| format!("invalid YAML frontmatter: {e}"))?;
+    let yaml: Yaml =
+        yaml_serde::from_str(&front_text).map_err(|e| format!("invalid YAML frontmatter: {e}"))?;
     let Yaml::Mapping(map) = yaml else {
         return Err("invalid YAML frontmatter: frontmatter must be a mapping".into());
     };
@@ -100,7 +100,7 @@ pub fn parse_skill_source(source: &str) -> Result<ParsedSkill, String> {
 
 /// frontmatter 布尔:true/false/yes/no/on/off/1/0(大小写不敏感);
 /// 缺席 = 缺省,其他类型 = 错
-fn invocation_bool(map: &serde_norway::Mapping, key: &str, default: bool) -> Result<bool, String> {
+fn invocation_bool(map: &yaml_serde::Mapping, key: &str, default: bool) -> Result<bool, String> {
     match map.get(Yaml::String(key.into())) {
         None | Some(Yaml::Null) => Ok(default),
         Some(v) => bool_of_yaml(v).ok_or_else(|| {

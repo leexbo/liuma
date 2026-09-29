@@ -99,10 +99,10 @@ impl PresetManifest {
     /// v1 只认单个 `kind: Preset` 文档,多余非空文档拒绝)
     pub fn parse(text: &str, path: &str) -> Result<Self, PresetError> {
         let mut found: Option<Self> = None;
-        for doc in serde_norway::Deserializer::from_str(text) {
+        for doc in yaml_serde::Deserializer::from_str(text) {
             // 空文档(纯 `---` 段)跳过;k8s manifest 同语义
             let value =
-                serde_norway::Value::deserialize(doc).map_err(|source| PresetError::Invalid {
+                yaml_serde::Value::deserialize(doc).map_err(|source| PresetError::Invalid {
                     path: path.into(),
                     source,
                 })?;
@@ -200,7 +200,7 @@ pub enum PresetError {
         /// 文件路径
         path: String,
         /// 解析错误
-        source: serde_norway::Error,
+        source: yaml_serde::Error,
     },
     /// manifest 信封不支持(未知 apiVersion/kind、多资源文档)
     #[error("unsupported manifest {path}: {reason}")]
