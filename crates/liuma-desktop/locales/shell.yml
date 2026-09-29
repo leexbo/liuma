@@ -53,8 +53,8 @@ shell:
     en: "Cancelled"
 
   hero_tagline:
-    zh-CN: "木牛流马,替你驮活"
-    en: "The wooden ox that hauls your work"
+    zh-CN: "所托必达，所行必录"
+    en: "Every task delivered. Every step recorded."
 
   hero_no_key:
     zh-CN: "尚未配置 API key——前往设置"
