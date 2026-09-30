@@ -312,11 +312,16 @@ fn mount_bash(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPortOb
         bash = bash.with_approval_port(Arc::clone(port));
     }
     if ctx.present("jobs") {
-        bash = bash.with_jobs(ctx.jobs_registry());
+        let registry = ctx.jobs_registry();
+        bash = bash.with_jobs(registry.clone());
         // job 结算通知口在场才挂(投给发起会话;schema 文案的
         // 「结算会通知」承诺据此成立)
         if let Some(port) = &ctx.notify_port {
             bash = bash.with_job_notify(Arc::clone(port), ctx.session_id_for_ports());
+        }
+        // 宿主桥在场:登记为该会话的 shell jobs 帧源(UI 任务条可见)
+        if let (Some(bridge), Some(session_id)) = (&ctx.subagent_bridge, ctx.current_session) {
+            (bridge.shell_jobs)(session_id, registry);
         }
     }
     if ctx.pty {

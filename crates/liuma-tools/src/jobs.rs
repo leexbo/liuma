@@ -107,8 +107,10 @@ impl JobsRegistry {
         }
     }
 
-    /// 通知状态变更(records guard 释放后调用,回调内可再锁)
-    pub(crate) fn changed(&self) {
+    /// 通知状态变更(records guard 释放后调用,回调内可再锁)。
+    /// 直接改 records 的宿主侧(测试/桥接)负责手动触发;
+    /// 工具侧路径(start_job/stop/watcher)已内建
+    pub fn changed(&self) {
         let hook = self.inner.on_change.lock().ok().and_then(|s| s.clone());
         if let Some(hook) = hook {
             hook();

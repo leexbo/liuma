@@ -259,6 +259,10 @@ pub type SubagentEventSink = Arc<dyn Fn(&str, &EventEnvelope) + Send + Sync>;
 /// jobs 呈现接线(宿主登记注册表为父会话的 jobs 源)
 pub type JobsBinding = Arc<dyn Fn(&str, SubagentRegistry) + Send + Sync>;
 
+/// shell job 呈现接线(宿主登记 JobsRegistry 为父会话的 jobs 源;
+/// 状态变化 → session/jobs 帧,与子代理行合并广播)
+pub type ShellJobsBinding = Arc<dyn Fn(&str, crate::JobsRegistry) + Send + Sync>;
+
 /// 子代理宿主桥:jobs 呈现接线 + 子会话事件实时流转发,
 /// 装配时由宿主(liuma-core)构造、经 MountContext 注入
 pub struct SubagentBridge {
@@ -266,6 +270,8 @@ pub struct SubagentBridge {
     pub jobs: JobsBinding,
     /// 子会话事件出口(引擎事件 → session/event 实时流)
     pub events: SubagentEventSink,
+    /// shell job 注册表登记(状态变化 → session/jobs 帧合并广播)
+    pub shell_jobs: ShellJobsBinding,
 }
 
 /// 注册表弱引用(宿主持有;upgrade 失败 = 工具已随会话释放)

@@ -625,6 +625,9 @@ pub struct AppHost {
     live_children: std::sync::Mutex<std::collections::HashSet<String>>,
     /// 子代理注册表 jobs 源(父会话 id → 弱引用;registry 随工具释放)
     jobs_sources: std::sync::Mutex<HashMap<String, liuma_tools::subagent::WeakRegistry>>,
+    /// shell job 注册表源(父会话 id → 弱引用;状态变化 → 重广播
+    /// 合并 session/jobs 帧)
+    shell_job_sources: std::sync::Mutex<HashMap<String, liuma_tools::WeakJobsRegistry>>,
     /// 子会话事件翻译器(按子会话持计数器状态,translate→mux 实时流)
     subagent_translators: std::sync::Mutex<HashMap<String, crate::translate::Translator>>,
     /// 用户级设置(~/.liuma/settings.yaml;setter 落盘与冷装配读取)
@@ -1476,6 +1479,7 @@ impl AppHost {
             append_locks: AppendLocks::default(),
             live_children: std::sync::Mutex::new(std::collections::HashSet::new()),
             jobs_sources: std::sync::Mutex::new(HashMap::new()),
+            shell_job_sources: std::sync::Mutex::new(HashMap::new()),
             subagent_translators: std::sync::Mutex::new(HashMap::new()),
             model_overrides: std::sync::RwLock::new(HashMap::new()),
             preset_overrides: std::sync::RwLock::new(HashMap::new()),
@@ -4544,6 +4548,12 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                             host.relay_subagent_event(sid, ev);
                         })
                     },
+                    shell_jobs: {
+                        let host = self_arc.clone() as Arc<AppHost>;
+                        Arc::new(move |pid: &str, reg: liuma_tools::JobsRegistry| {
+                            AppHost::bind_shell_jobs(&host, pid, reg);
+                        })
+                    },
                 })),
                 extra_tools,
             )
@@ -6087,6 +6097,24 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             .insert(parent_id.to_string(), registry.downgrade());
     }
 
+    /// 接线 shell job 注册表为某父会话的 jobs 源(与 [`Self::bind_jobs`]
+    /// 同构):挂状态变更弱引用回调,任何登记/收尾/stop 变化即重广播
+    /// 合并 session/jobs 帧(shell 行与子代理行同帧呈现)
+    pub fn bind_shell_jobs(self: &Arc<Self>, parent_id: &str, registry: liuma_tools::JobsRegistry) {
+        registry.set_on_change(Some(Arc::new({
+            let host = Arc::downgrade(self);
+            let parent = parent_id.to_string();
+            move || {
+                if let Some(host) = host.upgrade() {
+                    host.broadcast_jobs(&parent);
+                }
+            }
+        })));
+        self.shell_job_sources
+            .lock_recover()
+            .insert(parent_id.to_string(), registry.downgrade());
+    }
+
     /// 宿主侧打断子代理(任务面板行直呼;与 interrupt_agent 工具
     /// 同一信号——stop 唤醒 → 当前 turn 令牌取消,LLM 流/bash 即时中断,
     /// 子代理保持可续话)。找到且在跑 = true;已结束/idle = false。
@@ -6130,57 +6158,20 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         }
     }
 
-    /// 向 mux 广播某父会话的后台子代理清单(session/jobs 帧;
-    /// onJobsChanged 语义)。registry 已释放 = 无任务可报,静默返回。
+    /// 向 mux 广播某父会话的后台任务清单(session/jobs 帧;
+    /// onJobsChanged 语义):子代理行 + shell job 行合并,任一源变化
+    /// 即整帧重发(客户端整体替换)。两源俱失 = 无任务可报,静默返回
     pub fn broadcast_jobs(&self, parent_id: &str) {
-        let registry = {
-            let mut sources = self.jobs_sources.lock_recover();
-            match sources.get(parent_id).and_then(|w| w.upgrade()) {
-                Some(r) => r,
-                None => {
-                    sources.remove(parent_id);
-                    return;
-                }
-            }
+        let Some(jobs) = self.jobs_snapshot(parent_id) else {
+            return;
         };
-        let jobs: Vec<Value> = registry
-            .background_records()
-            .iter()
-            .map(|r| {
-                // 状态映射 SessionJob:running/completed/killed/failed;
-                // RS 驻留 idle = 该轮完成仍可续话 → completed + detail 可继续
-                let (status, detail) = match r.status.as_str() {
-                    "running" => ("running", None),
-                    "idle" => ("completed", Some("可继续")),
-                    "cancelled" => ("killed", None),
-                    "failed" => ("failed", None),
-                    _ => ("completed", None),
-                };
-                let mut job = json!({
-                    "id": r.session_id,
-                    "kind": "subagent",
-                    "label": r.task,
-                    "status": status,
-                    "startedAt": r.started_at,
-                });
-                if let Some(detail) = detail {
-                    job["detail"] = json!(detail);
-                }
-                if let Some(ended) = r.ended_at {
-                    job["finishedAt"] = json!(ended);
-                }
-                if !r.prompt.is_empty() {
-                    job["prompt"] = json!(r.prompt);
-                }
-                job
-            })
-            .collect();
         let _ = self.mux.send(frame(
             "session/jobs",
-            json!({ "sessionId": parent_id, "jobs": jobs }),
+            json!({ "sessionId": parent_id, "jobs": jobs.clone() }),
         ));
-        // 子会话运行态同步(host 总线;驱动侧栏点/标题计时,与主会话同帧)
-        for job in &jobs {
+        // 子会话运行态同步(host 总线;驱动侧栏点/标题计时,与主会话同帧)。
+        // shell job 非会话,不驱动侧栏运行态
+        for job in jobs.iter().filter(|j| j["kind"] == "subagent") {
             self.host
                 .send(frame(
                     "host/session-status",
@@ -6192,6 +6183,94 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 ))
                 .ok();
         }
+    }
+
+    /// 某父会话的后台任务行(子代理 + shell 合并快照;两源俱失 =
+    /// None,源存活无记录 = Some(空)——客户端整体替换语义)
+    fn jobs_snapshot(&self, parent_id: &str) -> Option<Vec<Value>> {
+        let mut jobs: Vec<Value> = Vec::new();
+        let mut alive = false;
+        {
+            let mut sources = self.jobs_sources.lock_recover();
+            match sources.get(parent_id).and_then(|w| w.upgrade()) {
+                Some(registry) => {
+                    alive = true;
+                    jobs.extend(registry.background_records().iter().map(|r| {
+                        // 状态映射 SessionJob:running/completed/killed/failed;
+                        // RS 驻留 idle = 该轮完成仍可续话 → completed + detail 可继续
+                        let (status, detail) = match r.status.as_str() {
+                            "running" => ("running", None),
+                            "idle" => ("completed", Some("可继续")),
+                            "cancelled" => ("killed", None),
+                            "failed" => ("failed", None),
+                            _ => ("completed", None),
+                        };
+                        let mut job = json!({
+                            "id": r.session_id,
+                            "kind": "subagent",
+                            "label": r.task,
+                            "status": status,
+                            "startedAt": r.started_at,
+                        });
+                        if let Some(detail) = detail {
+                            job["detail"] = json!(detail);
+                        }
+                        if let Some(ended) = r.ended_at {
+                            job["finishedAt"] = json!(ended);
+                        }
+                        if !r.prompt.is_empty() {
+                            job["prompt"] = json!(r.prompt);
+                        }
+                        job
+                    }));
+                }
+                None => {
+                    sources.remove(parent_id);
+                }
+            }
+        }
+        {
+            let mut sources = self.shell_job_sources.lock_recover();
+            match sources.get(parent_id).and_then(|w| w.upgrade()) {
+                Some(registry) => {
+                    alive = true;
+                    jobs.extend(Self::shell_job_rows(&registry));
+                }
+                None => {
+                    sources.remove(parent_id);
+                }
+            }
+        }
+        alive.then_some(jobs)
+    }
+
+    /// shell job 注册表记录 → SessionJob 行(id 加 job- 前缀防与
+    /// 子会话槽位 id 撞名;done→completed、stopped→killed 映射与
+    /// 子代理侧对齐)
+    fn shell_job_rows(registry: &liuma_tools::JobsRegistry) -> Vec<Value> {
+        let records = registry.lock().unwrap_or_else(|p| p.into_inner());
+        records
+            .iter()
+            .map(|r| {
+                let status = match r.status.as_str() {
+                    "running" => "running",
+                    "done" => "completed",
+                    "stopped" => "killed",
+                    _ => "failed",
+                };
+                let mut job = json!({
+                    "id": format!("job-{}", r.id),
+                    "kind": "shell",
+                    "label": r.command,
+                    "status": status,
+                    "startedAt": r.started_at,
+                });
+                if let Some(ended) = r.ended_at {
+                    job["finishedAt"] = json!(ended);
+                }
+                job
+            })
+            .collect()
     }
 
     /// mux 流开基线:附着会话 subscribed + 队列快照 + 控制终态
@@ -6233,6 +6312,16 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 // 默认 standard 即正确)
                 if let Some(f) = mode_terminal_frame(&provider, &inner.log, &id) {
                     out.push(f);
+                }
+                // 后台任务清单基线(子代理 + shell 合并):直播帧只在
+                // 变化时发,重连/重订阅后任务条由基线恢复
+                if let Some(jobs) = self.jobs_snapshot(&id)
+                    && !jobs.is_empty()
+                {
+                    out.push(frame(
+                        "session/jobs",
+                        json!({ "sessionId": id, "jobs": jobs }),
+                    ));
                 }
             }
         }
@@ -13396,6 +13485,86 @@ mod tests {
         assert_eq!(job["detail"], "可继续", "驻留 idle 映射 completed+可继续");
         assert!(job["finishedAt"].is_i64());
         assert_eq!(job["prompt"], "work");
+    }
+
+    /// shell job 行并入 session/jobs 帧:bind_shell_jobs 后注册表任何
+    /// 变化触发合并广播(shell 行 kind=shell、done→completed、
+    /// stopped→killed),并进 mux 基线(重连后任务条不消失)
+    #[tokio::test]
+    async fn shell_jobs_frame_merges_and_reaches_baseline() {
+        let host = temp_host("job-frame");
+        host.set_fake_script(script(&["ok"]));
+        let mut mux = host.mux_subscribe();
+        let id = host.create_session(None, None, None);
+        // 基线只覆盖附着会话:先跑一个普通 turn 完成附着
+        host.prompt(&id, &[json!({ "type": "text", "text": "hi" })], "queue")
+            .await
+            .unwrap();
+        let _ = recv_until(&mut mux, |f| {
+            f.method == "session/event" && f.payload["event"]["type"] == "turn/end"
+        })
+        .await;
+        let registry = liuma_tools::JobsRegistry::new();
+        AppHost::bind_shell_jobs(&host, &id, registry.clone());
+        {
+            let mut records = registry.lock().unwrap();
+            records.push(liuma_tools::JobRecord {
+                id: 1,
+                command: "cargo build".into(),
+                status: "running".into(),
+                log_path: std::path::PathBuf::from("/tmp/x.log"),
+                killer: None,
+                grace: std::time::Duration::from_secs(1),
+                started_at: 123,
+                ended_at: None,
+            });
+        }
+        registry.changed();
+        let frame = recv_until(&mut mux, |f| {
+            f.method == "session/jobs"
+                && f.payload["jobs"]
+                    .as_array()
+                    .is_some_and(|jobs| jobs.iter().any(|j| j["kind"] == "shell"))
+        })
+        .await
+        .expect("shell 行应并入 session/jobs 帧");
+        let shell = &frame.payload["jobs"].as_array().unwrap()[0];
+        assert_eq!(shell["id"], "job-1");
+        assert_eq!(shell["label"], "cargo build");
+        assert_eq!(shell["status"], "running");
+        assert_eq!(shell["startedAt"], 123);
+
+        // 收尾:done → completed + finishedAt;stopped → killed
+        {
+            let mut records = registry.lock().unwrap();
+            records[0].status = "done".into();
+            records[0].ended_at = Some(456);
+        }
+        registry.changed();
+        let frame = recv_until(&mut mux, |f| {
+            f.method == "session/jobs"
+                && f.payload["jobs"].as_array().is_some_and(|jobs| {
+                    jobs.iter()
+                        .any(|j| j["kind"] == "shell" && j["status"] == "completed")
+                })
+        })
+        .await
+        .expect("收尾后应收到 completed 帧");
+        let shell = frame.payload["jobs"].as_array().unwrap()[0].clone();
+        assert_eq!(shell["finishedAt"], 456);
+
+        // 基线:shell 行在重连基线中在场
+        let baseline = host.mux_baseline();
+        assert!(
+            baseline.iter().any(|f| {
+                f.method == "session/jobs"
+                    && f.payload["sessionId"] == serde_json::json!(id)
+                    && f.payload["jobs"]
+                        .as_array()
+                        .is_some_and(|jobs| jobs.iter().any(|j| j["id"] == "job-1"))
+            }),
+            "基线应含 shell jobs 快照"
+        );
     }
 
     /// 子会话实时流:驻留子代理的引擎事件经 relay 翻译后,以

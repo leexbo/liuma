@@ -25,8 +25,10 @@ impl Default for SubagentsStore {
 /// 血缘行:jobs 帧与子会话清单按 id 合并后的呈现数据
 #[derive(Debug, Clone)]
 pub(crate) struct LineageRow {
-    /// 子会话槽位 id(跳转用)
+    /// 子会话槽位 id(跳转用;shell 行为 job-N 非会话,不跳转)
     pub session_id: String,
+    /// 行属类:subagent(可跳转子会话)/ shell(后台进程)
+    pub kind: String,
     /// 任务名(委派 description;无 jobs 数据时回落会话标题)
     pub label: String,
     /// 运行中(running job;无 jobs 数据 = false)
@@ -63,12 +65,17 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 某会话运行中的后台子代理数(jobs 帧统计)
+    /// 某会话运行中的后台子代理数(jobs 帧统计;shell job 不驱动
+    /// 会话列表的运行态标记)
     pub fn running_subagent_count(&self, session_id: &str) -> usize {
         self.state
             .jobs_by_id
             .get(session_id)
-            .map(|jobs| jobs.iter().filter(|j| j["status"] == "running").count())
+            .map(|jobs| {
+                jobs.iter()
+                    .filter(|j| j["status"] == "running" && j["kind"] != "shell")
+                    .count()
+            })
             .unwrap_or(0)
     }
 
@@ -81,6 +88,7 @@ impl AppStore {
                 let status = j["status"].as_str().unwrap_or("completed");
                 rows.push(LineageRow {
                     session_id: j["id"].as_str().unwrap_or_default().to_string(),
+                    kind: j["kind"].as_str().unwrap_or("subagent").to_string(),
                     label: j["label"].as_str().unwrap_or_default().to_string(),
                     running: status == "running",
                     dot: Some(match status {
@@ -101,6 +109,7 @@ impl AppStore {
             let title = self.title_for(&c.session_id);
             rows.push(LineageRow {
                 session_id: c.session_id,
+                kind: "subagent".into(),
                 label: title,
                 running: false,
                 dot: None,

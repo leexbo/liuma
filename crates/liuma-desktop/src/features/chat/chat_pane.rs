@@ -930,7 +930,7 @@ fn context_block(
 ) -> impl IntoElement {
     if matches!(
         source["kind"].as_str(),
-        Some("subagent-settled") | Some("subagent-message")
+        Some("subagent-settled") | Some("subagent-message") | Some("shell-job-settled")
     ) {
         return notice_card(store, open_context, ix, key, content, source).into_any_element();
     }
@@ -1311,6 +1311,8 @@ fn notice_card(
     } else if summary.contains("failed")
         || summary.contains("declined")
         || summary.contains("ended abnormally")
+        || summary.contains("exited with code")
+        || summary.contains("terminated by")
     {
         (t!("chat.subagent_failed"), closing_of_settlement(content))
     } else {
@@ -1326,7 +1328,12 @@ fn notice_card(
     let s_jump = s.clone();
     let row = member_row(
         store,
-        fixed(IconName::Bot, 14.).into_any_element(),
+        // shell job 结算 = 后台任务图标;子代理 = Bot
+        if kind == "shell-job-settled" {
+            fixed(LiumaIcon::Briefcase, 14.).into_any_element()
+        } else {
+            fixed(IconName::Bot, 14.).into_any_element()
+        },
         grp,
         status.to_string(),
         Some(MemberSummary::Text(folded_summary)),
@@ -1382,8 +1389,10 @@ fn notice_card(
 
 /// 结算通知的 closing message(固定分节之后;无收尾 → None)
 fn closing_of_settlement(content: &str) -> Option<String> {
+    // 子代理结算 = closing message;shell job 结算 = 输出尾部
     content
         .split_once("Its closing message:\n\n")
+        .or_else(|| content.split_once("Tail of its output:\n\n"))
         .map(|(_, rest)| rest.trim().to_string())
         .filter(|c| !c.is_empty())
 }

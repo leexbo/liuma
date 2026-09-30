@@ -175,11 +175,14 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                 } else {
                     theme::TRANSPARENT()
                 })
-                .cursor_pointer()
-                .hover(|st| st.bg(theme::DOCK()))
-                .on_click(move |_, _, cx| {
-                    let id = chip_id.clone();
-                    s_chip.update(cx, |st, cx| st.open_session(&id, cx));
+                // shell job 行非会话,无跳转(点击不响应,不显手型)
+                .when(chip.kind != "shell", |el| {
+                    el.cursor_pointer()
+                        .hover(|st| st.bg(theme::DOCK()))
+                        .on_click(move |_, _, cx| {
+                            let id = chip_id.clone();
+                            s_chip.update(cx, |st, cx| st.open_session(&id, cx));
+                        })
                 })
                 .when_some(chip.dot, |el, dot| el.child(state_dot(dot)))
                 .child(
