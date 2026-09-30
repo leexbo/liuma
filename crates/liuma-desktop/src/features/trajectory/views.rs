@@ -1795,8 +1795,9 @@ fn ledger(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .into_any_element()
 }
 
-/// 台账悬浮跳转钮(34px 圆形药丸;内容区回底钮同款形态)。挡点击不挡
-/// 滚轮(悬浮于滚动区上);stop_propagation 免触发「点表空白清选中」
+/// 台账悬浮跳转钮(28px 圆形药丸;内容区回底钮同款形态与尺寸)。挡
+/// 点击不挡滚轮(悬浮于滚动区上);stop_propagation 免触发「点表空白
+/// 清选中」
 fn float_jump_button(
     id: &'static str,
     icon: IconName,
@@ -1808,7 +1809,7 @@ fn float_jump_button(
         .id(id)
         .debug_selector(move || sel.clone())
         .flex()
-        .size(px(34.))
+        .size(px(28.))
         .items_center()
         .justify_center()
         .rounded_full()
@@ -1820,7 +1821,7 @@ fn float_jump_button(
         .block_mouse_except_scroll()
         .hover(|s| s.opacity(0.85))
         .tooltip(crate::shell::tip(tip_text))
-        .child(fixed(icon, 14.).text_color(theme::LABEL()))
+        .child(fixed(icon, 12.).text_color(theme::LABEL()))
         .on_click(move |ev, window, cx| {
             cx.stop_propagation();
             on_click(ev, window, cx);
@@ -2211,7 +2212,7 @@ fn record_row(
         .relative()
         .flex()
         // 行宽锚定:list 以 layout_as_root 布子项,auto 宽收缩到内容
-        // (MaxContent 单行测量,长命令行曾把行撑到数千 px 越面板被裁)。
+        // (MaxContent 单行测量,长命令行会把行撑出列表宽)。
         // w_full 在 prepaint 的 Definite 可用宽下解析为列表宽,行内
         // min_w(0)+truncate 才有界(同聊天列 div().w(col_w) 的锚定手法)
         .w_full()

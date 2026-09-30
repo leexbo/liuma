@@ -476,7 +476,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                     // 右下角:离卡片右缘留出呼吸间隙
                     .right(px(28.))
                     .flex()
-                    .size(px(34.))
+                    .size(px(28.))
                     .items_center()
                     .justify_center()
                     .rounded_full()
@@ -498,7 +498,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                             cx.notify();
                         });
                     })
-                    .child(fixed(IconName::ArrowDown, 14.).text_color(theme::LABEL())),
+                    .child(fixed(IconName::ArrowDown, 12.).text_color(theme::LABEL())),
             )
         })
 }
