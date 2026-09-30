@@ -152,6 +152,39 @@ impl PtySession {
         Ok((buf, task))
     }
 
+    /// 起通道化增量读:逐块发送到无界通道(EOF/读错关闭发送端;
+    /// 消费者掉线即停读)。消费者自行积累与截取部分输出
+    pub fn start_read_chunks(
+        &self,
+    ) -> Result<
+        (
+            tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+            tokio::task::JoinHandle<()>,
+        ),
+        PtyError,
+    > {
+        let reader = self
+            .master
+            .try_clone_reader()
+            .map_err(|e| PtyError::Io(e.to_string()))?;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::task::spawn_blocking(move || {
+            let mut reader = reader;
+            let mut chunk = [0u8; 8192];
+            loop {
+                match std::io::Read::read(&mut reader, &mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if tx.send(chunk[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        Ok((rx, task))
+    }
+
     /// 读取全部输出直到 EOF(便捷面 = start_read + await 任务 + 取缓冲;
     /// 取消/超时由调用方在 select 层处理并 kill)
     pub async fn read_to_end(&mut self) -> Result<String, PtyError> {

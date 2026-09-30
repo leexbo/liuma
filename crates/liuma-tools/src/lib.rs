@@ -73,6 +73,11 @@ pub trait ApprovalPort: Send + Sync {
 /// 拒绝提示链(沙箱拒绝输出的下一行;教模型带参重试一次,审批问用户)
 pub const ESCALATION_HINT: &str = "[sandbox: escalation available — retry this exact command once with sandbox_permissions (the narrowest wider mode that suffices) + justification; the approval prompt asks the user]";
 
+/// 前台命令缺省墙钟预算(120s;到点转后台不杀)
+pub const BASH_TIMEOUT_DEFAULT_MS: u64 = 120_000;
+/// 前台预算上限(600s;更长的活儿用 run_in_background,超限拒绝而非钳制)
+pub const BASH_TIMEOUT_MAX_MS: u64 = 600_000;
+
 pub use ask_question::{AskQuestionPort, AskQuestionTool, QuestionItem, QuestionOption};
 pub use file::FileTools;
 pub use goal::GoalTool;
@@ -232,6 +237,10 @@ impl BashTool {
                             "description": "Clear, concise description of what this command does in active voice, 5-10 words (shown in the UI). Examples: \"ls\" → \"List files in current directory\"; \"git status\" → \"Show working tree status\"; \"npm install\" → \"Install package dependencies\"."
                         },
                         "run_in_background": { "type": "boolean", "description": "Run detached; returns a job id immediately (manage via the jobs tool)" },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "description": "Wall-clock budget for this foreground command in milliseconds (default 120000, max 600000). When it elapses the command is moved to a background job — nothing is killed, the output keeps streaming to the job log, and you can keep working; manage it with the jobs tool."
+                        },
                         "sandbox_permissions": {
                             "type": "string",
                             "enum": ["workspace-write", "full-access"],
@@ -248,8 +257,10 @@ impl BashTool {
         })
     }
 
-    /// PTY 路径:沙箱经 argv 包装;取消即 killer 组信号杀进程
-    async fn execute_pty(&mut self, command: &str) -> ToolOutput {
+    /// PTY 路径:沙箱经 argv 包装;通道化增量读 + 前台预算三相
+    /// (EOF / 取消 / 预算耗尽——耗尽与 pipes 同一裁决:移交或降级杀)。
+    /// 取消即 killer 组信号杀进程
+    async fn execute_pty(&mut self, command: &str, timeout_ms: u64) -> ToolOutput {
         let policy = self.resolve_policy();
         let (program, args) = match shell::shell_argv(command) {
             Ok(v) => v,
@@ -265,23 +276,99 @@ impl BashTool {
                 };
             }
         };
-        let output = tokio::select! {
-            out = session.read_to_end() => out.unwrap_or_default(),
-            _ = self.cancel.cancelled() => {
-                session.kill();
-                return ToolOutput { output: "cancelled".into(), success: false, ..Default::default() };
+        let (mut rx, _read_task) = match session.start_read_chunks() {
+            Ok(v) => v,
+            Err(e) => return fail_output(format!("pty read start failed: {e}")),
+        };
+        let mut out: Vec<u8> = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+        enum Phase {
+            Eof,
+            Cancelled,
+            Deadline,
+        }
+        let phase = loop {
+            tokio::select! {
+                chunk = rx.recv() => match chunk {
+                    // 通道关闭(EOF/读错)即读尽
+                    None => break Phase::Eof,
+                    Some(bytes) => out.extend_from_slice(&bytes),
+                },
+                _ = self.cancel.cancelled() => break Phase::Cancelled,
+                _ = tokio::time::sleep_until(deadline) => break Phase::Deadline,
             }
         };
-        let status = session.wait().await.unwrap_or(ExitStatus {
-            code: None,
-            signal: None,
-        });
-        let (success, exit_code, signal) = settle(status);
-        ToolOutput {
-            output: output.trim().to_string(),
-            success,
-            view: Some(terminal_view(exit_code, signal, Some(&self.cwd))),
-            ..Default::default()
+        let settle_pty = |status: ExitStatus, output: String| {
+            let (success, exit_code, signal) = settle(status);
+            ToolOutput {
+                output,
+                success,
+                view: Some(terminal_view(exit_code, signal, Some(&self.cwd))),
+                ..Default::default()
+            }
+        };
+        match phase {
+            Phase::Cancelled => {
+                session.kill();
+                ToolOutput {
+                    output: "cancelled".into(),
+                    success: false,
+                    ..Default::default()
+                }
+            }
+            Phase::Eof => {
+                let output = liuma_sandbox::text::decode_output(&out).trim().to_string();
+                let status = session.wait().await.unwrap_or(ExitStatus {
+                    code: None,
+                    signal: None,
+                });
+                settle_pty(status, output)
+            }
+            Phase::Deadline => {
+                // 裁决序与 pipes 一致:取消优先 → 已退出排干落定 → 移交/降级
+                if self.cancel.is_cancelled() {
+                    session.kill();
+                    return ToolOutput {
+                        output: "cancelled".into(),
+                        success: false,
+                        ..Default::default()
+                    };
+                }
+                match session.try_wait() {
+                    Ok(Some(_)) => {
+                        while let Some(bytes) = rx.recv().await {
+                            out.extend_from_slice(&bytes);
+                        }
+                        let output = liuma_sandbox::text::decode_output(&out).trim().to_string();
+                        let status = session.wait().await.unwrap_or(ExitStatus {
+                            code: None,
+                            signal: None,
+                        });
+                        settle_pty(status, output)
+                    }
+                    _ => match self.jobs.clone() {
+                        Some(registry) => {
+                            self.handover_pty_to_background(
+                                registry, session, rx, out, command, timeout_ms,
+                            )
+                            .await
+                        }
+                        None => {
+                            session.kill();
+                            let mut text =
+                                liuma_sandbox::text::decode_output(&out).trim().to_string();
+                            text.push_str(&format!(
+                                "\n[timed out after {timeout_ms}ms — killed; this assembly has no background jobs, so the command could not continue]"
+                            ));
+                            ToolOutput {
+                                output: text,
+                                success: false,
+                                ..Default::default()
+                            }
+                        }
+                    },
+                }
+            }
         }
     }
 
@@ -344,6 +431,222 @@ impl BashTool {
             ),
             success: true,
             ..Default::default()
+        }
+    }
+
+    /// timeout_ms 解析:缺省 DEFAULT;整数 1..=MAX(文案逐字固定)
+    fn parse_timeout_ms(arguments: &Value) -> Result<u64, String> {
+        const MSG: &str = "invalid timeout_ms: expected an integer between 1 and 600000; use run_in_background for longer commands";
+        match &arguments["timeout_ms"] {
+            Value::Null => Ok(BASH_TIMEOUT_DEFAULT_MS),
+            v => match v.as_u64() {
+                Some(ms) if (1..=BASH_TIMEOUT_MAX_MS).contains(&ms) => Ok(ms),
+                _ => Err(MSG.into()),
+            },
+        }
+    }
+
+    /// 前台落定:沙箱分类(denialSignatures + runnerFailureRules 语义)+
+    /// 渲染意图。runner 失败(命令从未执行)/ 拒绝(内核拦截)/ 常规退出
+    /// (success=true,退出码是数据、不是失败)
+    async fn settle_foreground(
+        &self,
+        mut child: liuma_sandbox::Child,
+        output: String,
+        policy: &SandboxPolicy,
+    ) -> ToolOutput {
+        let (success, exit_code, signal, rendered) = match child.wait_classified().await {
+            ExitClass::Ran(status) => {
+                let (s, c, sig) = settle(status);
+                (s, c, sig, output)
+            }
+            ExitClass::RunnerFailed { code, detail } => (
+                false,
+                code,
+                None,
+                format!("sandbox runner 失败(命令未执行):\n{detail}"),
+            ),
+            ExitClass::Denied { status, .. } => {
+                // 拒绝标记 + stderr 原文 + 升级提示链(审批口在场且存在
+                // 更宽档位时才提示——无审批服务时不撒谎)
+                let stderr = child.stderr_text().await;
+                let mut text = format!("{}\n{}", denial_marker(policy.mode), stderr.trim());
+                if self.approval.is_some() && !Self::wider_modes(policy.mode).is_empty() {
+                    text.push('\n');
+                    text.push_str(ESCALATION_HINT);
+                }
+                (false, status.code, None, text)
+            }
+        };
+        ToolOutput {
+            output: rendered,
+            success,
+            view: Some(terminal_view(exit_code, signal, Some(&self.cwd))),
+            ..Default::default()
+        }
+    }
+
+    /// 预算耗尽裁决:①取消优先(与 deadline 同刻到达不得误判成超时)
+    /// ②进程已自发退出 → 排干余量走正常落定(完成的命令不报「转后台」)
+    /// ③真超时 → 移交后台;jobs 未装配 → 降级杀 + 部分输出。
+    /// stdout 已自发关闭但进程存活的 daemon 型命令落 ③:移交正确
+    async fn adjudicate_deadline(
+        &self,
+        child: liuma_sandbox::Child,
+        mut stdout: Option<tokio::process::ChildStdout>,
+        out: Vec<u8>,
+        policy: &SandboxPolicy,
+        command: &str,
+        timeout_ms: u64,
+    ) -> ToolOutput {
+        let mut child = child;
+        if self.cancel.is_cancelled() {
+            let _ = child.kill_with_grace(self.grace).await;
+            return ToolOutput {
+                output: "cancelled".into(),
+                success: false,
+                ..Default::default()
+            };
+        }
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                // 已退出:排干 stdout 余量(EOF 即到),完整输出正常落定
+                let mut out = out;
+                if let Some(pipe) = stdout.as_mut() {
+                    use tokio::io::AsyncReadExt;
+                    let mut rest = Vec::new();
+                    let _ = pipe.read_to_end(&mut rest).await;
+                    out.extend_from_slice(&rest);
+                }
+                let output = liuma_sandbox::text::decode_output(&out).trim().to_string();
+                self.settle_foreground(child, output, policy).await
+            }
+            // None = 还在跑(真超时);Err = 探测失败,按存活性保守处理
+            _ => match self.jobs.clone() {
+                Some(registry) => {
+                    self.handover_to_background(registry, child, stdout, out, command, timeout_ms)
+                        .await
+                }
+                None => {
+                    // 降级:无后台装配无法转走,杀进程并交出已积累输出
+                    let _ = child.kill_with_grace(self.grace).await;
+                    let stderr = child.stderr_text().await;
+                    let mut text = liuma_sandbox::text::decode_output(&out).trim().to_string();
+                    if !stderr.trim().is_empty() {
+                        text.push('\n');
+                        text.push_str(stderr.trim());
+                    }
+                    text.push_str(&format!(
+                        "\n[timed out after {timeout_ms}ms — killed; this assembly has no background jobs, so the command could not continue]"
+                    ));
+                    ToolOutput {
+                        output: text,
+                        success: false,
+                        view: Some(terminal_view(None, None, Some(&self.cwd))),
+                        ..Default::default()
+                    }
+                }
+            },
+        }
+    }
+
+    /// 前台超时移交:pipes 形态。登记 job + 流式 watcher(携带已读
+    /// 前缀),进程原样继续(沙箱/审批上下文已在 spawn 时生效,无需迁移)
+    async fn handover_to_background(
+        &self,
+        registry: JobsRegistry,
+        child: liuma_sandbox::Child,
+        stdout: Option<tokio::process::ChildStdout>,
+        prefix: Vec<u8>,
+        command: &str,
+        timeout_ms: u64,
+    ) -> ToolOutput {
+        let mut child = child;
+        let killer = JobKiller::Group(child.group_killer());
+        // 分离终止宽限与 run_in_background 同参(SIGTERM 后 1s 即 SIGKILL)
+        let started = start_job(
+            &registry,
+            &self.cwd,
+            command,
+            killer,
+            Duration::from_secs(1),
+        )
+        .await;
+        match started {
+            Ok((id, log_path)) => {
+                tokio::spawn(run_job_watcher(
+                    child,
+                    stdout,
+                    prefix,
+                    registry,
+                    id,
+                    log_path.clone(),
+                ));
+                ToolOutput {
+                    output: format!(
+                        "moved to background: job {id} after {timeout_ms}ms (the command keeps running; manage it with the jobs tool: read/list/stop)\nlog: {}",
+                        log_path.display()
+                    ),
+                    success: true,
+                    ..Default::default()
+                }
+            }
+            Err(msg) => {
+                // 登记失败即无收尾方:杀掉进程再报错,不留孤儿
+                let _ = child.kill_with_grace(self.grace).await;
+                fail_output(msg)
+            }
+        }
+    }
+
+    /// 前台超时移交:PTY 形态。读通道与已读前缀随会话移交 watcher;
+    /// 登记失败路径靠 master drop 的 SIGHUP 收口(PTY 语义)
+    async fn handover_pty_to_background(
+        &self,
+        registry: JobsRegistry,
+        session: liuma_sandbox::pty::PtySession,
+        rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+        prefix: Vec<u8>,
+        command: &str,
+        timeout_ms: u64,
+    ) -> ToolOutput {
+        let Some(killer) = session.killer() else {
+            // 无分离句柄则无从 stop:降级杀(master drop 送 SIGHUP)
+            drop(session);
+            return ToolOutput {
+                output: format!(
+                    "[timed out after {timeout_ms}ms — killed; this pty session has no termination handle]"
+                ),
+                success: false,
+                ..Default::default()
+            };
+        };
+        let killer = JobKiller::Pty(killer);
+        // PTY 无宽限语义,grace 仅占位(killer 即杀)
+        let started = start_job(&registry, &self.cwd, command, killer, Duration::ZERO).await;
+        match started {
+            Ok((id, log_path)) => {
+                tokio::spawn(run_pty_job_watcher(
+                    session,
+                    rx,
+                    prefix,
+                    registry,
+                    id,
+                    log_path.clone(),
+                ));
+                ToolOutput {
+                    output: format!(
+                        "moved to background: job {id} after {timeout_ms}ms (the command keeps running; manage it with the jobs tool: read/list/stop)\nlog: {}",
+                        log_path.display()
+                    ),
+                    success: true,
+                    ..Default::default()
+                }
+            }
+            Err(msg) => {
+                drop(session);
+                fail_output(msg)
+            }
         }
     }
 }
@@ -438,17 +741,49 @@ async fn run_job_watcher(
         }
         let _ = f.flush().await;
     }
-    let status_label = if let Some(s) = status
-        && s.success()
-    {
-        "done"
-    } else {
-        "failed"
-    };
+    finish_job(&registry, id, status.map(|s| s.success()));
+}
+
+/// 后台 watcher(PTY 形态):通道化增量读逐块落盘 → 会话退出 → 收尾。
+/// stderr 与 stdout 合流在 master(PTY 语义),无单独并入步
+async fn run_pty_job_watcher(
+    mut session: liuma_sandbox::pty::PtySession,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    prefix: Vec<u8>,
+    registry: JobsRegistry,
+    id: u64,
+    log_path: PathBuf,
+) {
+    use tokio::io::AsyncWriteExt;
+    let mut log = tokio::fs::File::create(&log_path).await.ok();
+    let mut tail: Vec<u8> = Vec::new();
+    if !prefix.is_empty() {
+        if let Some(f) = log.as_mut() {
+            let _ = f.write_all(&prefix).await;
+        }
+        advance_tail(&mut tail, &prefix);
+    }
+    while let Some(chunk) = rx.recv().await {
+        if let Some(f) = log.as_mut() {
+            let _ = f.write_all(&chunk).await;
+        }
+        advance_tail(&mut tail, &chunk);
+    }
+    if let Some(f) = log.as_mut() {
+        let _ = f.flush().await;
+    }
+    let ok = session.wait().await.ok().map(|s| s.success());
+    finish_job(&registry, id, ok);
+}
+
+/// job 收尾(两形态 watcher 共用):状态落定 + 变更通知。
+/// stop 抢先置位 stopped、收尾只改 running 的竞争机制保持;
+/// ok = None 表示退出状态不可知(按失败落定)
+fn finish_job(registry: &JobsRegistry, id: u64, ok: Option<bool>) {
+    let status_label = if ok == Some(true) { "done" } else { "failed" };
     if let Ok(mut r) = registry.lock()
         && let Some(job) = r.iter_mut().find(|j| j.id == id)
     {
-        // stop 抢先标记 stopped(watcher 只改 running,不覆盖)
         if job.status == "running" {
             job.status = status_label.into();
         }
@@ -523,13 +858,33 @@ impl ToolPort for BashTool {
                 ..Default::default()
             };
         }
+        // 前台预算:timeout_ms(缺省 DEFAULT;文案逐字固定,越界拒绝
+        // 而非钳制——静默改值会让模型误判自己的预算)
+        let timeout_ms = match Self::parse_timeout_ms(&arguments) {
+            Ok(ms) => ms,
+            Err(msg) => {
+                return ToolOutput {
+                    output: msg,
+                    success: false,
+                    ..Default::default()
+                };
+            }
+        };
         // 后台路径:spawn + 注册 + 立即返回 job id;
-        // watcher 任务收尾状态并把输出落盘 .liuma/jobs/<id>.log
+        // watcher 任务流式落盘并收尾状态(.liuma/jobs/<id>.log)。
+        // 预算只约束前台等待,后台无此概念
         if arguments["run_in_background"].as_bool().unwrap_or(false) {
+            if !arguments["timeout_ms"].is_null() {
+                return ToolOutput {
+                    output: "timeout_ms is only valid for foreground commands".into(),
+                    success: false,
+                    ..Default::default()
+                };
+            }
             return self.execute_background(command).await;
         }
         if self.pty {
-            return self.execute_pty(command).await;
+            return self.execute_pty(command, timeout_ms).await;
         }
         let mut policy = self.resolve_policy();
         // 一次性升级闸门:严格加宽检查 → 审批口在场 → 问用户(批准先于
@@ -613,51 +968,73 @@ impl ToolPort for BashTool {
             Err(e) => return fail_output(format!("shell unavailable: {e}")),
         };
         // spawn 失败(含 fail-closed 沙箱拒绝)即工具失败,不中断 loop
-        let child = match spawn_child(&program, &args, &opts).await {
+        let mut child = match spawn_child(&program, &args, &opts).await {
             Ok(child) => child,
             Err(e) => return fail_output(format!("spawn failed: {e}")),
         };
-        let mut child = child;
-        let output = tokio::select! {
-            out = child.stdout() => liuma_sandbox::text::decode_output(&out.unwrap_or_default()).trim().to_string(),
-            // 软取消:杀子进程(SIGTERM→grace→SIGKILL)后温和返回
-            _ = self.cancel.cancelled() => {
+        // 增量读循环:out 与管道属主外置——超时/取消时天然持有部分输出。
+        // 逐块单次 read(管道 read 取消安全,读了多少算多少)
+        let mut stdout = child.take_stdout();
+        let mut out: Vec<u8> = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+        /// 读循环收束相(EOF / 取消 / 预算耗尽)
+        enum Phase {
+            Eof,
+            Cancelled,
+            Deadline,
+        }
+        let phase = loop {
+            tokio::select! {
+                read = async {
+                    use tokio::io::AsyncReadExt;
+                    let stdout = stdout.as_mut().expect("select 前置条件保证在场");
+                    let mut buf = vec![0u8; 8192];
+                    let n = stdout.read(&mut buf).await;
+                    (buf, n)
+                }, if stdout.is_some() => {
+                    let (buf, n) = read;
+                    match n {
+                        Ok(0) | Err(_) => break Phase::Eof,
+                        Ok(n) => out.extend_from_slice(&buf[..n]),
+                    }
+                }
+                // 软取消:杀子进程(SIGTERM→grace→SIGKILL)后温和返回
+                _ = self.cancel.cancelled() => break Phase::Cancelled,
+                _ = tokio::time::sleep_until(deadline) => break Phase::Deadline,
+            }
+        };
+        match phase {
+            Phase::Cancelled => {
                 // 已取消,杀失败无补救手段(进程可能已退出)
                 let _ = child.kill_with_grace(self.grace).await;
-                return ToolOutput { output: "cancelled".into(), success: false, ..Default::default() };
-            }
-        };
-        // 沙箱分类落定(denialSignatures + runnerFailureRules
-        // 语义):runner 失败(命令从未执行)/ 拒绝(内核拦截了文件效果)/
-        // 常规退出(success=true,退出码是数据、不是失败)
-        let (success, exit_code, signal, rendered) = match child.wait_classified().await {
-            ExitClass::Ran(status) => {
-                let (s, c, sig) = settle(status);
-                (s, c, sig, output)
-            }
-            ExitClass::RunnerFailed { code, detail } => (
-                false,
-                code,
-                None,
-                format!("sandbox runner 失败(命令未执行):\n{detail}"),
-            ),
-            ExitClass::Denied { status, .. } => {
-                // 拒绝标记 + stderr 原文 + 升级提示链(审批口在场且存在
-                // 更宽档位时才提示——无审批服务时不撒谎)
-                let stderr = child.stderr_text().await;
-                let mut text = format!("{}\n{}", denial_marker(policy.mode), stderr.trim());
-                if self.approval.is_some() && !Self::wider_modes(policy.mode).is_empty() {
-                    text.push('\n');
-                    text.push_str(ESCALATION_HINT);
+                ToolOutput {
+                    output: "cancelled".into(),
+                    success: false,
+                    ..Default::default()
                 }
-                (false, status.code, None, text)
             }
-        };
-        ToolOutput {
-            output: rendered,
-            success,
-            view: Some(terminal_view(exit_code, signal, Some(&self.cwd))),
-            ..Default::default()
+            Phase::Eof => {
+                // stdout 读尽。进程可能仍挂着(关闭 stdout ≠ 退出),
+                // 落定等待受同一 deadline 守护,到点走同一裁决
+                let exited = tokio::select! {
+                    status = child.wait() => Some(status.ok()),
+                    _ = tokio::time::sleep_until(deadline) => None,
+                };
+                match exited {
+                    Some(_) => {
+                        let output = liuma_sandbox::text::decode_output(&out).trim().to_string();
+                        self.settle_foreground(child, output, &policy).await
+                    }
+                    None => {
+                        self.adjudicate_deadline(child, stdout, out, &policy, command, timeout_ms)
+                            .await
+                    }
+                }
+            }
+            Phase::Deadline => {
+                self.adjudicate_deadline(child, stdout, out, &policy, command, timeout_ms)
+                    .await
+            }
         }
     }
 }
@@ -1059,6 +1436,51 @@ mod tests {
             out.output,
             "sandbox escalation requires approval, but no approval service is composed"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// timeout_ms 校验:越界/类型错/与后台成对,逐字拒绝且零执行
+    /// (spawn 前返回,无平台沙箱依赖)
+    #[tokio::test]
+    async fn bash_timeout_validation_verbatim() {
+        let dir = std::env::temp_dir().join(format!("liuma-bash-tmv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut tool = BashTool::new(&dir);
+        const MSG: &str = "invalid timeout_ms: expected an integer between 1 and 600000; use run_in_background for longer commands";
+        let cases: Vec<(Value, &str)> = vec![
+            (
+                json!({ "command": "echo hi", "description": "D", "timeout_ms": 0 }),
+                MSG,
+            ),
+            (
+                json!({ "command": "echo hi", "description": "D", "timeout_ms": 600_001 }),
+                MSG,
+            ),
+            (
+                json!({ "command": "echo hi", "description": "D", "timeout_ms": "120000" }),
+                MSG,
+            ),
+            (
+                json!({ "command": "echo hi", "description": "D", "timeout_ms": 1.5 }),
+                MSG,
+            ),
+            (
+                json!({ "command": "echo hi", "description": "D", "timeout_ms": 60_000, "run_in_background": true }),
+                "timeout_ms is only valid for foreground commands",
+            ),
+        ];
+        for (args, expect) in cases {
+            let out = ToolPort::execute(
+                &mut tool,
+                &ToolCallRequest {
+                    name: liuma_sandbox::shell::tool_name().into(),
+                    arguments: args,
+                },
+            )
+            .await;
+            assert!(!out.success, "应拒绝: {expect}");
+            assert_eq!(out.output, expect);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

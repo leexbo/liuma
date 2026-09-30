@@ -1151,3 +1151,225 @@ async fn jobs_read_streams_output_while_running() {
     .await;
     assert!(stop.success, "{}", stop.output);
 }
+
+/// 前台超时移交:预算耗尽 → 登记 job + 移交文案立即返回,进程不杀,
+/// 已读前缀随移交落盘,后续输出继续流式写入;stop 收口
+#[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
+#[tokio::test]
+async fn foreground_timeout_moves_command_to_background() {
+    use liuma_agent_loop::{ToolCallRequest, ToolPort};
+    use liuma_tools::{JobTool, JobsRegistry};
+
+    let dir = std::env::temp_dir().join(format!("liuma-jobs-mv-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let registry = JobsRegistry::new();
+    let mut bash = BashTool::new(&dir).with_jobs(registry.clone());
+    let mut jobs = JobTool::new(registry.clone());
+
+    let started = std::time::Instant::now();
+    let out = ToolPort::execute(
+        &mut bash,
+        &ToolCallRequest {
+            name: "bash".into(),
+            arguments: json!({
+                "command": "echo before-timeout && sleep 30",
+                "description": "Outlive the budget then linger",
+                "timeout_ms": 300
+            }),
+        },
+    )
+    .await;
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "移交应立即返回(等了 {:?})",
+        started.elapsed()
+    );
+    assert!(out.success, "{}", out.output);
+    assert!(
+        out.output
+            .contains("moved to background: job 1 after 300ms"),
+        "{}",
+        out.output
+    );
+    assert!(out.output.contains(".liuma/jobs/1.log"), "{}", out.output);
+    assert!(
+        registry
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|j| j.status == "running"),
+        "移交后 job 应为 running"
+    );
+    // 已读前缀随移交落盘
+    let mut prefix_seen = false;
+    for _ in 0..100 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if let Ok(text) = std::fs::read_to_string(dir.join(".liuma/jobs/1.log"))
+            && text.contains("before-timeout")
+        {
+            prefix_seen = true;
+            break;
+        }
+    }
+    assert!(prefix_seen, "已读前缀应随移交写入日志");
+
+    let stop = ToolPort::execute(
+        &mut jobs,
+        &ToolCallRequest {
+            name: "jobs".into(),
+            arguments: json!({ "action": "stop", "id": 1 }),
+        },
+    )
+    .await;
+    assert!(stop.success, "{}", stop.output);
+}
+
+/// 竞态回归锁:预算与命令完成几乎同刻,两种胜负都合法——正常落定,
+/// 或移交后台(移交分支的 job 秒级结算且日志含完整输出)。
+/// 断言的真正不变式:预算耗尽绝不杀一个 jobs 在场的快速命令
+#[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
+#[tokio::test]
+async fn tiny_timeout_never_kills_a_fast_command() {
+    use liuma_agent_loop::{ToolCallRequest, ToolPort};
+    use liuma_tools::JobsRegistry;
+
+    let dir = std::env::temp_dir().join(format!("liuma-jobs-race-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let registry = JobsRegistry::new();
+    let mut bash = BashTool::new(&dir).with_jobs(registry.clone());
+
+    let out = ToolPort::execute(
+        &mut bash,
+        &ToolCallRequest {
+            name: "bash".into(),
+            arguments: json!({
+                "command": "echo race-ok",
+                "description": "Complete around the deadline",
+                "timeout_ms": 1
+            }),
+        },
+    )
+    .await;
+    assert!(out.success, "两种胜负都不得失败: {}", out.output);
+    if out.output.contains("moved to background") {
+        // 移交分支:job 在秒级内结算 done,日志含完整输出
+        let mut settled = String::new();
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let done = registry.lock().unwrap().iter().any(|j| j.status == "done");
+            if done {
+                settled =
+                    std::fs::read_to_string(dir.join(".liuma/jobs/1.log")).unwrap_or_default();
+                break;
+            }
+        }
+        assert!(
+            registry.lock().unwrap().iter().any(|j| j.status == "done"),
+            "移交的快速命令应秒级结算"
+        );
+        assert!(settled.contains("race-ok"), "日志应含完整输出: {settled}");
+    } else {
+        assert_eq!(out.output, "race-ok");
+    }
+}
+
+/// 降级路径:无 jobs 装配时预算耗尽杀进程,交出部分输出 + 如实文案
+#[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
+#[tokio::test]
+async fn foreground_timeout_without_jobs_degrades_to_kill() {
+    use liuma_agent_loop::{ToolCallRequest, ToolPort};
+
+    let dir = std::env::temp_dir().join(format!("liuma-jobs-deg-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut bash = BashTool::new(&dir);
+    let started = std::time::Instant::now();
+    let out = ToolPort::execute(
+        &mut bash,
+        &ToolCallRequest {
+            name: "bash".into(),
+            arguments: json!({
+                "command": "sleep 30",
+                "description": "Outlive the budget with no jobs support",
+                "timeout_ms": 300
+            }),
+        },
+    )
+    .await;
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "降级杀应在宽限内返回(等了 {:?})",
+        started.elapsed()
+    );
+    assert!(!out.success);
+    assert!(
+        out.output.contains("timed out after 300ms"),
+        "{}",
+        out.output
+    );
+    assert!(out.output.contains("killed"), "{}", out.output);
+}
+
+/// PTY 超时移交:与 pipes 同一裁决——预算耗尽转后台 job(不杀),
+/// 前缀随移交落盘,stop 走 PTY killer
+#[cfg(unix)] // PTY 用例见 pty.rs 测试头:嵌套沙箱内 openpty 被拒,环境性跳过
+#[tokio::test]
+async fn pty_timeout_moves_command_to_background() {
+    use liuma_agent_loop::{ToolCallRequest, ToolPort};
+    use liuma_tools::{JobTool, JobsRegistry};
+
+    if std::process::Command::new("/usr/bin/sandbox-exec")
+        .args(["-p", "(version 1)", "true"])
+        .output()
+        .map(|o| !o.status.success())
+        .unwrap_or(false)
+    {
+        eprintln!("嵌套沙箱内 openpty 不可用:环境性跳过断言");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("liuma-jobs-pty-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let registry = JobsRegistry::new();
+    let mut bash = BashTool::new(&dir).with_jobs(registry.clone()).with_pty();
+    let mut jobs = JobTool::new(registry.clone());
+
+    let out = ToolPort::execute(
+        &mut bash,
+        &ToolCallRequest {
+            name: "bash".into(),
+            arguments: json!({
+                "command": "echo pty-prefix && sleep 30",
+                "description": "Outlive the pty budget then linger",
+                "timeout_ms": 300
+            }),
+        },
+    )
+    .await;
+    assert!(out.success, "{}", out.output);
+    assert!(
+        out.output
+            .contains("moved to background: job 1 after 300ms"),
+        "{}",
+        out.output
+    );
+    let mut prefix_seen = false;
+    for _ in 0..100 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if let Ok(text) = std::fs::read_to_string(dir.join(".liuma/jobs/1.log"))
+            && text.contains("pty-prefix")
+        {
+            prefix_seen = true;
+            break;
+        }
+    }
+    assert!(prefix_seen, "PTY 前缀应随移交写入日志");
+
+    let stop = ToolPort::execute(
+        &mut jobs,
+        &ToolCallRequest {
+            name: "jobs".into(),
+            arguments: json!({ "action": "stop", "id": 1 }),
+        },
+    )
+    .await;
+    assert!(stop.success, "{}", stop.output);
+}
