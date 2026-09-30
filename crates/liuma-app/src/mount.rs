@@ -196,8 +196,8 @@ fn component_prompt(name: &str) -> &'static str {
         "files" => {
             "Use the file_read tool — not shell commands like cat — to inspect text files. Results include line numbers. Use offset and limit to continue reading large files.\n\nUse the file_edit tool for targeted changes to existing UTF-8 text files. It replaces literal old_text with new_text; by default old_text must appear exactly once. If old_text appears multiple times, provide a more specific old_text. Read the file first (the default fs-observation-policy requires it), unless you just created or edited it in this session.\n\nUse the file_search tool — not shell find or grep — to discover files by path pattern or to search file contents. Use file_read on a matched file when you need surrounding context."
         }
-        // RS jobs 为单工具(list/read/stop)且无完成通知,「notified
-        // in-session / do not busy-poll」承诺不成立 → 按接口适配
+        // jobs 静态节 = 无通知形态的轮询指引;通知口在场时由
+        // JOBS_NOTIFY_SECTION 替换(见 [`tool_prompt_sections_with`])
         "jobs" => {
             "Track every background job id you start; keep working on independent steps and do not duplicate a running job's work. Before giving a final answer, read every still-relevant job with the jobs tool (action read), and stop jobs that stopped mattering."
         }
@@ -224,17 +224,31 @@ fn component_prompt(name: &str) -> &'static str {
 /// 结算通知语义此时才真实成立(行为承诺必须与接口一致)。
 pub const SUBAGENT_BACKGROUND_SECTION: &str = "Use subagent in the background by default. Start independent delegations together in one assistant message and continue useful work while they run. Set `run_in_background: false` only when your next action depends on that subagent's result. When a background run settles, the runtime sends you a notice containing its outcome and any final assistant message.";
 
-/// 收集 preset 在场组件的 prompt 节(manifest 行序;装配期一次)。
-/// 不含条件节(subagent 后台节)——等价 `tool_prompt_sections_with(preset, false)`。
-pub fn tool_prompt_sections(preset: &PresetManifest) -> Vec<&'static str> {
-    tool_prompt_sections_with(preset, false)
+/// jobs 通知形态使用指南节(结算通知口在场时替换静态节):承诺
+/// run_in_background / 超时转后台 / 结算通知,并明令不轮询
+pub const JOBS_NOTIFY_SECTION: &str = "Start background jobs with bash `run_in_background` for anything long-running; a foreground command that outlives its `timeout_ms` budget is moved to the background the same way. When a job settles (finishes, fails, or is stopped), the runtime sends you a notice with its exit code and an output tail — do not poll. Use the jobs tool (action read) only when you need more of a job's output, and stop jobs that stopped mattering. Every job id you start is reported exactly once.";
+
+/// 条件 prompt 节的装配形态(结构化传递,防布尔参数膨胀):
+/// 各条件节只在对应接口承诺成立时挂(行为承诺必须与接口一致)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PromptConditions {
+    /// subagent 后台形态(结算通知 port 在场)
+    pub subagent_background: bool,
+    /// shell job 结算通知口在场(bash 的后台/超时转后台通知承诺成立)
+    pub job_notices: bool,
 }
 
-/// 同 [`tool_prompt_sections`],`subagent_background` = subagent 是否装配为
-/// 后台形态(结算通知 port 在场):真则 manifest 含 subagent 行时追加后台节
+/// 收集 preset 在场组件的 prompt 节(manifest 行序;装配期一次)。
+/// 不含条件节——等价 `tool_prompt_sections_with(preset, PromptConditions::default())`。
+pub fn tool_prompt_sections(preset: &PresetManifest) -> Vec<&'static str> {
+    tool_prompt_sections_with(preset, PromptConditions::default())
+}
+
+/// 同 [`tool_prompt_sections`],条件节按 `conditions` 挂:subagent 后台
+/// 节仅在后台形态;jobs 节在通知口在场时以通知形态替换静态轮询节
 pub fn tool_prompt_sections_with(
     preset: &PresetManifest,
-    subagent_background: bool,
+    conditions: PromptConditions,
 ) -> Vec<&'static str> {
     let reg = in_tree_registry();
     preset
@@ -245,7 +259,12 @@ pub fn tool_prompt_sections_with(
             let source = m.source.as_str();
             if source == "subagent" {
                 // 条件节:后台形态才有(其余组件用注册表静态节)
-                return subagent_background.then_some(SUBAGENT_BACKGROUND_SECTION);
+                return conditions
+                    .subagent_background
+                    .then_some(SUBAGENT_BACKGROUND_SECTION);
+            }
+            if source == "jobs" && conditions.job_notices {
+                return Some(JOBS_NOTIFY_SECTION);
             }
             reg.get(source).map(|c| c.prompt).filter(|p| !p.is_empty())
         })
@@ -786,10 +805,44 @@ mod tests {
         let resolved = resolved_with("    - source: subagent\n");
         assert!(tool_prompt_sections(&resolved.preset).is_empty());
         // port 在场 = 后台形态 → 挂后台节(承诺 run_in_background/结算通知)
-        let secs = tool_prompt_sections_with(&resolved.preset, true);
+        let secs = tool_prompt_sections_with(
+            &resolved.preset,
+            PromptConditions {
+                subagent_background: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(secs.len(), 1);
         assert!(secs[0].starts_with("Use subagent in the background by default."));
         assert!(secs[0].contains("run_in_background: false"));
+    }
+
+    #[test]
+    fn jobs_section_swaps_to_notify_form() {
+        // jobs 节两形态:通知口在场替换为通知节(替换非加节,节数不变)
+        let resolved = resolved_with("    - source: jobs\n");
+        let poll = tool_prompt_sections(&resolved.preset);
+        assert_eq!(poll.len(), 1);
+        let poll_text = poll[0];
+        assert!(
+            poll_text.contains("Before giving a final answer, read every still-relevant job"),
+            "缺省形态 = 轮询指引:{poll_text}"
+        );
+        let notified = tool_prompt_sections_with(
+            &resolved.preset,
+            PromptConditions {
+                job_notices: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(notified.len(), 1, "通知形态是替换,不是加节");
+        assert!(notified[0].contains("do not poll"), "{}", notified[0]);
+        assert!(notified[0].contains("timeout_ms"), "{}", notified[0]);
+        assert!(
+            notified[0].contains("reported exactly once"),
+            "{}",
+            notified[0]
+        );
     }
 
     #[test]

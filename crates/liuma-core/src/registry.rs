@@ -4359,7 +4359,13 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         // `{e:#}` = anyhow 全链:裸 `{e}` 只显最外层 context,
         // 会把真正的 OS 原因(如 Too many open files)吞掉,线上无法归因
         .map_err(|e| RpcError::internal(format!("session 装配失败:{e:#}")))?;
-        let parts = liuma_app::prompt_parts(&resolved, true);
+        let parts = liuma_app::prompt_parts(
+            &resolved,
+            liuma_app::mount::PromptConditions {
+                subagent_background: true,
+                job_notices: true,
+            },
+        );
         // AGENTS.md 基线不在此注入:per-step 指令重扫的 compose 首步发现
         // 日志无基线时自动整段载入,时序天然排在用户消息之后(pre-step
         // 语义);attach 时注入会插到用户消息之前,导致注入行
@@ -11243,7 +11249,13 @@ mod tests {
             &host.workspace.join("liuma.toml"),
         )
         .unwrap();
-        let parts = liuma_app::prompt_parts(&resolved, true);
+        let parts = liuma_app::prompt_parts(
+            &resolved,
+            liuma_app::mount::PromptConditions {
+                subagent_background: true,
+                ..Default::default()
+            },
+        );
         let mut fake = FakeProvider::new();
         fake.then(script(&["第一答"])[0].clone());
         let gate = InvariantGate::new(fake, liuma_app::fresh_log());

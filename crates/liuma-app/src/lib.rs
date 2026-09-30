@@ -500,9 +500,9 @@ pub struct PromptParts {
 /// 恒在;persona 行 config 的 identity 经 {{model}}/{{cwd}} 插值后追加
 /// (persona 文本即插值模板;无 persona 行 = 只有 harness 句)。
 /// 工具指南节由装配注册表收集(在场组件的 prompt 节,tool:<name> 语义);
-/// `subagent_background` = subagent 装配为后台形态(结算通知 port 在场)时
-/// 追加 subagent 后台节(见 mount::tool_prompt_sections_with)。
-pub fn prompt_parts(resolved: &Resolved, subagent_background: bool) -> PromptParts {
+/// 条件节(subagent 后台节 / jobs 通知节)按 `conditions` 挂,对应接口
+/// 承诺成立时才有(见 mount::tool_prompt_sections_with)。
+pub fn prompt_parts(resolved: &Resolved, conditions: mount::PromptConditions) -> PromptParts {
     let persona = resolved
         .preset
         .mount("persona")
@@ -546,7 +546,7 @@ pub fn prompt_parts(resolved: &Resolved, subagent_background: bool) -> PromptPar
 Use the read tool when their contents are needed; do not claim to have inspected a file before reading it."
                 .into(),
         ),
-        tool_sections: mount::tool_prompt_sections_with(&resolved.preset, subagent_background)
+        tool_sections: mount::tool_prompt_sections_with(&resolved.preset, conditions)
             .into_iter()
             .map(String::from)
             .collect(),
@@ -1196,7 +1196,7 @@ mod tests {
             context_window: liuma_compaction::DEFAULT_CONTEXT_WINDOW,
             preset,
         };
-        let parts = prompt_parts(&resolved, false);
+        let parts = prompt_parts(&resolved, Default::default());
         assert!(
             parts
                 .identity
@@ -1392,7 +1392,7 @@ mod tests {
             context_window: liuma_compaction::DEFAULT_CONTEXT_WINDOW,
             preset,
         };
-        let parts = prompt_parts(&resolved, false);
+        let parts = prompt_parts(&resolved, Default::default());
         let mut session = crate::Session::new(
             parts,
             provider,

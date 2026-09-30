@@ -138,7 +138,7 @@ async fn component_version() -> anyhow::Result<String> {
 /// 带 message 单轮;缺省进入 REPL(跨 turn 共享日志,流式终端输出)。
 async fn chat(message: Option<String>, common: CommonOpts) -> anyhow::Result<()> {
     let resolved = common.resolve()?;
-    let parts = app::prompt_parts(&resolved, false);
+    let parts = app::prompt_parts(&resolved, app::mount::PromptConditions::default());
     let backend = app::open_backend(&resolved.session)?;
     let session_path = resolved.session.clone();
     let cancel = liuma_agent_loop::CancelToken::new();
@@ -722,7 +722,7 @@ async fn serve(common: CommonOpts) -> anyhow::Result<()> {
     use liuma_host::rpc::{Gateway, serve_stdio};
 
     let resolved = common.resolve()?;
-    let parts = app::prompt_parts(&resolved, false);
+    let parts = app::prompt_parts(&resolved, app::mount::PromptConditions::default());
     let header = app::build_header(&parts, &liuma_session::EventLog::new());
     let backend = app::open_backend(&resolved.session)?;
     let cancel = liuma_agent_loop::CancelToken::new();
