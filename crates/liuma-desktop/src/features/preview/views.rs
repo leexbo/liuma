@@ -676,6 +676,11 @@ fn preview_lines_body(
                 .id(("preview-code-line", ix))
                 .debug_selector(move || format!("preview-code-line-{ix}"))
                 .flex()
+                // 行宽锚定:list 以 layout_as_root 布子项,auto 宽收缩到
+                // 内容(MaxContent 单行测量,长代码行会越容器被裁);
+                // w_full 在 Definite 可用宽下解析为列表宽,wrap/truncate
+                // 才有界(同聊天列 div().w(col_w) 的锚定手法)
+                .w_full()
                 .items_baseline()
                 .pl(px(8.))
                 .pr(px(12.))
@@ -726,6 +731,8 @@ fn preview_lines_body(
                 .id(("preview-text-row", ix))
                 .debug_selector(move || format!("preview-text-row-{ix}"))
                 .flex()
+                // 行宽锚定(同代码行注释:防 list MaxContent 单行外溢)
+                .w_full()
                 .px(px(14.))
                 .py(px(1.))
                 .text_size(px(13.))

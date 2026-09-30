@@ -3540,6 +3540,156 @@ fn trajectory_inspector_clamps_to_panel_width(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 回归锁(台账行宽锚定):list 以 layout_as_root 布子项,行根 auto 宽
+/// 收缩到内容(MaxContent 单行测量)——长命令/长消息行曾撑到数千 px,
+/// 越过面板右缘被裁(「轨迹面板右侧被截断」的真根因;v_b188e88 台账迁
+/// list() 引入,自绘滚动容器的 flex 链拉伸不复存在)。行根 w_full 后:
+/// 真实长内容下每行右缘不得越台账/面板右缘。
+#[gpui_kit::test]
+fn trajectory_ledger_rows_anchor_to_list_width(cx: &mut TestAppContext) {
+    use crate::features::trajectory::TrajectoryView;
+    use liuma_core::trajectory::{TrajectoryRecord, TrajectoryRequest};
+
+    let (store, mut wcx, root) = menu_harness(cx, "traj-diag");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.run_until_parked();
+    };
+
+    let long_cmd = "bash {\"command\":\"cargo test -p liuma-core --all-features --release -- --test-threads=4 --nocapture 2>&1 | tee /tmp/liuma-measure/run-20260930/full-cargo-test-output.log\"}";
+    let long_msg = "这条消息包含非常长的中文正文,用来模拟真实会话里模型的解释性输出,重复填充内容宽度以观察换行行为,继续重复继续重复继续重复继续重复继续重复继续重复";
+    let rec = |index: u64, kind: &str, turn: Option<u64>, group: &str, text: String| {
+        TrajectoryRecord {
+            index,
+            seq: index,
+            kind: kind.into(),
+            turn,
+            group: group.into(),
+            turn_start: index == 2,
+            text,
+            result: (kind == "tool").then(|| "warning: 2 warnings emitted, target/debug/liuma-desktop (90 dependencies) finished in 43.21s".to_string()),
+            is_error: false,
+            time_seconds: (kind != "user").then_some(1.2),
+            started_at: Some(1000 + index as i64 * 100),
+            request_number: (index == 3).then_some(1),
+            input: None,
+            output: (kind == "message").then_some(120),
+            think: (kind == "message").then_some(30),
+            ttft_ms: (kind == "message").then_some(300),
+            payload: (kind == "tool").then(|| {
+                "{\"command\":\"cargo test -p liuma-core --all-features --release -- --test-threads=4 --nocapture 2>&1 | tee /tmp/liuma-measure/run-20260930/full-cargo-test-output.log\",\"cwd\":\"/Volumes/DATA/projects/liuma\",\"timeoutMs\":120000}".to_string()
+            }),
+            output_detail: (kind != "user").then(|| format!("详情 {index}: {long_msg}")),
+            thinking_detail: None,
+            system_prompt: None,
+            tools_catalog: None,
+            schema_detail: (kind == "tool").then(|| {
+                "{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"description\":\"Run a shell command in the workspace sandbox with output capture\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"}}}}}".to_string()
+            }),
+            source: None,
+            decision: None,
+            fold: None,
+        }
+    };
+    let request = TrajectoryRequest {
+        number: 1,
+        turn: 1,
+        step: 1,
+        model: "glm-4.7".into(),
+        provider: "glm".into(),
+        reasoning_effort: Some("high".into()),
+        status: "complete".into(),
+        started_at: 1200,
+        completed_at: 1500,
+        duration_ms: 1500,
+        ttft_ms: Some(300),
+        usage: Some(liuma_core::trajectory::TrajectoryUsage {
+            input: 1000,
+            cached: 400,
+            other: 600,
+            output: 120,
+            reasoning: 30,
+        }),
+        cumulative: liuma_core::trajectory::TrajectoryUsage {
+            input: 1000,
+            cached: 400,
+            other: 600,
+            output: 120,
+            reasoning: 30,
+        },
+        tool_calls: 1,
+    };
+
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            st.trajectory.trajectory = TrajectoryView {
+                records: vec![
+                    rec(1, "system", None, "Message", "Initial System Prompt".into()),
+                    rec(2, "user", Some(1), "Message", long_msg.into()),
+                    rec(3, "message", Some(1), "Message", long_msg.into()),
+                    rec(4, "tool", Some(1), "Step 1", long_cmd.into()),
+                    rec(5, "context", Some(1), "Message", long_msg.into()),
+                    rec(6, "message", Some(1), "Step 1", long_msg.into()),
+                ],
+                requests: vec![request],
+                has_older: true,
+                total: 6,
+                loading: false,
+                loading_older: false,
+            };
+            st.trajectory.trajectory_session = Some(id);
+            st.panel_open = true;
+            st.panel_tabs = vec![crate::shell::panel::PanelTab::Trajectory];
+            st.panel_active_tab = Some(crate::shell::panel::PanelTab::Trajectory);
+        });
+    });
+    // 常见笔记本窗口(不收侧栏,面板默认 540 → 让位到 1512−侧栏−860)
+    wcx.simulate_resize(gpui_kit::size(gpui_kit::px(1512.), gpui_kit::px(900.)));
+    redraw(cx, &mut wcx);
+
+    // 断言面:长内容行右缘不得越台账/面板右缘(修复前 row-2 ≈ +293、
+    // row-4 ≈ +1676)
+    let rp = wcx.debug_bounds("right-panel").expect("面板列缺失");
+    let scroll = wcx
+        .debug_bounds("trajectory-scroll")
+        .expect("台账滚动区缺失");
+    for sel in ["trajectory-row-2", "trajectory-row-4", "trajectory-row-6"] {
+        let b = wcx
+            .debug_bounds(sel)
+            .unwrap_or_else(|| panic!("行 {sel} 缺失"));
+        assert!(
+            b.right() <= scroll.right() + px(0.5),
+            "{sel} 右缘越台账右缘({:?} > {:?})——行宽未锚定到列表宽",
+            b.right(),
+            scroll.right()
+        );
+        assert!(
+            b.right() <= rp.right() + px(0.5),
+            "{sel} 右缘越面板右缘({:?} > {:?})",
+            b.right(),
+            rp.right()
+        );
+    }
+
+    // 开检查器(压缩台账到最小宽)后再验:行仍锚定台账宽
+    cx.update(|app| {
+        store.update(app, |st, cx| st.select_trajectory_record(4, cx));
+    });
+    redraw(cx, &mut wcx);
+    let scroll = wcx
+        .debug_bounds("trajectory-scroll")
+        .expect("开检查器后台账缺失");
+    let b = wcx.debug_bounds("trajectory-row-4").expect("工具行缺失");
+    assert!(
+        b.right() <= scroll.right() + px(0.5),
+        "开检查器后行右缘仍不得越台账右缘({:?} > {:?})",
+        b.right(),
+        scroll.right()
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 折叠带 + 富化行 + 检查器折叠页(C6 渲染面)。
 ///
 /// 回归锁:
@@ -11987,13 +12137,16 @@ fn open_session_stats_arrive_async_off_ui_thread(cx: &mut TestAppContext) {
 /// 预览行可见性回归锁:text 与 code 行体必须有非零尺寸的行(修复前
 /// list 裸挂塌 0 高、可见范围空、行闭包从不调用——体 selector 在场
 /// 但内容全空)。未知后缀(.lock)落纯文本兜底,代码后缀(.rs)落
-/// 代码渲染器,两者行都必须实际渲染
+/// 代码渲染器,两者行都必须实际渲染。另锁行宽锚定:list 以
+/// layout_as_root 布子项,行根 auto 宽收缩到内容(MaxContent 单行
+/// 测量)——长行曾越出预览体被裁,行根 w_full 后右缘不得越体右缘。
 #[gpui_kit::test]
 fn preview_text_and_code_rows_visible(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "preview-rows");
     let ws = root.join("ws");
     std::fs::create_dir_all(&ws).expect("建夹具目录");
-    std::fs::write(ws.join("a.lock"), "LOCK_LINE_ONE\nsecond\n").expect("写 lock");
+    let long_line = format!("{}second\n", "LOCK_LINE_".repeat(60));
+    std::fs::write(ws.join("a.lock"), long_line).expect("写 lock");
     std::fs::write(ws.join("b.rs"), "fn main() {}\n").expect("写 rs");
     for (name, sel) in [
         ("a.lock", "preview-text-row-0"),
@@ -12008,6 +12161,14 @@ fn preview_text_and_code_rows_visible(cx: &mut TestAppContext) {
             f32::from(row.size.height) > 0. && f32::from(row.size.width) > 0.,
             "{name} 首行应有非零尺寸(实际 {:?})",
             row.size
+        );
+        // 行宽锚定:长行(文本 60×10 字符)右缘不得越预览体右缘
+        let body = wcx.debug_bounds("preview-lines-body").expect("预览体缺失");
+        assert!(
+            row.right() <= body.right() + px(0.5),
+            "{name} 长行右缘越预览体右缘({:?} > {:?})——行宽未锚定",
+            row.right(),
+            body.right()
         );
     }
     let _ = std::fs::remove_dir_all(root);

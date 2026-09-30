@@ -1783,6 +1783,8 @@ fn load_earlier_row(st: &AppStore, store: &Entity<AppStore>) -> impl IntoElement
         .flex()
         .h(px(30.))
         .flex_shrink_0()
+        // 行宽锚定(同 record_row 的 w_full 注释:防 MaxContent 单行外溢)
+        .w_full()
         .items_center()
         .justify_center()
         .gap(px(6.))
@@ -1816,6 +1818,8 @@ fn turn_summary_row(
         .flex()
         .h(px(20.))
         .flex_shrink_0()
+        // 行宽锚定(同 record_row 的 w_full 注释:防 MaxContent 单行外溢)
+        .w_full()
         .min_w(px(0.))
         .items_center()
         .pl(px(40.))
@@ -1851,6 +1855,8 @@ fn call_summary_row(
         .flex()
         .h(px(20.))
         .flex_shrink_0()
+        // 行宽锚定(同 record_row 的 w_full 注释:防 MaxContent 单行外溢)
+        .w_full()
         .min_w(px(0.))
         .items_center()
         .pl(px(40.))
@@ -2146,6 +2152,11 @@ fn record_row(
         .id(("traj-row", ix as usize))
         .relative()
         .flex()
+        // 行宽锚定:list 以 layout_as_root 布子项,auto 宽收缩到内容
+        // (MaxContent 单行测量,长命令行曾把行撑到数千 px 越面板被裁)。
+        // w_full 在 prepaint 的 Definite 可用宽下解析为列表宽,行内
+        // min_w(0)+truncate 才有界(同聊天列 div().w(col_w) 的锚定手法)
+        .w_full()
         .h(px(30.))
         .flex_shrink_0()
         .items_center()
