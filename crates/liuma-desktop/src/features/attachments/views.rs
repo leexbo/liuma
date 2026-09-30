@@ -13,11 +13,12 @@
 use gpui_kit::ExternalPaths;
 use gpui_kit::component::IconName;
 use gpui_kit::component::StyledExt;
+use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnimationExt as _, App, Entity, Image, InteractiveElement, IntoElement, ObjectFit,
     ParentElement, SharedString, SpringAnimation, SpringConfig, StatefulInteractiveElement, Styled,
-    StyledImage, div, img, point, px, rgba,
+    StyledImage, Window, div, img, point, px, rgba,
 };
 
 use crate::features::attachments::store::{DraftAttachment, image_size_text};
@@ -30,6 +31,12 @@ use crate::shell::store::AppStore;
 const RAIL_CARD_IMAGE_W: f32 = 64.;
 const RAIL_CARD_FILE_W: f32 = 240.;
 const RAIL_GAP: f32 = 10.;
+/// 卡角移除钮直径,与其对卡上/右角的外溢量(钮半骑卡角)
+const REMOVE_BUTTON_SIZE: f32 = 20.;
+const REMOVE_OVERHANG: f32 = 6.;
+/// 卡 = hover 组根(组解析到最近祖先,同轨多卡互不串扰),
+/// 移除钮只随所在卡悬停浮现
+const REMOVE_GROUP: &str = "draft-card-remove";
 
 /// 草稿附件条:无滚动条,溢出由两端悬浮圆形箭头
 /// 翻页;单一有序列表,图片 64px 缩略 + 文件卡 240×64 / gap10 / 圆角 16 /
@@ -122,10 +129,11 @@ pub fn draft_rail(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         .children(items.iter().map(|d| {
                             match d {
                                 DraftAttachment::Image(im) => {
-                                    draft_card(store, &im.id, im.image.clone()).into_any_element()
+                                    draft_card(store, cx, &im.id, im.image.clone())
+                                        .into_any_element()
                                 }
                                 DraftAttachment::File(f) => {
-                                    draft_file_card(store, f.id.clone(), f.name.clone(), f.size)
+                                    draft_file_card(store, cx, f.id.clone(), f.name.clone(), f.size)
                                         .into_any_element()
                                 }
                             }
@@ -199,11 +207,13 @@ pub fn draft_rail(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
 /// 草稿轨内容宽(卡宽全固定 ⇒ 构造期可知;露尾目标的 max 分子,
 /// 与卡片渲染同源,改卡宽必两处)
 fn rail_content_w(drafts: &[DraftAttachment]) -> f32 {
+    // 每卡足迹 = 卡宽 + 骑缝外溢(卡包在 pt/pr(REMOVE_OVERHANG) 的
+    // hover 组根里,轨宽按组根计)
     let cards: f32 = drafts
         .iter()
         .map(|d| match d {
-            DraftAttachment::Image(_) => RAIL_CARD_IMAGE_W,
-            DraftAttachment::File(_) => RAIL_CARD_FILE_W,
+            DraftAttachment::Image(_) => RAIL_CARD_IMAGE_W + REMOVE_OVERHANG,
+            DraftAttachment::File(_) => RAIL_CARD_FILE_W + REMOVE_OVERHANG,
         })
         .sum();
     let n = drafts.len() as f32;
@@ -260,9 +270,11 @@ fn rail_arrow(
         })
 }
 
-/// 单张草稿卡(64×64,圆角 16,cover;右上移除钮,点击开 Lightbox)
+/// 单张草稿卡(64×64,圆角 16,cover;点击开 Lightbox;
+/// 右上角骑缝移除钮,悬停卡时浮现)
 fn draft_card(
     store: &Entity<AppStore>,
+    cx: &App,
     id: &str,
     image: std::sync::Arc<Image>,
 ) -> impl IntoElement {
@@ -272,10 +284,9 @@ fn draft_card(
     let remove_store = store.clone();
     let id_rm = id_label.clone();
     let id_sel = id_label.clone();
-    div()
+    let card = div()
         .id(SharedString::from(format!("draft-img-{id}")))
         .debug_selector(move || format!("draft-img-{}", id_sel).to_string())
-        .relative()
         .size(px(RAIL_CARD_IMAGE_W))
         .flex_shrink_0()
         .rounded(px(16.))
@@ -285,30 +296,72 @@ fn draft_card(
         .on_click(move |_, _, cx| {
             open_store.update(cx, |st, cx| st.open_lightbox(&id_open, cx));
         })
-        .child(img(image).w_full().h_full().object_fit(ObjectFit::Cover))
+        .child(img(image).w_full().h_full().object_fit(ObjectFit::Cover));
+    card_with_remove(cx, format!("draft-remove-{id}"), card, move |_, _, cx| {
+        remove_store.update(cx, |st, cx| st.remove_draft(&id_rm, cx));
+    })
+}
+
+/// 卡 + 角移除钮组装:外层是 hover 组根,并给骑缝外溢让位(上/右各
+/// REMOVE_OVERHANG),钮绝对定位在组根角上——半骑卡角。钮静置透明,
+/// 悬停所在卡时浮现(聊天消息操作的既有 reveal 惯例)
+fn card_with_remove(
+    cx: &App,
+    button_id: String,
+    card: impl IntoElement,
+    on_remove: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .relative()
+        .flex_none()
+        .group(REMOVE_GROUP)
+        .pt(px(REMOVE_OVERHANG))
+        .pr(px(REMOVE_OVERHANG))
+        .child(card)
         .child(
             div()
-                .id(SharedString::from("draft-remove"))
-                .debug_selector(|| "draft-remove".to_string())
                 .absolute()
-                .top(px(4.))
-                .right(px(4.))
-                .size(px(18.))
-                .rounded_full()
-                // 底 0.72 黑;hover 增亮 + 手型光标
-                // = 可点反馈(常显钮的交互语言)
-                .bg(rgba(0x000000B8))
-                .cursor_pointer()
-                .hover(|s| s.bg(rgba(0x000000D9)))
-                .text_color(gpui_kit::white())
-                .flex()
-                .items_center()
-                .justify_center()
-                .on_click(move |_, _, cx| {
-                    remove_store.update(cx, |st, cx| st.remove_draft(&id_rm, cx));
-                })
-                .child(fixed(IconName::Close, 10.)),
+                .top_0()
+                .right_0()
+                .opacity(0.)
+                .group_hover(REMOVE_GROUP, |s| s.opacity(1.))
+                .child(remove_button(cx, button_id, on_remove)),
         )
+}
+
+/// 卡角移除钮:底色圆盘 + 发丝线边 + 微阴影的关闭钮形态,悬停沉入
+/// 次级填充。盘体走库 Button(hover/active 变体与命中行为由库托管);
+/// custom 变体的色槽按库约定被打薄,盘面须不透明,故底色落在实例上。
+/// ✕ 作子元素自持 10px——图标钮的库默认会随钮身缩放图标,这里要的
+/// 是远小于钮身的字标
+fn remove_button(
+    cx: &App,
+    button_id: String,
+    on_remove: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
+) -> Button {
+    let sel = button_id.clone();
+    Button::new(SharedString::from(button_id))
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .hover(theme::DOCK().into())
+                .active(theme::DOCK().into())
+                .foreground(theme::LABEL().into()),
+        )
+        .accessibility_label(t!("remove").to_string())
+        .debug_selector(move || sel.clone())
+        .child(fixed(IconName::Close, 10.).text_color(theme::LABEL()))
+        .size(px(REMOVE_BUTTON_SIZE))
+        .p_0()
+        .rounded_full()
+        .bg(theme::BASE())
+        .border_1()
+        .border_color(theme::BORDER())
+        .shadow_sm()
+        .on_click(move |ev, window, cx| {
+            // 卡自身的 on_click(开 Lightbox)不得随钮冒泡触发
+            cx.stop_propagation();
+            on_remove(ev, window, cx);
+        })
 }
 
 /// 文件类型徽章:28×28 彩色方块 +
@@ -343,9 +396,10 @@ fn file_kind_badge(name: &str) -> impl IntoElement {
 
 /// 草稿文件卡(240×64,gap10,padding 0 12,圆角 16,
 /// 发丝线边框;28px 类型徽章 + 名称省略 + 「扩展名 大小」meta;
-/// 右上移除钮)
+/// 右上角骑缝移除钮,悬停卡时浮现)
 fn draft_file_card(
     store: &Entity<AppStore>,
+    cx: &App,
     id: String,
     name: String,
     size: u64,
@@ -353,35 +407,19 @@ fn draft_file_card(
     let remove_store = store.clone();
     let id_rm = id.clone();
     let id_sel = id.clone();
-    div()
+    let card = div()
         .id(SharedString::from(format!("draft-file-{id}")))
         .debug_selector(move || format!("draft-file-{}", id_sel).to_string())
-        .relative()
         .flex_shrink_0()
-        .child(file_card_body(&name, size))
-        .child(
-            div()
-                .id(SharedString::from("draft-file-remove"))
-                .debug_selector(|| "draft-file-remove".to_string())
-                .absolute()
-                .top(px(4.))
-                .right(px(4.))
-                .size(px(18.))
-                .rounded_full()
-                // 底 0.72 黑;hover 增亮 + 手型光标
-                // = 可点反馈(常显钮的交互语言)
-                .bg(rgba(0x000000B8))
-                .cursor_pointer()
-                .hover(|s| s.bg(rgba(0x000000D9)))
-                .text_color(gpui_kit::white())
-                .flex()
-                .items_center()
-                .justify_center()
-                .on_click(move |_, _, cx| {
-                    remove_store.update(cx, |st, cx| st.remove_draft(&id_rm, cx));
-                })
-                .child(fixed(IconName::Close, 10.)),
-        )
+        .child(file_card_body(&name, size));
+    card_with_remove(
+        cx,
+        format!("draft-file-remove-{id}"),
+        card,
+        move |_, _, cx| {
+            remove_store.update(cx, |st, cx| st.remove_draft(&id_rm, cx));
+        },
+    )
 }
 
 /// 历史消息文件渲染:240×64 卡,

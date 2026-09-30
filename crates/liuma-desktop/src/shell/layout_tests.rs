@@ -2362,7 +2362,7 @@ fn file_attachments_intake_and_cards_render(cx: &mut TestAppContext) {
 
 /// 草稿轨端箭头:溢出 → 右箭头浮现;点击翻页到
 /// 轨尾 → 左现右隐;再点左回到轨头 → 左隐右现;轨头新增附件 → 弹簧
-/// 滚尾露出(左现右隐)。轨高恒 76(10+64+2,无预留条带)。可见性
+/// 滚尾露出(左现右隐)。轨高恒 82(10+6+64+2,含移除钮骑缝外溢)。可见性
 /// 断言双通道:debug_bounds 验「画过」,store 的 rail_edges Cell 验
 /// 「当前应在」(debug_bounds 只增不清,隐没态只能靠状态)。
 /// 回归锁:①可见性由 canvas paint 期从最新滚动几何推导 + 变化才
@@ -2438,8 +2438,8 @@ fn draft_rail_edge_arrows_page_overflow(cx: &mut TestAppContext) {
         .height;
     assert_eq!(
         rail_h,
-        gpui_kit::px(76.),
-        "轨高应为 10+64+2,实际 {rail_h:?}"
+        gpui_kit::px(82.),
+        "轨高应为 10+6+64+2(移除钮骑缝外溢),实际 {rail_h:?}"
     );
 
     // 点右箭头逐步翻页(一步 = max(视口-64, 200),窗宽不足时需多
@@ -2534,8 +2534,8 @@ fn draft_rail_edge_arrows_page_overflow(cx: &mut TestAppContext) {
         .height;
     assert_eq!(
         rail_h,
-        gpui_kit::px(76.),
-        "轨高应为 10+64+2,实际 {rail_h:?}"
+        gpui_kit::px(82.),
+        "轨高应为 10+6+64+2(移除钮骑缝外溢),实际 {rail_h:?}"
     );
     let _ = std::fs::remove_dir_all(root);
 }
