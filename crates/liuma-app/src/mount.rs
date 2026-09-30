@@ -294,6 +294,11 @@ fn mount_bash(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPortOb
     }
     if ctx.present("jobs") {
         bash = bash.with_jobs(ctx.jobs_registry());
+        // job 结算通知口在场才挂(投给发起会话;schema 文案的
+        // 「结算会通知」承诺据此成立)
+        if let Some(port) = &ctx.notify_port {
+            bash = bash.with_job_notify(Arc::clone(port), ctx.session_id_for_ports());
+        }
     }
     if ctx.pty {
         bash = bash.with_pty();

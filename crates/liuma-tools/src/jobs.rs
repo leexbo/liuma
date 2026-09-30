@@ -144,6 +144,42 @@ pub fn next_job_id(registry: &JobsRegistry) -> u64 {
         .unwrap_or(1)
 }
 
+/// shell job 结算通知拼装(结算摘要 + 输出尾部 → 模型可见文本;
+/// source 染色载荷)。形态对齐 subagent 侧 settlement_notice
+pub fn job_settlement_notice(
+    id: u64,
+    command: &str,
+    status_label: &str,
+    exit_code: Option<i32>,
+    signal: Option<&str>,
+    tail: &str,
+) -> (String, Value) {
+    let subject = format!("Background job {id} ({command})");
+    let summary = match status_label {
+        "done" => format!("{subject} finished successfully."),
+        "stopped" => format!("{subject} was stopped."),
+        "failed" => match (exit_code, signal) {
+            (Some(code), _) => format!("{subject} exited with code {code}."),
+            (None, Some(sig)) => format!("{subject} was terminated by {sig}."),
+            _ => format!("{subject} failed before it finished."),
+        },
+        other => format!("{subject} ended abnormally ({other})."),
+    };
+    let mut text = summary.clone();
+    if !tail.trim().is_empty() {
+        text.push_str("\n\nTail of its output:\n\n");
+        text.push_str(tail.trim());
+    }
+    let source = json!({
+        "kind": "shell-job-settled",
+        "form": "notice",
+        "summary": summary,
+        "jobId": id,
+        "command": command,
+    });
+    (text, source)
+}
+
 /// jobs 工具:list / stop / read
 pub struct JobTool {
     /// 注册表(与 BashTool 后台路径共享)
@@ -379,5 +415,31 @@ mod tests {
             registry.downgrade()
         };
         assert!(weak.upgrade().is_none());
+    }
+
+    /// 通知变体:done/stopped/failed(码/信号/不可知);空尾省略
+    /// Output tail;source 染色字段
+    #[test]
+    fn job_settlement_notice_variants() {
+        let (text, source) =
+            job_settlement_notice(7, "cargo build", "done", Some(0), None, "tail text");
+        assert!(text.contains("Background job 7 (cargo build) finished successfully."));
+        assert!(text.contains("Tail of its output:\n\ntail text"));
+        assert_eq!(source["kind"], "shell-job-settled");
+        assert_eq!(source["jobId"], 7);
+        assert_eq!(source["command"], "cargo build");
+
+        let (text, _) = job_settlement_notice(8, "x", "stopped", None, None, "");
+        assert!(text.contains("was stopped"));
+        assert!(!text.contains("Tail of its output"), "空尾省略输出段");
+
+        let (text, _) = job_settlement_notice(9, "x", "failed", Some(2), None, "");
+        assert!(text.contains("exited with code 2"));
+
+        let (text, _) = job_settlement_notice(10, "x", "failed", None, Some("SIGKILL"), "");
+        assert!(text.contains("terminated by SIGKILL"));
+
+        let (text, _) = job_settlement_notice(11, "x", "weird", None, None, "");
+        assert!(text.contains("ended abnormally (weird)"));
     }
 }

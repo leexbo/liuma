@@ -1373,3 +1373,112 @@ async fn pty_timeout_moves_command_to_background() {
     .await;
     assert!(stop.success, "{}", stop.output);
 }
+
+/// 后台 job 结算通知端到端:自然完成与 stop 都投 notice
+/// (kind=shell-job-settled,文案含 job id/退出语义/输出尾部)
+#[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
+#[tokio::test]
+async fn background_job_settles_with_notice() {
+    use liuma_agent_loop::{ToolCallRequest, ToolPort};
+    use liuma_tools::{JobTool, JobsRegistry, SettlementNotificationPort};
+    use std::future::Future;
+    use std::pin::Pin;
+
+    /// 录制型通知 port:记录 (text, source)
+    #[derive(Default, Clone)]
+    struct RecordingNotify {
+        calls: std::sync::Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+    }
+    impl SettlementNotificationPort for RecordingNotify {
+        fn notify(
+            &self,
+            _parent: &str,
+            text: String,
+            source: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            self.calls.lock().unwrap().push((text, source));
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    let dir = std::env::temp_dir().join(format!("liuma-jobs-ntc-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let registry = JobsRegistry::new();
+    let recorder = RecordingNotify::default();
+    let mut bash = BashTool::new(&dir)
+        .with_jobs(registry.clone())
+        .with_job_notify(std::sync::Arc::new(recorder.clone()), "session-a");
+    let mut jobs = JobTool::new(registry.clone());
+
+    // job 1:自然完成(带输出尾部)
+    let out = ToolPort::execute(
+        &mut bash,
+        &ToolCallRequest {
+            name: "bash".into(),
+            arguments: json!({
+                "command": "echo notice-tail",
+                "description": "Emit tail for the notice",
+                "run_in_background": true
+            }),
+        },
+    )
+    .await;
+    assert!(out.success, "{}", out.output);
+    assert!(
+        out.output.contains("you will be notified when it settles"),
+        "启动文案应承诺通知: {}",
+        out.output
+    );
+    for _ in 0..1000 {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        if !recorder.calls.lock().unwrap().is_empty() {
+            break;
+        }
+    }
+    {
+        let calls = recorder.calls.lock().unwrap();
+        let (text, source) = &calls[0];
+        assert_eq!(source["kind"], "shell-job-settled");
+        assert_eq!(source["jobId"], 1);
+        assert!(text.contains("finished successfully"), "{text}");
+        assert!(text.contains("notice-tail"), "通知应带输出尾部: {text}");
+    }
+
+    // job 2:stop 通知
+    let out = ToolPort::execute(
+        &mut bash,
+        &ToolCallRequest {
+            name: "bash".into(),
+            arguments: json!({
+                "command": "sleep 30",
+                "description": "Linger for the stop notice",
+                "run_in_background": true
+            }),
+        },
+    )
+    .await;
+    assert!(out.success, "{}", out.output);
+    let stop = ToolPort::execute(
+        &mut jobs,
+        &ToolCallRequest {
+            name: "jobs".into(),
+            arguments: json!({ "action": "stop", "id": 2 }),
+        },
+    )
+    .await;
+    assert!(stop.success, "{}", stop.output);
+    for _ in 0..1000 {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        if recorder.calls.lock().unwrap().len() >= 2 {
+            break;
+        }
+    }
+    {
+        let calls = recorder.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2, "每个 job 恰投一次结算通知");
+        let (text, source) = &calls[1];
+        assert_eq!(source["kind"], "shell-job-settled");
+        assert_eq!(source["jobId"], 2);
+        assert!(text.contains("was stopped"), "{text}");
+    }
+}

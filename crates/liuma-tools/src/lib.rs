@@ -78,10 +78,30 @@ pub const BASH_TIMEOUT_DEFAULT_MS: u64 = 120_000;
 /// 前台预算上限(600s;更长的活儿用 run_in_background,超限拒绝而非钳制)
 pub const BASH_TIMEOUT_MAX_MS: u64 = 600_000;
 
+/// 结算通知 port:后台执行体(子代理 / shell job)→ 发起会话的单向
+/// 通知通道。宿主实现:经 Notice 入会话队列——空闲 = 唤醒下一 turn,
+/// 忙碌 = 引擎 step 边界认领(followup/steer 双语义)。目标会话不
+/// 存在时静默丢弃(发起方不再存活不是错误,子会话/日志自身即记录)
+pub trait SettlementNotificationPort: Send + Sync {
+    /// 投递一条通知(text = 模型可见文本;source = 染色载荷)
+    fn notify(
+        &self,
+        parent_session: &str,
+        text: String,
+        source: Value,
+    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
+}
+
+/// job 结算通知口(通知通道 + 发起会话 id)
+pub type JobNotify = (std::sync::Arc<dyn SettlementNotificationPort>, String);
+
 pub use ask_question::{AskQuestionPort, AskQuestionTool, QuestionItem, QuestionOption};
 pub use file::FileTools;
 pub use goal::GoalTool;
-pub use jobs::{JobKiller, JobRecord, JobTool, JobsRegistry, WeakJobsRegistry, next_job_id};
+pub use jobs::{
+    JobKiller, JobRecord, JobTool, JobsRegistry, WeakJobsRegistry, job_settlement_notice,
+    next_job_id,
+};
 pub use subagent::{SubagentControlTool, SubagentRecord, SubagentRegistry, SubagentTool};
 pub use todo::TodoWriteTool;
 pub use workflow::{RALPH_DONE, RalphTool, WorkflowTool};
@@ -104,6 +124,8 @@ pub struct BashTool {
     pub mode_source: Option<ModeSource>,
     /// 宿主审批闸门(沙箱一次性升级;None = 无升级能力,hint 亦不提示)
     pub approval: Option<std::sync::Arc<dyn ApprovalPort>>,
+    /// job 结算通知口(None = 此装配不投通知;schema 文案与承诺据此分支)
+    pub job_notify: Option<JobNotify>,
 }
 
 impl BashTool {
@@ -121,6 +143,7 @@ impl BashTool {
             jobs: None,
             mode_source: None,
             approval: None,
+            job_notify: None,
         }
     }
 
@@ -218,11 +241,33 @@ impl BashTool {
         self
     }
 
+    /// 注入 job 结算通知口(发起会话 id;job 落定时投递通知)
+    pub fn with_job_notify(
+        mut self,
+        port: std::sync::Arc<dyn SettlementNotificationPort>,
+        session_id: impl Into<String>,
+    ) -> Self {
+        self.job_notify = Some((port, session_id.into()));
+        self
+    }
+
     /// 工具 schema(注册面;OpenAI wire 形状 `tools[]` 元素)。
     /// 工具名与描述随平台 shell 走(`bash` / `pwsh`)——模型看到的工具名
     /// 要与它实际要写的语法一致,否则会按 bash 语义写出 Windows 上跑不通
-    /// 的命令
-    pub fn spec() -> Value {
+    /// 的命令。「结算会通知」承诺只在通知口在场时写进描述
+    /// (行为承诺与接口一致)
+    pub fn spec(&self) -> Value {
+        let notices = self.job_notify.is_some();
+        let bg_desc = if notices {
+            "Run detached; returns a job id immediately. You are notified when the job settles (finishes, fails, or is stopped) — do not poll; use the jobs tool only to read more output or to stop it."
+        } else {
+            "Run detached; returns a job id immediately (manage via the jobs tool)"
+        };
+        let timeout_desc = if notices {
+            "Wall-clock budget for this foreground command in milliseconds (default 120000, max 600000). When it elapses the command is moved to a background job — nothing is killed, the output keeps streaming to the job log, and you will be notified when it settles."
+        } else {
+            "Wall-clock budget for this foreground command in milliseconds (default 120000, max 600000). When it elapses the command is moved to a background job — nothing is killed, the output keeps streaming to the job log; manage it with the jobs tool."
+        };
         json!({
             "type": "function",
             "function": {
@@ -236,10 +281,10 @@ impl BashTool {
                             "type": "string",
                             "description": "Clear, concise description of what this command does in active voice, 5-10 words (shown in the UI). Examples: \"ls\" → \"List files in current directory\"; \"git status\" → \"Show working tree status\"; \"npm install\" → \"Install package dependencies\"."
                         },
-                        "run_in_background": { "type": "boolean", "description": "Run detached; returns a job id immediately (manage via the jobs tool)" },
+                        "run_in_background": { "type": "boolean", "description": bg_desc },
                         "timeout_ms": {
                             "type": "integer",
-                            "description": "Wall-clock budget for this foreground command in milliseconds (default 120000, max 600000). When it elapses the command is moved to a background job — nothing is killed, the output keeps streaming to the job log, and you can keep working; manage it with the jobs tool."
+                            "description": timeout_desc
                         },
                         "sandbox_permissions": {
                             "type": "string",
@@ -420,13 +465,22 @@ impl BashTool {
             child,
             stdout,
             Vec::new(),
-            registry,
-            id,
-            log_path.clone(),
+            JobWatch {
+                registry,
+                id,
+                log_path: log_path.clone(),
+                command: command.to_string(),
+                notify: self.job_notify.clone(),
+            },
         ));
+        let settle_note = if self.job_notify.is_some() {
+            "; you will be notified when it settles"
+        } else {
+            ""
+        };
         ToolOutput {
             output: format!(
-                "started job {id} (log: {}; jobs tool: list/read/stop)",
+                "started job {id} (log: {}; jobs tool: list/read/stop{settle_note})",
                 log_path.display()
             ),
             success: true,
@@ -574,17 +628,27 @@ impl BashTool {
         .await;
         match started {
             Ok((id, log_path)) => {
+                let notify = self.job_notify.clone();
+                let settle_note = if notify.is_some() {
+                    "the command keeps running and you will be notified when it settles (jobs tool: read/list/stop)"
+                } else {
+                    "the command keeps running; manage it with the jobs tool: read/list/stop"
+                };
                 tokio::spawn(run_job_watcher(
                     child,
                     stdout,
                     prefix,
-                    registry,
-                    id,
-                    log_path.clone(),
+                    JobWatch {
+                        registry,
+                        id,
+                        log_path: log_path.clone(),
+                        command: command.to_string(),
+                        notify,
+                    },
                 ));
                 ToolOutput {
                     output: format!(
-                        "moved to background: job {id} after {timeout_ms}ms (the command keeps running; manage it with the jobs tool: read/list/stop)\nlog: {}",
+                        "moved to background: job {id} after {timeout_ms}ms ({settle_note})\nlog: {}",
                         log_path.display()
                     ),
                     success: true,
@@ -626,17 +690,27 @@ impl BashTool {
         let started = start_job(&registry, &self.cwd, command, killer, Duration::ZERO).await;
         match started {
             Ok((id, log_path)) => {
+                let notify = self.job_notify.clone();
+                let settle_note = if notify.is_some() {
+                    "the command keeps running and you will be notified when it settles (jobs tool: read/list/stop)"
+                } else {
+                    "the command keeps running; manage it with the jobs tool: read/list/stop"
+                };
                 tokio::spawn(run_pty_job_watcher(
                     session,
                     rx,
                     prefix,
-                    registry,
-                    id,
-                    log_path.clone(),
+                    JobWatch {
+                        registry,
+                        id,
+                        log_path: log_path.clone(),
+                        command: command.to_string(),
+                        notify,
+                    },
                 ));
                 ToolOutput {
                     output: format!(
-                        "moved to background: job {id} after {timeout_ms}ms (the command keeps running; manage it with the jobs tool: read/list/stop)\nlog: {}",
+                        "moved to background: job {id} after {timeout_ms}ms ({settle_note})\nlog: {}",
                         log_path.display()
                     ),
                     success: true,
@@ -695,21 +769,29 @@ fn advance_tail(tail: &mut Vec<u8>, chunk: &[u8]) {
     }
 }
 
+/// watcher 物料(两形态共用):登记簿寻址 + 结算通知口
+struct JobWatch {
+    registry: JobsRegistry,
+    id: u64,
+    log_path: PathBuf,
+    command: String,
+    notify: Option<JobNotify>,
+}
+
 /// 后台 watcher(pipes 形态):stdout 逐块流式落盘(任务运行中
 /// `jobs read` 即有内容)→ 退出 → stderr 一并落盘(沙箱拒绝/脚本
-/// 错误文本不进 log 则排查无据)→ 状态收尾。stop 先置位 stopped、
-/// watcher 只改 running 的竞争机制保持(kill 后也经此路径)。
-/// 落盘失败不阻断收尾(创建失败 = 全程无文件,read 如实报读不了)
+/// 错误文本不进 log 则排查无据)→ 状态收尾 + 结算通知。
+/// stop 先置位 stopped、watcher 只改 running 的竞争机制保持(kill 后
+/// 也经此路径)。落盘失败不阻断收尾(创建失败 = 全程无文件,read
+/// 如实报读不了)
 async fn run_job_watcher(
     mut child: liuma_sandbox::Child,
     mut stdout: Option<tokio::process::ChildStdout>,
     prefix: Vec<u8>,
-    registry: JobsRegistry,
-    id: u64,
-    log_path: PathBuf,
+    watch: JobWatch,
 ) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut log = tokio::fs::File::create(&log_path).await.ok();
+    let mut log = tokio::fs::File::create(&watch.log_path).await.ok();
     let mut tail: Vec<u8> = Vec::new();
     if !prefix.is_empty() {
         if let Some(f) = log.as_mut() {
@@ -741,21 +823,29 @@ async fn run_job_watcher(
         }
         let _ = f.flush().await;
     }
-    finish_job(&registry, id, status.map(|s| s.success()));
+    finish_job(&watch.registry, watch.id, status.map(|s| s.success()));
+    notify_job_settled(
+        &watch.registry,
+        watch.id,
+        &watch.command,
+        status,
+        &tail,
+        watch.notify.as_ref(),
+    )
+    .await;
 }
 
-/// 后台 watcher(PTY 形态):通道化增量读逐块落盘 → 会话退出 → 收尾。
-/// stderr 与 stdout 合流在 master(PTY 语义),无单独并入步
+/// 后台 watcher(PTY 形态):通道化增量读逐块落盘 → 会话退出 →
+/// 收尾 + 结算通知。stderr 与 stdout 合流在 master(PTY 语义),
+/// 无单独并入步
 async fn run_pty_job_watcher(
     mut session: liuma_sandbox::pty::PtySession,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
     prefix: Vec<u8>,
-    registry: JobsRegistry,
-    id: u64,
-    log_path: PathBuf,
+    watch: JobWatch,
 ) {
     use tokio::io::AsyncWriteExt;
-    let mut log = tokio::fs::File::create(&log_path).await.ok();
+    let mut log = tokio::fs::File::create(&watch.log_path).await.ok();
     let mut tail: Vec<u8> = Vec::new();
     if !prefix.is_empty() {
         if let Some(f) = log.as_mut() {
@@ -772,8 +862,17 @@ async fn run_pty_job_watcher(
     if let Some(f) = log.as_mut() {
         let _ = f.flush().await;
     }
-    let ok = session.wait().await.ok().map(|s| s.success());
-    finish_job(&registry, id, ok);
+    let status = session.wait().await.ok();
+    finish_job(&watch.registry, watch.id, status.map(|s| s.success()));
+    notify_job_settled(
+        &watch.registry,
+        watch.id,
+        &watch.command,
+        status,
+        &tail,
+        watch.notify.as_ref(),
+    )
+    .await;
 }
 
 /// job 收尾(两形态 watcher 共用):状态落定 + 变更通知。
@@ -793,10 +892,46 @@ fn finish_job(registry: &JobsRegistry, id: u64, ok: Option<bool>) {
     registry.changed();
 }
 
+/// 结算通知:按注册表终态措辞(stop 先置位的 stopped 与自然收尾的
+/// done/failed 都投),携带退出码/信号与输出尾部,投给发起会话。
+/// 自然退出与 stop 置位的竞争按终态标签措辞(用户确实请求了 stop)。
+/// 通知口缺席 = 此装配不投(静默,不是错误)
+async fn notify_job_settled(
+    registry: &JobsRegistry,
+    id: u64,
+    command: &str,
+    status: Option<liuma_sandbox::ExitStatus>,
+    tail: &[u8],
+    notify: Option<&JobNotify>,
+) {
+    let Some((port, session)) = notify else {
+        return;
+    };
+    let label = registry
+        .lock()
+        .ok()
+        .and_then(|r| r.iter().find(|j| j.id == id).map(|j| j.status.clone()))
+        .unwrap_or_else(|| "failed".into());
+    let (exit_code, signal) = match status {
+        Some(s) => (s.code, s.signal.map(signal_name)),
+        None => (None, None),
+    };
+    let tail_text = liuma_sandbox::text::decode_output(tail).trim().to_string();
+    let (text, source) = job_settlement_notice(
+        id,
+        command,
+        &label,
+        exit_code,
+        signal.as_deref(),
+        &tail_text,
+    );
+    port.notify(session, text, source).await;
+}
+
 impl ToolPort for BashTool {
     /// 工具声明(engine 注入请求 header 供模型选择)
     fn specs(&self) -> Vec<Value> {
-        vec![Self::spec()]
+        vec![self.spec()]
     }
 
     async fn execute(&mut self, call: &ToolCallRequest) -> ToolOutput {
@@ -1482,5 +1617,36 @@ mod tests {
             assert_eq!(out.output, expect);
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// spec 文案随通知口分支:「结算会通知」承诺只在口在场时写进
+    /// 描述(行为承诺与接口一致)
+    #[test]
+    fn bash_spec_adapts_to_job_notify() {
+        struct NoopNotify;
+        impl SettlementNotificationPort for NoopNotify {
+            fn notify(
+                &self,
+                _parent_session: &str,
+                _text: String,
+                _source: Value,
+            ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+                Box::pin(std::future::ready(()))
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("liuma-bash-spec-{}", std::process::id()));
+        let plain = BashTool::new(&dir);
+        let plain_spec = serde_json::to_string(&plain.spec()).unwrap();
+        assert!(
+            !plain_spec.contains("notified"),
+            "无通知口不得承诺通知:{plain_spec}"
+        );
+        let notified =
+            BashTool::new(&dir).with_job_notify(std::sync::Arc::new(NoopNotify), "session-x");
+        let notified_spec = serde_json::to_string(&notified.spec()).unwrap();
+        assert!(
+            notified_spec.contains("You are notified when the job settles"),
+            "有通知口应承诺通知:{notified_spec}"
+        );
     }
 }

@@ -671,6 +671,9 @@ pub struct AppHost {
     mcp_rt_keepalive: Option<tokio::runtime::Runtime>,
     /// fake 模式脚本(每次 stream 调用消费一段;测试注入)
     fake_script: Mutex<Vec<Vec<LlmEvent>>>,
+    /// fake 会话追加原生工具(测试缝:注入待测工具面,如 bash+jobs;
+    /// 每次非子代理 fake attach 取走全部,真实装配路径不消费)
+    fake_extra_tools: Mutex<Vec<Box<dyn liuma_agent_loop::tools::ToolPortObj>>>,
     /// fake 模式 LLM 标题输出(测试注入;None = fake 不生成标题,保持回退)。
     /// 真实模式走 `build_raw_transport` 的一次请求,不经此字段。
     fake_title: Mutex<Option<String>>,
@@ -1491,6 +1494,7 @@ impl AppHost {
             skills: std::sync::Arc::new(liuma_skill::SkillService::new()),
             mcp_rt_keepalive,
             fake_script: Mutex::new(Vec::new()),
+            fake_extra_tools: Mutex::new(Vec::new()),
             models_cache: Mutex::new(HashMap::new()),
             search: tokio::sync::Mutex::new(None),
             attachments,
@@ -3818,6 +3822,12 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         *self.fake_script.lock_recover() = script;
     }
 
+    /// fake 会话追加原生工具(测试缝;非子代理 attach 取走全部)。
+    /// 工具持有自己的注册表/通知口——待测链路的接线由调用方完成
+    pub fn set_fake_extra_tools(&self, tools: Vec<Box<dyn liuma_agent_loop::tools::ToolPortObj>>) {
+        self.fake_extra_tools.lock_recover().extend(tools);
+    }
+
     /// fake 模式注入 LLM 标题输出(测试/演示用;None 默认 = fake 不生成)
     pub fn set_fake_title(&self, title: Option<String>) {
         *self.fake_title.lock_recover() = title;
@@ -4416,7 +4426,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 liuma_agent_loop::ToolSet::new(vec![Box::new(self_arc.mcp_pool.clone())
                     as Box<dyn liuma_agent_loop::tools::ToolPortObj>])
             } else {
-                liuma_agent_loop::ToolSet::new(vec![
+                let mut tool_list: Vec<Box<dyn liuma_agent_loop::tools::ToolPortObj>> = vec![
                     Box::new(self_arc.mcp_pool.clone())
                         as Box<dyn liuma_agent_loop::tools::ToolPortObj>,
                     Box::new(liuma_skill::SkillTool::new(
@@ -4428,7 +4438,10 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                         Some(Arc::new(PlanReviewPortImpl(self_arc.clone()))),
                         id,
                     )) as Box<dyn liuma_agent_loop::tools::ToolPortObj>,
-                ])
+                ];
+                // 测试缝注入的待测原生工具(取走制:一次 attach 一批)
+                tool_list.extend(self_arc.fake_extra_tools.lock_recover().drain(..));
+                liuma_agent_loop::ToolSet::new(tool_list)
             }
             .expect("fake 工具集装配失败");
             (
@@ -9388,6 +9401,86 @@ mod tests {
             "{notice_text}"
         );
         // 通知后的 assistant 回复 = 模型确实看到了通知并推进 turn
+        let notice_seq = notice.seq;
+        assert!(events.iter().any(|e| {
+            e.r#type == "assistant/message"
+                && e.seq > notice_seq
+                && e.data["content"] == "notice processed"
+        }));
+    }
+
+    /// shell job 结算通知全弧:bash run_in_background → watcher 结算 →
+    /// SettlementNoticeImpl 投 Notice → 驱动认领(turn 进行中结算 =
+    /// steer 同 turn 续跑;turn 后结算 = 唤醒新 turn,两路均合法),
+    /// user/message 携 source.kind=shell-job-settled 落档(模型可见,
+    /// 桌面凭此渲染);通知文案带 job id/退出语义/输出尾部
+    #[tokio::test]
+    async fn shell_job_settlement_notice_becomes_tinted_turn_input() {
+        let host = temp_host("job-notice");
+        host.set_fake_script(vec![
+            vec![LlmEvent::AssistantMessage(json!({
+                "content": "",
+                "tool_calls": [
+                    { "name": "bash", "arguments": {
+                        "command": "echo job-done",
+                        "description": "Echo a marker in the background",
+                        "run_in_background": true } }
+                ],
+            }))],
+            vec![LlmEvent::AssistantMessage(json!({ "content": "started" }))],
+            vec![LlmEvent::AssistantMessage(
+                json!({ "content": "notice processed" }),
+            )],
+        ]);
+        let id = host.create_session(None, None, None);
+        // 测试缝:fake 工具面注入 bash+jobs;通知口 = 宿主真身
+        // (SettlementNoticeImpl → Job::Notice → 驱动认领),接线与真实
+        // 装配同构
+        let bash = liuma_tools::BashTool::new(host.workspace.clone())
+            .with_jobs(liuma_tools::JobsRegistry::new())
+            .with_job_notify(Arc::new(SettlementNoticeImpl(Arc::clone(&host))), &id);
+        host.set_fake_extra_tools(vec![
+            Box::new(bash) as Box<dyn liuma_agent_loop::tools::ToolPortObj>
+        ]);
+        host.prompt(
+            &id,
+            &[json!({ "type": "text", "text": "start a background job" })],
+            "queue",
+        )
+        .await
+        .unwrap();
+
+        // 通知必须被模型消费(两种认领路径都会产出其后的 assistant 回复)
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let events = loop {
+            let events = liuma_host::persistence::jsonl::load_jsonl(&host.session_log_path(&id))
+                .unwrap_or_default();
+            let consumed = events.iter().any(|e| {
+                e.r#type == "assistant/message" && e.data["content"] == "notice processed"
+            });
+            if consumed {
+                break events;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("通知未被模型消费(日志:{events:?})");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+
+        let notice = events
+            .iter()
+            .find(|e| e.r#type == "user/message" && e.data["source"]["kind"] == "shell-job-settled")
+            .expect("通知必须以染色 user/message 落档");
+        assert_eq!(notice.data["source"]["form"], "notice");
+        assert_eq!(notice.data["source"]["jobId"], 1);
+        let notice_text = notice.data["content"].as_str().unwrap_or_default();
+        assert!(notice_text.contains("Background job 1"), "{notice_text}");
+        assert!(
+            notice_text.contains("finished successfully"),
+            "{notice_text}"
+        );
+        assert!(notice_text.contains("job-done"), "{notice_text}");
+        // 通知后的 assistant 回复 = 模型确实看到了通知并推进
         let notice_seq = notice.seq;
         assert!(events.iter().any(|e| {
             e.r#type == "assistant/message"

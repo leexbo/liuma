@@ -68,20 +68,12 @@ pub trait SessionFactory: Send + Sync {
     }
 }
 
-/// 通知 port:子代理 → 父会话的单向通知通道(结算通知 kind=
-/// "subagent-settled";子代理回发消息 kind="subagent-message")。宿主实现:
-/// 经 Job::Notice 入父会话 steer 通道——父空闲=唤醒下一 turn,忙碌=引擎
-/// step 边界认领(followup/steer 双语义)。父不存在时静默丢弃
-/// (父不再存活不是错误,子会话自身即持久记录)。
-pub trait SettlementNotificationPort: Send + Sync {
-    /// 投递一条通知(text = 模型可见文本;source = 染色载荷)。
-    fn notify(
-        &self,
-        parent_session: &str,
-        text: String,
-        source: Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
-}
+/// 通知 port(定义迁至 crate 根,泛化为「后台执行体 → 发起会话」:
+/// 子代理结算 kind="subagent-settled"、回发消息 kind="subagent-message"、
+/// shell job 结算 kind="shell-job-settled")。宿主实现:经 Notice 入
+/// 目标会话队列——空闲=唤醒下一 turn,忙碌=引擎 step 边界认领。
+/// 目标不存在时静默丢弃。旧路径 re-export 保持挂接面不变
+pub use crate::SettlementNotificationPort;
 
 /// 结算通知拼装(结算摘要 + 结算通知的消息形态):
 /// 返回 (模型可见文本, source 染色载荷)。
@@ -295,6 +287,53 @@ struct ChildParts {
     log: Arc<Mutex<EventLog>>,
     /// 子代理自己的后台任务注册表(bash 后台 + jobs 工具共享)
     jobs: crate::JobsRegistry,
+    /// 子代理 job 结算通知路由(驻留形态在场;前台一次性 = None,
+    /// turn 结束后无会话可投,job 静默落定)
+    job_notify: Option<Arc<dyn SettlementNotificationPort>>,
+}
+
+/// 子代理会话的 job 结算通知路由(发起会话 = 子代理自己):
+/// 与 `send_message` 同一语义——运行中 → steer 最近 step(中途插话),
+/// 空闲 → 续话通道开新 turn。注册表已终结 = 静默丢弃
+struct ChildJobNotify {
+    self_id: String,
+    registry: SubagentRegistry,
+}
+
+impl SettlementNotificationPort for ChildJobNotify {
+    fn notify(
+        &self,
+        _session: &str,
+        text: String,
+        source: Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        let registry = self.registry.clone();
+        let self_id = self.self_id.clone();
+        Box::pin(async move {
+            let Ok(r) = registry.lock() else {
+                return;
+            };
+            let Some(rec) = r.iter().find(|s| s.session_id == self_id) else {
+                return;
+            };
+            if rec.status == "running"
+                && let Some(buf) = &rec.steer
+            {
+                let mut b = buf.lock().unwrap_or_else(|p| p.into_inner());
+                b.push_back(SteerInput {
+                    id: format!("steer-{}", uuid::Uuid::now_v7()),
+                    text,
+                    images: Vec::new(),
+                    files: Vec::new(),
+                    source: Some(source),
+                });
+                return;
+            }
+            if let Some(tx) = &rec.tx {
+                let _ = tx.send(ChildMsg::Prompt(text));
+            }
+        })
+    }
 }
 
 /// 子代理 system prompt(公共骨架;驻留形态追加回发父指引)
@@ -394,6 +433,7 @@ async fn prepare_child_parts(
         header,
         log,
         jobs: crate::JobsRegistry::new(),
+        job_notify: None,
     })
 }
 
@@ -424,6 +464,11 @@ fn build_child_tools(ctx: ChildToolContext) -> Result<liuma_agent_loop::ToolSet,
     let child_bash =
         crate::BashTool::new(&ctx.parts.child_root).with_cancel(ctx.turn_token.clone());
     let child_bash = child_bash.with_jobs(ctx.parts.jobs.clone());
+    // job 结算通知投回子代理自己(驻留形态;发起会话 = 本子代理)
+    let child_bash = match &ctx.parts.job_notify {
+        Some(port) => child_bash.with_job_notify(Arc::clone(port), ctx.session_id),
+        None => child_bash,
+    };
     let mut tools: Vec<Box<dyn ToolPortObj>> = vec![
         Box::new(child_bash),
         Box::new(crate::FileTools::new(&ctx.parts.child_root)),
@@ -1048,7 +1093,7 @@ where
         notify: Arc::clone(&notify),
     };
 
-    let parts = match prepare_child_parts(&handle, &model, Some(&parent_link)).await {
+    let mut parts = match prepare_child_parts(&handle, &model, Some(&parent_link)).await {
         Ok(parts) => parts,
         Err(_) => {
             // 装配失败:记录 failed 并以失败通知收口(父会话必须知道委派没成)
@@ -1058,6 +1103,12 @@ where
             return;
         }
     };
+    // 子代理自己发起的 shell job 结算通知投回自己(运行中 steer /
+    // 空闲续话;steer/tx 已随驻留记录登记,路由按注册表现场判定)
+    parts.job_notify = Some(Arc::new(ChildJobNotify {
+        self_id: handle.session_id.clone(),
+        registry: registry.clone(),
+    }));
     if !initial_prompt.is_empty() {
         // descriptor 标记(重启恢复的判据;重挂形态不重写)
         commit_child_marker(
