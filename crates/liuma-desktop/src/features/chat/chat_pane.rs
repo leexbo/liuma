@@ -1304,6 +1304,21 @@ fn notice_card(
                 .split_once(":\n\n")
                 .map(|(_, rest)| rest.trim().to_string()),
         )
+    } else if kind == "shell-job-settled" {
+        // shell job 结算:标签不带「子代理」(后台任务 ≠ 子代理);
+        // 折叠摘要/正文 = 输出尾部,无尾部不渲染占位(sleep 类本无输出)
+        let status = if summary.contains("was stopped") {
+            t!("chat.job_stopped")
+        } else if summary.contains("failed")
+            || summary.contains("exited with code")
+            || summary.contains("terminated by")
+            || summary.contains("ended abnormally")
+        {
+            t!("chat.job_failed")
+        } else {
+            t!("chat.job_done")
+        };
+        (status, closing_of_settlement(content))
     } else if summary.contains("was stopped") {
         (t!("chat.subagent_stopped"), closing_of_settlement(content))
     } else if summary.contains("was interrupted") {
@@ -1311,17 +1326,24 @@ fn notice_card(
     } else if summary.contains("failed")
         || summary.contains("declined")
         || summary.contains("ended abnormally")
-        || summary.contains("exited with code")
-        || summary.contains("terminated by")
     {
         (t!("chat.subagent_failed"), closing_of_settlement(content))
     } else {
         (t!("chat.subagent_done"), closing_of_settlement(content))
     };
+    let is_job = kind == "shell-job-settled";
     let folded_summary = closing
         .as_ref()
         .map(|c| summary_line(c))
-        .unwrap_or_else(|| t!("chat.no_closing").to_string());
+        .unwrap_or_else(|| {
+            // shell job 无输出尾部(sleep 类)不造占位;子代理无闭场
+            // 才显示「无收尾消息」
+            if is_job {
+                String::new()
+            } else {
+                t!("chat.no_closing").to_string()
+            }
+        });
     let jump = child_id.clone();
     let grp = format!("mr-notice-{ix}");
     let row_sel = format!("notice-row-{ix}");
@@ -1351,15 +1373,29 @@ fn notice_card(
     let mut col = div().v_flex().flex_shrink_0();
     col = col.child(row);
     if open {
-        col = col.child(
-            div()
-                .mt(px(4.))
-                .text_size(px(13.))
-                .text_color(theme::LABEL_3())
-                .line_height(gpui_kit::relative(1.5))
-                .whitespace_normal()
-                .child(closing.unwrap_or_else(|| t!("chat.no_closing").into())),
-        );
+        // shell job 无输出尾部时不渲染正文占位(sleep 类本无输出,
+        // 「无收尾消息」是子代理语义)
+        if let Some(body) = closing.clone() {
+            col = col.child(
+                div()
+                    .mt(px(4.))
+                    .text_size(px(13.))
+                    .text_color(theme::LABEL_3())
+                    .line_height(gpui_kit::relative(1.5))
+                    .whitespace_normal()
+                    .child(body),
+            );
+        } else if !is_job {
+            col = col.child(
+                div()
+                    .mt(px(4.))
+                    .text_size(px(13.))
+                    .text_color(theme::LABEL_3())
+                    .line_height(gpui_kit::relative(1.5))
+                    .whitespace_normal()
+                    .child(t!("chat.no_closing").into_owned()),
+            );
+        }
         if !child_id.is_empty() {
             let s = s_jump;
             col = col.child(

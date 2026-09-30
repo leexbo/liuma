@@ -326,6 +326,11 @@ impl CompactProgress {
 pub struct ChatState {
     /// 顺序节点流
     pub nodes: Vec<ChatNode>,
+    /// 节点内容版本(任一节点的文本/思考就地变更即递增)。节点数与
+    /// 末键之外的第三类变更:流式定稿把已有节点从空文本改到有文本,
+    /// 行槽派生(process_mask 的答案归属/可见性)依赖文本内容,
+    /// 行槽缓存签名须随内容变化失效
+    pub content_ver: u64,
     /// todo 列表(todo/write 全量替换)
     pub todos: Vec<TodoItem>,
     /// 本地 running(turn/start~turn/end)
@@ -551,6 +556,10 @@ impl ChatState {
             }
             "assistant/chunk" => {
                 let text = ev.data["chunk"]["text"].as_str().unwrap_or_default();
+                if text.is_empty() {
+                    return;
+                }
+                self.content_ver = self.content_ver.wrapping_add(1);
                 self.with_streaming_node(&ev.data, |node| {
                     if let ChatNode::Assistant {
                         text: t, text_ver, ..
@@ -563,6 +572,10 @@ impl ChatState {
             }
             "assistant/reasoning" => {
                 let text = ev.data["text"].as_str().unwrap_or_default();
+                if text.is_empty() {
+                    return;
+                }
+                self.content_ver = self.content_ver.wrapping_add(1);
                 self.with_streaming_node(&ev.data, |node| {
                     // 增量是片段(逐 token,engine 逐条落档)——直接拼接;
                     // 换行属于内容本身
@@ -589,6 +602,7 @@ impl ChatState {
                     *text_ver = text_ver.wrapping_add(1);
                     reasoning.clear();
                     *streaming = true;
+                    self.content_ver = self.content_ver.wrapping_add(1);
                 }
             }
             // LLM 重试:落折叠行(直播记退避截止时刻供倒计时;重放不记)
@@ -649,6 +663,7 @@ impl ChatState {
                             if !text.is_empty() {
                                 *t = text;
                                 *text_ver = text_ver.wrapping_add(1);
+                                self.content_ver = self.content_ver.wrapping_add(1);
                             }
                             *streaming = false;
                             if usage.is_some() {
@@ -1000,9 +1015,17 @@ pub(crate) fn process_mask(nodes: &[ChatNode]) -> Vec<bool> {
                 answer_taken = true;
                 continue;
             }
-            ChatNode::Context { .. } | ChatNode::Tool { .. } | ChatNode::Retry { .. } => {
-                mask[i] = true
+            ChatNode::Context { source, .. } => {
+                // 结算通知(subagent/shell job 的 notice 卡)是内容不是
+                // 过程:恒可见。此前按过程项折叠——通知-only 段产出
+                // 「已思考」空组头把通知藏进折叠,通知卡对用户不可见
+                let kind = source["kind"].as_str().unwrap_or_default();
+                mask[i] = !matches!(
+                    kind,
+                    "subagent-settled" | "subagent-message" | "shell-job-settled"
+                );
             }
+            ChatNode::Tool { .. } | ChatNode::Retry { .. } => mask[i] = true,
             ChatNode::Assistant { text, .. } => {
                 let is_answer = !text.is_empty() && !answer_taken;
                 if is_answer {
@@ -2575,6 +2598,115 @@ mod tests {
             st.apply(e);
         }
         st.nodes
+    }
+
+    /// 结算通知是内容不是过程项:通知卡恒可见(折叠态平铺),通知-only
+    /// 段不再产出「已思考」空组头(此前通知被折进组,组头 0 工具 0 消息
+    /// 兜底成「已思考」,通知卡对用户不可见)
+    #[test]
+    fn notice_context_renders_as_content() {
+        let none = SlotSet::new();
+        let evs = vec![
+            // 轮 1:工具 + 中途通知(shell job 结算)+ 答案
+            ev("turn/start", 1, json!({ "turn": 1 })),
+            ev(
+                "user/message",
+                2,
+                json!({ "content": [ { "type": "text", "text": "run it" } ] }),
+            ),
+            ev(
+                "assistant/message",
+                3,
+                json!({
+                    "turn": 1, "step": 1,
+                    "message": { "id": "m1", "role": "assistant",
+                        "content": [ { "type": "text", "text": "starting" } ] },
+                }),
+            ),
+            ev(
+                "tool/call",
+                4,
+                json!({ "turn": 1, "step": 2, "callId": "8", "name": "bash", "arguments": "{}" }),
+            ),
+            ev(
+                "user/message",
+                5,
+                json!({
+                    "content": [ { "type": "text", "text": "Background job 1 (x) finished successfully." } ],
+                    "source": { "kind": "shell-job-settled", "form": "notice" },
+                }),
+            ),
+            ev(
+                "assistant/message",
+                6,
+                json!({
+                    "turn": 1, "step": 2,
+                    "message": { "id": "m2", "role": "assistant",
+                        "content": [ { "type": "text", "text": "job settled, all good" } ] },
+                }),
+            ),
+            ev(
+                "turn/end",
+                7,
+                json!({ "turn": 1, "reason": { "kind": "done" } }),
+            ),
+            // 轮 2:通知-only 段(通知唤醒的续答轮)
+            ev(
+                "user/message",
+                8,
+                json!({
+                    "content": [ { "type": "text", "text": "Background subagent s-1 finished." } ],
+                    "source": { "kind": "subagent-settled", "form": "notice" },
+                }),
+            ),
+            ev(
+                "assistant/message",
+                9,
+                json!({
+                    "turn": 2, "step": 1,
+                    "message": { "id": "m3", "role": "assistant",
+                        "content": [ { "type": "text", "text": "noted" } ] },
+                }),
+            ),
+            ev(
+                "turn/end",
+                10,
+                json!({ "turn": 2, "reason": { "kind": "done" } }),
+            ),
+        ];
+        let nodes = project(evs);
+        // 节点序:user0 a1 ctx2(tool-call? 否——通知)tool3 ctx4 a5 tail6 ctx7 a8 tail9
+        let mask = process_mask(&nodes);
+        let notice_ix = nodes
+            .iter()
+            .position(|n| matches!(n, ChatNode::Context { source, .. } if source["kind"] == "shell-job-settled"))
+            .expect("通知 Context 节点应在场");
+        assert!(!mask[notice_ix], "结算通知必须是内容节点(mask=false)");
+
+        let slots = build_row_slots(&nodes, &none);
+        let shapes = slot_shapes(&slots);
+        // 折叠态:通知以平铺内容行出现(非组内隐藏成员)
+        assert!(
+            shapes.contains(&format!("n{notice_ix}")),
+            "通知卡在折叠态必须平铺可见: {shapes:?}"
+        );
+        // 通知-only 段(轮 2)不产组:notice 与答案都是内容,无过程项
+        assert!(
+            !shapes.iter().any(|s| s.contains("turn-end:10")),
+            "通知-only 段不得产出折叠组: {shapes:?}"
+        );
+        // 计数口径:组内消息不含通知卡
+        let group = slots.iter().find_map(|s| match s {
+            RowSlot::Group { first, last, .. } => Some((*first, *last)),
+            _ => None,
+        });
+        if let Some((first, last)) = group {
+            assert_eq!(
+                group_message_count(&nodes, first, last),
+                1,
+                "组内消息只计助手文本"
+            );
+        }
     }
 
     /// 基本收拢:think-only + 工具收进组行;正文与收尾行在外;

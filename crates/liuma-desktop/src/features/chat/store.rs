@@ -168,7 +168,7 @@ pub(crate) struct ChatStore {
     /// 行槽只随「节点结构(增删)与组展开态」变化——流式正文原地追加
     /// 不动结构。旁路/测试直改 chats 只要动结构必经 push/clear,
     /// len/末键必变,签名失效面已覆盖(原地换 kind 的变异全仓不存在)
-    pub(crate) row_slots_sig: Option<(usize, Option<String>, u64)>,
+    pub(crate) row_slots_sig: Option<(usize, Option<String>, u64, u64)>,
     /// 组展开版次(toggle_turn_group 递增;行槽签名分量)
     pub(crate) open_turns_ver: u64,
     /// 轮次锚点**全量索引**((seq, 首行摘要);open_session 后台拉取,
@@ -333,7 +333,7 @@ fn changed_slot_ranges(
 /// chat_version);见 [`ChatStore::nav_anchors_cache`])
 pub(crate) struct NavAnchorsCache {
     /// 行槽签名快照
-    pub sig: (usize, Option<String>, u64),
+    pub sig: (usize, Option<String>, u64, u64),
     /// 全量锚点索引长度快照
     pub anchor_count: usize,
     /// 投影版本快照
@@ -961,6 +961,14 @@ impl AppStore {
             nodes.len(),
             nodes.last().map(|n| n.key().to_string()),
             self.chat.open_turns_ver,
+            // 内容版本:流式定稿就地改文本(节点数/末键不变),答案归属
+            // 与零高可见性随内容变——签名必须跟着失效
+            self.state
+                .current_id
+                .as_deref()
+                .and_then(|id| self.state.chats.get(id))
+                .map(|c| c.content_ver)
+                .unwrap_or(0),
         );
         if self.chat.row_slots_sig.as_ref() == Some(&sig) {
             return;
@@ -984,7 +992,7 @@ impl AppStore {
     /// O(历史) 的固定成本。流式期 version 逐帧失效(与缓存前同价),
     /// 稳态滚动/静态帧 O(1)。
     pub(crate) fn nav_anchors_cached(&mut self) -> Vec<NavAnchor> {
-        let sig = self.chat.row_slots_sig.clone().unwrap_or((0, None, 0));
+        let sig = self.chat.row_slots_sig.clone().unwrap_or((0, None, 0, 0));
         let version = self.chat.chat_version;
         let anchor_count = self.chat.anchor_index.len();
         if let Some(cached) = &self.chat.nav_anchors_cache
