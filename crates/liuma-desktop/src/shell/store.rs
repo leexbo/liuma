@@ -118,6 +118,10 @@ pub struct AppStore {
     pub preview: crate::features::preview::PreviewStore,
     /// 预览变更轮询任务(1s stat;仅存在预览 tab 时活,自退)
     pub preview_poll: Option<gpui_kit::Task<()>>,
+    /// 状态边沿刷新的延迟任务(重触发即替换;见 Effect::StatusRefresh)
+    pub(crate) status_refresh: Option<gpui_kit::Task<()>>,
+    /// 状态边沿刷新代次(替换任务时 +1,过期任务到期自弃)
+    pub(crate) status_refresh_gen: u64,
     /// 本地通告序号(Notice key 去重用)
     local_notice_seq: u64,
     /// 测试 harness 临时根(取证守卫:panic 时保留并打印路径,正常
@@ -264,6 +268,8 @@ impl AppStore {
             files: crate::features::files::FilesStore::mount(cx),
             preview: crate::features::preview::PreviewStore::default(),
             preview_poll: None,
+            status_refresh: None,
+            status_refresh_gen: 0,
             local_notice_seq: 0,
             temp_root: None,
         };
@@ -657,13 +663,27 @@ impl AppStore {
                 // 工作区增减连带路径/分支表
                 self.refresh_workspaces();
             }
-            Effect::Stats(id) => {
-                // 状态边沿拉取:session/stats 推送的丢帧自愈安全网
-                // (tokio broadcast 滞后丢帧)。冷路径全量读+折叠大日志
-                // 不能同步跑 GPUI 线程(切回大会话 UI 冻结),异步回填
-                self.refresh_stats(&id, cx);
-                // 模型可能刚经 bash 切过分支
-                self.refresh_branches();
+            Effect::StatusRefresh { id, delay_ms } => {
+                // 状态边沿的延迟刷新(见 reducer 该 Effect 注释):代次
+                // +1 顶掉旧任务,到期任务比对代次自弃(连发 turn 合并到
+                // 最后一次);Task 持有保活。拉取面同旧 Stats+Sessions
+                // 边沿组合(统计安全网 + 清单 + 分支),只是让出认领窗口
+                self.status_refresh_gen += 1;
+                let epoch = self.status_refresh_gen;
+                let sid = id.clone();
+                self.status_refresh = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(delay_ms))
+                        .await;
+                    let _ = this.update(cx, |s, cx| {
+                        if s.status_refresh_gen != epoch {
+                            return; // 过期任务:已被更新的边沿顶替
+                        }
+                        s.refresh_list(cx);
+                        s.refresh_stats(&sid, cx);
+                        s.refresh_branches();
+                    });
+                }));
             }
             Effect::StatsUpsert(id, stats) => {
                 // 事件驱动实时统计(宿主落档点增量聚合的推送)

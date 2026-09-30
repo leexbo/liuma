@@ -200,6 +200,11 @@ pub struct LoopEngine {
     retry_policy: RetryPolicy,
     /// 抖动随机源(∈ [0,1];默认取 uuid v7 随机位,测试注入固定样本)
     random_source: Box<dyn Fn() -> f64 + Send + Sync>,
+    /// 已落档 `turn/start` 计数:构造时基线扫描一次,此后随本引擎提交
+    /// 递增(hook_turn_no 的 O(1) 来源——原每轮全日志 filter().count()
+    /// 是 O(n) 扫)。正确性前提:`turn/start` 写者唯一(本引擎;
+    /// 一会话一引擎一日志,生产与测试夹具均如此)
+    turn_starts: u64,
 }
 
 /// 每 step 重建 header 的回调类型(宿主注入;输入共享日志,产出新 header)
@@ -232,6 +237,18 @@ fn uuid_random() -> f64 {
 impl LoopEngine {
     /// 以初始 header 与共享日志构建(闸门与引擎共享同一日志视图)
     pub fn new(header: RequestHeader, log: Arc<Mutex<EventLog>>) -> Self {
+        // turn/start 基线计数(per-attach 一次;恢复式锁,后台 panic
+        // 不连坐——EventLog 纯内存,poison 不损数据)
+        let turn_starts = {
+            let mut seeded = 0u64;
+            let l = log.lock().unwrap_or_else(|p| p.into_inner());
+            l.for_each(|ev| {
+                if ev.r#type == "turn/start" {
+                    seeded += 1;
+                }
+            });
+            seeded
+        };
         Self {
             log,
             phase: Phase::Idle,
@@ -258,6 +275,7 @@ impl LoopEngine {
             pending_touches: Vec::new(),
             retry_policy: RetryPolicy::default(),
             random_source: Box::new(uuid_random),
+            turn_starts,
         }
     }
 
@@ -818,14 +836,10 @@ impl LoopEngine {
         // step/start 前;拒绝 ⇒ turn 以 blocked 收尾、无 step(事件序:
         // turn/start → hook对 → turn/end)。hook 对由实现方落档。
         // turn 序号与 Translator 计数同源:日志内历史 turn/start 数
-        // (本 turn 的 turn/start 已落档,计数即本 turn 序号)
-        let hook_turn_no: u64 = {
-            let l = self
-                .log
-                .lock()
-                .map_err(|_| LoopError::Log("log 锁中毒".into()))?;
-            l.iter().filter(|ev| ev.r#type == "turn/start").count() as u64
-        };
+        // (本 turn 的 turn/start 已落档并递增维护字段,计数即本 turn
+        // 序号——原全日志 filter().count() 每轮 O(n))
+        self.turn_starts += 1;
+        let hook_turn_no: u64 = self.turn_starts;
         if let Some(hooks) = &self.hook_port
             && let crate::hooks::PreStepVerdict::Reject =
                 hooks.on_prompt_submit(input, hook_turn_no).await
@@ -2008,6 +2022,79 @@ mod tests {
             reasoning_effort: None,
             tools: Vec::new(),
         }
+    }
+
+    /// 记录 prompt-submit 收到的 turn 序号(其余三调用点直通)
+    struct TurnNoRecorder {
+        turns: Mutex<Vec<u64>>,
+    }
+
+    impl crate::hooks::HookPort for TurnNoRecorder {
+        async fn on_prompt_submit(&self, _prompt: &str, turn: u64) -> crate::hooks::PreStepVerdict {
+            self.turns.lock().unwrap().push(turn);
+            crate::hooks::PreStepVerdict::Proceed
+        }
+        async fn pre_tool(
+            &self,
+            _call: &crate::tools::ToolCallRequest,
+            _turn: u64,
+        ) -> crate::hooks::PreToolVerdict {
+            crate::hooks::PreToolVerdict::Proceed
+        }
+        async fn post_tool(
+            &self,
+            _call: &crate::tools::ToolCallRequest,
+            _output: &crate::tools::ToolOutput,
+            _turn: u64,
+        ) -> crate::hooks::PostToolVerdict {
+            crate::hooks::PostToolVerdict::Pass
+        }
+        async fn on_stop(&self, _turn: u64) -> crate::hooks::StopVerdict {
+            crate::hooks::StopVerdict::Pass
+        }
+    }
+
+    /// 回归锁(turn 计数维护字段):预置 K 条历史 turn/start 的日志上,
+    /// prompt-submit 钩子收到 K+1、下一轮 K+2——维护字段与「全日志
+    /// 计数」等价(原实现每轮全日志 filter().count(),O(n) 扫)
+    #[tokio::test]
+    async fn hook_turn_no_counts_seeded_turns() {
+        let log = Arc::new(Mutex::new(EventLog::new()));
+        for _ in 0..3 {
+            log.lock()
+                .unwrap()
+                .append(EventEnvelope::new("turn/start", 0, serde_json::json!({})))
+                .unwrap();
+        }
+        let recorder = Arc::new(TurnNoRecorder {
+            turns: Mutex::new(Vec::new()),
+        });
+        let mut engine = LoopEngine::new(header(), Arc::clone(&log));
+        engine.set_hook_port(recorder.clone());
+        let mut transport = EmptyTransport;
+        let mut tools = NoTools;
+        let clock = || 1i64;
+        for _ in 0..2 {
+            engine
+                .run_turn(
+                    "hi",
+                    None,
+                    &[],
+                    &[],
+                    &[],
+                    &mut transport,
+                    &mut tools,
+                    &clock,
+                    &mut |_| {},
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            *recorder.turns.lock().unwrap(),
+            vec![4, 5],
+            "基线 3 条 turn/start 上两轮应收到 4、5(维护字段与全日志计数等价)"
+        );
     }
 
     /// 传输错误退场:turn/error 落档 + phase 复位(否则后续 turn

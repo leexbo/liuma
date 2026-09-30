@@ -441,6 +441,11 @@ impl liuma_agent_loop::Summarizer for HttpTransport {
             let consumer = async {
                 let mut text = String::new();
                 let mut chars = 0usize;
+                // 定稿优先:Responses/Anthropic 方言纯文本流既发 Chunk 直播
+                // 增量、又在流末发携带定稿全文的 AssistantMessage(内容重叠);
+                // 两者都拼接会把摘要文本拼两遍。Chunk 仅累积计数,取
+                // 「定稿,否则累积」(与 engine 侧消费范式一致)。
+                let mut final_text: Option<String> = None;
                 while let Some(event) = rx.recv().await {
                     match event {
                         LlmEvent::Chunk(delta) => {
@@ -449,15 +454,14 @@ impl liuma_agent_loop::Summarizer for HttpTransport {
                         }
                         LlmEvent::AssistantMessage(m) => {
                             if let Some(c) = m["content"].as_str() {
-                                chars += c.chars().count();
-                                text.push_str(c);
+                                final_text = Some(c.to_string());
                             }
                         }
                         _ => {}
                     }
                     on_progress(chars);
                 }
-                text
+                final_text.unwrap_or(text)
             };
             // 折叠请求上限 300s(手动 /compact 输入可达数百 KB,30s 不够);
             // 超时按折叠失败处理(自动路径降级跳过/手动路径报错)
@@ -506,6 +510,41 @@ mod tests {
             "普通 400 仍归 INVALID_REQUEST: {e:?}"
         );
         assert!(!e.is_context_overflow());
+    }
+
+    /// 回归锁:Responses/Anthropic 方言纯文本流 = Chunk 直播增量 +
+    /// 流末 AssistantMessage 定稿全文(二者内容重叠)。summarize_stream
+    /// 取「定稿,否则累积」——旧实现两者都拼接,压缩摘要文本被拼两遍。
+    /// (glm-responses 方言,mock SSE 还原真实双发事件序。)
+    #[tokio::test]
+    async fn summarize_stream_prefers_final_message_over_chunks() {
+        let body = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"折叠摘\"}\n\n\
+                    data: {\"type\":\"response.output_text.delta\",\"delta\":\"要文本\"}\n\n\
+                    data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"折叠摘要文本\"}]}]}}\n\n";
+        let (base_url, _captured) = spawn_sse_server(body).await;
+        let adapter = crate::adapters::adapter_by_name("glm-responses")
+            .expect("glm-responses 为注册方言,adapter 必在");
+        let mut transport = HttpTransport::with_adapter(
+            ProviderConfig {
+                base_url,
+                api_key: "sk-test".into(),
+                stream_mode: StreamMode::Sse,
+            },
+            adapter,
+        )
+        .unwrap();
+        let header = RequestHeader {
+            model: "test-model".into(),
+            system: "be brief".into(),
+            temperature: 0.1,
+            reasoning_effort: None,
+            tools: Vec::new(),
+        };
+        let text = transport
+            .summarize_stream(&header, &json!([]), &mut |_| {})
+            .await
+            .expect("summarize_stream");
+        assert_eq!(text, "折叠摘要文本");
     }
 
     /// 极简 mock 服务器:接受一个连接,读请求,回固定 SSE 体(Connection: close 分帧)

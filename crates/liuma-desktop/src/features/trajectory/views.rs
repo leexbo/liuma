@@ -947,6 +947,9 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 .flex()
                 .flex_1()
                 .min_h(px(0.))
+                // 行区水平收缩许可:台账(flex_1)先缩、检查器(flex_shrink_0)
+                // 由渲染期钳制让位,无 min_w(0) 时二者以内容最小宽参与协商
+                .min_w(px(0.))
                 .child(ledger(store, cx))
                 .children(inspector(store, window, cx)),
         )
@@ -1813,6 +1816,7 @@ fn turn_summary_row(
         .flex()
         .h(px(20.))
         .flex_shrink_0()
+        .min_w(px(0.))
         .items_center()
         .pl(px(40.))
         .cursor_pointer()
@@ -1820,7 +1824,15 @@ fn turn_summary_row(
         .text_color(theme::CAPTION())
         .hover(|st| st.text_color(theme::LABEL_3()))
         .debug_selector(move || format!("turn-summary-{turn}"))
-        .child(t!("trajectory.folded_steps", steps = steps, tools = tools))
+        .child(
+            // 长文本截断(record_row 正文列同款):窄面板下不让行内容
+            // 溢出右缘
+            div().min_w(px(0.)).flex_1().truncate().child(t!(
+                "trajectory.folded_steps",
+                steps = steps,
+                tools = tools
+            )),
+        )
         .on_click(move |_, _, cx| {
             s.update(cx, |st, cx| st.toggle_turn(turn, cx));
         })
@@ -1839,6 +1851,7 @@ fn call_summary_row(
         .flex()
         .h(px(20.))
         .flex_shrink_0()
+        .min_w(px(0.))
         .items_center()
         .pl(px(40.))
         .cursor_pointer()
@@ -1846,11 +1859,15 @@ fn call_summary_row(
         .text_color(theme::CAPTION())
         .hover(|st| st.text_color(theme::LABEL_3()))
         .debug_selector(move || format!("call-summary-{message_index}"))
-        .child(t!(
-            "trajectory.folded_tools",
-            count = count,
-            names = names.join(", ")
-        ))
+        .child(
+            // 长文本截断(record_row 正文列同款):窄面板下不让行内容
+            // 溢出右缘(工具名串可任意长)
+            div().min_w(px(0.)).flex_1().truncate().child(t!(
+                "trajectory.folded_tools",
+                count = count,
+                names = names.join(", ")
+            )),
+        )
         .on_click(move |_, _, cx| {
             s.update(cx, |st, cx| st.toggle_call(message_index, cx));
         })
@@ -2222,13 +2239,39 @@ fn inspector_tabs_for(rec: Option<&TrajectoryRecord>, diff_available: bool) -> V
     }
 }
 
+/// 台账表最小渲染宽:检查器让位的下限(面板让位到 320 时检查器
+/// 至多 120,右缘不再溢出面板被裁)
+const LEDGER_MIN_W: f32 = 200.;
+
 fn inspector(
     store: &Entity<AppStore>,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut App,
 ) -> Option<impl IntoElement> {
     let s = snap(store.read(cx));
     let target = s.inspector?;
+    // 渲染期钳制检查器宽:存储宽(inspector_width,拖宽协商 320..720)
+    // 不知道面板当前渲染宽(面板让位可压到 320),固定宽 + flex_shrink_0
+    // 会把行区顶穿、检查器右缘被面板 overflow_hidden 裁掉。与面板拖宽
+    // 同哲学(metrics::panel_width_for 注释):钳制只是视图让位,不改
+    // 存储值——窗口拉宽自然回意愿宽
+    let (panel_open, panel_px, sidebar_collapsed, sidebar_px) = {
+        let st = store.read(cx);
+        (
+            st.panel_open,
+            st.panel_px,
+            st.sidebar_collapsed,
+            st.sidebar_px,
+        )
+    };
+    let panel_w = f32::from(crate::shell::metrics::panel_width_for(
+        panel_open,
+        panel_px,
+        f32::from(window.viewport_size().width),
+        sidebar_collapsed,
+        sidebar_px,
+    ));
+    let inspector_w = s.inspector_width.min((panel_w - LEDGER_MIN_W).max(0.));
     let record = match target {
         InspectTarget::Record(ix) => s.index.and_then(|i| i.get(&s.view.records, ix)),
         InspectTarget::Request(_) => None,
@@ -2363,7 +2406,10 @@ fn inspector(
             .flex_shrink_0()
             .v_flex()
             .min_h(px(0.))
-            .w(px(s.inspector_width))
+            .w(px(inspector_w))
+            // 水平裁剪收在检查器自身:内部 json/mono 单行不折行,无此
+            // 约束会长画到面板右缘才被 trajectory-view 裁掉
+            .overflow_hidden()
             .border_l_1()
             .border_color(theme::BORDER())
             .bg(theme::LAYER())
@@ -2554,10 +2600,13 @@ fn nav_link(id: &'static str, text: impl Into<gpui_kit::SharedString>) -> gpui_k
         .debug_selector(move || sel.clone())
 }
 
-/// 等宽文本块(限高容器内滚动)
+/// 等宽文本块(限高容器内滚动;长非断行 token 水平裁剪不折行——
+/// 溢出由检查器 overflow_hidden 收口)
 fn mono_block(id: impl Into<gpui_kit::ElementId>, text: &str, color: Rgba) -> impl IntoElement {
     div()
         .id(id)
+        .min_w(px(0.))
+        .overflow_hidden()
         .rounded(px(8.))
         .bg(theme::CODE())
         .p(px(10.))
@@ -2680,6 +2729,8 @@ fn jt_span(color: Rgba, text: impl Into<String>) -> gpui_kit::AnyElement {
 fn jt_row(depth: usize, children: Vec<gpui_kit::AnyElement>) -> gpui_kit::AnyElement {
     div()
         .flex()
+        .min_w(px(0.))
+        .overflow_hidden()
         .items_start()
         .when(depth > 0, |el| el.pl(px(14. * depth as f32)))
         .children(children)
@@ -2897,6 +2948,8 @@ fn json_tree_block(
 fn json_block(id: &'static str, text: &str) -> impl IntoElement {
     div()
         .id(id)
+        .min_w(px(0.))
+        .overflow_hidden()
         .rounded(px(8.))
         .bg(theme::CODE())
         .p(px(10.))
@@ -2905,7 +2958,9 @@ fn json_block(id: &'static str, text: &str) -> impl IntoElement {
         .font_family("Menlo")
         .line_height(gpui_kit::relative(1.55))
         .children(text.lines().map(|line| {
-            div().flex().children(
+            // 行内 token 为固有宽 flex 子项,长行溢出裁切不折行(单行
+            // 语义)——由本块 overflow_hidden 收口
+            div().flex().min_w(px(0.)).overflow_hidden().children(
                 json_tokens(line)
                     .into_iter()
                     .map(|(kind, s)| div().text_color(jkind_color(kind)).child(s))

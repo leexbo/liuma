@@ -48,6 +48,10 @@ common:
     zh-CN: "收起"
     en: "Collapse"
 
+  expand:
+    zh-CN: "展开"
+    en: "Expand"
+
   retry:
     zh-CN: "重试"
     en: "Retry"

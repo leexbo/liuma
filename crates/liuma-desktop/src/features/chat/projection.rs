@@ -249,6 +249,16 @@ pub struct QueueEntry {
     pub text: Option<String>,
 }
 
+/// 乐观用户消息(prompt RPC 回执落地、`user/message` 事件未到)。
+/// 直播态:重放不记,宿主重同步(subscribed)清空
+#[derive(Debug, Clone)]
+pub struct PendingUser {
+    /// 宿主预分配消息 id(RPC 回执携带;user/message 载荷同 id → 原位替换)
+    pub id: String,
+    /// 发送文本(渲染与折叠用)
+    pub text: String,
+}
+
 /// 队列条目落位
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueuePlacement {
@@ -345,6 +355,13 @@ pub struct ChatState {
     /// 重试行退避截止时刻(直播帧到达时刻 + delayMs;渲染期推算剩余秒,
     /// 1s tick 只触发重绘)。纯 UI 元数据,不参与相等性;重放不记。
     pub retry_deadlines: std::collections::HashMap<String, std::time::Instant>,
+    /// 乐观用户消息(prompt RPC 回执即插;`user/message` 事件帧到达按
+    /// 载荷 id 去重替换——发送到回显不再等「落盘→认领→全量扫→事件帧」
+    /// 的完整往返)。直播态,不参与相等性;重放不记
+    pub pending_user: Vec<PendingUser>,
+    /// 本 turn 已认领 pending(认领先于 turn/start;hook 拒绝路径
+    /// turn/start→turn/end 无 user/message,pending 由此回收)
+    pub(crate) pending_user_claimed: bool,
     /// 节点 key → nodes 下标索引(定位 O(1))。历史合并的 chunk 追加
     /// 原为每次 `position` 线性扫,O(节点数 × 事件数) 二次复杂度——
     /// 3k 节点 × 3 万 chunk ≈ 10⁸ 次 key 比较,是打开长会话主线程冻结
@@ -384,6 +401,9 @@ impl ChatState {
         self.running = false;
         self.compact_running = false;
         self.compact_queued = false;
+        // 乐观气泡是直播态:历史载入不回放(与进度行/完成闪同语义)
+        self.pending_user.clear();
+        self.pending_user_claimed = false;
         // 重放不重现瞬态:进度行与完成闪都是直播态(事件序里有 progress,
         // 但历史载入不该回放一条已经结束的进度条)
         self.compact_progress = None;
@@ -420,6 +440,12 @@ impl ChatState {
                 self.running = true;
                 self.todos.clear();
                 self.turn_started_ms = Some(ev.time);
+                // 认领标记(乐观回收状态机):认领先于 turn/start,空闲
+                // 发送的下一个 turn/start 必是其认领——hook 拒绝路径
+                // (turn/start→turn/end 无 user/message)据此回收 pending
+                if !self.pending_user.is_empty() {
+                    self.pending_user_claimed = true;
+                }
                 // 新回合清掉上一个压缩的收尾态(失败行/完成闪不跨轮滞留)
                 if self.compact_progress.as_ref().is_some_and(|p| p.terminal()) {
                     self.compact_progress = None;
@@ -428,6 +454,13 @@ impl ChatState {
             }
             "turn/end" => {
                 self.running = false;
+                // 乐观回收:hook 拒绝的 turn(user/message 未到)不残留
+                // 永久 pending 气泡;正常路径 user/message 已先到清空,
+                // 此处仅复位认领标记
+                if self.pending_user_claimed {
+                    self.pending_user.clear();
+                    self.pending_user_claimed = false;
+                }
                 // 排队中的压缩任务在回合结束后被驱动取走 → 晋升进行态
                 if self.compact_queued {
                     self.compact_queued = false;
@@ -497,6 +530,12 @@ impl ChatState {
                         files: file_blocks(&ev.data["content"]),
                         time: ev.time,
                     });
+                    // 乐观气泡原位替换:载荷 id 与 RPC 回执 id 同源
+                    // (宿主预分配贯通);历史重放的旧消息 id 不会命中
+                    // 现存 pending,天然幂等
+                    if let Some(id) = ev.data["id"].as_str() {
+                        self.pending_user.retain(|p| p.id != id);
+                    }
                 } else {
                     self.push_node(ChatNode::Context {
                         key: format!("ctx:{}", ev.seq),
@@ -1489,6 +1528,69 @@ mod tests {
             surface_op: Some(SurfaceOp::Append),
             ignorable: None,
         }
+    }
+
+    /// 回归锁(乐观替换):pending_user 在同 id 的 user/message 到达后
+    /// 原位消解(节点入列、气泡出列);不同 id 不误伤
+    #[test]
+    fn optimistic_pending_user_resolves_by_id() {
+        let mut st = ChatState::default();
+        st.pending_user.push(PendingUser {
+            id: "m-1".into(),
+            text: "hello".into(),
+        });
+        st.apply(&ev(
+            "user/message",
+            2,
+            json!({
+                "id": "m-1", "role": "user",
+                "content": [ { "type": "text", "text": "hello" } ],
+                "source": { "kind": "user" },
+            }),
+        ));
+        assert!(
+            st.nodes.iter().any(|n| n.key() == "user:2"),
+            "user/message 节点应入列"
+        );
+        assert!(st.pending_user.is_empty(), "同 id pending 应消解");
+        // 不同 id:不消解(下一轮再收)
+        st.pending_user.push(PendingUser {
+            id: "m-2".into(),
+            text: "other".into(),
+        });
+        st.apply(&ev(
+            "user/message",
+            5,
+            json!({
+                "id": "m-9", "role": "user",
+                "content": [ { "type": "text", "text": "x" } ],
+                "source": { "kind": "user" },
+            }),
+        ));
+        assert_eq!(st.pending_user.len(), 1, "不同 id 不误伤");
+    }
+
+    /// 回归锁(乐观回收):hook 拒绝路径 turn/start→turn/end(无
+    /// user/message)不残留永久 pending 气泡;正常收尾也复位认领标记
+    #[test]
+    fn optimistic_pending_user_cleared_on_unclaimed_turn_end() {
+        let mut st = ChatState::default();
+        st.pending_user.push(PendingUser {
+            id: "m-1".into(),
+            text: "hi".into(),
+        });
+        st.apply(&ev("turn/start", 1, json!({ "turn": 1 })));
+        assert!(st.pending_user_claimed, "turn/start 应置认领标记");
+        st.apply(&ev(
+            "turn/end",
+            3,
+            json!({ "reason": { "kind": "blocked" } }),
+        ));
+        assert!(
+            st.pending_user.is_empty(),
+            "拒绝收尾的 turn 不得残留 pending"
+        );
+        assert!(!st.pending_user_claimed, "认领标记应复位");
     }
 
     /// 全回合样本(对齐 translate.rs 测试序列)

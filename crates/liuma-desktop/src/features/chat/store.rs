@@ -136,6 +136,11 @@ pub(crate) struct ChatStore {
     pub search_collapsed: HashSet<String>,
     /// 展开的 Think 行 key(a:<turn>:<step>)
     pub open_reasoning: HashSet<String>,
+    /// 手动展开的超长用户消息 key(ChatNode::User key 即 user:<seq>;
+    /// 插队待投递条目为条目 id)。缺席 = 未手动展开——超长消息默认
+    /// 折叠,「超长」判定在渲染期按文本估行(阈值见 chat_pane
+    /// USER_FOLD_LINES)。内存态,不持久化
+    pub user_unfolded: HashSet<String>,
     /// 展开的上下文注入行 key(ctx:<seq>)
     pub open_context: HashSet<String>,
     /// 展开的轮过程组(键 = 段收口节点 key,如 turn-end:11)。**空集 =
@@ -359,6 +364,7 @@ impl Default for ChatStore {
             card_expanded: HashSet::new(),
             search_collapsed: HashSet::new(),
             open_reasoning: HashSet::new(),
+            user_unfolded: HashSet::new(),
             open_context: HashSet::new(),
             open_turns: HashSet::new(),
             nav_hover: None,
@@ -891,17 +897,21 @@ impl AppStore {
             self.chat.tv_subs.push((key, sub));
         }
         let sid = self.state.current_id.clone();
-        // 列表行数 = 行槽 + 流尾插队气泡(伪行;session/queue 帧驱动增减)
-        let steering = self
+        // 列表行数 = 行槽 + 流尾伪行(插队气泡 + 乐观用户气泡;前者
+        // session/queue 帧驱动,后者 RPC 回执/user/message 替换驱动)
+        let (steering, optimistic) = self
             .current_chat()
             .map(|c| {
-                c.queue
-                    .iter()
-                    .filter(|e| e.placement == QueuePlacement::Steering)
-                    .count()
+                (
+                    c.queue
+                        .iter()
+                        .filter(|e| e.placement == QueuePlacement::Steering)
+                        .count(),
+                    c.pending_user.len(),
+                )
             })
-            .unwrap_or(0);
-        let count = self.chat.row_slots.len() + steering;
+            .unwrap_or((0, 0));
+        let count = self.chat.row_slots.len() + steering + optimistic;
         if self.chat.chat_list_session.as_deref() != sid.as_deref() {
             // 全量加载打开:未测项带固定行高 hint——滚动范围/导航轨
             // 显隐立即成立(按可见性测高下未测行 0 高,总高塌着),真实
@@ -1365,6 +1375,9 @@ impl AppStore {
         }
         let text = text_owned.as_str();
         let is_command = text.trim().starts_with('/');
+        // 发送前的真实运行态(乐观置位前捕获):空闲发送才插乐观气泡;
+        // 运行中发送走队列/插队帧的既有 pending 呈现
+        let running_at_send = self.state.running_by_id.get(&id).copied().unwrap_or(false);
         if !is_command {
             self.state.running_by_id.insert(id.clone(), true);
             // 用户消息强制钉底(新内容 toBottom)
@@ -1430,6 +1443,8 @@ impl AppStore {
         }
         let sid = id.clone();
         let text_owned = text.to_string();
+        // 回调侧的乐观气泡文本(text_owned 移入 bridge 闭包)
+        let sent_text = text.to_string();
         // 运行中 Enter 行为按偏好(queue = 排队 / steer = 转向);
         // 空闲/命令恒排队
         let running = self.state.running_by_id.get(&id).copied().unwrap_or(false);
@@ -1503,10 +1518,23 @@ impl AppStore {
                 eprintln!("[liuma-desktop] prompt 被拒: {} ({})", e.message, e.code);
             }
             match rpc {
-                // 成功:草稿附件已提交,清空(失败保留)
-                Ok(Ok(_)) => {
+                // 成功:草稿附件已提交,清空(失败保留);空闲文本发送
+                // 同时落乐观气泡——RPC 回执携带宿主预分配 id,user/message
+                // 事件帧到达后按 id 原位替换(发送回显不等宿主完整往返)
+                Ok(Ok(res)) => {
+                    let pending_id = res["id"].as_str().map(str::to_string);
                     store.update(cx, |s, cx| {
                         s.attachments.drafts.clear();
+                        if let Some(pid) = pending_id
+                            && !is_command
+                            && !running_at_send
+                            && let Some(chat) = s.state.chats.get_mut(&sid)
+                        {
+                            chat.pending_user.push(super::projection::PendingUser {
+                                id: pid,
+                                text: sent_text.clone(),
+                            });
+                        }
                         cx.notify();
                     });
                 }
@@ -2070,6 +2098,42 @@ impl AppStore {
             self.chat.open_reasoning.remove(key);
         }
         cx.notify();
+    }
+
+    /// 超长用户消息展开/折叠(键 = `user:<seq>` 或插队条目 id)。
+    /// 折叠切换改条目高度:按行收窄重测(行数不变,无需重建行槽/
+    /// 锚定;插队伪行不在 node_slot,以行槽后偏移定位)
+    pub fn toggle_user_message(&mut self, key: &str, cx: &mut Context<Self>) {
+        if !self.chat.user_unfolded.insert(key.to_string()) {
+            self.chat.user_unfolded.remove(key);
+        }
+        let keys: std::collections::BTreeSet<String> = std::iter::once(key.to_string()).collect();
+        let mut ranges = changed_slot_ranges(&keys, &self.chat.node_slot);
+        if ranges.is_empty()
+            && let Some(ix) = self.pending_steering_row(key)
+        {
+            ranges.push(ix..ix + 1);
+        }
+        self.remeasure_slots(ranges);
+        cx.notify();
+    }
+
+    /// 插队待投递伪行的绝对行号(= 行槽数 + Steering 序;非插队条目或
+    /// 不在当前会话 = None)——伪行不在 node_slot,折叠重测以它定位
+    fn pending_steering_row(&self, id: &str) -> Option<usize> {
+        let base = self.chat.row_slots.len();
+        let chat = self.current_chat()?;
+        let mut off = 0usize;
+        for entry in chat.queue.iter() {
+            if entry.placement != QueuePlacement::Steering {
+                continue;
+            }
+            if entry.id == id {
+                return Some(base + off);
+            }
+            off += 1;
+        }
+        None
     }
 
     /// 上下文注入行展开/折叠

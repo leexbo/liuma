@@ -50,10 +50,14 @@ pub enum Effect {
     Sessions,
     /// 重拉宿主信息(工作区变更)
     HostInfo,
-    /// 拉会话统计(running 边沿;丢帧自愈的安全网)
-    Stats(String),
     /// 统计落表(session/stats 推送;载荷 = 宿主聚合 JSON)
     StatsUpsert(String, serde_json::Value),
+    /// 状态边沿的**延迟**刷新(清单 + 统计 + 分支):认领瞬间恰是
+    /// driver 抢 worker 产出 user/message 帧的窗口,即时刷新与之抢
+    /// 同一 tokio 池会推迟发送回显;上升沿让出 TTFT 窗口(1500ms),
+    /// 下降沿短去抖合并连发 turn(300ms)。统计面由 session/stats
+    /// 事件推送实时保鲜,此处只是丢帧安全网,晚一拍无碍
+    StatusRefresh { id: String, delay_ms: u64 },
 }
 
 /// 多会话状态(可由帧纯函数推导的子集)
@@ -99,19 +103,27 @@ pub fn apply_frame(state: &mut StoreState, frame: ServerRequest) -> Vec<Effect> 
                 return vec![];
             };
             let was = state.running_by_id.insert(p.session_id.clone(), p.running);
-            let mut effects = vec![Effect::Stats(p.session_id.clone())];
+            let mut effects = Vec::new();
             if p.running && !was.unwrap_or(false) {
-                // 上升沿:记 turn 起始墙钟(运行时长显示)+ 刷清单
-                // (首条消息的标题摘录随 turn 开始可见)
+                // 上升沿:记 turn 起始墙钟(运行时长显示)
                 state
                     .running_since_by_id
                     .insert(p.session_id.clone(), std::time::Instant::now());
-                effects.push(Effect::Sessions);
             }
             if !p.running {
-                // 对齐 web:turn 结束 → 清单终值刷新;清记时(时长已结算进 turn_tail)
+                // 清记时(时长已结算进 turn_tail)
                 state.running_since_by_id.remove(&p.session_id);
-                effects.push(Effect::Sessions);
+            }
+            // 边沿才刷新,且延迟执行(Effect::StatusRefresh):认领瞬间
+            // 即时 refresh_list(全清单读盘)/refresh_stats(全量 fold)
+            // 与 driver 抢同一 tokio 池,推迟发送回显。清单刷新晚一拍
+            // 只影响标题摘录到达时机;统计由 session/stats 推送保鲜
+            if was != Some(p.running) {
+                let delay_ms = if p.running { 1500 } else { 300 };
+                effects.push(Effect::StatusRefresh {
+                    id: p.session_id.clone(),
+                    delay_ms,
+                });
             }
             effects
         }
@@ -149,6 +161,10 @@ pub fn apply_frame(state: &mut StoreState, frame: ServerRequest) -> Vec<Effect> 
             };
             if let Some(chat) = state.chats.get_mut(id) {
                 chat.queue.clear();
+                // 乐观气泡与队列幽灵条同语义:重订阅 = 新代宿主权威,
+                // 本地乐观态一律清空
+                chat.pending_user.clear();
+                chat.pending_user_claimed = false;
             }
             vec![]
         }
@@ -460,7 +476,8 @@ mod tests {
     #[test]
     fn status_edges_drive_stats_and_list() {
         let mut st = state();
-        // 起跑:running=true → 统计安全网 + 清单(标题摘录随 turn 开始)
+        // 起跑(上升沿):延迟刷新让出 TTFT 窗口——不与 driver 抢
+        // worker(即时刷新推迟发送回显),记时照常
         let eff = apply_frame(
             &mut st,
             frame(
@@ -468,9 +485,16 @@ mod tests {
                 json!({ "sessionId": "s1", "running": true }),
             ),
         );
-        assert_eq!(eff, vec![Effect::Stats("s1".into()), Effect::Sessions,]);
+        assert_eq!(
+            eff,
+            vec![Effect::StatusRefresh {
+                id: "s1".into(),
+                delay_ms: 1500
+            }],
+        );
         assert_eq!(st.running_by_id.get("s1"), Some(&true));
-        // 重复 running=true:边沿已过,仅统计安全网
+        assert!(st.running_since_by_id.contains_key("s1"), "起跑记时");
+        // 重复 running=true:非边沿,零效果(统计由 session/stats 推送保鲜)
         let eff = apply_frame(
             &mut st,
             frame(
@@ -478,8 +502,8 @@ mod tests {
                 json!({ "sessionId": "s1", "running": true }),
             ),
         );
-        assert_eq!(eff, vec![Effect::Stats("s1".into())]);
-        // 收尾:running=false → 统计安全网 + 清单
+        assert!(eff.is_empty());
+        // 收尾(下降沿):短去抖合并连发 turn
         let eff = apply_frame(
             &mut st,
             frame(
@@ -487,8 +511,15 @@ mod tests {
                 json!({ "sessionId": "s1", "running": false }),
             ),
         );
-        assert_eq!(eff, vec![Effect::Stats("s1".into()), Effect::Sessions,]);
+        assert_eq!(
+            eff,
+            vec![Effect::StatusRefresh {
+                id: "s1".into(),
+                delay_ms: 300
+            }],
+        );
         assert_eq!(st.running_by_id.get("s1"), Some(&false));
+        assert!(!st.running_since_by_id.contains_key("s1"), "收尾清记时");
     }
 
     /// session/stats 推送 → StatsUpsert(事件驱动实时统计)
@@ -648,7 +679,7 @@ mod tests {
 
     /// 回归锁:subscribed 清旧代队列(host 空队列不发基线帧,由本帧
     /// 表达)——缺失时重订阅后旧代「插队 · 待投递」气泡滞留,与已落档
-    /// user/message 重复渲染。
+    /// user/message 重复渲染;乐观用户气泡同语义一并清空。
     #[test]
     fn subscribed_clears_stale_queue() {
         let mut st = state();
@@ -659,6 +690,12 @@ mod tests {
             preview: "插队的".into(),
             text: Some("插队的".into()),
         }];
+        chat.pending_user
+            .push(crate::features::chat::projection::PendingUser {
+                id: "m-1".into(),
+                text: "乐观的".into(),
+            });
+        chat.pending_user_claimed = true;
         let eff = apply_frame(
             &mut st,
             frame(
@@ -667,7 +704,13 @@ mod tests {
             ),
         );
         assert!(eff.is_empty());
-        assert!(st.chats.get("s-sub").expect("chat 在场").queue.is_empty());
+        let chat = st.chats.get("s-sub").expect("chat 在场");
+        assert!(chat.queue.is_empty());
+        assert!(
+            chat.pending_user.is_empty(),
+            "重订阅应清乐观气泡(新代宿主权威)"
+        );
+        assert!(!chat.pending_user_claimed);
 
         // 未附着过的会话:清空为 no-op,不建空 chat 条目
         let eff = apply_frame(

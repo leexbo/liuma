@@ -333,6 +333,10 @@ struct SlotInner {
     /// 决策模型运行面(设置文件 decision 区 enabled 才有;哨兵/守卫/评审员
     /// 的端口与场景配置来源;fake 会话 None)
     decision: Option<DecisionRuntime>,
+    /// 直播统计跨 turn 复用:认领/压缩时按 `bd.next_seq()` 补洞,turn 内
+    /// sink 增量喂入——替代每次认领的逐事件全量重建(长会话 O(n) 分配)。
+    /// 恢复式锁(后台 panic 不连坐;丢失即回落全量重建,无正确性依赖)
+    live: Mutex<LiveStats>,
 }
 
 /// 决策模型每会话运行面(attach 装配;端口/端点随 attach,场景开关
@@ -802,13 +806,17 @@ fn mermaid_demo_segment() -> Vec<LlmEvent> {
 /// 重命名标题持久化文件(workspace `.liuma/` 内,JSON 对象)
 const TITLES_FILE: &str = ".liuma/titles.json";
 
-/// 标题落盘(`.liuma/` 子目录缺席则先建——首个标题写入时该目录尚不存在)
+/// 标题落盘(`.liuma/` 子目录缺席则先建——首个标题写入时该目录尚不存在)。
+/// 临时文件 + rename 原子顶替:直写会在崩溃/断电时留下半截 JSON,而
+/// 加载侧解析失败即整表丢弃(unwrap_or_default),半截文件 = 全部标题丢失
 fn write_titles_file(workspace: &std::path::Path, text: &str) -> Result<(), std::io::Error> {
     let path = workspace.join(TITLES_FILE);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, text)
+    let tmp = workspace.join(format!("{TITLES_FILE}.tmp"));
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, &path)
 }
 
 /// 添加工作区持久化文件(默认工作区顶层;路径数组)
@@ -1042,8 +1050,10 @@ fn broadcast_event(
 ) {
     let l = log.lock_recover();
     let mut tr = Translator::new(provider.clone());
+    // 计数器预热走零分配 prime(仅推进状态字段):全量 translate 预热
+    // 每事件构造 JSON 后丢弃,长会话是纯浪费(状态机判据同款,输出等价)
     l.for_each(|ev| {
-        tr.translate(ev);
+        tr.prime(ev);
     });
     let target = match seq {
         Some(s) => l.get(s),
@@ -1127,12 +1137,17 @@ fn push_stats_frame(
     ev: &EventEnvelope,
 ) {
     // 补洞:带外事件绕过 sink(压缩收口/钩子桥落档)→ bd 出现 seq 缺口,
-    // 锁内逐条补齐(均摊每回合至多一次,替代此前每 stats 事件全量扫)
+    // 锁内逐条补齐(均摊每回合至多一次,替代此前每 stats 事件全量扫)。
+    // agg 同补:带外落的 compaction/stats 等统计事件若只喂 bd 不喂 agg,
+    // 聚合面(占用/轮数)永久停在缺口前
     if ev.seq > live.bd.next_seq()
         && let Ok(l) = log.lock()
     {
         for s in live.bd.next_seq()..ev.seq {
             if let Some(missed) = l.get(s) {
+                if stats::StatsAgg::is_stats_event(&missed.r#type) {
+                    live.agg.apply(&missed.r#type, missed.time, &missed.data);
+                }
                 live.bd.push(&missed);
             }
         }
@@ -1321,22 +1336,29 @@ fn frame_title_messages(first_text: &str) -> Value {
     json!([{ "role": "user", "content": [{ "type": "text", "text": framed }] }])
 }
 
-/// 4b:从流式事件累积标题文本 → normalize(拼接增量文本块;
-/// maxTitleBytes=80,base 默认)。
+/// 4b:从流式事件提取标题文本 → normalize(maxTitleBytes=80,base 默认)。
+///
+/// 定稿优先:Responses/Anthropic 方言对纯文本流既发 `Chunk` 直播增量、
+/// 又在流末发携带**定稿全文**的 `AssistantMessage`(二者内容重叠);
+/// Chunk 仅累积、AssistantMessage 覆盖,取「定稿,否则累积」——与
+/// engine 侧消费范式一致(engine.rs `final_message` 优先、chunks 回退),
+/// 否则标题文本被拼两遍。
 fn title_from_events(events: &[LlmEvent]) -> String {
-    let mut text = String::new();
+    let mut streamed = String::new();
+    let mut final_text: Option<&str> = None;
     for ev in events {
         match ev {
-            LlmEvent::Chunk(delta) => text.push_str(delta),
+            LlmEvent::Chunk(delta) => streamed.push_str(delta),
             LlmEvent::AssistantMessage(m) => {
                 if let Some(c) = m["content"].as_str() {
-                    text.push_str(c);
+                    final_text = Some(c);
                 }
             }
             _ => {}
         }
     }
-    crate::title::normalize_session_title(&text, 80)
+    let text = final_text.unwrap_or(&streamed);
+    crate::title::normalize_session_title(text, 80)
 }
 
 impl AppHost {
@@ -1367,10 +1389,18 @@ impl AppHost {
         )?;
         let (mux, _) = broadcast::channel(512);
         let (host, _) = broadcast::channel(128);
-        let titles = std::fs::read_to_string(workspace_clone.join(TITLES_FILE))
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
+        // 存量清洗:历史「流式增量+定稿全文双拼」bug 把 LLM 标题写成了
+        // 翻倍文本(title_from_events 修复前生成);加载时平方串折叠还原
+        let titles: std::collections::HashMap<String, String> =
+            std::fs::read_to_string(workspace_clone.join(TITLES_FILE))
+                .ok()
+                .and_then(|t| {
+                    serde_json::from_str::<std::collections::HashMap<String, String>>(&t).ok()
+                })
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(k, v)| (k, crate::title::fold_doubled_title(&v)))
+                .collect();
         // 设置先行:工作区注册表存于 settings.yaml
         let settings = SettingsStore::open(sessions_root.join("settings.yaml"));
         let reg_paths = settings.read().workspace_paths.clone();
@@ -4542,6 +4572,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             traj: Arc::new(Mutex::new(crate::trajectory::TrajectoryFolder::new())),
             closed: std::sync::atomic::AtomicBool::new(false),
             decision: decision_runtime,
+            live: Mutex::new(LiveStats::default()),
         };
         let assembly_won = slot.inner.set(inner).is_ok();
         // 装配窗关闭:守卫先于 slot 的移动放闸(此后 broadcast/spawn
@@ -5899,12 +5930,14 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
 
         let slot = self.attach(session_id)?;
         let inner = slot.inner()?;
-        // 消息 id 宿主预分配(v7):队列帧 / 认领 splice / user/message 共用
+        // 消息 id 宿主预分配(v7):队列帧 / 认领 splice / user/message 共用;
+        // 随回执一并返回——桌面端乐观显示(RPC 返回即插 pending 气泡,
+        // user/message 帧到达后按同 id 原位替换)的去重键
         let id = Uuid::now_v7().to_string();
         inner
             .queue_tx
             .send(Job::Prompt {
-                id,
+                id: id.clone(),
                 text,
                 images: refs,
                 files: file_refs,
@@ -5912,7 +5945,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 contexts,
             })
             .map_err(|_| RpcError::internal("session worker 已退出"))?;
-        Ok(json!({ "accepted": true }))
+        Ok(json!({ "accepted": true, "id": id }))
     }
 
     /// session.updateQueue:队列条目变更(edit / remove / steer)。
@@ -7722,17 +7755,20 @@ async fn handle_driver_cmd(
             // 失败/空落 compaction/error(kind 区分:empty=无历史可压,
             // 桌面渲染期换词典;error=真实失败,红色告警)
             let mut translator = Translator::new(provider_info.clone());
-            // 统计聚合同款预热(与 turn 内 sink 同一 apply;压缩落的
-            // compaction/stats 是占用回落的唯一信号,漏推则占用卡停在
-            // 压缩前——见 push_stats_frame 的说明)
-            let mut live = LiveStats::default();
+            // 统计聚合取 SlotInner 跨 turn 复用态(与 turn 认领同一份):
+            // 按 `bd.next_seq()` 补洞——压缩落的 compaction/stats 是占用
+            // 回落的唯一信号,漏推则占用卡停在压缩前(见 push_stats_frame
+            // 的说明)
+            let mut live = std::mem::take(&mut *inner.live.lock_recover());
             {
-                // 预热:translator 依全量事件演进(与 broadcast_event 同;
-                // 一次日志扫描,相对分钟级摘要是零成本)
+                // 预热:translator 依全量事件演进(零分配 prime,与
+                // broadcast_event 同;一次日志扫描,相对分钟级摘要是零成本)
                 let log = inner.log.lock_recover();
-                log.for_each(|ev| {
-                    translator.translate(ev);
-                    live.agg.apply(&ev.r#type, ev.time, &ev.data);
+                log.for_each_from(live.bd.next_seq(), |ev| {
+                    translator.prime(ev);
+                    if stats::StatsAgg::is_stats_event(&ev.r#type) {
+                        live.agg.apply(&ev.r#type, ev.time, &ev.data);
+                    }
                     live.bd.push(ev);
                 });
             }
@@ -7773,6 +7809,8 @@ async fn handle_driver_cmd(
                     }
                 }
             }
+            // 归还跨 turn 复用的统计态(下次认领取同一份续扫)
+            *inner.live.lock_recover() = live;
         }
     }
     // 驱动命令落档的事件(压缩 summary 等)补喂轨迹折叠器(有变更即广播)
@@ -8108,16 +8146,20 @@ async fn driver_loop(
         }
         // 队列帧(认领后待运行条目已出队)
         let _ = host0.mux.send(queue_frame(&session_id, inner));
-        // 翻译器计数预热(扫描既有日志)
+        // 翻译器计数预热(扫描既有日志;零分配 prime——全量 translate
+        // 每事件构造 JSON 后丢弃,长会话是纯浪费)
         let mut translator = Translator::new(provider_info.clone());
-        // 统计聚合预热(同一 fold 逻辑;turn 内增量 apply)。
+        // 统计聚合跨 turn 复用(SlotInner 持有):按 `bd.next_seq()` 补洞,
+        // 首次认领从 seq 1 起等价全量重建,后续认领只追增量。
         // 窗口随会话模型解析(与引擎压缩阈值同源)
         let context_window = host0.session_context_window(&session_id);
-        let mut live = LiveStats::default();
+        let mut live = std::mem::take(&mut *inner.live.lock_recover());
         if let Ok(l) = inner.log.lock() {
-            l.for_each(|ev| {
-                translator.translate(ev);
-                live.agg.apply(&ev.r#type, ev.time, &ev.data);
+            l.for_each_from(live.bd.next_seq(), |ev| {
+                translator.prime(ev);
+                if stats::StatsAgg::is_stats_event(&ev.r#type) {
+                    live.agg.apply(&ev.r#type, ev.time, &ev.data);
+                }
                 live.bd.push(ev);
             });
         }
@@ -8149,15 +8191,16 @@ async fn driver_loop(
         // 确定性。子代理/已 pin 会话沿用继承事件,不再补。此属于权限事件
         // (非注入),不作为 contexts 交给引擎。
         {
-            let has_permission_events = inner
-                .log
-                .lock()
-                .ok()
-                .map(|l| {
-                    l.iter()
-                        .any(|e| e.r#type == "sandbox/mode" || e.r#type == "permission/preset")
-                })
-                .unwrap_or(false);
+            // 借用式扫描(iter() 是 owned 全展开,逐事件克隆)
+            let mut has = false;
+            if let Ok(l) = inner.log.lock() {
+                l.for_each(|e| {
+                    if !has && (e.r#type == "sandbox/mode" || e.r#type == "permission/preset") {
+                        has = true;
+                    }
+                });
+            }
+            let has_permission_events = has;
             if !has_permission_events {
                 let preset = host0.default_permission();
                 if let Some(spec) = crate::permission::PRESETS.iter().find(|p| p.name == preset) {
@@ -8214,6 +8257,8 @@ async fn driver_loop(
                 },
             )
             .await;
+        // 归还跨 turn 复用的统计态(下次认领/压缩取同一份续扫)
+        *inner.live.lock_recover() = live;
         slot.running
             .store(false, std::sync::atomic::Ordering::Relaxed);
         qs.lock_recover().running = false;
@@ -8342,6 +8387,175 @@ mod tests {
         assert_eq!(f.payload["sessionId"], "s1");
         assert_eq!(f.payload["event"]["type"], "plan/mode");
         assert_eq!(f.payload["event"]["data"]["active"], true);
+    }
+
+    /// 回归锁(prime 差分):零分配 prime 预热与全量 translate 预热的
+    /// 状态机演进等价——同一目标事件经两路预热后翻译输出逐字节一致
+    /// (认领/压缩/broadcast_event 的预热换 prime 的正确性前提)。
+    /// 非平凡性:未经预热的翻译器输出必须不同(锁住预热确实生效)
+    #[test]
+    fn prime_warmup_matches_full_translate_warmup() {
+        let provider = ProviderInfo {
+            provider: "deepseek".into(),
+            model: "test".into(),
+        };
+        let mut log = EventLog::new();
+        log.append(EventEnvelope::new("turn/start", 0, serde_json::json!({})))
+            .unwrap();
+        log.append(EventEnvelope::new("step/start", 1, serde_json::json!({})))
+            .unwrap();
+        log.append(EventEnvelope::new(
+            "audit/call",
+            2,
+            serde_json::json!({
+                "boundary": "llm", "operation": "request-done",
+                "detail": { "durationMs": 123,
+                            "usage": { "ttftMs": 45, "output_tokens": 67 } }
+            }),
+        ))
+        .unwrap();
+        log.append(EventEnvelope::new("turn/start", 3, serde_json::json!({})))
+            .unwrap();
+        log.append(EventEnvelope::new("step/start", 4, serde_json::json!({})))
+            .unwrap();
+        let target = EventEnvelope::new(
+            "assistant/message",
+            5,
+            serde_json::json!({ "content": "hi", "id": "m-1" }),
+        );
+        let to_json = |e: Option<crate::proto::SessionEvent>| {
+            e.map(|ev| serde_json::to_value(&ev).unwrap_or_default())
+        };
+        // 全量 translate 预热(旧行为)vs prime 预热(现行为)
+        let mut a = Translator::new(provider.clone());
+        log.for_each(|ev| {
+            a.translate(ev);
+        });
+        let mut b = Translator::new(provider.clone());
+        log.for_each(|ev| {
+            b.prime(ev);
+        });
+        let out_a = to_json(a.translate(&target));
+        let out_b = to_json(b.translate(&target));
+        assert_eq!(
+            out_a, out_b,
+            "prime 与全量 translate 预热后的翻译输出必须逐字节一致"
+        );
+        // 非平凡:未预热(turn=0/step=0/无 usage)的输出必须不同
+        let mut fresh = Translator::new(provider);
+        let out_fresh = to_json(fresh.translate(&target));
+        assert_ne!(
+            out_b, out_fresh,
+            "预热应实际影响输出(turn/step/usage 附着),否则本锁无效"
+        );
+    }
+
+    /// 回归锁(补洞聚合):带外事件绕过 sink 落档(压缩收口/钩子桥)时,
+    /// push_stats_frame 的 seq 补洞必须把缺口上的统计事件同时喂进聚合
+    /// ——只补 bd 不补 agg 会令用量面(占用/轮数)永久停在缺口前
+    #[test]
+    fn push_stats_frame_backfills_aggregate_on_gap() {
+        let log = Mutex::new(EventLog::new());
+        {
+            let mut l = log.lock().unwrap();
+            l.append(EventEnvelope::new("turn/start", 0, serde_json::json!({})))
+                .unwrap(); // seq 1
+            l.append(EventEnvelope::new(
+                "audit/call",
+                1,
+                serde_json::json!({
+                    "boundary": "llm", "operation": "request-done",
+                    "detail": { "durationMs": 100,
+                                "usage": { "input_tokens": 500, "output_tokens": 50 } }
+                }),
+            ))
+            .unwrap(); // seq 2(带外:不经过 turn 的 sink)
+            l.append(EventEnvelope::new("turn/end", 2, serde_json::json!({})))
+                .unwrap(); // seq 3
+        }
+        let (tx, mut rx) = broadcast::channel(8);
+        let mut live = LiveStats::default();
+        // bd 只见过 seq 1 → seq 2 是缺口
+        let first = log.lock().unwrap().get(1).unwrap();
+        live.bd.push(&first);
+        let ev3 = log.lock().unwrap().get(3).unwrap();
+        push_stats_frame("s1", &log, &tx, &mut live, "prov", 128_000, &ev3);
+        let f = rx.try_recv().expect("turn/end 是统计事件,stats 帧应发出");
+        assert_eq!(
+            f.payload["stats"]["inputTokens"], 500,
+            "缺口上的 request-done 用量必须进聚合(漏补则停在 0)"
+        );
+    }
+
+    /// 回归锁(乐观显示 id 贯通):prompt RPC 回执携带预分配消息 id,
+    /// 且与最终落档的 user/message 载荷 id 一致——桌面端乐观气泡按它
+    /// 去重替换的唯一键
+    #[tokio::test]
+    async fn prompt_rpc_returns_id_matching_user_message() {
+        let host = temp_host("prompt-id");
+        host.set_fake_script(script(&["ok"]));
+        let mut mux = host.mux_subscribe();
+        let id = host.create_session(None, None, None);
+        let res = host
+            .prompt(&id, &[json!({ "type": "text", "text": "hello" })], "queue")
+            .await
+            .unwrap();
+        let mid = res["id"].as_str().expect("回执应带预分配 id").to_string();
+        assert!(!mid.is_empty(), "id 非空");
+        // 驱动到 turn/end,再从磁盘日志核对 user/message 载荷 id
+        recv_until(&mut mux, |f| {
+            f.method == "session/event" && f.payload["event"]["type"] == "turn/end"
+        })
+        .await
+        .expect("turn/end 帧");
+        let events = load_envelopes(&host.session_log_path(&id)).expect("会话日志");
+        let um = events
+            .iter()
+            .find(|e| e.r#type == "user/message")
+            .expect("user/message 应落档");
+        assert_eq!(
+            um.data["id"].as_str(),
+            Some(mid.as_str()),
+            "user/message 载荷 id 必须与 RPC 回执 id 一致"
+        );
+    }
+
+    /// 回归锁(跨 turn 复用):统计聚合挂 SlotInner 后,第二轮认领续扫
+    /// 而非重建——累计用量含首轮(每段脚本带 usage input 1200)
+    #[tokio::test]
+    async fn live_stats_persist_across_turns() {
+        // script() 助手不带 Usage 事件,本测试需要用量进聚合
+        let seg = |m: &str| {
+            vec![
+                LlmEvent::Chunk(m.into()),
+                LlmEvent::AssistantMessage(json!({ "content": m })),
+                LlmEvent::Usage(json!({
+                    "input_tokens": 1200, "output_tokens": 300,
+                    "cached_tokens": 900, "ttftMs": 150,
+                })),
+                LlmEvent::Done,
+            ]
+        };
+        let host = temp_host("live-stats");
+        host.set_fake_script(vec![seg("one"), seg("two")]);
+        let mut mux = host.mux_subscribe();
+        let id = host.create_session(None, None, None);
+        run_turn(&host, &mut mux, &id, "q1").await;
+        run_turn(&host, &mut mux, &id, "q2").await;
+        // 收最后一帧 session/stats(轮尾收口即推)
+        let mut last = None;
+        while let Ok(f) = mux.try_recv() {
+            if f.method == "session/stats" {
+                last = Some(f);
+            }
+        }
+        let f = last.expect("两轮后应有 stats 帧");
+        assert_eq!(
+            f.payload["stats"]["inputTokens"], 2400,
+            "第二轮应含首轮累计(1200×2),实为 {}",
+            f.payload["stats"]["inputTokens"]
+        );
+        assert_eq!(f.payload["stats"]["turns"], 2, "轮计数应为 2");
     }
 
     /// mux baseline 携带控制终态:set_mode 落档后 baseline 含
@@ -9448,6 +9662,73 @@ mod tests {
         // 持久化 .liuma/titles.json 含该会话
         let file = std::fs::read_to_string(host.workspace().join(".liuma/titles.json")).unwrap();
         assert!(file.contains("Justfile"), "标题应持久化:{file}");
+    }
+
+    /// 回归锁:Responses/Anthropic 方言纯文本流 = Chunk 直播增量 +
+    /// 流末 AssistantMessage 定稿全文(二者内容重叠)。标题取
+    /// 「定稿,否则累积」——旧实现两者都拼接,LLM 标题被拼成精确
+    /// 两遍(如 "i18n方案优化选型i18n方案优化选型")。
+    #[test]
+    fn title_from_events_prefers_final_message_over_chunks() {
+        let events = vec![
+            LlmEvent::Chunk("i18n方案".into()),
+            LlmEvent::Chunk("优化选型".into()),
+            LlmEvent::AssistantMessage(json!({ "content": "i18n方案优化选型" })),
+            LlmEvent::Usage(json!({ "input_tokens": 10 })),
+            LlmEvent::Done,
+        ];
+        assert_eq!(title_from_events(&events), "i18n方案优化选型");
+    }
+
+    /// 回归锁(反侧):流被截断无定稿(OpenAI Chat 方言纯文本只发
+    /// Chunk)→ 回退 Chunk 累积,不丢文本。
+    #[test]
+    fn title_from_events_falls_back_to_chunk_accumulation() {
+        let events = vec![
+            LlmEvent::Chunk("修复".into()),
+            LlmEvent::Chunk("登录崩溃".into()),
+            LlmEvent::Done,
+        ];
+        assert_eq!(title_from_events(&events), "修复登录崩溃");
+    }
+
+    /// 回归锁(存量清洗):修复前生成的翻倍标题在加载时平方串折叠
+    /// 还原(含 80 字节截断形态);干净标题原样保留。
+    #[test]
+    fn loads_legacy_doubled_titles_folded() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuma-core-titles-fold-{}",
+            Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(dir.join(".liuma")).unwrap();
+        let dirty = serde_json::json!({
+            "s-dirty1": "i18n方案优化选型i18n方案优化选型",
+            "s-dirty2": "用待办工具为 README 补安装说明用待办工具为 README 补安装说",
+            "s-clean": "修复登录页崩溃",
+        });
+        std::fs::write(
+            dir.join(".liuma/titles.json"),
+            serde_json::to_string(&dirty).unwrap(),
+        )
+        .unwrap();
+        let sroot = std::env::temp_dir().join(format!(
+            "liuma-core-titles-fold-sroot-{}",
+            Uuid::new_v4().simple()
+        ));
+        let host = AppHost::new_at(dir.clone(), true, "test-key", sroot).unwrap();
+        assert_eq!(
+            host.session_title("s-dirty1").as_deref(),
+            Some("i18n方案优化选型")
+        );
+        assert_eq!(
+            host.session_title("s-dirty2").as_deref(),
+            Some("用待办工具为 README 补安装说明")
+        );
+        assert_eq!(
+            host.session_title("s-clean").as_deref(),
+            Some("修复登录页崩溃")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 1x1 PNG(合法最小文件,附件准入全解码可过)

@@ -173,7 +173,9 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
     let item_store = store.clone();
     let list = gpui_kit::list(list_state.clone(), move |ix, _window, cx| {
         let st = item_store.read(cx);
-        // 流尾伪行:插队待投递气泡(session/queue 权威快照;行号 = 行槽之后)
+        // 流尾伪行:插队待投递气泡(session/queue 权威快照)+ 乐观用户
+        // 气泡(RPC 回执即显,user/message 帧到达按 id 替换);
+        // 行号 = 行槽之后,steering 先于 optimistic
         let Some(slot) = st.chat.row_slots.get(ix) else {
             let off = ix - st.chat.row_slots.len();
             let Some(id) = st.state.current_id.as_deref() else {
@@ -187,17 +189,39 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 .iter()
                 .filter(|e| e.placement == crate::features::chat::QueuePlacement::Steering)
                 .collect();
-            let Some(entry) = entries.get(off) else {
+            if let Some(entry) = entries.get(off) {
+                // 与节点行同款包裹(w_full + justify_center + 列宽内衬):
+                // taffy 里 auto 宽收缩到内容宽,缺这层时 justify_end 无自由
+                // 空间可分配,气泡塌到列左缘(「插队消息渲染到左侧」回归源)
+                return div()
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .child(pending_bubble(
+                        &item_store,
+                        cx,
+                        &entry.id,
+                        &entry.preview,
+                        "pending-steering",
+                        col_w,
+                    ))
+                    .into_any_element();
+            }
+            let Some(p) = chat.pending_user.get(off - entries.len()) else {
                 return div().into_any_element();
             };
-            // 与节点行同款包裹(w_full + justify_center + 列宽内衬):
-            // taffy 里 auto 宽收缩到内容宽,缺这层时 justify_end 无自由
-            // 空间可分配,气泡塌到列左缘(「插队消息渲染到左侧」回归源)
             return div()
                 .w_full()
                 .flex()
                 .justify_center()
-                .child(pending_steering_bubble(entry, col_w))
+                .child(pending_bubble(
+                    &item_store,
+                    cx,
+                    &p.id,
+                    &p.text,
+                    "pending-user",
+                    col_w,
+                ))
                 .into_any_element();
         };
         // test 钩子 selector 沿用节点原始序号(组行另行标注):布局
@@ -1925,6 +1949,29 @@ fn plan_archive_card(
         })
 }
 
+/// 用户气泡折叠阈值:估行超此值(≈315px)默认折叠,用户可手动展开
+/// (例外集 = chat.user_unfolded)
+const USER_FOLD_LINES: usize = 15;
+/// 折叠态露出的预览行数(渐隐盖住第 6 行下缘)
+const USER_PREVIEW_LINES: usize = 6;
+/// 用户气泡行高(14px 字号 × 1.5 相对行高,与气泡文本 div 同源)
+const USER_LINE_H: f32 = 21.;
+
+/// 用户气泡文本估行:显式 `\n` 逐段 + 按文本宽估折行(ascii 0.55 /
+/// 全角 1.0 × 14px 字宽)。启发式与 layout_tests 的 est_lines 同源,
+/// ±1 行误差由「阈值 15 − 预览 6」的余量吸收
+pub(crate) fn estimate_user_lines(text: &str, text_w: f32) -> usize {
+    text.lines()
+        .map(|l| {
+            let units: f32 = l
+                .chars()
+                .map(|c| if c.is_ascii() { 0.55 } else { 1.0 })
+                .sum();
+            ((units * 14. / text_w.max(1.)).ceil() as usize).max(1)
+        })
+        .sum()
+}
+
 /// 用户气泡:绝对宽 = 列宽 70%(原 525/748;同内容列,防测量塌陷),
 /// 圆角 22,底色 #2b2b2c,整体靠右(气泡 + 动作行随右缘,动作行在文档流内)
 #[allow(clippy::too_many_arguments)]
@@ -1941,6 +1988,12 @@ fn user_bubble(
     col_w: gpui_kit::Pixels,
 ) -> impl IntoElement {
     let bw = crate::shell::metrics::bubble_w(col_w);
+    // 超长判定(渲染期现算:窗口宽变 → 气泡宽变 → 折叠态自然重判)。
+    // 文本宽 = 气泡宽 − 左右内衬 16×2
+    let text_w = f32::from(bw) - 2. * 16.;
+    let over = !text.is_empty() && estimate_user_lines(text, text_w) > USER_FOLD_LINES;
+    let collapsed = over && !store.read(cx).chat.user_unfolded.contains(key);
+    let toggle_store = store.clone();
     div()
         .v_flex()
         .flex_shrink_0()
@@ -1980,7 +2033,62 @@ fn user_bubble(
                 .when(!files.is_empty(), |el| {
                     el.child(crate::features::attachments::message_files(files))
                 })
-                .when(!text.is_empty(), |el| el.child(bubble_rich_text(ix, text))),
+                .when(!text.is_empty(), |el| {
+                    // 超长折叠:预览行数封顶 + 底部渐隐(透明 → 气泡底色,
+                    // gpui 渐变仅两止点,同 tool_sweep 手法)+ 展开/收起钮
+                    el.child(
+                        div()
+                            .relative()
+                            .when(collapsed, |el| {
+                                el.max_h(px(USER_PREVIEW_LINES as f32 * USER_LINE_H))
+                                    .overflow_hidden()
+                            })
+                            .child(bubble_rich_text(ix, text))
+                            .when(collapsed, |el| {
+                                el.child(
+                                    div()
+                                        .absolute()
+                                        .left_0()
+                                        .right_0()
+                                        .bottom_0()
+                                        .h(px(44.))
+                                        .bg(gpui_kit::linear_gradient(
+                                            180.,
+                                            gpui_kit::linear_color_stop(
+                                                gpui_kit::transparent_black(),
+                                                0.,
+                                            ),
+                                            gpui_kit::linear_color_stop(theme::BUBBLE(), 1.),
+                                        ))
+                                        .debug_selector(move || format!("user-fade-{ix}")),
+                                )
+                            }),
+                    )
+                })
+                // 展开钮挂气泡内文本之后(右对齐同侧):仅超长消息渲染,
+                // 短消息零侵入
+                .when(over, |el| {
+                    let key_owned = key.to_string();
+                    el.child(
+                        div()
+                            .id(("user-fold", ix))
+                            .flex_shrink_0()
+                            .cursor_pointer()
+                            .text_size(px(13.))
+                            .text_color(theme::CAPTION())
+                            .hover(|s| s.text_color(theme::LABEL_2()))
+                            .debug_selector(move || format!("user-fold-{ix}"))
+                            .child(if collapsed {
+                                t!("common.expand").to_string()
+                            } else {
+                                t!("common.collapse").to_string()
+                            })
+                            .on_click(move |_, _, cx| {
+                                toggle_store
+                                    .update(cx, |st, cx| st.toggle_user_message(&key_owned, cx));
+                            }),
+                    )
+                }),
         )
         .child({
             // 操作行:时间戳 + 复制(时刻在图标前;早于最新消息
@@ -3438,24 +3546,40 @@ fn pretty_json(s: &str) -> String {
         .unwrap_or_else(|_| s.to_string())
 }
 
-/// 插队待投递气泡:与用户气泡同款视觉(右对齐;无标注无透明度——
-/// 待投递语义由位置表达:气泡位于流尾、认领后由持久 user/message 行
-/// 原位接管,视觉无缝)。标注式 chrome(小标 + 降透明)曾使它成为
-/// 唯一被装饰的用户样式气泡,破坏右对齐节奏,已移除。
-fn pending_steering_bubble(
-    entry: &crate::features::chat::QueueEntry,
+/// 流尾待定气泡(插队待投递 / 乐观用户):与用户气泡同款视觉(右对齐;
+/// 无标注无透明度——待定语义由位置表达:气泡位于流尾、被持久
+/// user/message 行原位接管,视觉无缝)。标注式 chrome(小标 + 降透明)
+/// 曾使它成为唯一被装饰的用户样式气泡,破坏右对齐节奏,已移除。
+/// 超长折叠与用户气泡同款(键 = 条目/消息 id)
+fn pending_bubble(
+    store: &Entity<AppStore>,
+    cx: &App,
+    key: &str,
+    text: &str,
+    prefix: &'static str,
     col_w: gpui_kit::Pixels,
 ) -> impl IntoElement {
     let bw = crate::shell::metrics::bubble_w(col_w);
+    let text_w = f32::from(bw) - 2. * 16.;
+    let over = !text.is_empty() && estimate_user_lines(text, text_w) > USER_FOLD_LINES;
+    let collapsed = over && !store.read(cx).chat.user_unfolded.contains(key);
+    let toggle_store = store.clone();
+    let toggle_id = key.to_string();
+    // 各闭包独立持有的选择器串(move 闭包不可共享)
+    let sel_row = format!("{prefix}-{key}");
+    let sel_bubble = format!("{prefix}-bubble-{key}");
+    let sel_fade = format!("{prefix}-fade-{key}");
+    let sel_fold = format!("{prefix}-fold-{key}");
+    let id_fold = sel_fold.clone();
     div()
-        .debug_selector(move || format!("pending-steering-{}", entry.id))
+        .debug_selector(move || sel_row)
         .w(col_w)
         .flex()
         .justify_end()
         .px(px(0.))
         .child(
             div()
-                .debug_selector(move || format!("pending-steering-bubble-{}", entry.id))
+                .debug_selector(move || sel_bubble)
                 .max_w(bw)
                 .rounded(px(22.))
                 .bg(theme::BUBBLE())
@@ -3464,7 +3588,58 @@ fn pending_steering_bubble(
                 .text_size(px(14.))
                 .text_color(theme::LABEL())
                 .line_height(gpui_kit::relative(1.5))
-                .child(entry.preview.clone()),
+                .v_flex()
+                .items_end()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .relative()
+                        .when(collapsed, |el| {
+                            el.max_h(px(USER_PREVIEW_LINES as f32 * USER_LINE_H))
+                                .overflow_hidden()
+                        })
+                        .child(text.to_string())
+                        .when(collapsed, |el| {
+                            el.child(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .bottom_0()
+                                    .h(px(44.))
+                                    .bg(gpui_kit::linear_gradient(
+                                        180.,
+                                        gpui_kit::linear_color_stop(
+                                            gpui_kit::transparent_black(),
+                                            0.,
+                                        ),
+                                        gpui_kit::linear_color_stop(theme::BUBBLE(), 1.),
+                                    ))
+                                    .debug_selector(move || sel_fade.clone()),
+                            )
+                        }),
+                )
+                .when(over, |el| {
+                    el.child(
+                        div()
+                            .id(gpui_kit::SharedString::from(id_fold))
+                            .flex_shrink_0()
+                            .cursor_pointer()
+                            .text_size(px(13.))
+                            .text_color(theme::CAPTION())
+                            .hover(|s| s.text_color(theme::LABEL_2()))
+                            .debug_selector(move || sel_fold)
+                            .child(if collapsed {
+                                t!("common.expand").to_string()
+                            } else {
+                                t!("common.collapse").to_string()
+                            })
+                            .on_click(move |_, _, cx| {
+                                toggle_store
+                                    .update(cx, |st, cx| st.toggle_user_message(&toggle_id, cx));
+                            }),
+                    )
+                }),
         )
 }
 
@@ -3497,7 +3672,7 @@ fn tool_display_name(name: &str) -> Option<std::borrow::Cow<'static, str>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{context_provenance, head_line, tail_line};
+    use super::{context_provenance, estimate_user_lines, head_line, tail_line};
     use serde_json::json;
 
     /// 折叠 Think 摘要 = 尾部内容(流式实时跟随)
@@ -3574,5 +3749,18 @@ mod tests {
         let (role, label) = context_provenance(&src);
         assert_eq!(role, "inject");
         assert_eq!(label, "plugin");
+    }
+
+    /// 估行:显式 \n 逐段 + 按文本宽折行(ascii 0.55 / 全角 1.0 × 14px)
+    #[test]
+    fn estimate_user_lines_counts_explicit_and_wrapped() {
+        // 纯显式换行:3 段各 1 行
+        assert_eq!(estimate_user_lines("甲\n乙\n丙", 400.), 3);
+        // 全角按宽折行:12 汉字 × 14px = 168px,容宽 100 → 2 行
+        assert_eq!(estimate_user_lines("一二三四五六七八九十一二三", 100.), 2);
+        // ascii 0.55 折算:100 × 0.55 × 14 = 770px,容宽 200 → 4 行
+        assert_eq!(estimate_user_lines(&"a".repeat(100), 200.), 4);
+        // 空串 = 0 行(lines() 空迭代;气泡文本 child 本就仅非空渲染)
+        assert_eq!(estimate_user_lines("", 200.), 0);
     }
 }

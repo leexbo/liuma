@@ -73,12 +73,14 @@ impl Translator {
     }
 
     /// 窗口预热:仅推进 turn/step/last_usage 三个状态字段,不构造任何
-    /// 输出 Value。[`translate_window`] 对 cut 之前的信封跑本方法——
-    /// 状态机判据与 [`Self::translate`] 同款,保证窗口翻译输出与
-    /// 「全量翻译」逐字节一致(last_usage 跨窗附着语义含在内:turn N
-    /// 尾的 request-done 在全量翻译里同样会附着到下一轮首条
-    /// assistant/message)。
-    fn prime(&mut self, ev: &EventEnvelope) {
+    /// 输出 Value(零分配)。[`translate_window`] 对 cut 之前的信封跑
+    /// 本方法——状态机判据与 [`Self::translate`] 同款,保证窗口翻译
+    /// 输出与「全量翻译」逐字节一致(last_usage 跨窗附着语义含在内:
+    /// turn N 尾的 request-done 在全量翻译里同样会附着到下一轮首条
+    /// assistant/message)。**预热消费者统一用本方法**:丢弃输出的
+    /// 全量 `translate` 预热(认领/压缩/broadcast_event)每事件构造
+    /// JSON 后丢弃,长会话是纯浪费
+    pub(crate) fn prime(&mut self, ev: &EventEnvelope) {
         match ev.r#type.as_str() {
             "turn/start" => {
                 self.turn += 1;

@@ -368,6 +368,174 @@ fn user_bubble_width_adapts_to_content(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 超长用户消息折叠:估行超阈值(15)默认折叠——露前 6 行 + 底部渐隐
+/// + 展开钮;短消息零侵入(无钮无渐隐)。点击展开 → 全文 + 收起钮 +
+/// 高度显著增长 + 行槽重测收窄到该行;再点收起对称回落。
+#[gpui_kit::test]
+fn long_user_message_folds_with_fade_and_expand(cx: &mut TestAppContext) {
+    use crate::features::chat::projection::{ChatNode, ChatState};
+    let (store, mut wcx, root) = menu_harness(cx, "user-fold");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.run_until_parked();
+    };
+
+    // 超长消息:40 段显式行(每段都长于一行)≫ 15 行阈值
+    let long_text = (0..40)
+        .map(|i| format!("{i} {}", long_para(0)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            let mut chat = ChatState::default();
+            chat.nodes.push(ChatNode::User {
+                key: "user:0".into(),
+                text: long_text,
+                images: vec![],
+                files: Vec::new(),
+                time: 0,
+            });
+            chat.nodes.push(ChatNode::User {
+                key: "user:1".into(),
+                text: "短消息".into(),
+                images: vec![],
+                files: Vec::new(),
+                time: 0,
+            });
+            st.state.chats.insert(id, chat);
+            cx.notify();
+        })
+    });
+    redraw(cx, &mut wcx);
+
+    // 折叠态:渐隐 + 展开钮在场;短消息无钮无渐隐
+    assert!(
+        wcx.debug_bounds("user-fade-0").is_some(),
+        "超长消息折叠态应有渐隐"
+    );
+    assert!(
+        wcx.debug_bounds("user-fold-0").is_some(),
+        "超长消息应有展开钮"
+    );
+    assert!(
+        wcx.debug_bounds("user-fold-1").is_none(),
+        "短消息不应有展开钮"
+    );
+    let folded = wcx.debug_bounds("user-bubble-0").expect("长消息气泡缺失");
+    // 预览 6 行 × 21 + 上下内衬 20 + 展开钮一行 + 余量
+    assert!(
+        folded.size.height < px(6. * 21. + 20. + 30. + 30.),
+        "折叠态气泡应封顶预览高度,实为 {:?}",
+        folded.size.height
+    );
+
+    // 展开:高度显著增长 + 重测收窄到该行(0 号槽)
+    click_sel(&mut wcx, "user-fold-0");
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("user-fade-0").is_none(),
+        "展开态不应有渐隐"
+    );
+    let unfolded = wcx
+        .debug_bounds("user-bubble-0")
+        .expect("展开态长消息气泡缺失");
+    assert!(
+        unfolded.size.height > folded.size.height + px(20. * 21. * 0.8),
+        "展开态应显著高于折叠态:展开 {:?} vs 折叠 {:?}",
+        unfolded.size.height,
+        folded.size.height
+    );
+    let ranges = cx.update(|app| store.read(app).chat.last_remeasure_ranges.clone());
+    assert!(
+        ranges.iter().any(|r| r.contains(&0)),
+        "折叠切换应重测该行槽,实为 {ranges:?}"
+    );
+
+    // 收起:对称回落
+    click_sel(&mut wcx, "user-fold-0");
+    redraw(cx, &mut wcx);
+    let refolded = wcx
+        .debug_bounds("user-bubble-0")
+        .expect("再折叠后长消息气泡缺失");
+    assert!(
+        (refolded.size.height - folded.size.height).abs() < px(2.),
+        "再折叠应回到折叠高度:再折 {:?} vs 首折 {:?}",
+        refolded.size.height,
+        folded.size.height
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 回归锁(乐观显示渲染面):pending_user 在场 → 流尾渲染乐观气泡;
+/// 同 id 的 user/message 帧到达后伪行消失、真实用户行入列(原位交接,
+/// 不双影)
+#[gpui_kit::test]
+fn optimistic_user_bubble_renders_and_hands_off(cx: &mut TestAppContext) {
+    use crate::features::chat::projection::{ChatNode, ChatState, PendingUser};
+    let (store, mut wcx, root) = menu_harness(cx, "opt-bubble");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.run_until_parked();
+    };
+    let sid = cx.update(|app| {
+        store.update(app, |st, cx| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            let mut chat = ChatState::default();
+            chat.nodes.push(ChatNode::User {
+                key: "user:1".into(),
+                text: "先前的消息".into(),
+                images: vec![],
+                files: Vec::new(),
+                time: 0,
+            });
+            chat.pending_user.push(PendingUser {
+                id: "m-9".into(),
+                text: "乐观消息".into(),
+            });
+            st.state.chats.insert(id.clone(), chat);
+            cx.notify();
+            id
+        })
+    });
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("pending-user-m-9").is_some(),
+        "乐观气泡应渲染在流尾"
+    );
+
+    // 交接:同 id 的 user/message 事件帧 → 伪行消失、真实行入列
+    let event_frame = liuma_core::proto::ServerRequest {
+        r#type: "server-request".into(),
+        rpc_id: "t".into(),
+        method: "session/event".into(),
+        payload: serde_json::json!({
+            "sessionId": sid,
+            "event": { "type": "user/message", "seq": 9, "time": 0,
+                "data": { "id": "m-9",
+                          "content": [ { "type": "text", "text": "乐观消息" } ],
+                          "source": { "kind": "user" } },
+                "surfaceOp": "append" },
+        }),
+    };
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            let _ = crate::shell::reducer::apply_frame(&mut st.state, event_frame);
+            cx.notify();
+        })
+    });
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("pending-user-m-9").is_none(),
+        "user/message 到达后乐观伪行应消失(不双影)"
+    );
+    assert!(
+        wcx.debug_bounds("user-bubble-1").is_some(),
+        "真实用户行应入列(第二条用户消息)"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 工具卡(Read)展开后:收起按钮**恒显示**(hidden>0 无条件
 /// 渲染,不随展开消失)+ 展开体底部有 Inspect 药丸;点 Inspect 开右栏
 /// 轨迹面板标签并打开该 tool 调用的记录检查器。
@@ -2781,6 +2949,10 @@ fn first_message_titles_session(cx: &mut TestAppContext) {
     let mut title = String::new();
     for _ in 0..100 {
         std::thread::sleep(std::time::Duration::from_millis(200));
+        // 推进假时钟:状态边沿的清单刷新经去抖定时器延迟执行
+        // (Effect::StatusRefresh,让出认领/TTFT 窗口),真实 sleep 不驱动它
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(200));
         cx.run_until_parked();
         title = cx.update(|app| store.read(app).title_for(&id));
         if title != "新会话" {
@@ -2810,6 +2982,9 @@ fn first_message_title_collapses_newlines(cx: &mut TestAppContext) {
     let mut title = String::new();
     for _ in 0..100 {
         std::thread::sleep(std::time::Duration::from_millis(200));
+        // 同 first_message_titles_session:去抖定时器靠假时钟推进
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(200));
         cx.run_until_parked();
         title = cx.update(|app| store.read(app).title_for(&id));
         if title != "新会话" {
@@ -3240,6 +3415,127 @@ fn trajectory_ledger_rows_inspector_and_tabs(cx: &mut TestAppContext) {
     assert!(
         wcx.debug_bounds("block-jump-4").is_some(),
         "Raw 页 tool-call 块头应可跳工具记录"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 检查器渲染期宽度钳制:面板让位到窄于「存储检查器宽 + 台账最小宽」
+/// 时,检查器就地让位(渲染宽 = min(存储宽, 面板宽 − 台账最小宽 200)),
+/// 右缘不得越面板;窗口拉宽后面板回意愿宽,检查器恢复存储宽。
+///
+/// 回归锁:固定宽 flex_shrink_0 的检查器此前不知面板渲染宽,面板
+/// 让位到 320..540 时右缘(关闭钮/页签尾部)被面板 overflow_hidden
+/// 裁掉、台账被压穿(右缘截断 bug)。
+#[gpui_kit::test]
+fn trajectory_inspector_clamps_to_panel_width(cx: &mut TestAppContext) {
+    use crate::features::trajectory::{InspectTarget, TrajectoryView};
+    use liuma_core::trajectory::TrajectoryRecord;
+
+    let (store, mut wcx, root) = menu_harness(cx, "traj-clamp");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+    };
+
+    let rec = |index: u64, kind: &str| TrajectoryRecord {
+        index,
+        seq: index,
+        kind: kind.into(),
+        turn: Some(1),
+        group: "Message".into(),
+        turn_start: index == 1,
+        text: format!("记录 {index}"),
+        result: None,
+        is_error: false,
+        time_seconds: Some(1.0),
+        started_at: Some(1000 + index as i64 * 10),
+        request_number: None,
+        input: None,
+        output: None,
+        think: None,
+        ttft_ms: None,
+        payload: None,
+        output_detail: None,
+        thinking_detail: None,
+        system_prompt: None,
+        tools_catalog: None,
+        schema_detail: None,
+        source: None,
+        decision: None,
+        fold: None,
+    };
+
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            st.trajectory.trajectory = TrajectoryView {
+                records: vec![rec(1, "message"), rec(2, "tool")],
+                requests: vec![],
+                has_older: false,
+                total: 2,
+                loading: false,
+                loading_older: false,
+            };
+            st.trajectory.trajectory_session = Some(id);
+            st.panel_open = true;
+            st.panel_tabs = vec![crate::shell::panel::PanelTab::Trajectory];
+            st.panel_active_tab = Some(crate::shell::panel::PanelTab::Trajectory);
+            // 侧栏收起(rail):面板渲染宽 = 视口 − 0 − CHAT_AREA_MIN(860)
+            st.sidebar_collapsed = true;
+            st.panel_px = 700.;
+            st.trajectory.inspector_width = 400.;
+        });
+    });
+    // 窄窗 1240:面板让位到 380(< 320 阈值不关,仍开)→ 检查器
+    // 至多 380 − 200 = 180
+    wcx.simulate_resize(gpui_kit::size(gpui_kit::px(1240.), gpui_kit::px(800.)));
+    cx.update(|app| {
+        store.update(app, |st, cx| st.select_trajectory_record(2, cx));
+    });
+    redraw(cx, &mut wcx);
+    assert_eq!(
+        cx.update(|app| store.read(app).trajectory.inspector),
+        Some(InspectTarget::Record(2)),
+        "前置:检查器应打开"
+    );
+    let insp = wcx
+        .debug_bounds("trajectory-inspector")
+        .expect("检查器缺失");
+    assert!(
+        f32::from(insp.size.width) <= 180.5,
+        "窄面板下检查器应钳到 ≤180,实为 {}",
+        f32::from(insp.size.width)
+    );
+    let rp = wcx.debug_bounds("right-panel").expect("面板列缺失");
+    assert!(
+        insp.right() <= rp.right() + gpui_kit::px(0.5),
+        "检查器右缘不得越面板右缘"
+    );
+    let ledger = wcx
+        .debug_bounds("trajectory-scroll")
+        .expect("台账滚动区缺失");
+    assert!(
+        f32::from(ledger.size.width) >= 198.5,
+        "台账应保有最小宽 200(±边框),实为 {}",
+        f32::from(ledger.size.width)
+    );
+
+    // 拉宽 1800:面板回意愿宽 700 → 检查器恢复存储宽 400(钳制不吞噬意愿)
+    wcx.simulate_resize(gpui_kit::size(gpui_kit::px(1800.), gpui_kit::px(800.)));
+    redraw(cx, &mut wcx);
+    let insp = wcx
+        .debug_bounds("trajectory-inspector")
+        .expect("宽窗下检查器缺失");
+    assert!(
+        f32::from(insp.size.width) >= 399.5,
+        "宽面板下检查器应恢复存储宽 400,实为 {}",
+        f32::from(insp.size.width)
+    );
+    let rp = wcx.debug_bounds("right-panel").expect("面板列缺失");
+    assert!(
+        insp.right() <= rp.right() + gpui_kit::px(0.5),
+        "宽窗下检查器右缘仍不得越面板右缘"
     );
     let _ = std::fs::remove_dir_all(root);
 }

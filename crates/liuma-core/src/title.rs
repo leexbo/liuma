@@ -147,6 +147,28 @@ pub fn fallback_session_title(input: &str, max_words: usize, max_bytes: usize) -
         .to_string()
 }
 
+/// 折叠历史「翻倍标题」(流式增量与定稿全文双拼 bug 的存量脏数据)。
+///
+/// 判定:存在切点 `i`(1..len)使前缀 `s = t[..i]` 满足「剩余部分
+/// (≥2 字符且 ≤ len(s))是 `s` 的前缀」——覆盖精确翻倍
+/// (`t == s+s`,切点在半长)与翻倍后按 80 字节截断(`t` 是 `s+s` 的
+/// 真前缀,第二份残段 = 80−首份字节,切点可超过半长)两种历史形态;
+/// 取最大 `i`(最保守折叠)。无匹配原样返回。取舍:
+/// ① 残段 ≥2 字符——脏数据只在翻倍超 80 字节时才截断(残段
+/// = 80−首份字节 ≥ 2),放宽到 1 会把首尾同字的正常标题砍掉末字;
+/// ② 尾部恰是自身前缀重复的合法标题(如 "fix the bug fix")仍会被
+/// 误折,概率与代价均低,接受(仅启动加载一次性迁移调用)。
+pub fn fold_doubled_title(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    for i in (1..chars.len()).rev() {
+        let (head, rest) = chars.split_at(i);
+        if rest.len() >= 2 && rest.len() <= i && rest.iter().zip(head.iter()).all(|(r, h)| r == h) {
+            return head.iter().collect();
+        }
+    }
+    input.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +206,36 @@ mod tests {
         assert_eq!(fallback_session_title("a b c d e", 3, 3), "a b");
         // 空输入 → 空标题
         assert_eq!(fallback_session_title("", 5, 40), "");
+    }
+
+    #[test]
+    fn fold_doubled_folds_exact_and_truncated_doubles() {
+        // 精确翻倍(全量 LLM 标题,双拼后未触 80 字节上限)
+        assert_eq!(
+            fold_doubled_title("i18n方案优化选型i18n方案优化选型"),
+            "i18n方案优化选型"
+        );
+        // 翻倍后 80 字节截断:第二份副本中途被切(切点超过半长)
+        assert_eq!(
+            fold_doubled_title("用待办工具为 README 补安装说明用待办工具为 README 补安装说"),
+            "用待办工具为 README 补安装说明"
+        );
+        // 截断极短:第二份残段只剩 2 字符(80−首份字节下限)
+        assert_eq!(fold_doubled_title("abcdefghijab"), "abcdefghij");
+        // ASCII 同款
+        assert_eq!(fold_doubled_title("fix loginfix login"), "fix login");
+    }
+
+    #[test]
+    fn fold_doubled_keeps_normal_titles() {
+        // 普通标题(尾部非自身前缀的重复)原样返回
+        assert_eq!(fold_doubled_title("修复登录页崩溃"), "修复登录页崩溃");
+        assert_eq!(fold_doubled_title("one two three"), "one two three");
+        // 首尾同字但残段仅 1 字符:不是截断形态(翻倍 ≤80 字节不截),不折
+        assert_eq!(fold_doubled_title("我手写我"), "我手写我");
+        assert_eq!(fold_doubled_title("修复登录页崩溃修"), "修复登录页崩溃修");
+        // 空串/单字符不可切
+        assert_eq!(fold_doubled_title(""), "");
+        assert_eq!(fold_doubled_title("a"), "a");
     }
 }
