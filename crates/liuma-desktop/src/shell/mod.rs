@@ -367,6 +367,7 @@ impl Render for WorkspaceView {
             s.install_trajectory_scroll_handler(cx);
             s.flush_trajectory_scroll(cx);
             s.sync_chat_list(cx);
+            s.flush_chat_scroll(cx);
             s.sync_retry_tick(cx);
             // 列宽变化通知(宽变失效 → settle 全量重测;见 chat/store 注释)
             s.sync_chat_list_width(

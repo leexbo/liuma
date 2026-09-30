@@ -147,9 +147,9 @@ async fn http_tool_round_trip_through_sandbox() {
 
     // 日志:工具往返 + 审计归因
     let l = log.lock().unwrap();
-    let types: Vec<&str> = l.iter().map(|e| e.r#type.as_str()).collect();
-    assert!(types.contains(&"tool/call"));
-    assert!(types.contains(&"tool/result"));
+    let types: Vec<String> = l.iter().map(|e| e.r#type.clone()).collect();
+    assert!(types.contains(&"tool/call".to_string()));
+    assert!(types.contains(&"tool/result".to_string()));
     assert_eq!(
         types.iter().filter(|t| **t == "audit/call").count(),
         6,

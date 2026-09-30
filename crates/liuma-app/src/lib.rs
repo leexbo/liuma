@@ -945,7 +945,7 @@ pub async fn judge_context(
     // 锁卫兵不跨 await(作用域内收集;恢复式锁,后台 panic 不连坐)
     let events: Vec<EventEnvelope> = {
         let l = log.lock().unwrap_or_else(|p| p.into_inner());
-        l.iter().cloned().collect()
+        l.iter().collect()
     };
     // 压力判定:上次真实用量(缺席则派生字符估算)≥ 0.6 × 窗口
     let derived_chars = liuma_session::derive_visible_messages(events.iter())
@@ -1064,10 +1064,11 @@ pub fn open_backend(path: &str) -> Result<JsonlBackend> {
 }
 
 /// 从 JSONL 会话文件重建事件日志(重开会话:模型可见历史与投影
-/// 同源恢复)。文件缺失 = 空日志(新会话);每行经 [`liuma_session::
-/// decode_envelope_str`] 单遍直解 + 读取方守卫,未知未标事件即拒
-/// (fail-closed)。冷加载热路径:单遍直解省中间 Value 树,全档
-/// 解析成本约对半(守卫语义与 Value 路径共用同一实现)。
+/// 同源恢复)。文件缺失 = 空日志(新会话);每行经
+/// [`liuma_session::chunk_rows::decode_line_events`] 布局盲判别——
+/// 普通行单遍直解 + 读取方守卫(未知未标事件即拒,fail-closed;
+/// 直解省中间 Value 树,全档解析成本约对半),打包行展开成员。
+/// **不得**绕过判别直解信封:打包行无 `type` 字段,直解即拒载。
 pub fn load_log(path: &str) -> Result<EventLog> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
@@ -1080,10 +1081,12 @@ pub fn load_log(path: &str) -> Result<EventLog> {
         if line.trim().is_empty() {
             continue;
         }
-        let ev = liuma_session::decode_envelope_str(line)
-            .map_err(|e| anyhow::anyhow!("{path}:{lineno} {e}"))?;
-        log.append(ev)
-            .map_err(|e| anyhow::anyhow!("{path}:{lineno} {e}"))?;
+        for ev in liuma_session::chunk_rows::decode_line_events(line)
+            .map_err(|e| anyhow::anyhow!("{path}:{lineno} {e}"))?
+        {
+            log.append(ev)
+                .map_err(|e| anyhow::anyhow!("{path}:{lineno} {e}"))?;
+        }
     }
     Ok(log)
 }
@@ -1102,7 +1105,8 @@ impl JsonlEventStore {
         Self { path: path.into() }
     }
 
-    /// 全档解析 + 连续性校验(文件缺失/不可读 = Err,在场性由调用方判定)
+    /// 全档解析 + 连续性校验(文件缺失/不可读 = Err,在场性由调用方判定)。
+    /// 布局盲:经 [`chunk_rows::decode_line_events`] 判别,打包行展开成员
     fn load_all(&self) -> Result<Vec<EventEnvelope>, liuma_session::EventStoreError> {
         let text = std::fs::read_to_string(&self.path)
             .map_err(|e| liuma_session::EventStoreError::Io(format!("{}: {e}", self.path)))?;
@@ -1111,10 +1115,15 @@ impl JsonlEventStore {
             if line.trim().is_empty() {
                 continue;
             }
-            let ev = liuma_session::decode_envelope_str(line).map_err(|e| {
-                liuma_session::EventStoreError::Malformed(format!("{}:{} {e}", self.path, n + 1))
-            })?;
-            events.push(ev);
+            let mut line_events =
+                liuma_session::chunk_rows::decode_line_events(line).map_err(|e| {
+                    liuma_session::EventStoreError::Malformed(format!(
+                        "{}:{} {e}",
+                        self.path,
+                        n + 1
+                    ))
+                })?;
+            events.append(&mut line_events);
         }
         liuma_session::verify_seq_contiguity(&events)?;
         Ok(events)
@@ -1236,7 +1245,7 @@ mod tests {
         .unwrap();
         let text = log
             .iter()
-            .map(|ev| serde_json::to_string(ev).unwrap())
+            .map(|ev| serde_json::to_string(&ev).unwrap())
             .collect::<Vec<_>>()
             .join("\n");
         std::fs::write(&path, text).unwrap();
@@ -1293,7 +1302,7 @@ mod tests {
         .unwrap();
         let via_store = store.all().unwrap();
         let via_log = load_log(path.to_str().unwrap()).unwrap();
-        let log_events: Vec<_> = via_log.iter().cloned().collect();
+        let log_events: Vec<_> = via_log.iter().collect();
         assert_eq!(via_store.len(), 3);
         assert_eq!(via_store, log_events, "端口与 load_log 同载荷");
 
@@ -1356,7 +1365,7 @@ mod tests {
         // 历史先落盘(真实会话形态:文件承载 1..N 全量),再装配后端
         {
             use std::io::Write as _;
-            let hist: Vec<_> = log.lock().unwrap().iter().cloned().collect();
+            let hist: Vec<_> = log.lock().unwrap().iter().collect();
             let mut out = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
             for ev in &hist {
                 serde_json::to_writer(&mut out, ev).unwrap();

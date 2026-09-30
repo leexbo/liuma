@@ -241,7 +241,8 @@ async fn manual_compact_forces_summary_and_replays_without_recall() {
         assert_eq!(summary.data["items"], items);
         assert_eq!(summary.data["shadowedTokens"], tokens);
         // 派生面:摘要以 checkpoint 包装进请求前缀
-        let visible = liuma_session::derive_visible_messages(l.iter());
+        let snap: Vec<EventEnvelope> = l.iter().collect();
+        let visible = liuma_session::derive_visible_messages(snap.iter());
         let first = &visible.as_array().unwrap()[0];
         assert!(
             first["content"]
@@ -323,7 +324,8 @@ async fn manual_compact_folds_small_history_to_current_turn() {
     assert_eq!(items, 6, "折 q0/a0..q2/a2 共 6 条;当前这一轮 q3 留下");
     {
         let l = log.lock().unwrap();
-        let visible = liuma_session::derive_visible_messages(l.iter());
+        let snap: Vec<EventEnvelope> = l.iter().collect();
+        let visible = liuma_session::derive_visible_messages(snap.iter());
         let arr = visible.as_array().expect("数组");
         assert_eq!(arr.len(), 2, "派生面 = checkpoint + 当前这一轮");
         assert!(
@@ -734,7 +736,7 @@ fn big_tool_log() -> Arc<Mutex<EventLog>> {
 
 /// 会话里的事件(锁内克隆;测试断言用)
 fn events(log: &Arc<Mutex<EventLog>>) -> Vec<EventEnvelope> {
-    log.lock().unwrap().iter().cloned().collect()
+    log.lock().unwrap().iter().collect()
 }
 
 /// 只记录且如实报数的裁定器:回执与计数进载荷,**派生面不动**

@@ -337,7 +337,7 @@ mod tests {
             log.append(EventEnvelope::new(ty, 0, data.clone()))
                 .expect("append");
         }
-        log.iter().cloned().collect()
+        log.iter().collect()
     }
 
     fn user_msg(text: &str) -> (&'static str, serde_json::Value) {
@@ -701,7 +701,7 @@ mod tests {
             log.append(EventEnvelope::new("tool/result", 0, tool_result(chars).1))
                 .expect("append");
         }
-        let events: Vec<EventEnvelope> = log.iter().cloned().collect();
+        let events: Vec<EventEnvelope> = log.iter().collect();
         let already: std::collections::HashSet<u64> = [4].into(); // 9_000 那条已裁
         let picked = select_value_candidates(events.iter(), &range, &already, 2_000, 600);
         assert_eq!(

@@ -63,7 +63,8 @@ impl<T> InvariantGate<T> {
             .lock()
             .map_err(|_| GateError::Violation(internal_error("log 锁中毒")))?;
         // 期望侧与 engine 共用同一投影(裁剪/折叠策略栈;唯一实现)
-        let derived_messages = derive_visible_messages(log.iter());
+        let snap: Vec<liuma_session::EventEnvelope> = log.iter().collect();
+        let derived_messages = derive_visible_messages(snap.iter());
         let derived_header = header.to_json();
         verify_request(
             &derived_messages,

@@ -74,59 +74,58 @@ pub fn export_spans(log: &EventLog) -> Vec<SpanRecord> {
     let mut turn: Option<(u64, i64)> = None; // (span_id, start time)
     let mut step: Option<(u64, i64)> = None;
 
-    for ev in log.iter() {
-        match ev.r#type.as_str() {
-            "turn/start" => turn = Some((ev.seq, ev.time)),
-            "step/start" => step = Some((ev.seq, ev.time)),
-            "turn/end" => {
-                if let Some((span_id, start)) = turn.take() {
-                    spans.push(SpanRecord {
-                        trace_id: trace_id.clone(),
-                        span_id,
-                        parent_id: None,
-                        name: "turn".into(),
-                        start_time_unix_nano: start * 1_000_000,
-                        end_time_unix_nano: ev.time * 1_000_000,
-                        attributes: json!({ "endSeq": ev.seq }),
-                    });
-                }
-                step = None;
-            }
-            "step/end" => {
-                if let (Some((turn_id, _)), Some((span_id, start))) = (turn, step.take()) {
-                    spans.push(SpanRecord {
-                        trace_id: trace_id.clone(),
-                        span_id,
-                        parent_id: Some(turn_id),
-                        name: "step".into(),
-                        start_time_unix_nano: start * 1_000_000,
-                        end_time_unix_nano: ev.time * 1_000_000,
-                        attributes: json!({ "endSeq": ev.seq }),
-                    });
-                }
-            }
-            "audit/call" => {
-                let parent = step.map(|(id, _)| id).or(turn.map(|(id, _)| id));
+    // 借用式流扫(零物化:owned iter 的整表展开在长会话下是数百 MB 级瞬时分配)
+    log.for_each(|ev| match ev.r#type.as_str() {
+        "turn/start" => turn = Some((ev.seq, ev.time)),
+        "step/start" => step = Some((ev.seq, ev.time)),
+        "turn/end" => {
+            if let Some((span_id, start)) = turn.take() {
                 spans.push(SpanRecord {
                     trace_id: trace_id.clone(),
-                    span_id: ev.seq,
-                    parent_id: parent,
-                    name: format!(
-                        "{}.{}",
-                        ev.data["boundary"].as_str().unwrap_or("?"),
-                        ev.data["operation"].as_str().unwrap_or("?")
-                    ),
-                    start_time_unix_nano: ev.time * 1_000_000,
+                    span_id,
+                    parent_id: None,
+                    name: "turn".into(),
+                    start_time_unix_nano: start * 1_000_000,
                     end_time_unix_nano: ev.time * 1_000_000,
-                    attributes: json!({
-                        "detail": ev.data["detail"],
-                        "sourceEventSeqs": ev.source_event_seqs.clone().unwrap_or_default(),
-                    }),
+                    attributes: json!({ "endSeq": ev.seq }),
                 });
             }
-            _ => {}
+            step = None;
         }
-    }
+        "step/end" => {
+            if let (Some((turn_id, _)), Some((span_id, start))) = (turn, step.take()) {
+                spans.push(SpanRecord {
+                    trace_id: trace_id.clone(),
+                    span_id,
+                    parent_id: Some(turn_id),
+                    name: "step".into(),
+                    start_time_unix_nano: start * 1_000_000,
+                    end_time_unix_nano: ev.time * 1_000_000,
+                    attributes: json!({ "endSeq": ev.seq }),
+                });
+            }
+        }
+        "audit/call" => {
+            let parent = step.map(|(id, _)| id).or(turn.map(|(id, _)| id));
+            spans.push(SpanRecord {
+                trace_id: trace_id.clone(),
+                span_id: ev.seq,
+                parent_id: parent,
+                name: format!(
+                    "{}.{}",
+                    ev.data["boundary"].as_str().unwrap_or("?"),
+                    ev.data["operation"].as_str().unwrap_or("?")
+                ),
+                start_time_unix_nano: ev.time * 1_000_000,
+                end_time_unix_nano: ev.time * 1_000_000,
+                attributes: json!({
+                    "detail": ev.data["detail"],
+                    "sourceEventSeqs": ev.source_event_seqs.clone().unwrap_or_default(),
+                }),
+            });
+        }
+        _ => {}
+    });
     spans
 }
 

@@ -8,6 +8,14 @@ trajectory:
     zh-CN: "时长"
     en: "Duration"
 
+  jump_top:
+    zh-CN: "回顶"
+    en: "Top"
+
+  jump_bottom:
+    zh-CN: "回底"
+    en: "Bottom"
+
   toolbar_turns:
     zh-CN: "轮次"
     en: "Turns"

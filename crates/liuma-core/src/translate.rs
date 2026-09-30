@@ -496,6 +496,30 @@ pub fn translate_window<'a>(
     out
 }
 
+/// [`translate_window`] 的打包日志形态:借用式单遍(prime 前缀 + 译
+/// 窗口),**免整表 owned 展开**——切片迭代器面在打包日志上只能逐条
+/// 克隆(46 万事件 ≈ 379MB 瞬时分配,历史分页每次请求一次)。
+/// 输出与切片版逐事件一致(差分锁在本文件测试)
+pub fn translate_window_log(
+    provider: &ProviderInfo,
+    log: &liuma_session::EventLog,
+    cut: u64,
+    before_seq: Option<u64>,
+) -> Vec<SessionEvent> {
+    let mut tr = Translator::new(provider.clone());
+    let mut out = Vec::new();
+    log.for_each_range(1, before_seq, |ev| {
+        if ev.seq > cut {
+            if let Some(e) = tr.translate(ev) {
+                out.push(e);
+            }
+        } else {
+            tr.prime(ev);
+        }
+    });
+    out
+}
+
 // ── history 分页(api-proxy paginate 语义) ───────────────────────────
 
 /// 分页结果
@@ -580,6 +604,87 @@ mod tests {
         ProviderInfo {
             provider: "openai-completions".into(),
             model: "deepseek-chat".into(),
+        }
+    }
+
+    /// 差分锁(打包日志零物化路径):`EventLog::page_cut` 与
+    /// `translate_window_log` 对混排(打包 delta 行 + 注入/真实 user +
+    /// assistant)日志,与切片版 `page_cut` / `translate_window`
+    /// 逐字节一致——history 分页的宿主实现两者只留打包形态
+    #[test]
+    fn packed_log_page_cut_and_window_match_slice_versions() {
+        let mut log = liuma_session::EventLog::new();
+        let mut events: Vec<EventEnvelope> = vec![
+            ev("turn/start", 0, json!({})),
+            ev("user/message", 0, json!({ "content": "第一问", "turn": 1 })),
+            ev("step/start", 0, json!({})),
+        ];
+        // 可打包 reasoning 连段(ignorable + 精确键)
+        for t in ["思", "考", "中"] {
+            let mut d = ev("assistant/reasoning", 0, json!({ "text": t }));
+            d.ignorable = true;
+            events.push(d);
+        }
+        events.extend([
+            ev(
+                "assistant/message",
+                0,
+                json!({ "content": "答一", "turn": 1, "step": 1 }),
+            ),
+            // 注入上下文(不计入 surface 计数)
+            ev(
+                "user/message",
+                0,
+                json!({ "content": "[injected]", "source": { "kind": "plugin" } }),
+            ),
+            ev("turn/end", 0, json!({ "turn": 1 })),
+            ev("turn/start", 0, json!({})),
+            ev("user/message", 0, json!({ "content": "第二问", "turn": 2 })),
+            ev(
+                "assistant/message",
+                0,
+                json!({ "content": "答二", "turn": 2, "step": 1 }),
+            ),
+            ev("turn/end", 0, json!({ "turn": 2 })),
+        ]);
+        for d in events {
+            log.append(d).unwrap();
+        }
+
+        let slice: Vec<EventEnvelope> = log.iter().collect();
+        assert!(slice.len() >= 12);
+        // page_cut 全参数矩阵一致
+        for before in [None, Some(6u64), Some(9), Some(100)] {
+            for max in [0usize, 1, 2, 3, 50] {
+                assert_eq!(
+                    log.page_cut(before, max),
+                    page_cut(&slice, before, max),
+                    "page_cut(before={before:?}, max={max}) 打包/切片漂移"
+                );
+            }
+        }
+        // 窗口翻译逐事件一致(归一化翻译器为缺 id 消息合成的随机
+        // UUID——两次翻译实例不同 id,除此逐字节相等)
+        let norm = |events: Vec<SessionEvent>| -> Vec<SessionEvent> {
+            events
+                .into_iter()
+                .map(|mut e| {
+                    if let Some(obj) = e.data.as_object_mut() {
+                        obj.remove("id");
+                    }
+                    e
+                })
+                .collect()
+        };
+        for before in [None, Some(6u64), Some(9), Some(100)] {
+            for max in [1usize, 2, 3, 50] {
+                let cut = log.page_cut(before, max);
+                assert_eq!(
+                    norm(translate_window_log(&info(), &log, cut, before)),
+                    norm(translate_window(&info(), slice.iter(), cut, before)),
+                    "window(before={before:?}, max={max}) 打包/切片漂移"
+                );
+            }
         }
     }
 
@@ -1272,7 +1377,7 @@ mod tests {
         let log2 = liuma_app::load_log(REAL_LOG).unwrap();
         let load_log_total = t.elapsed();
 
-        let slice: Vec<liuma_session::EventEnvelope> = log2.iter().cloned().collect();
+        let slice: Vec<liuma_session::EventEnvelope> = log2.iter().collect();
         let provider = super::ProviderInfo {
             provider: "anthropic".into(),
             model: "test".into(),

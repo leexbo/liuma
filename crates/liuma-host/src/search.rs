@@ -17,7 +17,6 @@
 use std::path::Path;
 
 use liuma_session::EventEnvelope;
-use liuma_session::envelope::decode_envelope;
 use turso::Value as Tv;
 
 use super::PersistenceError;
@@ -145,16 +144,18 @@ impl SearchIndex {
             if line.trim().is_empty() {
                 continue;
             }
-            let raw: serde_json::Value = serde_json::from_str(line)
-                .map_err(|e| PersistenceError::Turso(format!("{session}: 行解析失败 {e}")))?;
-            let ev = decode_envelope(&raw)?;
-            if ev.seq <= watermark {
-                continue;
-            }
-            latest = latest.max(ev.seq);
-            if let Some((kind, content)) = project(&ev) {
-                self.conn
-                    .execute(
+            // 布局盲统一入口(普通行直解快路 + 打包行展开;直解信封会把
+            // 打包行当损坏文件拒载)
+            for ev in liuma_session::chunk_rows::decode_line_events(line)
+                .map_err(|e| PersistenceError::Turso(format!("{session}: 行解析失败 {e}")))?
+            {
+                if ev.seq <= watermark {
+                    continue;
+                }
+                latest = latest.max(ev.seq);
+                if let Some((kind, content)) = project(&ev) {
+                    self.conn
+                        .execute(
                         "INSERT OR REPLACE INTO docs (session, seq, kind, content) VALUES (?, ?, ?, ?)",
                         (
                             Tv::Text(session.into()),
@@ -165,6 +166,7 @@ impl SearchIndex {
                     )
                     .await
                     .map_err(|e| PersistenceError::Turso(e.to_string()))?;
+                }
             }
         }
         if latest > watermark {
@@ -339,7 +341,11 @@ mod tests {
             }),
         ))
         .unwrap();
-        std::fs::write(&log_a, log.iter().map(envelope_line).collect::<String>()).unwrap();
+        std::fs::write(
+            &log_a,
+            log.iter().map(|ev| envelope_line(&ev)).collect::<String>(),
+        )
+        .unwrap();
 
         let mut log2 = EventLog::new();
         log2.append(EventEnvelope::new(
@@ -350,7 +356,11 @@ mod tests {
             }),
         ))
         .unwrap();
-        std::fs::write(&log_b, log2.iter().map(envelope_line).collect::<String>()).unwrap();
+        std::fs::write(
+            &log_b,
+            log2.iter().map(|ev| envelope_line(&ev)).collect::<String>(),
+        )
+        .unwrap();
 
         let index = SearchIndex::open(dir.join("search.db").to_str().unwrap())
             .await
@@ -397,7 +407,10 @@ mod tests {
             .unwrap();
         std::fs::write(
             &log_a,
-            log_more.iter().map(envelope_line).collect::<String>(),
+            log_more
+                .iter()
+                .map(|ev| envelope_line(&ev))
+                .collect::<String>(),
         )
         .unwrap();
         index.sync_session("ws/a", &log_a).await.expect("再同步");
@@ -430,7 +443,11 @@ mod tests {
             }),
         ))
         .unwrap();
-        std::fs::write(&log_a, log.iter().map(envelope_line).collect::<String>()).unwrap();
+        std::fs::write(
+            &log_a,
+            log.iter().map(|ev| envelope_line(&ev)).collect::<String>(),
+        )
+        .unwrap();
 
         let index = SearchIndex::open(dir.join("search.db").to_str().unwrap())
             .await

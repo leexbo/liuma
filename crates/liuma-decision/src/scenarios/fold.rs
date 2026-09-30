@@ -66,15 +66,12 @@ impl FoldJudge {
     /// 工作有多重要」得有工作本身;注入上下文不算一轮,判据同其余场景)
     fn recent_task(&self) -> String {
         let log = self.log.lock().unwrap_or_else(|p| p.into_inner());
-        log.iter()
-            .rev()
-            .find(|ev| {
-                ev.r#type == "user/message"
-                    && ev.data["source"]["kind"].as_str().unwrap_or("user") == "user"
-            })
-            .and_then(|ev| ev.data["content"].as_str())
-            .map(|c| c.chars().take(TASK_MAX_CHARS).collect())
-            .unwrap_or_default()
+        log.last_matching("user/message", |ev| {
+            ev.data["source"]["kind"].as_str().unwrap_or("user") == "user"
+        })
+        .and_then(|ev| ev.data["content"].as_str().map(String::from))
+        .map(|c| c.chars().take(TASK_MAX_CHARS).collect())
+        .unwrap_or_default()
     }
 
     /// receipt 对落档

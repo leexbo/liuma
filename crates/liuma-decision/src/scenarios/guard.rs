@@ -47,18 +47,12 @@ impl ToolGuard {
     /// 最近任务描述:最后一条真实用户消息(source.kind=user)内容截断
     fn recent_task(&self) -> String {
         let log = self.log.lock().unwrap_or_else(|p| p.into_inner());
-        log.iter()
-            .rev()
-            .find(|ev| {
-                ev.r#type == "user/message"
-                    && ev.data["source"]["kind"].as_str().unwrap_or("user") == "user"
-            })
-            .and_then(|ev| ev.data["content"].as_str())
-            .map(|c| {
-                let cut: String = c.chars().take(400).collect();
-                cut
-            })
-            .unwrap_or_default()
+        log.last_matching("user/message", |ev| {
+            ev.data["source"]["kind"].as_str().unwrap_or("user") == "user"
+        })
+        .and_then(|ev| ev.data["content"].as_str().map(String::from))
+        .map(|c| c.chars().take(400).collect())
+        .unwrap_or_default()
     }
 
     /// receipt 对落档
@@ -422,7 +416,7 @@ mod tests {
         assert_eq!(args["command"], "rm -rf /tmp/x");
     }
 
-    /// recentTask:取最后一条真实用户消息(注入上下文不算)    /// recentTask:取最后一条真实用户消息(注入上下文不算)
+    /// recentTask:取最后一条真实用户消息(注入上下文不算)
     #[tokio::test]
     async fn recent_task_reads_last_user_message() {
         let (sink, _seen) = recording_sink();

@@ -533,6 +533,31 @@ impl AppStore {
         self.trajectory.scroll_pos_known = true;
     }
 
+    /// 轨迹列表跳到顶部(已载首行;置脏 + 置信,渲染期 flush 在
+    /// `has_older` 时自动续拉更早页,前插锚定由 splice 自持)
+    pub fn jump_trajectory_top(&mut self, cx: &mut Context<Self>) {
+        self.trajectory.trajectory_scroll_dirty = true;
+        self.trajectory.scroll_pos_known = true;
+        self.trajectory
+            .trajectory_list
+            .scroll_to(gpui_kit::ListOffset {
+                item_ix: 0,
+                offset_in_item: gpui_kit::px(0.),
+            });
+        cx.notify();
+    }
+
+    /// 轨迹列表跳到底部(最新记录)
+    pub fn jump_trajectory_bottom(&mut self, cx: &mut Context<Self>) {
+        self.trajectory
+            .trajectory_list
+            .scroll_to(gpui_kit::ListOffset {
+                item_ix: usize::MAX,
+                offset_in_item: gpui_kit::px(0.),
+            });
+        cx.notify();
+    }
+
     /// 渲染期冲洗:滚动副作用收尾(跟随滚底已由 list 的 Tail 模式托管,
     /// 这里只处理需要**回读 `ListState`** 的判断——渲染期不在 list 借用内,
     /// 安全)。前插锚定由 list 的 `splice` 自持

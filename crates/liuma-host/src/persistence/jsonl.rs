@@ -9,8 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use liuma_session::EventEnvelope;
-use liuma_session::chunk_rows::{self, ChunkRow, DeltaKind, ROW_KEY, ROW_TAG, StorageRecord};
-use liuma_session::envelope::decode_envelope;
+use liuma_session::chunk_rows::{self, ChunkRow, DeltaKind, ROW_TAG, StorageRecord};
 
 use super::PersistenceError;
 
@@ -218,7 +217,10 @@ struct TaggedRow<'a> {
     row_fields: &'a ChunkRow,
 }
 
-/// 从 JSONL 文件全量读取(静态入口,重放/重建路径共用)
+/// 从 JSONL 文件全量读取(静态入口,重放/重建路径共用)。
+/// 布局盲判别收口在 [`liuma_session::chunk_rows::decode_line_events`]
+/// (打包行展开成员;普通行信封直解 + 守卫)——与 load_log /
+/// EventStore 同一实现,读写两侧不漂移
 pub fn load_jsonl(path: &Path) -> Result<Vec<EventEnvelope>, PersistenceError> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
@@ -228,35 +230,9 @@ pub fn load_jsonl(path: &Path) -> Result<Vec<EventEnvelope>, PersistenceError> {
         if line.trim().is_empty() {
             continue;
         }
-        let raw: serde_json::Value = serde_json::from_str(&line).map_err(|e| {
-            PersistenceError::Turso(format!("{path:?}: 第 {} 行非 JSON: {e}", idx + 1))
-        })?;
-        // 布局盲:打包行展开为其成员事件;普通行走信封守卫
-        if raw.get(ROW_KEY).and_then(|v| v.as_str()) == Some(ROW_TAG) {
-            let kind_tag = raw.get("kind").and_then(|v| v.as_str()).ok_or_else(|| {
-                PersistenceError::Turso(format!("{path:?}: 第 {} 行打包行缺 kind", idx + 1))
-            })?;
-            let kind = DeltaKind::from_row_tag(kind_tag).ok_or_else(|| {
-                PersistenceError::Turso(format!(
-                    "{path:?}: 第 {} 行未知 kind {kind_tag:?}",
-                    idx + 1
-                ))
-            })?;
-            let row: ChunkRow = serde_json::from_value(raw).map_err(|e| {
-                PersistenceError::Turso(format!("{path:?}: 第 {} 行打包行损坏: {e}", idx + 1))
-            })?;
-            for ev in chunk_rows::expand(&row, kind)
-                .map_err(|e| PersistenceError::Turso(format!("{path:?}: 第 {} 行 {e}", idx + 1)))?
-            {
-                // 成员是受控重建的(ignorable 已置位),仍走信封守卫对齐语义
-                events.push(decode_envelope(
-                    &serde_json::to_value(&ev).expect("信封序列化"),
-                )?);
-            }
-            continue;
-        }
-        // 守卫:未知且未标 ignorable → 拒绝
-        events.push(decode_envelope(&raw)?);
+        let mut line_events = chunk_rows::decode_line_events(&line)
+            .map_err(|e| PersistenceError::Turso(format!("{path:?}: 第 {} 行 {e}", idx + 1)))?;
+        events.append(&mut line_events);
     }
     Ok(events)
 }

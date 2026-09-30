@@ -18,6 +18,92 @@ fn big_md(prefix: &str) -> String {
     )
 }
 
+/// TextView **绘制路径** churn 复现(env 门控,默认跳过):真机 release
+/// 从头滚到尾 RSS 单调涨到 700MB,而纯状态建/毁是平的(markdown_tv 的
+/// tv_churn 实验)——嫌疑在布局/整形/绘制层的缓存。本实验开一个真实
+/// 窗口,每轮换一段全新 markdown 并 refresh(等价滚动途经不同行),
+/// 采 RSS 曲线:线性涨 = 框架绘制层泄漏;平 = 列表/应用层。
+/// 跑法:
+///   LIUMA_TV_CHURN=1 cargo test -p liuma-desktop --release tv_paint_churn -- --nocapture
+#[gpui_kit::test]
+fn tv_paint_churn_rss_curve(cx: &mut TestAppContext) {
+    use gpui_kit::component::text::{TextView, TextViewState};
+    if std::env::var("LIUMA_TV_CHURN").is_err() {
+        eprintln!("[pc] 跳过(未设 LIUMA_TV_CHURN)");
+        return;
+    }
+    cx.update(|app| {
+        gpui_kit::component::init(app);
+        crate::kits::theme::init(app);
+    });
+    #[cfg(target_os = "macos")]
+    fn rss_mb() -> f64 {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+            .output()
+            .expect("ps");
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse::<u64>()
+            .map(|kb| kb as f64 / 1024.0)
+            .unwrap_or(0.)
+    }
+    #[cfg(not(target_os = "macos"))]
+    fn rss_mb() -> f64 {
+        0.
+    }
+
+    /// 单 TextView 挂窗:state 每轮换新(模拟滚动途经不同行)
+    struct ChurnView {
+        state: Option<gpui_kit::Entity<TextViewState>>,
+    }
+    impl gpui_kit::Render for ChurnView {
+        fn render(
+            &mut self,
+            _window: &mut gpui_kit::Window,
+            _cx: &mut gpui_kit::Context<Self>,
+        ) -> impl IntoElement {
+            match &self.state {
+                Some(s) => TextView::new(s).into_any_element(),
+                None => gpui_kit::div().into_any_element(),
+            }
+        }
+    }
+
+    let rounds = 600usize;
+    let report_every = 100usize;
+    let (view, vctx) = cx.add_window_view(|_w, _cx| ChurnView { state: None });
+    vctx.run_until_parked();
+    eprintln!("[pc] 基线 RSS = {:.0} MB", rss_mb());
+    let t0 = std::time::Instant::now();
+    for i in 0..rounds {
+        let text = format!(
+            "# 段落 {i}\n\n{}正文叙述,{}带 `code` 与**强调**。\n\n```rust\nfn step_{i}() -> u32 {{ {i} }}\n```\n\n- 项一\n- 项二\n",
+            "较长的叙述文本,".repeat(60),
+            "变化词,".repeat(20),
+        );
+        vctx.update(|_, cx| {
+            let state = cx.new(|cx| TextViewState::markdown(&text, cx));
+            view.update(cx, |v, _| v.state = Some(state));
+        });
+        let _ = vctx.refresh();
+        vctx.run_until_parked();
+        if (i + 1) % report_every == 0 {
+            eprintln!("[pc] {:>4} 段后 RSS = {:.0} MB", i + 1, rss_mb());
+        }
+    }
+    vctx.update(|_, cx| {
+        view.update(cx, |v, _| v.state = None);
+    });
+    let _ = vctx.refresh();
+    vctx.run_until_parked();
+    eprintln!(
+        "[pc] 释放后 RSS = {:.0} MB({:.1}s)",
+        rss_mb(),
+        t0.elapsed().as_secs_f64()
+    );
+}
+
 #[gpui_kit::test]
 fn workspace_chat_nodes_do_not_overlap(cx: &mut TestAppContext) {
     cx.update(|app| {
@@ -5894,14 +5980,29 @@ fn trajectory_toolbar_geometry_and_roving_focus(cx: &mut TestAppContext) {
     }
     assert!(entered, "Tab 环上前 16 站未进入轨迹工具条(按钮不可聚焦?)");
 
-    // 条内首个钮 = 时长:Enter 翻起它
+    // 条内钮序:回顶 / 回底 / 时长 / 轮次 / 调用。回顶回底是跳转动作,
+    // Enter 不翻任何开关;焦点从首钮(回顶)起
     press_enter(&mut wcx);
     redraw(cx, &mut wcx);
     assert_eq!(
         flags(cx),
-        (true, false, false),
-        "Enter 未激活条内首个钮(时长)"
+        (false, false, false),
+        "Enter 在回顶钮上不应翻开关"
     );
+
+    // Right → 回底(动作钮,不翻开关)
+    wcx.simulate_keystrokes("right");
+    redraw(cx, &mut wcx);
+    press_enter(&mut wcx);
+    redraw(cx, &mut wcx);
+    assert_eq!(flags(cx), (false, false, false), "回底钮不翻开关");
+
+    // Right → 时长:Enter 翻起它
+    wcx.simulate_keystrokes("right");
+    redraw(cx, &mut wcx);
+    press_enter(&mut wcx);
+    redraw(cx, &mut wcx);
+    assert_eq!(flags(cx), (true, false, false), "Enter 未激活「时长」");
 
     // Right → 下一个钮(轮次);Enter 应触发轮次而非时长
     wcx.simulate_keystrokes("right");
@@ -5925,10 +6026,13 @@ fn trajectory_toolbar_geometry_and_roving_focus(cx: &mut TestAppContext) {
         "Left 后 Enter 未激活「时长」"
     );
 
-    // 环绕:聚焦首个钮时 Left 绕到条尾的搜索框。落点用「键入落到搜索框」
-    // 证身——条内只有它收字符,而 Enter 在此不翻任何开关
-    wcx.simulate_keystrokes("left");
-    redraw(cx, &mut wcx);
+    // 环绕:聚焦首个钮(回顶)时 Left 绕到条尾的搜索框。落点用「键入
+    // 落到搜索框」证身——条内只有它收字符,而 Enter 在此不翻任何开关。
+    // 时长为第三钮:三次 Left 途经回底、回顶后才环绕
+    for _ in 0..3 {
+        wcx.simulate_keystrokes("left");
+        redraw(cx, &mut wcx);
+    }
     press_enter(&mut wcx);
     redraw(cx, &mut wcx);
     assert_eq!(flags(cx), (false, true, false), "Left 未绕出按钮组");
@@ -5936,16 +6040,23 @@ fn trajectory_toolbar_geometry_and_roving_focus(cx: &mut TestAppContext) {
     redraw(cx, &mut wcx);
     assert_eq!(search_val(cx), "q", "Left 未从首个钮环绕到条尾搜索框");
 
-    // 再从搜索框 Right 绕回首个钮
+    // 再从搜索框 Right 绕回首个钮(回顶),两次 Right 到「时长」翻起
     wcx.simulate_keystrokes("right");
     redraw(cx, &mut wcx);
     press_enter(&mut wcx);
     redraw(cx, &mut wcx);
     assert_eq!(
         flags(cx),
-        (true, true, false),
-        "Right 未从条尾搜索框环绕回首个钮"
+        (false, true, false),
+        "Right 从条尾环绕回了首钮(回顶,不翻开关)"
     );
+    wcx.simulate_keystrokes("right");
+    redraw(cx, &mut wcx);
+    wcx.simulate_keystrokes("right");
+    redraw(cx, &mut wcx);
+    press_enter(&mut wcx);
+    redraw(cx, &mut wcx);
+    assert_eq!(flags(cx), (true, true, false), "两次 Right 后应到「时长」");
     let _ = std::fs::remove_dir_all(root);
 }
 

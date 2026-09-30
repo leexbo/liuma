@@ -371,7 +371,7 @@ async fn gateway_mode_and_approve_roundtrip() {
     // declined(拒绝不切模式,无第二条 standard)
     let log = gw.log();
     let l = log.lock().unwrap();
-    let tail: Vec<&str> = l
+    let tail: Vec<String> = l
         .iter()
         .filter(|e| {
             matches!(
@@ -379,7 +379,7 @@ async fn gateway_mode_and_approve_roundtrip() {
                 "session/mode" | "plan/submitted" | "plan/approved" | "plan/declined"
             )
         })
-        .map(|e| e.r#type.as_str())
+        .map(|e| e.r#type)
         .collect();
     assert_eq!(
         tail,

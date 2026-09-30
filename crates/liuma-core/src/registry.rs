@@ -25,7 +25,7 @@ use liuma_agent_loop::{
 use liuma_app::{Resolved, Session};
 use liuma_attachment::ImageMediaType;
 use liuma_llm::{FakeProvider, HttpTransport, InvariantGate};
-use liuma_session::{EventEnvelope, EventLog, EventStore as _};
+use liuma_session::{EventEnvelope, EventLog};
 use serde_json::{Value, json};
 use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use uuid::Uuid;
@@ -893,7 +893,7 @@ fn now_ms() -> u64 {
 fn load_envelopes(path: &Path) -> Option<Vec<EventEnvelope>> {
     liuma_app::load_log(path.to_str()?)
         .ok()
-        .map(|log| log.iter().cloned().collect())
+        .map(|log| log.iter().collect())
 }
 
 /// 清单派生事实(stat 指纹 + 由日志全文派生的 blank/标题;见
@@ -918,28 +918,23 @@ fn derive_list_facts(log: &Path) -> (bool, Option<String>) {
 }
 
 /// 权限 fold 数据源:驻留日志优先(锁内借用,零克隆零读盘——切回已驻留
-/// 会话不再整档重解析),冷会话整读一次(借用 fold,不克隆快照)。
+/// 会话不再整档重解析),冷会话流式直读一次(load_log,布局盲)。
 /// 两源同语义:append 先落盘后入内存(盘不落后于内存),repair 只补
 /// tool/result、turn/end 类事件,不触碰权限 knob。
-/// `f` 对事件切片 fold;None = 会话不存在或日志不可读。
-fn with_session_events<T>(
-    host: &AppHost,
-    id: &str,
-    f: impl FnOnce(&[EventEnvelope]) -> T,
-) -> Option<T> {
+/// `f` 对打包日志 fold(借用面,免整表展开);None = 会话不存在或日志不可读。
+fn with_session_events<T>(host: &AppHost, id: &str, f: impl FnOnce(&EventLog) -> T) -> Option<T> {
     // 驻留快路径:不触发装配(get_slot 非 attach),冷会话自然 miss
     if let Some(slot) = host.get_slot(id)
         && let Ok(inner) = slot.inner()
     {
         let log = inner.log.lock_recover();
-        return Some(f(log.iter().as_slice()));
+        return Some(f(&log));
     }
-    // 冷路径:EventStore 端口全量读取,直接借用 fold
+    // 冷路径:流式直读(此前 EventStore::all() 全量 Vec = 大会话数百 MB
+    // 瞬时展开,open_session 每次权限 fold 都吃这份高水位)
     let path = host.slot_path(id);
-    let events = liuma_app::JsonlEventStore::new(path.to_str()?.to_string())
-        .all()
-        .ok()?;
-    Some(f(events.as_slice()))
+    let log = liuma_app::load_log(path.to_str()?).ok()?;
+    Some(f(&log))
 }
 
 /// 会话血缘 header 文件路径(会话目录下;存 parent/origin)
@@ -1047,15 +1042,15 @@ fn broadcast_event(
 ) {
     let l = log.lock_recover();
     let mut tr = Translator::new(provider.clone());
-    for ev in l.iter() {
+    l.for_each(|ev| {
         tr.translate(ev);
-    }
+    });
     let target = match seq {
-        Some(s) => l.iter().find(|e| e.seq == s),
+        Some(s) => l.get(s),
         None => l.iter().next_back(),
     };
     if let Some(ev) = target
-        && let Some(event) = tr.translate(ev)
+        && let Some(event) = tr.translate(&ev)
         && let Some(f) = event_frame(session_id, event)
     {
         let _ = mux.send(f);
@@ -1073,14 +1068,14 @@ fn mode_terminal_frame(
     let l = log.lock_recover();
     let mut tr = Translator::new(provider.clone());
     let mut target = None;
-    for ev in l.iter() {
+    l.for_each(|ev| {
         tr.translate(ev);
         if ev.r#type == "session/mode" {
             target = Some(ev.seq);
         }
-    }
+    });
     let ev = target.and_then(|s| l.get(s))?;
-    let event = tr.translate(ev)?;
+    let event = tr.translate(&ev)?;
     event_frame(session_id, event)
 }
 
@@ -1104,42 +1099,59 @@ fn trajectory_delta_frame(
     )
 }
 
+/// 直播统计推送态:用量聚合(`StatsAgg`)与构成增量(`BreakdownAcc`)
+/// 同生命周期——预热一次建好,sink 逐事件喂入
+#[derive(Default)]
+struct LiveStats {
+    agg: stats::StatsAgg,
+    bd: crate::context::BreakdownAcc,
+}
+
 /// 统计帧:事件属统计面即 apply 并推 `session/stats`(事件驱动,替代
-/// 客户端轮询;chunk 等高频非统计事件不推)。构成三段为字符启发式线性扫,
-/// 随推随算保鲜。
+/// 客户端轮询;chunk 等高频非统计事件不推)。构成三段走增量维护
+/// (`BreakdownAcc` 顺序喂入 + O(1) 快照)——打包常驻后全量扫需展开
+/// 整表,高频 stats 事件下不可接受。
 ///
 /// turn 内 sink 与 **turn 外**的维护任务(手动压缩)共用:压缩的
 /// `compaction/summary`/`compaction/stats` 不经过 turn 的引擎回调,只挂在
 /// 那条回调上的推送会让占用卡停在压缩前——环停在上一次真实请求的用量、
-/// 构成停在未折叠的全量,同一张卡两个口径。
+/// 构成停在未折叠的全量,同一张卡两个口径。带外事件同理:bd 落后于
+/// ev.seq(绕过 sink 落档)时先锁内补洞再喂,快照永不过期。
 fn push_stats_frame(
     session_id: &str,
     log: &Mutex<EventLog>,
     mux: &broadcast::Sender<ServerRequest>,
-    agg: &mut stats::StatsAgg,
+    live: &mut LiveStats,
     provider_label: &str,
     context_window: u64,
     ev: &EventEnvelope,
 ) {
+    // 补洞:带外事件绕过 sink(压缩收口/钩子桥落档)→ bd 出现 seq 缺口,
+    // 锁内逐条补齐(均摊每回合至多一次,替代此前每 stats 事件全量扫)
+    if ev.seq > live.bd.next_seq()
+        && let Ok(l) = log.lock()
+    {
+        for s in live.bd.next_seq()..ev.seq {
+            if let Some(missed) = l.get(s) {
+                live.bd.push(&missed);
+            }
+        }
+    }
+    // 每条事件都喂(构成面含非 stats 事件:消息/思考/工具结果皆计价)
+    live.bd.push(ev);
     if !stats::StatsAgg::is_stats_event(&ev.r#type) {
         return;
     }
-    agg.apply(&ev.r#type, ev.time, &ev.data);
-    let breakdown = log
-        .lock()
-        .ok()
-        .map(|l| {
-            let b = crate::context::context_breakdown(l.iter());
-            stats::Breakdown {
-                system_tokens: b.system_tokens,
-                tools_tokens: b.tools_tokens,
-                message_tokens: b.message_tokens,
-            }
-        })
-        .unwrap_or_default();
-    let mut stats_json = agg.to_json(breakdown, context_window);
+    live.agg.apply(&ev.r#type, ev.time, &ev.data);
+    let b = live.bd.snapshot();
+    let breakdown = stats::Breakdown {
+        system_tokens: b.system_tokens,
+        tools_tokens: b.tools_tokens,
+        message_tokens: b.message_tokens,
+    };
+    let mut stats_json = live.agg.to_json(breakdown, context_window);
     // 最近完成轮桶(turn/end 收口即推,轮尾即时拿到本轮用量;无完成轮时缺键)
-    if let Some(lt) = agg.last_turn_json(provider_label) {
+    if let Some(lt) = live.agg.last_turn_json(provider_label) {
         stats_json["lastTurn"] = lt;
     }
     let _ = mux.send(frame(
@@ -1168,54 +1180,40 @@ fn feed_trajectory_delta(
 }
 
 /// 补喂兜底:把 folder 缺的日志事件按 seq 喂齐(attach 暖机 / 驱动外
-/// 落档 / RPC 读快照前),有变更即广播 delta。低频路径;先取日志切片
-/// 再锁 folder,不嵌套持锁
+/// 落档 / RPC 读快照前),有变更即广播 delta。低频路径。
+///
+/// 锁序 **traj → log**(嵌套):全仓无 log→traj 反向持锁路径(append/
+/// stats/repair 只持 log,fold 增量只持 traj),无环即无死锁。此前
+/// 「先取批再喂」避免嵌套的代价是每批 owned 展开——46 万事件 ≈ 1.2s
+/// (dev)且数百 MB 瞬时分配;`for_each_from` 借用直喂后仅剩折叠本身。
+///
+/// 变更**累积后只发一帧**:每有一条变更就发一个 `trajectory/delta`,
+/// 桌面侧每帧一次 `notify()`——29 万事件重放会产生约 2000 帧,把主线程
+/// 钉在「逐帧重绘」上。桌面按 index/number upsert,合并语义等价;
+/// 载荷量级 = 驻留窗(≤2000 条)
 fn sync_trajectory_from_log(
     session_id: &str,
     log: &Mutex<EventLog>,
     traj: &Mutex<crate::trajectory::TrajectoryFolder>,
     mux: &broadcast::Sender<ServerRequest>,
 ) {
-    // 按批喂:**原先一次性 clone 全部待喂事件**(暖机时 last=0 = 整份日志)
-    // ——大会话下是一份与日志等量级的瞬时分配(实测 29 万事件 ≈ 300MB)。
-    // 每批取完即释放 log 锁再拿 traj 锁,保持「不嵌套持锁」的既有约束。
-    //
-    // 变更**累积后只发一帧**:原先每有一条变更就发一个 `trajectory/delta`,
-    // 桌面侧每帧一次 `notify()` ——29 万事件重放会产生约 2000 帧,把主线程
-    // 钉在「逐帧重绘」上(实测 render 以 16.7ms 间隔持续 20 秒以上)。
-    // 桌面按 index/number upsert,合并语义等价;载荷量级 = 驻留窗(≤2000 条)
-    const BATCH: usize = 256;
     let mut merged = crate::trajectory::TrajectoryChanges::default();
-    let mut total = 0;
-    let mut last_seq = 0;
-    let mut cursor = traj.lock_recover().last_seq();
-    loop {
-        // 锁内只做「取值 + 释放」:不得跨到 traj 锁(锁序安全)
-        let batch: Vec<EventEnvelope> = {
-            let l = log.lock_recover();
-            let slice = l.iter().as_slice();
-            // 二分定位:seq 与下标同序(append 强制连续),故 O(log n) 找起点
-            // ——若用 `filter` 从头扫,每批 O(n) → 整段 O(n²/BATCH)
-            let start = slice.partition_point(|e| e.seq <= cursor);
-            let end = (start + BATCH).min(slice.len());
-            slice[start..end].to_vec()
-        };
-        let Some(last_ev) = batch.last() else {
-            break;
-        };
-        cursor = last_ev.seq;
-        {
-            let mut t = traj.lock_recover();
-            for ev in &batch {
-                if t.feed(ev) {
-                    let changes = t.take_changes();
-                    merged.records.extend(changes.records);
-                    merged.requests.extend(changes.requests);
-                }
+    let total;
+    let last_seq;
+    {
+        let mut t = traj.lock_recover();
+        let cursor = t.last_seq();
+        let l = log.lock_recover();
+        // for_each_from O(1) 定位续扫(cursor+1 起),借用直喂零展开
+        l.for_each_from(cursor + 1, |ev| {
+            if t.feed(ev) {
+                let changes = t.take_changes();
+                merged.records.extend(changes.records);
+                merged.requests.extend(changes.requests);
             }
-            total = t.total();
-            last_seq = t.last_seq();
-        }
+        });
+        total = t.total();
+        last_seq = t.last_seq();
     }
     if merged.is_empty() {
         return;
@@ -2169,7 +2167,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 .log
                 .lock()
                 .map_err(|_| RpcError::internal("log 锁中毒"))?;
-            Ok(l.iter().cloned().collect())
+            Ok(l.iter().collect())
         } else {
             let path = self.slot_path(id);
             if !path.exists() {
@@ -2178,36 +2176,40 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             Ok(liuma_app::load_log(&path.display().to_string())
                 .map_err(|e| RpcError::internal(format!("日志重载失败:{e}")))?
                 .iter()
-                .cloned()
                 .collect())
         }
     }
 
-    /// 会话日志锁内借用执行 f(附着 = 活日志借用;冷会话 = load_log
-    /// 一次借用 fold,不克隆快照)。fold 型消费方(stats/锚点/轨迹/
-    /// 事件读)都是借用读,临界区内无 await(std::sync::Mutex);
-    /// 代价是运行中会话 fold 期间短暂阻塞 append(纯计数 fold 毫秒级)。
+    /// 会话日志锁内借用执行 f(附着 = 活日志借用;冷会话 = 读取端口
+    /// 一次载入后重挂 EventLog)。fold 型消费方(stats/锚点/轨迹/
+    /// 事件读)走 [`EventLog::for_each`] 借用折叠或 `get` O(1) 定位,
+    /// 不整表物化——owned 展开在长会话下是数百 MB 级瞬时分配。
+    /// 临界区内无 await(std::sync::Mutex);代价是运行中会话 fold
+    /// 期间短暂阻塞 append(纯计数 fold 毫秒级)。
     /// 冷路径经 [`liuma_session::EventStore`] 读取端口(JSONL 实现;
     /// 未来索引实现替换点)。Err = 会话不存在/日志不可读。
     fn with_session_log<T>(
         &self,
         id: &str,
-        f: impl FnOnce(&[EventEnvelope]) -> Result<T, RpcError>,
+        f: impl FnOnce(&EventLog) -> Result<T, RpcError>,
     ) -> Result<T, RpcError> {
         if let Some(slot) = self.get_slot(id)
             && let Some(inner) = slot.inner.get()
         {
             let l = inner.log.lock_recover();
-            return f(l.iter().as_slice());
+            return f(&l);
         }
         let path = self.slot_path(id);
         if !path.exists() {
             return Err(RpcError::session_not_found(id));
         }
-        let events = liuma_app::JsonlEventStore::new(path.display().to_string())
-            .all()
+        // 冷路径直读(load_log 流式解码 + 打包表示,行盲):**不得**走
+        // EventStore::all() 的全量 Vec——46 万事件会话 = ~379MB 瞬时展开,
+        // 且 open_session 的 stats/history 并发竞速里谁先触发冷路径就吃
+        // 这一份高水位(实测同会话 209MB↔461MB 抖动的根因)
+        let log = liuma_app::load_log(&path.display().to_string())
             .map_err(|e| RpcError::internal(format!("日志重载失败:{e}")))?;
-        f(events.as_slice())
+        f(&log)
     }
 
     /// session.trajectory:轨迹台账(记录尾窗 + 全量请求清单)。
@@ -2248,8 +2250,13 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             return Ok(page);
         }
         let page = self.with_session_log(id, |log| {
+            // 流式折叠(for_each 借用,免整表物化)
+            let mut folder = crate::trajectory::TrajectoryFolder::new();
+            log.for_each(|ev| {
+                folder.feed(ev);
+            });
             Ok(crate::trajectory::page_of(
-                crate::trajectory::fold_trajectory(log),
+                folder.data(),
                 max_records,
                 before_index,
             ))
@@ -2267,15 +2274,17 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         let ctx_window = self.session_context_window(id);
         self.with_session_log(id, |log| {
             let mut agg = stats::StatsAgg::with_retained_turns();
-            for ev in log {
+            let mut bd = crate::context::BreakdownAcc::default();
+            log.for_each(|ev| {
                 agg.apply(&ev.r#type, ev.time, &ev.data);
-            }
-            let breakdown = crate::context::context_breakdown(log.iter());
+                bd.push(ev);
+            });
+            let b = bd.snapshot();
             Ok(agg.to_json_full(
                 stats::Breakdown {
-                    system_tokens: breakdown.system_tokens,
-                    tools_tokens: breakdown.tools_tokens,
-                    message_tokens: breakdown.message_tokens,
+                    system_tokens: b.system_tokens,
+                    tools_tokens: b.tools_tokens,
+                    message_tokens: b.message_tokens,
                 },
                 ctx_window,
                 &provider_label,
@@ -2347,13 +2356,13 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
     /// workspace-write)。原实现每次整读整解析磁盘 JSONL——桌面切换会话
     /// 时它跑在 GPUI 主线程,大会话是秒级冻结的来源之一。
     fn session_sandbox_mode(&self, id: &str) -> &'static str {
-        with_session_events(self, id, crate::permission::sandbox_mode_of)
+        with_session_events(self, id, crate::permission::sandbox_mode_of_log)
             .unwrap_or(crate::permission::DEFAULT_SANDBOX_MODE)
     }
 
     /// 会话当前审批策略(fold 会话日志,驻留优先/冷读盘;无则默认 ask)。
     pub fn session_approval(&self, id: &str) -> String {
-        with_session_events(self, id, crate::permission::approval_policy_of)
+        with_session_events(self, id, crate::permission::approval_policy_of_log)
             .map(str::to_string)
             .unwrap_or_else(|| crate::permission::DEFAULT_APPROVAL_POLICY.to_string())
     }
@@ -4110,7 +4119,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             .map(|ev| ev.seq);
         // 无任何完成轮(空白/种子会话)→ 回退全量复制(旧行为):
         // 末完成轮缺位时以末 seq 为界
-        let last_seq = events.iter().last().map(|ev| ev.seq).unwrap_or(0);
+        let last_seq = events.iter().next_back().map(|ev| ev.seq).unwrap_or(0);
         let cut_seq = match at_seq {
             Some(anchor) => {
                 match events
@@ -4427,7 +4436,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             let mode_log = Arc::clone(&l);
             let mode_source: liuma_tools::ModeSource = Arc::new(move || {
                 crate::permission::sandbox_mode_of_name(crate::permission::sandbox_mode_of(
-                    &mode_log.lock_recover().iter().cloned().collect::<Vec<_>>(),
+                    &mode_log.lock_recover().iter().collect::<Vec<_>>(),
                 ))
             });
             // MCP servers:宿主级端口池(设置保存即连接,所有会话共享一条
@@ -4451,9 +4460,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 &l,
                 &cancel,
                 false,
-                crate::permission::sandbox_mode_of(
-                    &l.lock_recover().iter().cloned().collect::<Vec<_>>(),
-                ),
+                crate::permission::sandbox_mode_of(&l.lock_recover().iter().collect::<Vec<_>>()),
                 Some(mode_source),
                 Some({
                     let host = self_arc.clone();
@@ -4711,7 +4718,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         let last_seq = liuma_app::load_log(&path.display().to_string())
             .map_err(|e| RpcError::internal(format!("goal 落盘失败:{e}")))?
             .iter()
-            .last()
+            .next_back()
             .map(|e| e.seq)
             .unwrap_or(0);
         let mut ev = ev;
@@ -4826,22 +4833,22 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         before: usize,
         after: usize,
     ) -> Result<Value, RpcError> {
-        self.with_session_log(id, |events| {
-            let Some(ix) = events.iter().position(|ev| ev.seq == seq) else {
+        self.with_session_log(id, |log| {
+            // seq 即逻辑下标(append 强制连续):get O(1) 定位,免线性找位
+            let Some(ev) = log.get(seq) else {
                 return Err(RpcError::bad_request("事件不存在(seq 越界)"));
             };
-            let ev = &events[ix];
             let summarize =
                 |e: &liuma_session::EventEnvelope| json!({ "seq": e.seq, "type": e.r#type });
-            let before_events: Vec<Value> = events[..ix]
-                .iter()
-                .rev()
-                .take(before)
-                .rev()
-                .map(summarize)
+            let lo = seq.saturating_sub(before as u64).max(1);
+            let before_events: Vec<Value> = (lo..seq)
+                .filter_map(|s| log.get(s))
+                .map(|e| summarize(&e))
                 .collect();
-            let after_events: Vec<Value> =
-                events[ix + 1..].iter().take(after).map(summarize).collect();
+            let after_events: Vec<Value> = ((seq + 1)..=(seq + after as u64))
+                .filter_map(|s| log.get(s))
+                .map(|e| summarize(&e))
+                .collect();
             Ok(json!({
                 "session": id,
                 "event": { "seq": ev.seq, "type": ev.r#type, "data": ev.data },
@@ -4854,8 +4861,8 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
     /// 单事件溯源(session_event_trace):归因链(sourceEventSeqs)
     /// + 事件基础面
     pub fn event_trace(&self, id: &str, seq: u64) -> Result<Value, RpcError> {
-        self.with_session_log(id, |events| {
-            let Some(ev) = events.iter().find(|ev| ev.seq == seq) else {
+        self.with_session_log(id, |log| {
+            let Some(ev) = log.get(seq) else {
                 return Err(RpcError::bad_request("事件不存在(seq 越界)"));
             };
             let sources: Vec<Value> = ev
@@ -4864,9 +4871,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 .unwrap_or(&[])
                 .iter()
                 .filter_map(|sseq| {
-                    events
-                        .iter()
-                        .find(|e| e.seq == *sseq)
+                    log.get(*sseq)
                         .map(|e| json!({ "seq": e.seq, "type": e.r#type }))
                 })
                 .collect();
@@ -4891,18 +4896,18 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         let slot = self.attach(session_id)?;
         let inner = slot.inner()?;
         let l = inner.log.lock_recover();
-        let log_slice = l.iter().as_slice();
         let mut out = Vec::new();
-        for ev in log_slice {
+        // 借用式流扫(零物化):输出仅锚点对
+        l.for_each(|ev| {
             if ev.r#type != "user/message" {
-                continue;
+                return;
             }
             // 注入上下文(source.kind != user)不是轮次开始,不算锚点
             if ev.data["source"]["kind"]
                 .as_str()
                 .is_some_and(|k| k != "user")
             {
-                continue;
+                return;
             }
             let text = ev.data["content"]
                 .as_str()
@@ -4922,7 +4927,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 });
             let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
             out.push((ev.seq, collapsed));
-        }
+        });
         Ok(out)
     }
 
@@ -4935,28 +4940,28 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
     ) -> Result<HistoryValue, RpcError> {
         let slot = self.attach(session_id)?;
         let inner = slot.inner()?;
-        // 锁内零克隆:原实现整份快照 clone-out(深克隆全部 data Value,
-        // 大会话 = 数倍会话体积的瞬时分配)+ 全量翻译后才分页;现窗口
-        // 定位 + 窗口翻译都在锁内借用完成(临界区无 await)。全量路径
-        // (max_messages 取大数)翻译仍 O(全量) 但零克隆。
+        // 锁内零物化:边界定位走打包日志原生 page_cut(O(记录数) 零展开),
+        // 窗口翻译走 for_each 借用单遍(prime 前缀 + 译窗口)——此前
+        // 「整表 owned 展开 + 切片窗口」在 46 万事件会话上是每次请求
+        // ~379MB 的瞬时分配。临界区无 await。
         let l = inner.log.lock_recover();
-        let log_slice = l.iter().as_slice();
-        let cut = crate::translate::page_cut(log_slice, before_seq, max_messages);
+        let cut = l.page_cut(before_seq, max_messages);
         let provider = ProviderInfo {
             provider: self.base.dialect.clone(),
             model: self.session_model(session_id),
         };
         let events: Vec<HistoryEntry> =
-            crate::translate::translate_window(&provider, log_slice, cut, before_seq)
+            crate::translate::translate_window_log(&provider, &l, cut, before_seq)
                 .into_iter()
                 .map(|event| HistoryEntry { event, view: None })
                 .collect();
         let high_water = l.high_water();
         // title 仅真实存在时下发(None = 无标题,客户端回落占位):
-        // 重命名 > 日志侧首条投影
+        // 重命名 > 日志侧首条投影(首条 user/message 恒在头部,取有界
+        // 前缀避免无用户消息会话的全表扫)
         let title = self
             .session_title(session_id)
-            .or_else(|| title_of(log_slice));
+            .or_else(|| title_of(&l.iter().take(16).collect::<Vec<EventEnvelope>>()));
         Ok(HistoryValue {
             has_more: cut > 0,
             cut,
@@ -6677,55 +6682,53 @@ fn repair_dangling_calls(log: &Arc<Mutex<EventLog>>) {
         // 最近 assistant/message 的 (已用, provider id, name)
         let mut last_tools: Vec<(bool, String, String)> = Vec::new();
         let mut open_calls: Vec<(u64, String)> = Vec::new(); // (tool/call seq, provider id)
-        for ev in l.iter() {
-            match ev.r#type.as_str() {
-                "turn/start" => turn_open = true,
-                "turn/end" | "turn/error" => turn_open = false,
-                "assistant/message" => {
-                    last_tools = ev
-                        .data
-                        .get("tool_calls")
-                        .and_then(|v| v.as_array())
-                        .map(|calls| {
-                            calls
-                                .iter()
-                                .map(|c| {
-                                    (
-                                        false,
-                                        c.get("id")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("")
-                                            .to_string(),
-                                        c.get("name")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("")
-                                            .to_string(),
-                                    )
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                }
-                "tool/call" => {
-                    let name = ev.data.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    let id = last_tools
-                        .iter_mut()
-                        .find(|(used, _, n)| !*used && n == name)
-                        .map(|(used, id, _)| {
-                            *used = true;
-                            id.clone()
-                        })
-                        .unwrap_or_default();
-                    open_calls.push((ev.seq, id));
-                }
-                "tool/result" => {
-                    if let Some(call) = ev.data.get("call").and_then(|v| v.as_u64()) {
-                        open_calls.retain(|(seq, _)| *seq != call);
-                    }
-                }
-                _ => {}
+        l.for_each(|ev| match ev.r#type.as_str() {
+            "turn/start" => turn_open = true,
+            "turn/end" | "turn/error" => turn_open = false,
+            "assistant/message" => {
+                last_tools = ev
+                    .data
+                    .get("tool_calls")
+                    .and_then(|v| v.as_array())
+                    .map(|calls| {
+                        calls
+                            .iter()
+                            .map(|c| {
+                                (
+                                    false,
+                                    c.get("id")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    c.get("name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
             }
-        }
+            "tool/call" => {
+                let name = ev.data.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let id = last_tools
+                    .iter_mut()
+                    .find(|(used, _, n)| !*used && n == name)
+                    .map(|(used, id, _)| {
+                        *used = true;
+                        id.clone()
+                    })
+                    .unwrap_or_default();
+                open_calls.push((ev.seq, id));
+            }
+            "tool/result" => {
+                if let Some(call) = ev.data.get("call").and_then(|v| v.as_u64()) {
+                    open_calls.retain(|(seq, _)| *seq != call);
+                }
+            }
+            _ => {}
+        });
         if open_calls.is_empty() && !turn_open {
             return None;
         }
@@ -6742,7 +6745,7 @@ fn repair_dangling_calls(log: &Arc<Mutex<EventLog>>) {
                 }),
             );
             if let Ok(s) = l.append(ev)
-                && let Some(ev) = l.get(s).cloned()
+                && let Some(ev) = l.get(s)
             {
                 out.push(ev);
             }
@@ -6754,7 +6757,7 @@ fn repair_dangling_calls(log: &Arc<Mutex<EventLog>>) {
                 serde_json::json!({ "cancelled": "session-restart" }),
             );
             if let Ok(s) = l.append(ev)
-                && let Some(ev) = l.get(s).cloned()
+                && let Some(ev) = l.get(s)
             {
                 out.push(ev);
             }
@@ -6793,21 +6796,24 @@ fn replay_inbox(log: &EventLog) -> (VecDeque<PendingItem>, VecDeque<SteerInput>)
     // 无对应移除。折叠时按 id 剔除已被 user/message 落档的条目,否则
     // 重启后 replay 复活已消费条目:幽灵「待投递」气泡 + 消息二次投
     // 递。位置语义不变:剔除发生在位置折叠之后,不扰动其余条目定位。
-    let claimed: std::collections::HashSet<String> = log
-        .iter()
-        .filter(|e| e.r#type == "user/message")
-        .filter_map(|e| e.data["id"].as_str().map(str::to_string))
-        .collect();
+    let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut next_turn: Vec<SpliceItem> = Vec::new();
     let mut next_step: Vec<SpliceItem> = Vec::new();
-    for ev in log.iter() {
+    // 单遍借用扫(claimed 收集与 splice 折叠同一遍,零物化)
+    log.for_each(|ev| {
+        if ev.r#type == "user/message" {
+            if let Some(id) = ev.data["id"].as_str() {
+                claimed.insert(id.to_string());
+            }
+            return;
+        }
         if ev.r#type != "agent/inbox/spliced" {
-            continue;
+            return;
         }
         let list = match ev.data["target"].as_str() {
             Some("next-step") => &mut next_step,
             Some("next-turn") => &mut next_turn,
-            _ => continue,
+            _ => return,
         };
         let start = ev.data["start"].as_u64().unwrap_or(0) as usize;
         let removed = ev.data["removedCount"].as_u64().unwrap_or(0) as usize;
@@ -6824,7 +6830,7 @@ fn replay_inbox(log: &EventLog) -> (VecDeque<PendingItem>, VecDeque<SteerInput>)
             let at = (start + i).min(list.len());
             list.insert(at, item);
         }
-    }
+    });
     next_step.retain(|i| !claimed.contains(&i.id));
     (
         next_turn
@@ -7335,7 +7341,7 @@ fn hook_event_sink(
             let mut l = log.lock_recover();
             l.append(liuma_session::EventEnvelope::new(ty, now_ms() as i64, data))
                 .ok()
-                .and_then(|seq| l.get(seq).cloned())
+                .and_then(|seq| l.get(seq))
         }) else {
             return;
         };
@@ -7719,15 +7725,16 @@ async fn handle_driver_cmd(
             // 统计聚合同款预热(与 turn 内 sink 同一 apply;压缩落的
             // compaction/stats 是占用回落的唯一信号,漏推则占用卡停在
             // 压缩前——见 push_stats_frame 的说明)
-            let mut stats_agg = stats::StatsAgg::default();
+            let mut live = LiveStats::default();
             {
                 // 预热:translator 依全量事件演进(与 broadcast_event 同;
                 // 一次日志扫描,相对分钟级摘要是零成本)
                 let log = inner.log.lock_recover();
-                for ev in log.iter() {
+                log.for_each(|ev| {
                     translator.translate(ev);
-                    stats_agg.apply(&ev.r#type, ev.time, &ev.data);
-                }
+                    live.agg.apply(&ev.r#type, ev.time, &ev.data);
+                    live.bd.push(ev);
+                });
             }
             let provider_label = provider_info.provider.clone();
             let mut sink = |ev: &EventEnvelope| {
@@ -7741,7 +7748,7 @@ async fn handle_driver_cmd(
                     session_id,
                     &inner.log,
                     mux,
-                    &mut stats_agg,
+                    &mut live,
                     &provider_label,
                     context_window,
                     ev,
@@ -7827,10 +7834,12 @@ async fn driver_loop(
         let home = liuma_host::default_liuma_root();
         let state = std::sync::Mutex::new(liuma_host::InstructionRuntimeState::new());
         if let Ok(mut st) = state.lock() {
+            // 定向收集:compose 面只消费 user/message(visible_map),
+            // 整表展开在 46 万事件会话 ≈ 379MB 瞬时分配
             let snapshot = log
                 .lock()
                 .ok()
-                .map(|l| l.iter().cloned().collect::<Vec<_>>());
+                .map(|l| l.collect_of_types(&["user/message"]));
             if let Some(snap) = snapshot {
                 st.restore_from_log(&snap);
             }
@@ -7839,7 +7848,7 @@ async fn driver_loop(
             let Ok(mut st) = state.lock() else {
                 return None;
             };
-            let events = log.lock().ok()?.iter().cloned().collect::<Vec<_>>();
+            let events = log.lock().ok()?.collect_of_types(&["user/message"]);
             st.compose(&events, &home, &ws_root, touches)
         }));
     }
@@ -7851,7 +7860,13 @@ async fn driver_loop(
         let log = Arc::clone(&inner.log);
         let ws_root = host0.resolve_session(&session_id).0;
         session.set_context_provider(Box::new(move || {
-            let events = log.lock().ok()?.iter().cloned().collect::<Vec<_>>();
+            // 定向收集:权限快照只消费 sandbox/mode / approval/policy /
+            // permission/preset 三类
+            let events = log.lock().ok()?.collect_of_types(&[
+                "sandbox/mode",
+                "approval/policy",
+                "permission/preset",
+            ]);
             let sections =
                 crate::permission::snapshot_sections(&events, &ws_root.display().to_string());
             if sections.is_empty() {
@@ -7884,9 +7899,12 @@ async fn driver_loop(
             let service = Arc::clone(&host0.skills);
             let state = std::sync::Mutex::new(liuma_skill::SkillCatalogState::new());
             if let Ok(mut st) = state.lock() {
+                // 定向收集(恢复面只消费 skill-catalog 注入的 user/message;
+                // 此前整表深克隆 type+data ≈ 400MB 瞬时分配)
                 let snapshot = log.lock().ok().map(|l| {
-                    l.iter()
-                        .map(|e| (e.r#type.to_string(), e.data.clone()))
+                    l.collect_of_types(&["user/message"])
+                        .into_iter()
+                        .map(|e| (e.r#type, e.data))
                         .collect::<Vec<_>>()
                 });
                 if let Some(snap) = snapshot {
@@ -8095,12 +8113,13 @@ async fn driver_loop(
         // 统计聚合预热(同一 fold 逻辑;turn 内增量 apply)。
         // 窗口随会话模型解析(与引擎压缩阈值同源)
         let context_window = host0.session_context_window(&session_id);
-        let mut stats_agg = stats::StatsAgg::default();
+        let mut live = LiveStats::default();
         if let Ok(l) = inner.log.lock() {
-            for ev in l.iter() {
+            l.for_each(|ev| {
                 translator.translate(ev);
-                stats_agg.apply(&ev.r#type, ev.time, &ev.data);
-            }
+                live.agg.apply(&ev.r#type, ev.time, &ev.data);
+                live.bd.push(ev);
+            });
         }
         // routes 的提供方半边:会话生效 provider = 工作区当前 provider
         // (会话级切换即 set_workspace_provider + 重附着,无独立会话覆盖)
@@ -8187,7 +8206,7 @@ async fn driver_loop(
                         &sid,
                         &inner.log,
                         &mux,
-                        &mut stats_agg,
+                        &mut live,
                         &provider_label,
                         context_window,
                         ev,
@@ -8403,9 +8422,9 @@ mod tests {
         repair_dangling_calls(&log);
         {
             let l = log.lock().unwrap();
-            let evs: Vec<&EventEnvelope> = l.iter().collect();
+            let evs: Vec<EventEnvelope> = l.iter().collect();
             assert_eq!(evs.len(), 5, "应追加合成 result + turn/end");
-            let r = evs[3];
+            let r = &evs[3];
             assert_eq!(r.r#type, "tool/result");
             assert_eq!(r.data["call"], serde_json::json!(3), "配对键 = call seq");
             assert_eq!(r.data["id"], serde_json::json!("callu_1"));
@@ -8418,7 +8437,7 @@ mod tests {
                 r.data["output"],
                 serde_json::json!(liuma_session::events::DANGLING_TOOL_PLACEHOLDER)
             );
-            let t = evs[4];
+            let t = &evs[4];
             assert_eq!(t.r#type, "turn/end");
             assert!(t.data.get("cancelled").is_some(), "中止收口");
         }
@@ -8447,7 +8466,7 @@ mod tests {
         repair_dangling_calls(&log2);
         {
             let l = log2.lock().unwrap();
-            let evs: Vec<&EventEnvelope> = l.iter().collect();
+            let evs: Vec<EventEnvelope> = l.iter().collect();
             assert_eq!(evs.len(), 4, "只追加合成 result");
             assert_eq!(evs[3].r#type, "tool/result");
             assert_eq!(evs[3].data["call"], serde_json::json!(2));
@@ -12680,7 +12699,7 @@ mod tests {
             if let Ok(seq) = log.append(ev)
                 && let Some(envelope) = log.get(seq)
             {
-                let _ = backend.append(envelope);
+                let _ = backend.append(&envelope);
             }
         }
     }

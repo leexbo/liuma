@@ -611,6 +611,7 @@ fn nav_ticks(
         let slot = a.slot_ix;
         let key = a.key.clone();
         let card_key = key.clone();
+        let jump_key = key.clone();
         let sc = store.clone();
         let hh = store.clone();
         let sel = format!("nav-point-{key}");
@@ -652,11 +653,13 @@ fn nav_ticks(
                 }
             })
             .on_click(move |_, _, cx| {
+                let key = jump_key.clone();
                 sc.update(cx, |st, cx| {
-                    // 全量加载后所有锚点都在列表内,slot 恒 Some(None
-                    // 分支是历史分页遗留,索引与投影瞬态不一致的兜底)
-                    if let Some(ix) = slot {
-                        st.jump_to_nav(ix, cx);
+                    match slot {
+                        Some(ix) => st.jump_to_nav(ix, cx),
+                        // 未加载锚(历史分页窗口外):load-through——
+                        // 逐页前插直至锚点入窗,再顶对齐跳转
+                        None => st.jump_to_unloaded_anchor(&key, cx),
                     }
                 });
             })
@@ -789,10 +792,12 @@ fn nav_ticks(
                 move |_, _, _| marker_slots,
                 move |b, marker_slots, window, _| {
                     let top = list_state.logical_scroll_top().item_ix;
-                    // 首锚之上(视口顶还没到第一个用户行)兜底首锚:
-                    // 标记常亮不灭(此前 None 直接不画 = 「偶尔灭掉」)
-                    let ix = crate::features::chat::projection::current_nav_ix(&marker_slots, top)
-                        .unwrap_or(0);
+                    // 常亮不灭:命中区取最近已加载锚;窗口边界之上(正在看
+                    // 更早轮的尾部、其锚未加载)回落到已加载首锚的前一个
+                    let ix = crate::features::chat::projection::current_nav_ix_clamped(
+                        &marker_slots,
+                        top,
+                    );
                     // 坐标必须以画布 bounds 原点为基(容器在侧栏右侧,
                     // 窗口绝对 x=24 会画进侧栏底下 = 标记「不亮」实测)
                     let y = b.origin.y + px(band_top + ix as f32 * pitch);

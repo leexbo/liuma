@@ -142,6 +142,32 @@ pub fn approval_policy_of(events: &[EventEnvelope]) -> &'static str {
     )
 }
 
+/// [`sandbox_mode_of`] 的打包日志形态:反向借用扫(免整表 owned 展开
+/// ——每次 open_session 的权限 fold 都走此,大会话全量展开是数百 MB
+/// 级瞬时分配)。语义与切片版逐字节一致(白名单值才算命中)
+pub fn sandbox_mode_of_log(log: &liuma_session::EventLog) -> &'static str {
+    let hit = |ev: &liuma_session::EventEnvelope| {
+        ev.data["mode"]
+            .as_str()
+            .and_then(|v| SANDBOX_MODES.iter().find(|m| **m == v).copied())
+    };
+    log.last_matching("sandbox/mode", |ev| hit(ev).is_some())
+        .and_then(|ev| hit(&ev))
+        .unwrap_or(DEFAULT_SANDBOX_MODE)
+}
+
+/// [`approval_policy_of`] 的打包日志形态(同 [`sandbox_mode_of_log`])
+pub fn approval_policy_of_log(log: &liuma_session::EventLog) -> &'static str {
+    let hit = |ev: &liuma_session::EventEnvelope| {
+        ev.data["policy"]
+            .as_str()
+            .and_then(|v| APPROVAL_POLICIES.iter().find(|m| **m == v).copied())
+    };
+    log.last_matching("approval/policy", |ev| hit(ev).is_some())
+        .and_then(|ev| hit(&ev))
+        .unwrap_or(DEFAULT_APPROVAL_POLICY)
+}
+
 /// 会话最后记录的权限预设(fold 最后一个 `permission/preset`;无则 None)。
 pub fn permission_preset_of(events: &[EventEnvelope]) -> Option<String> {
     last_type_string(events, "permission/preset", "preset")
@@ -426,5 +452,40 @@ mod tests {
         assert!(!snapshot_sections(&[], "/tmp/ws").is_empty());
         let (_, payload) = snapshot_payload(&[], "/tmp/ws").expect("无事件也应给默认快照");
         assert_eq!(payload["source"]["form"], "snapshot");
+    }
+
+    /// 等价锁:打包日志形态(`*_of_log` 反向借用扫)== 切片形态
+    /// (`*_of` 全量反扫),含白名单拒认与多次覆盖
+    #[test]
+    fn log_form_permission_folds_match_slice_form() {
+        use serde_json::json;
+        let mut log = liuma_session::EventLog::new();
+        for (ty, key, val) in [
+            ("sandbox/mode", "mode", "read-only"),
+            ("sandbox/mode", "mode", "bogus"), // 白名单外:跳过
+            ("sandbox/mode", "mode", "full-access"), // 终值
+            ("approval/policy", "policy", "never"),
+            ("approval/policy", "policy", "auto"), // 白名单外:跳过
+        ] {
+            log.append(liuma_session::EventEnvelope::new(
+                ty,
+                0,
+                json!({ key: val }),
+            ))
+            .unwrap();
+        }
+        let slice: Vec<EventEnvelope> = log.iter().collect();
+        assert_eq!(
+            sandbox_mode_of_log(&log),
+            sandbox_mode_of(&slice),
+            "sandbox 打包/切片漂移"
+        );
+        assert_eq!(
+            approval_policy_of_log(&log),
+            approval_policy_of(&slice),
+            "approval 打包/切片漂移"
+        );
+        assert_eq!(sandbox_mode_of_log(&log), "full-access");
+        assert_eq!(approval_policy_of_log(&log), "never", "白名单外值跳过");
     }
 }

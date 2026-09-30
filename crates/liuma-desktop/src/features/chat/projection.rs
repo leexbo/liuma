@@ -353,6 +353,10 @@ pub struct ChatState {
     node_index: std::collections::HashMap<String, usize>,
     /// 历史合并中(born 不记录:载入的历史行不做入场动画;仅方法内瞬态)
     merging: bool,
+    /// 已载历史的最早截断 seq(下一页 `before_seq`;0 = 已到会话头)
+    pub history_cut: u64,
+    /// 是否还有更早历史页(session.history 响应回填)
+    pub history_has_more: bool,
 }
 
 /// 相等性排除 UI 元数据:同事件序列的两个状态节点/业务字段全同,
@@ -837,6 +841,19 @@ impl ChatState {
         self.push_indexed(node);
     }
 
+    /// 头窗拼接:更早历史页折出的投影节点**前插**(「加载更早」)。
+    /// 节点 key 为绝对 turn/step(翻译层 prime 过前缀),无需重编号;
+    /// key 去重天然防边界轮重复;node_index 整体重建(全体下移)
+    pub fn prepend_history(&mut self, older: ChatState) {
+        let mut nodes = older.nodes;
+        nodes.append(&mut self.nodes);
+        self.nodes = nodes;
+        self.node_index.clear();
+        for (ix, node) in self.nodes.iter().enumerate() {
+            self.node_index.insert(node.key().to_string(), ix);
+        }
+    }
+
     /// 记录节点出生(仅直播帧;历史合并载入的行不做入场动画)
     fn record_born(&mut self, key: &str) {
         if !self.merging {
@@ -1163,6 +1180,22 @@ pub fn current_nav_ix(anchor_slots: &[Option<usize>], top: usize) -> Option<usiz
         .map(|(i, _)| i)
 }
 
+/// [`current_nav_ix`] 的标记渲染形态(常亮不灭):视口顶落在已加载
+/// 首锚**之上**时(历史分页窗口边界切在轮中段——正在看的是更早轮
+/// 的尾部,其锚未加载),回落到已加载首锚的前一个锚,而非列表首锚
+/// (全量加载时代两者恰好同一;窗口化后回落首锚 = 标记瞬跳到
+/// 未加载区顶部)。全未加载兜底 0
+pub fn current_nav_ix_clamped(anchor_slots: &[Option<usize>], top: usize) -> usize {
+    match current_nav_ix(anchor_slots, top) {
+        Some(i) => i,
+        None => anchor_slots
+            .iter()
+            .position(|s| s.is_some())
+            .map(|first| first.saturating_sub(1))
+            .unwrap_or(0),
+    }
+}
+
 pub fn nav_anchors(slots: &[RowSlot], nodes: &[ChatNode]) -> Vec<NavAnchor> {
     let mut out = Vec::new();
     for (slot_ix, slot) in slots.iter().enumerate() {
@@ -1369,6 +1402,49 @@ mod tests {
         assert_eq!(current_nav_ix(&slots, 100), Some(3), "钉底 = 最后一个");
         assert_eq!(current_nav_ix(&[], 0), None, "无锚无位置");
         assert_eq!(current_nav_ix(&[None, None], 5), None, "全未加载无位置");
+    }
+
+    /// 标记渲染形态的回落:窗口边界之上(正在看更早轮的尾部、其锚
+    /// 未加载)落到已加载首锚的**前一个**锚,而非列表首锚——全量加载
+    /// 时代两者恰好同一,窗口化后回落首锚 = 标记瞬跳到未加载区顶部
+    #[test]
+    fn clamped_nav_ix_falls_back_to_anchor_before_loaded_window() {
+        // 10 锚:前 6 未加载,后 4 已加载(行槽 50/60/70/80)
+        let slots = vec![
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(50),
+            Some(60),
+            Some(70),
+            Some(80),
+        ];
+        // 命中区:与 current_nav_ix 一致
+        assert_eq!(current_nav_ix_clamped(&slots, 80), 9);
+        assert_eq!(
+            current_nav_ix_clamped(&slots, 55),
+            6,
+            "仍在锚 6 区间(锚 7 行号 60 未到)"
+        );
+        assert_eq!(current_nav_ix_clamped(&slots, 60), 7);
+        assert_eq!(
+            current_nav_ix_clamped(&slots, 50),
+            6,
+            "最老已加载锚命中自身"
+        );
+        // 边界区(50 之上):回落到已加载首锚(6)的前一个 = 5,
+        // 而不是跳到列表首锚 0
+        assert_eq!(current_nav_ix_clamped(&slots, 49), 5);
+        assert_eq!(current_nav_ix_clamped(&slots, 0), 5);
+        // 全量加载(无未加载锚):之上回落首锚 0(与旧行为一致)
+        let full = vec![Some(0), Some(5), None, Some(9)];
+        assert_eq!(current_nav_ix_clamped(&full, 0), 0);
+        // 全未加载 / 空:兜底 0
+        assert_eq!(current_nav_ix_clamped(&[None, None], 5), 0);
+        assert_eq!(current_nav_ix_clamped(&[], 0), 0);
     }
 
     /// session/queue items 解析:queued/steering 分流、preview 拼接、

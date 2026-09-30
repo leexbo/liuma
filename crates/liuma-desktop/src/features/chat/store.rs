@@ -288,6 +288,11 @@ pub(crate) struct ChatStore {
     /// 历史加载中(冷会话整档读档期间聊天区骨架占位的显示条件之一;
     /// load_history 置位,落地/失败清位)
     pub history_loading: bool,
+    /// 更早历史页加载中(「加载更早」防重入)
+    pub history_more_loading: bool,
+    /// 导航 load-through 的待跳锚 key(点击分页窗口外的导航锚登记;
+    /// 逐页前插直至入窗跳转,或无更早页时放弃清位)
+    pub pending_nav: Option<String>,
     /// 轮号用量桶,键 = (会话 id, 轮号)。挂应用级 ChatStore 而非会话
     /// 投影:回填 RPC 与投影建立谁先到都不丢(投影重建不焚毁),重开
     /// 会话由冷读 turnList 再灌一次
@@ -404,6 +409,8 @@ impl Default for ChatStore {
             last_remeasure_ranges: Vec::new(),
             nav_anchors_cache: None,
             history_loading: false,
+            history_more_loading: false,
+            pending_nav: None,
         }
     }
 }
@@ -1103,6 +1110,84 @@ impl AppStore {
         self.ensure_row_slots();
         self.reset_chat_list_anchored(anchor);
         cx.notify();
+    }
+
+    /// 头窗前插落地(「加载更早」页到达):锚定复位走 reset 路径——
+    /// 前插非尾部追加,splice 记账与测高缓存按行号存放都会整体错位
+    pub(crate) fn prepend_chat_history(
+        &mut self,
+        older: crate::features::chat::projection::ChatState,
+        cx: &mut Context<Self>,
+    ) {
+        // 锚须在拼接前读(旧槽位/旧滚动位)
+        let anchor = self.viewport_anchor();
+        if let Some(chat) = self
+            .state
+            .current_id
+            .as_deref()
+            .and_then(|id| self.state.chats.get_mut(id))
+        {
+            chat.prepend_history(older);
+        }
+        self.ensure_row_slots();
+        self.reset_chat_list_anchored(anchor);
+        self.chat.chat_list_count = self.chat.row_slots.len();
+        cx.notify();
+    }
+
+    /// 渲染期冲洗:聊天滚动副作用——首行入视口即「加载更早」
+    /// (与轨迹面板同款触发面;列表 Bottom 对齐,初始位不在顶部,
+    /// 前插后锚定位有更早行垫背,无翻页级联)
+    pub fn flush_chat_scroll(&mut self, cx: &mut Context<Self>) {
+        if self.chat.history_more_loading {
+            return;
+        }
+        let Some(id) = self.state.current_id.clone() else {
+            return;
+        };
+        let Some(chat) = self.state.chats.get(&id) else {
+            return;
+        };
+        if !chat.history_has_more {
+            return;
+        }
+        let top = self.chat.chat_list.logical_scroll_top();
+        if top.item_ix == 0 && f32::from(top.offset_in_item) <= 48. {
+            self.load_more_chat_history(cx);
+        }
+    }
+
+    /// 未加载锚的 load-through:登记目标锚并启动逐页前插
+    /// (点击历史分页窗口外的导航锚;页落地后 resolve_pending_nav 续推)
+    pub fn jump_to_unloaded_anchor(&mut self, key: &str, cx: &mut Context<Self>) {
+        self.chat.pending_nav = Some(key.to_string());
+        self.load_more_chat_history(cx);
+        self.resolve_pending_nav(cx);
+    }
+
+    /// 待跳锚收口:入窗即顶对齐跳转;未入窗且有更早页则续拉(链式),
+    /// 无更早页放弃清位
+    pub(crate) fn resolve_pending_nav(&mut self, cx: &mut Context<Self>) {
+        let Some(key) = self.chat.pending_nav.clone() else {
+            return;
+        };
+        self.ensure_row_slots();
+        if let Some(ix) = self.slot_index_of_anchor(&key) {
+            self.chat.pending_nav = None;
+            self.jump_to_nav(ix, cx);
+            return;
+        }
+        let has_more = self
+            .state
+            .current_id
+            .as_deref()
+            .and_then(|id| self.state.chats.get(id))
+            .is_some_and(|c| c.history_has_more);
+        if !has_more {
+            self.chat.pending_nav = None;
+        } else {
+            self.load_more_chat_history(cx);
+        }
     }
 
     /// 导航轨 hover 点更新(None = 移出)
@@ -1897,13 +1982,15 @@ impl AppStore {
     /// ListState 只在渲染期回读(见 `install_scroll_handler` 一类约束,这里
     /// 由渲染期 flush 调用)。锚点取 `logical_scroll_top().item_ix`:
     /// Bottom 对齐且未滚动时它即末项,正好是「跟着尾部」的位置。余量给足,
-    /// 滚动时不会刚出窗口就被逐出又重建
+    /// 滚动时不会刚出窗口就被逐出又重建。余量定档:实测长会话常驻
+    /// ~145 个 TextView(每行完整 markdown 布局)是 GPUI 层内存与滚动
+    /// CPU 的主项;±30/+60 已覆盖一次快速滚动的提前量,再大常驻翻倍
     fn tv_slot_window(&self) -> Option<std::ops::Range<usize>> {
         let count = self.chat.chat_list.item_count();
         if count == 0 {
             return None;
         }
-        const MARGIN: usize = 150;
+        const MARGIN: usize = 30;
         let top = self.chat.chat_list.logical_scroll_top().item_ix.min(count);
         let start = top.saturating_sub(MARGIN);
         let end = (top + MARGIN * 2).min(count);

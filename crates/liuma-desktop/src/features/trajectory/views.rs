@@ -1075,6 +1075,32 @@ fn toolbar(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 .border_color(theme::BORDER())
                 .content(toggle_button(
                     cx,
+                    "traj-toolbar-jump-top",
+                    t!("trajectory.jump_top"),
+                    false,
+                    fixed(IconName::ChevronUp, 12.),
+                    {
+                        let s = store.clone();
+                        move |_, _, cx| {
+                            s.update(cx, |st, cx| st.jump_trajectory_top(cx));
+                        }
+                    },
+                ))
+                .content(toggle_button(
+                    cx,
+                    "traj-toolbar-jump-bottom",
+                    t!("trajectory.jump_bottom"),
+                    false,
+                    fixed(IconName::ChevronDown, 12.),
+                    {
+                        let s = store.clone();
+                        move |_, _, cx| {
+                            s.update(cx, |st, cx| st.jump_trajectory_bottom(cx));
+                        }
+                    },
+                ))
+                .content(toggle_button(
+                    cx,
                     "traj-toolbar-duration",
                     t!("trajectory.toolbar_duration"),
                     s.duration,
@@ -1348,10 +1374,16 @@ fn timeline(
         }
     }
 
-    // turn 边界竖线(turn_start 记录的条形位置)
+    // turn 边界竖线(turn_start 记录的条形位置)。
+    // span 定位用预建映射:此前每条 turn 线对 spans 线性 find,
+    // O(轮数 × 记录数)——2000 记录 × 40 轮 = 每帧 8 万次比较,
+    // 轨迹面板开着时随每次重绘跑(渲染风暴期 ×140 帧)
+    let span_by_record: std::collections::HashMap<u64, &TlSpan> =
+        spans.iter().map(|sp| (sp.record_index, sp)).collect();
     let mut turn_lines: Vec<gpui_kit::AnyElement> = Vec::new();
     for r in s.view.records.iter().filter(|r| r.turn_start) {
-        if let Some(sp) = spans.iter().find(|sp| sp.record_index == r.index) {
+        if let Some(sp) = span_by_record.get(&r.index) {
+            let sp = *sp;
             let x = to_track(sp.x0).clamp(0., 1.);
             if x <= 0. {
                 continue;

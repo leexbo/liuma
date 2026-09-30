@@ -725,4 +725,61 @@ mod registry_tests {
             assert_eq!(r.len(), 0);
         });
     }
+
+    /// TextView 创建/销毁 churn 复现(env 门控,默认跳过):滚动全程
+    /// ~1700 个 TextView 建了又逐出,RSS 单调涨(真机 release 实测滚到
+    /// 头 700MB)。本实验不经列表,直接隔离 TextViewState::markdown
+    /// 的建/毁循环——若 RSS 仍线性涨,泄漏在 merman/gpui 文本层;
+    /// 平了则在列表/渲染层。跑法:
+    ///   LIUMA_TV_CHURN=1 cargo test -p liuma-desktop --release tv_churn -- --nocapture
+    #[gpui_kit::test]
+    fn tv_churn_rss_curve(cx: &mut TestAppContext) {
+        if std::env::var("LIUMA_TV_CHURN").is_err() {
+            eprintln!("[tc] 跳过(未设 LIUMA_TV_CHURN)");
+            return;
+        }
+        init(cx);
+        #[cfg(target_os = "macos")]
+        fn rss_mb() -> f64 {
+            let out = std::process::Command::new("ps")
+                .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+                .output()
+                .expect("ps");
+            String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse::<u64>()
+                .map(|kb| kb as f64 / 1024.0)
+                .unwrap_or(0.)
+        }
+        #[cfg(not(target_os = "macos"))]
+        fn rss_mb() -> f64 {
+            0.
+        }
+        // 每段 ~4KB markdown(标题+代码块+列表),2000 段互不相同
+        let rounds = 2000usize;
+        let report_every = 400usize;
+        let mut held: Option<gpui_kit::Entity<TextViewState>> = None;
+        let t0 = std::time::Instant::now();
+        eprintln!("[tc] 基线 RSS = {:.0} MB", rss_mb());
+        for i in 0..rounds {
+            let text = format!(
+                "# 段落 {i}\n\n{}正文叙述,{}带 `code` 与**强调**。\n\n```rust\nfn step_{i}() -> u32 {{ {i} }}\n```\n\n- 项一\n- 项二\n",
+                "较长的叙述文本,".repeat(60),
+                "变化词,".repeat(20),
+            );
+            let state = cx.new(|cx| TextViewState::markdown(&text, cx));
+            held = Some(state); // 覆盖上一轮 = 旧实体销毁
+            if (i + 1) % report_every == 0 {
+                cx.run_until_parked(); // 推进异步解析落地
+                eprintln!("[tc] {:>5} 段后 RSS = {:.0} MB", i + 1, rss_mb());
+            }
+        }
+        drop(held);
+        cx.run_until_parked();
+        eprintln!(
+            "[tc] 全部释放后 RSS = {:.0} MB({:.1}s)",
+            rss_mb(),
+            t0.elapsed().as_secs_f64()
+        );
+    }
 }

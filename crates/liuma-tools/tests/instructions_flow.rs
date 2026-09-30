@@ -109,7 +109,7 @@ impl Harness {
         );
         engine.set_instructions_provider(Box::new(move |touches| {
             let mut st = state.lock().unwrap();
-            let events = log.lock().unwrap().iter().cloned().collect::<Vec<_>>();
+            let events = log.lock().unwrap().iter().collect::<Vec<_>>();
             st.compose(&events, &home, &ws, touches)
         }));
         let mut tool = ScriptTool {

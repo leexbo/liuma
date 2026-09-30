@@ -374,7 +374,7 @@ async fn prepare_child_parts(
                 .map_err(|e| format!("subagent session heal failed: {e}"))?;
             use std::io::Write as _;
             for ev in log_inner.iter() {
-                serde_json::to_writer(&mut f, ev)
+                serde_json::to_writer(&mut f, &ev)
                     .map_err(|e| format!("subagent session heal failed: {e}"))?;
                 f.write_all(b"\n")
                     .map_err(|e| format!("subagent session heal failed: {e}"))?;

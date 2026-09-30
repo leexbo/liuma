@@ -388,7 +388,7 @@ impl<T: LlmTransport + Summarizer + Send, TOOLS: ToolPort + Send> Gateway<T, TOO
                     .log
                     .lock()
                     .map_err(|_| JsonRpcError::internal("log 锁中毒"))?;
-                let events: Vec<&EventEnvelope> = log.iter().collect();
+                let events: Vec<EventEnvelope> = log.iter().collect();
                 Ok((
                     json!({ "events": events, "highWater": log.high_water() }),
                     Vec::new(),

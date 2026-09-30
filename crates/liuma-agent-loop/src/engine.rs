@@ -342,7 +342,9 @@ impl LoopEngine {
     pub fn restore_projection(&mut self) {
         let projection = &mut self.projection;
         if let Ok(l) = self.log.lock() {
-            let snap = l.iter().cloned().collect::<Vec<_>>();
+            // 定向收集(restore 只消费 user/message 与折叠摘要;整表
+            // 展开在长会话 ≈ 379MB 瞬时分配,attach 每次都跑)
+            let snap = l.collect_of_types(&["user/message", "compaction/summary"]);
             projection.restore(&snap);
         }
     }
@@ -964,9 +966,10 @@ impl LoopEngine {
             if let Some(provider) = &self.context_provider
                 && let Some((current, sections)) = provider()
             {
-                // 折叠遮蔽命中 retained 时先失效(读日志判定)
+                // 折叠遮蔽命中 retained 时先失效(读日志判定;refresh_fold
+                // 只看 compaction/summary,定向收集免整表展开)
                 if let Ok(l) = self.log.lock() {
-                    let snap = l.iter().cloned().collect::<Vec<_>>();
+                    let snap = l.collect_of_types(&["compaction/summary"]);
                     self.projection.refresh_fold(&snap);
                 }
                 if let Some((mut payload, _text)) = self.projection.project(&current, &sections) {
@@ -982,7 +985,7 @@ impl LoopEngine {
                     if let Ok(l) = self.log.lock()
                         && let Some(ev) = l.get(injected_seq)
                     {
-                        self.projection.observe_event(ev);
+                        self.projection.observe_event(&ev);
                     }
                 }
             }
@@ -1550,7 +1553,8 @@ impl LoopEngine {
             .log
             .lock()
             .map_err(|_| LoopError::Log("log 锁中毒".into()))?;
-        Ok(derive_visible_messages(log.iter()))
+        let snap: Vec<EventEnvelope> = log.iter().collect();
+        Ok(derive_visible_messages(snap.iter()))
     }
 
     /// 折叠判定与执行:上下文量测越过压力阈值时,把保留尾之前的前缀
@@ -1645,7 +1649,7 @@ impl LoopEngine {
             let Ok(l) = log.lock() else {
                 return Err(LoopError::Log("log 锁中毒".into()));
             };
-            l.iter().cloned().collect()
+            l.iter().collect()
         };
         let visible = derive_visible_messages(events.iter());
         let derived_chars = visible.to_string().chars().count() as u64;
@@ -1735,7 +1739,7 @@ impl LoopEngine {
             let Ok(l) = log.lock() else {
                 return Err(LoopError::Log("log 锁中毒".into()));
             };
-            derive_visible_messages(l.iter())
+            derive_visible_messages(l.iter().collect::<Vec<_>>().iter())
         } else {
             visible
         };
@@ -1865,7 +1869,7 @@ impl LoopEngine {
             let Ok(l) = log.lock() else {
                 return Err(LoopError::Log("log 锁中毒".into()));
             };
-            derive_visible_messages(l.iter())
+            derive_visible_messages(l.iter().collect::<Vec<_>>().iter())
                 .to_string()
                 .chars()
                 .count() as u64
@@ -2329,10 +2333,10 @@ mod streaming_tests {
             .expect("chunk");
         assert!(first_reasoning < first_chunk, "推理先于内容: {seen:?}");
         let l = log.lock().unwrap();
-        let texts: Vec<&str> = l
+        let texts: Vec<String> = l
             .iter()
             .filter(|ev| ev.r#type == "assistant/reasoning")
-            .map(|ev| ev.data["text"].as_str().unwrap_or_default())
+            .map(|ev| ev.data["text"].as_str().unwrap_or_default().to_string())
             .collect();
         assert_eq!(texts, vec!["思", "考"], "增量原样(不合并): {texts:?}");
     }

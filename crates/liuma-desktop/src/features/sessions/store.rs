@@ -20,6 +20,10 @@ use crate::shell::reducer;
 use crate::shell::store::AppStore;
 use liuma_core::proto::HistoryValue;
 
+/// 聊天历史尾窗条数(初始加载与「加载更早」页大小,按**消息**计数;
+/// dsh 参照取 50,liuma 轮内工具行密放宽到 200)
+const CHAT_HISTORY_WINDOW: usize = 200;
+
 /// 导出保存对话框初始目录:`LIUMA_DOWNLOAD_DIR` 或 ~/Downloads(仅作
 /// 对话框起点;最终路径由用户选定,应用不代选)
 pub(crate) fn downloads_dir() -> std::path::PathBuf {
@@ -157,6 +161,9 @@ impl AppStore {
         self.chat.anchor_index.clear();
         self.chat.row_slots.clear();
         self.chat.row_slots_sig = None;
+        // 图片缓存焚毁(解码 RGBA 常驻,多图会话可上百 MB;懒加载,
+        // 新会话的图随历史落地按需重解码)
+        self.attachments.image_cache.clear();
         // active_workspace 不随会话联动:工作区选中是独立状态,仅由
         // 显式点击工作区行/下拉设置(否则会话选中跨节点亮工作区行,
         // 见侧栏互斥渲染的系列回归)
@@ -177,9 +184,11 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 历史全量加载(打开即投影整段会话;渲染层虚拟化,只画可见行)。
-    /// 分页方案(每页 fetch 全量翻译日志,比一次性翻译更贵)连同其
-    /// 游标/合并重建/挂起跳转机器整体不采用。
+    /// 历史尾窗加载(打开即投影**尾部窗口**;渲染层虚拟化,只画可见行,
+    /// 数据层同样只载尾窗——看不见的不物化,滚动到顶再前插更早页)。
+    /// 窗口翻译为宿主 `page_cut` + `translate_window`(前缀仅 prime 预热,
+    /// 翻译分配 O(窗口));旧「全量拉取」方案在 46 万事件会话上要逐条
+    /// 物化 SessionEvent(峰值数百 MB),不再采用。
     /// 直播帧可能先行到达——以已投影状态为基线回放,节点 key 幂等。
     /// **必须经 [`HostBridge::call`] 上 tokio**:history 内部 attach 会
     /// `tokio::spawn` 每-会话 worker,GPUI 后台线程无 reactor 会 panic。
@@ -191,10 +200,10 @@ impl AppStore {
         let store = cx.entity().clone();
         let host = self.bridge.host().clone();
         let sid = id.clone();
-        // max_messages 取大数 = 不分页,一次带回全部事件
+        // 尾窗条数(dsh 参照取 50;liuma 轮内工具行密,放宽到 200)
         let rx = self
             .bridge
-            .call(async move { host.history(&sid, None, u32::MAX as usize).await });
+            .call(async move { host.history(&sid, None, CHAT_HISTORY_WINDOW).await });
         cx.spawn(async move |_this, cx| {
             let page = rx.await;
             store.update(cx, |s, cx| {
@@ -213,7 +222,8 @@ impl AppStore {
                 let HistoryValue {
                     events,
                     projections,
-                    ..
+                    cut,
+                    has_more,
                 } = page;
                 let page_events: Vec<liuma_core::proto::SessionEvent> =
                     events.into_iter().map(|e| e.event).collect();
@@ -222,6 +232,8 @@ impl AppStore {
                     let live = s.state.running_by_id.get(&id).copied().unwrap_or(false);
                     let chat = s.state.chats.entry(id.clone()).or_default();
                     chat.merge_history(page_events);
+                    chat.history_cut = cut;
+                    chat.history_has_more = has_more;
                     if !live {
                         // 日志停在回合中途(被杀回合)时,未落定的调用会永久
                         // 停在 Running —— 渲染层的运行扫光是 repeat 动画,
@@ -252,6 +264,66 @@ impl AppStore {
                     s.state.titles.insert(id.clone(), t.to_string());
                 }
                 cx.notify();
+            });
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
+    /// 「加载更早」:以已载窗口首截断 seq 为 `before_seq` 前插一页。
+    /// 断缝守卫(dsh 参照同款):页尾 seq + 1 ≠ before 即 fail-loud 停页,
+    /// 不静默拼接(拼接错缝 = 时间线错序)
+    pub fn load_more_chat_history(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.state.current_id.clone() else {
+            return;
+        };
+        let Some(chat) = self.state.chats.get(&id) else {
+            return;
+        };
+        if self.chat.history_more_loading || !chat.history_has_more || chat.history_cut == 0 {
+            return;
+        }
+        let before = chat.history_cut;
+        self.chat.history_more_loading = true;
+        let store = cx.entity().clone();
+        let host = self.bridge.host().clone();
+        let sid = id.clone();
+        let rx = self
+            .bridge
+            .call(async move { host.history(&sid, Some(before), CHAT_HISTORY_WINDOW).await });
+        cx.spawn(async move |_this, cx| {
+            let page = rx.await;
+            store.update(cx, |s, cx| {
+                s.chat.history_more_loading = false;
+                let Ok(Ok(page)) = page else { return };
+                let HistoryValue {
+                    events,
+                    cut,
+                    has_more,
+                    ..
+                } = page;
+                let page_events: Vec<liuma_core::proto::SessionEvent> =
+                    events.into_iter().map(|e| e.event).collect();
+                let Some(chat) = s.state.chats.get_mut(&id) else {
+                    return;
+                };
+                // 断缝守卫(页边界口径):宿主按 seq 有序扫描切窗,事件级
+                // 连续性由构造保证;但翻译层会**过滤**非客方事件(页尾
+                // 常是 audit/tool 类,不产出 SessionEvent),用「页尾事件
+                // seq+1 == before」判缝会假性触发、一页后误清 has_more。
+                // 改判**边界前移**:新 cut 不严格小于 before = 无进展,
+                // 停页防死循环
+                if cut >= before {
+                    chat.history_has_more = false;
+                    return;
+                }
+                chat.history_cut = cut;
+                chat.history_has_more = has_more;
+                let mut older = crate::features::chat::projection::ChatState::default();
+                older.merge_history(page_events);
+                s.prepend_chat_history(older, cx);
+                // 导航 load-through:入窗跳转或续拉下一页
+                s.resolve_pending_nav(cx);
             });
             Ok::<(), anyhow::Error>(())
         })

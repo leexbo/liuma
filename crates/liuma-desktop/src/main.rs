@@ -175,7 +175,23 @@ fn main() {
                             .await;
                         tick += 1;
                         let line = fp_store.read_with(cx, |s, _| s.footprint());
-                        eprintln!("[fp] t={}s {line}", tick * 5);
+                        // RSS 同报:内存归因定位(增长随翻页 = 宿主路径;
+                        // 随滚动距离连续 = 渲染层)。macOS ps;其他平台缺省 0
+                        #[cfg(target_os = "macos")]
+                        let rss = std::process::Command::new("ps")
+                            .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+                            .output()
+                            .ok()
+                            .and_then(|o| {
+                                String::from_utf8_lossy(&o.stdout)
+                                    .trim()
+                                    .parse::<u64>()
+                                    .ok()
+                            })
+                            .unwrap_or(0);
+                        #[cfg(not(target_os = "macos"))]
+                        let rss = 0u64;
+                        eprintln!("[fp] t={}s rss={rss}KB {line}", tick * 5);
                     }
                 })
                 .detach();

@@ -239,10 +239,77 @@ pub fn expand(row: &ChunkRow, kind: DeltaKind) -> Result<Vec<EventEnvelope>, Row
     Ok(events)
 }
 
+/// 一行 JSONL → 逻辑事件(**读侧布局盲统一入口**):普通行先走信封
+/// 直解快路(无中间 Value 树);直解失败且行为打包行(`row` 键判别)
+/// 时展开成员。`load_log` / `EventStore` 等一切「按行读文件」的路径
+/// 必须经此判别——绕过它直解信封会把打包行当损坏文件拒载
+/// (缺 `type` 字段)。非打包行的报错保持信封守卫原语义不变。
+pub fn decode_line_events(line: &str) -> Result<Vec<EventEnvelope>, crate::EnvelopeError> {
+    match crate::decode_envelope_str(line) {
+        Ok(ev) => Ok(vec![ev]),
+        Err(envelope_err) => {
+            let raw: serde_json::Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => return Err(envelope_err),
+            };
+            if raw.get(ROW_KEY).and_then(|v| v.as_str()) != Some(ROW_TAG) {
+                return Err(envelope_err);
+            }
+            let kind = raw
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .and_then(DeltaKind::from_row_tag)
+                .ok_or_else(|| {
+                    crate::EnvelopeError::Decode("packed row missing/unknown `kind`".into())
+                })?;
+            let row: ChunkRow = serde_json::from_value(raw)
+                .map_err(|e| crate::EnvelopeError::Decode(format!("packed row corrupt: {e}")))?;
+            expand(&row, kind)
+                .map_err(|e| crate::EnvelopeError::Decode(format!("packed row invalid: {e}")))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// 行解码统一入口:普通行直解、打包行展开、坏行报原信封错
+    #[test]
+    fn decode_line_events_is_layout_blind() {
+        // 普通行:单事件直解(含守卫语义)
+        let normal =
+            r#"{"type":"user/message","seq":1,"time":0,"data":{"content":"hi"},"ignorable":false}"#;
+        let evs = decode_line_events(normal).expect("普通行直解");
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0].r#type, "user/message");
+        // 打包行:展开为成员(seq 锚定逐条还原)
+        let packed = r#"{"row":"chunks","kind":"reasoning","seq0":1,"time0":1,"dt":[1,1],"texts":["a","b","c"]}"#;
+        let evs = decode_line_events(packed).expect("打包行展开");
+        assert_eq!(
+            evs.iter()
+                .map(|e| e.data["text"].clone())
+                .collect::<Vec<_>>(),
+            vec![json!("a"), json!("b"), json!("c")]
+        );
+        assert_eq!(evs.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![1, 2, 3]);
+        // 坏行:非打包行报原信封错(守卫语义不变)
+        assert!(decode_line_events("{not json").is_err());
+        assert!(
+            decode_line_events(
+                r#"{"type":"evil/unknown","seq":1,"time":0,"data":{},"ignorable":false}"#
+            )
+            .is_err()
+        );
+        // 打包行损坏:fail-loud
+        assert!(
+            decode_line_events(
+                r#"{"row":"chunks","kind":"reasoning","seq0":1,"time0":1,"dt":[1],"texts":[]}"#
+            )
+            .is_err()
+        );
+    }
 
     fn reasoning(seq: u64, time: i64, text: &str) -> EventEnvelope {
         let mut ev =

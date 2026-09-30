@@ -526,7 +526,8 @@ async fn todo_write_events_flow_through_engine_and_restore() {
 
     // 消息面不含 todo/write(非 surface;闸门比对全程通过即证明)
     let l = log.lock().unwrap();
-    let msgs = liuma_session::derive_messages(l.iter());
+    let snap: Vec<liuma_session::EventEnvelope> = l.iter().collect();
+    let msgs = liuma_session::derive_messages(snap.iter());
     let s = serde_json::to_string(&msgs).unwrap();
     assert!(!s.contains("todo/write"));
     assert!(s.contains("write todo tests"), "工具结果本身仍可见");

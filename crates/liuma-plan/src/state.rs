@@ -21,12 +21,9 @@ pub fn mode_envelope(mode: &str, ts: i64) -> EventEnvelope {
 
 /// 当前模式:最近一条 `session/mode`(缺省 standard)。
 pub fn current_mode(log: &EventLog) -> String {
-    log.iter()
-        .rev()
-        .find(|e| e.r#type == "session/mode")
-        .and_then(|e| e.data["mode"].as_str())
-        .unwrap_or("standard")
-        .to_string()
+    log.last_of("session/mode")
+        .and_then(|e| e.data["mode"].as_str().map(|m| m.to_string()))
+        .unwrap_or_else(|| "standard".to_string())
 }
 
 /// 从日志读 plan 态(最近一条 `session/mode` 与 `plan/approved`)。
@@ -35,9 +32,7 @@ pub fn current_mode(log: &EventLog) -> String {
 pub fn plan_state(log: &EventLog) -> (bool, Option<String>) {
     let mode = current_mode(log);
     let active = log
-        .iter()
-        .rev()
-        .find(|e| e.r#type == "plan/approved")
+        .last_of("plan/approved")
         .and_then(|e| e.data["plan"].as_str().map(String::from));
     (mode == "plan", active)
 }
@@ -47,7 +42,7 @@ pub fn plan_state(log: &EventLog) -> (bool, Option<String>) {
 ///
 /// 冷恢复路径(驱动启动 re-ask)据此识别「崩溃时评审未收口」。
 pub fn pending_plan(log: &EventLog) -> Option<String> {
-    let submitted = log.iter().rev().find(|e| e.r#type == "plan/submitted")?;
+    let submitted = log.last_of("plan/submitted")?;
     let plan = submitted.data["plan"].as_str()?.to_string();
     let resolved_after = log.iter().any(|e| {
         matches!(

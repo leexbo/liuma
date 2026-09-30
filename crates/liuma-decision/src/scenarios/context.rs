@@ -132,7 +132,8 @@ mod tests {
         }
         let already: HashSet<u64> = [3].into();
         // retain_from=4:seq<4 参选;seq2 太短;seq3 已修剪过 → 只剩 1
-        let picked = select_candidates(log.iter(), 4, &already);
+        let snap: Vec<EventEnvelope> = log.iter().collect();
+        let picked = select_candidates(snap.iter(), 4, &already);
         assert_eq!(picked.iter().map(|c| c.seq).collect::<Vec<_>>(), vec![1]);
         // 大输出优先排序 + 上限截断
         let mut log2 = EventLog::new();
@@ -150,7 +151,8 @@ mod tests {
             log2.append(tool_result(seq, chars)).unwrap();
         }
         let none: HashSet<u64> = HashSet::new();
-        let picked = select_candidates(log2.iter(), 10, &none);
+        let snap: Vec<EventEnvelope> = log2.iter().collect();
+        let picked = select_candidates(snap.iter(), 10, &none);
         assert_eq!(picked.len(), crate::thresholds::MAX_QUESTIONS_PER_REQUEST);
         assert_eq!(picked[0].seq, 2, "大输出优先");
         assert!(!picked.iter().any(|c| c.seq == 1), "最小者被上限截断");

@@ -85,38 +85,131 @@ pub fn context_breakdown<'a>(
                     tools_tokens = ceil_div(chars, CHARS_PER_TOKEN) + BLOCK_OVERHEAD;
                 }
             }
-            "user/message"
-            | "assistant/message"
-            | "assistant/reasoning"
-            | "tool/result"
-            | "compaction/summary" => {
+            _ => {
                 // 被折叠遮蔽的历史(已定序且 seq <= 最新摘要 throughSeq)
                 // 已由摘要代表,不再占上下文;seq 0 = 未定序,不参与判定
                 if ev.seq > 0 && ev.seq <= through_seq {
                     continue;
                 }
-                // 注入上下文(user/message + source.kind != "user")不计入
-                // message_tokens:注入是旁车上下文,不占历史消息数;
-                // 真实用户/助手消息照算。
-                if ev.r#type == "user/message"
-                    && ev.data["source"]["kind"].as_str().unwrap_or("user") != "user"
-                {
-                    continue;
-                }
-                message += match ev.r#type.as_str() {
-                    "assistant/reasoning" => ev.data["text"].as_str().map_or(0, price_block),
-                    "tool/result" => ev.data["output"].as_str().map_or(0, price_block),
-                    "compaction/summary" => ev.data["summary"].as_str().map_or(0, price_block),
-                    _ => message_tokens(&ev.data),
-                }
+                message += message_contribution(ev);
             }
-            _ => {}
         }
     }
     ContextBreakdown {
         system_tokens,
         tools_tokens,
         message_tokens: message,
+    }
+}
+
+/// 单条事件对 message 段的贡献(0 = 不计:非可见类型或注入上下文)。
+/// 批量([`context_breakdown`])与增量([`BreakdownAcc`])共用,口径不二
+fn message_contribution(ev: &EventEnvelope) -> u64 {
+    match ev.r#type.as_str() {
+        "user/message"
+        | "assistant/message"
+        | "assistant/reasoning"
+        | "tool/result"
+        | "compaction/summary" => {
+            // 注入上下文(user/message + source.kind != "user")不计入
+            // message_tokens:注入是旁车上下文,不占历史消息数;
+            // 真实用户/助手消息照算。
+            if ev.r#type == "user/message"
+                && ev.data["source"]["kind"].as_str().unwrap_or("user") != "user"
+            {
+                return 0;
+            }
+            match ev.r#type.as_str() {
+                "assistant/reasoning" => ev.data["text"].as_str().map_or(0, price_block),
+                "tool/result" => ev.data["output"].as_str().map_or(0, price_block),
+                "compaction/summary" => ev.data["summary"].as_str().map_or(0, price_block),
+                _ => message_tokens(&ev.data),
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// [`context_breakdown`] 的增量维护形态:事件按 seq 顺序喂入,快照 O(1)。
+///
+/// 直播热路径(`push_stats_frame` 每 stats 事件一查)用:打包常驻后
+/// 全量扫需展开整表,长会话每帧上百毫秒不可接受。message 段走前缀和:
+/// 折叠掩蔽(throughSeq)总在被打蔽事件**之后**落地,快照时减去被遮蔽
+/// 前缀即得,与全量扫逐字段相等(等价锁测试)。
+#[derive(Debug, Clone)]
+pub struct BreakdownAcc {
+    /// 下一条期待喂入的 seq(已喂入 1..next_seq)
+    next_seq: u64,
+    /// 最新请求信封的 system/tools 价格(audit 覆盖式,与批量同)
+    system_tokens: u64,
+    tools_tokens: u64,
+    /// 前缀和:prefix[s] = seq 1..=s 的 message 贡献和(prefix[0] = 0)
+    prefix: Vec<u64>,
+    /// 最新 compaction/summary 的 throughSeq(0 = 未折叠)
+    through_seq: u64,
+}
+
+impl Default for BreakdownAcc {
+    fn default() -> Self {
+        Self {
+            next_seq: 1,
+            system_tokens: 0,
+            tools_tokens: 0,
+            prefix: vec![0],
+            through_seq: 0,
+        }
+    }
+}
+
+impl BreakdownAcc {
+    /// 顺序喂入一条已定序事件(seq 必须等于 [`Self::next_seq`]:
+    /// 乱序/重复忽略——缺口由调用方补齐后再喂)
+    pub fn push(&mut self, ev: &EventEnvelope) {
+        if ev.seq != self.next_seq {
+            return;
+        }
+        self.next_seq += 1;
+        match ev.r#type.as_str() {
+            "audit/call"
+                if ev.data["boundary"].as_str() == Some("llm")
+                    && ev.data["operation"].as_str() == Some("request") =>
+            {
+                if let Some(chars) = ev.data["detail"]["systemChars"].as_u64() {
+                    self.system_tokens = ceil_div(chars, CHARS_PER_TOKEN) + ROLE_OVERHEAD;
+                }
+                if let Some(chars) = ev.data["detail"]["toolsChars"].as_u64() {
+                    self.tools_tokens = ceil_div(chars, CHARS_PER_TOKEN) + BLOCK_OVERHEAD;
+                }
+            }
+            "compaction/summary" => {
+                self.through_seq = ev.data["throughSeq"].as_u64().unwrap_or(0);
+            }
+            _ => {}
+        }
+        let c = message_contribution(ev);
+        self.prefix
+            .push(self.prefix.last().copied().unwrap_or(0) + c);
+    }
+
+    /// 下一条期待喂入的 seq(补洞起点)
+    pub fn next_seq(&self) -> u64 {
+        self.next_seq
+    }
+
+    /// 当前构成(O(1),与 [`context_breakdown`] 全量扫同口径)
+    pub fn snapshot(&self) -> ContextBreakdown {
+        let total = self.prefix.last().copied().unwrap_or(0);
+        // throughSeq 越界(> 已喂入末 seq)→ 全量遮蔽,与批量掩蔽一致
+        let masked = self
+            .prefix
+            .get(self.through_seq as usize)
+            .copied()
+            .unwrap_or(total);
+        ContextBreakdown {
+            system_tokens: self.system_tokens,
+            tools_tokens: self.tools_tokens,
+            message_tokens: total - masked,
+        }
     }
 }
 
@@ -259,5 +352,74 @@ mod tests {
         let b = context_breakdown(&log_with_request);
         assert_eq!(b.system_tokens, ceil_div(100, 4) + ROLE_OVERHEAD);
         assert_eq!(b.tools_tokens, ceil_div(200, 4) + BLOCK_OVERHEAD);
+    }
+
+    /// 等价锁:BreakdownAcc 逐事件喂入 == context_breakdown 全量扫,
+    /// 且在**每个前缀**上三字段逐一相等(增量维护不得漂移)。流内含
+    /// audit 覆盖、注入消息、可打包 reasoning 对、中段与二段摘要
+    #[test]
+    fn breakdown_acc_matches_full_scan_at_every_prefix() {
+        let stream: Vec<EventEnvelope> = vec![
+            audit_llm_request(100, 200),
+            ev("user/message", json!({ "content": "hi there" })),
+            ev(
+                "user/message",
+                json!({ "content": "[injected]", "source": { "kind": "plugin" } }),
+            ),
+            EventEnvelope::new_ignorable(
+                "assistant/reasoning",
+                1,
+                json!({ "text": "thinking hard about it" }),
+            ),
+            EventEnvelope::new_ignorable("assistant/reasoning", 2, json!({ "text": "more" })),
+            ev(
+                "assistant/message",
+                json!({ "content": "answer", "tool_calls": [
+                    { "name": "bash", "arguments": { "command": "ls" } }
+                ] }),
+            ),
+            ev("tool/result", json!({ "output": "file_a file_b" })),
+            audit_llm_request(8, 40),
+            ev(
+                "compaction/summary",
+                json!({ "summary": "condensed history", "throughSeq": 6 }),
+            ),
+            ev("user/message", json!({ "content": "after fold" })),
+            ev(
+                "compaction/summary",
+                json!({ "summary": "folded again", "throughSeq": 9 }),
+            ),
+            ev("assistant/message", json!({ "content": "final" })),
+        ];
+        let mut log = liuma_session::EventLog::new();
+        let mut acc = BreakdownAcc::default();
+        for e in stream {
+            let seq = log.append(e).expect("append");
+            let sequenced = log.get(seq).expect("get");
+            acc.push(&sequenced);
+            let snap: Vec<EventEnvelope> = log.iter().collect();
+            let full = context_breakdown(snap.iter());
+            assert_eq!(acc.snapshot(), full, "前缀 seq={seq} 处增量/全量漂移");
+        }
+    }
+
+    /// 等价锁(真实样本,env 门控):整段日志喂入后与全量扫相等
+    #[test]
+    fn breakdown_acc_matches_full_scan_on_real_log() {
+        let path = std::env::var("LIUMA_REAL_LOG").unwrap_or_else(|_| {
+            "/Users/leexbo/.liuma/--Volumes-DATA-projects-liuma--/s-4ffe75f20bc846ffbaf4243667d53e8e/session.jsonl".into()
+        });
+        if !std::path::Path::new(&path).exists() {
+            eprintln!("[ctx] 跳过(样本不存在:{path})");
+            return;
+        }
+        let log = liuma_app::load_log(&path).expect("load");
+        let mut acc = BreakdownAcc::default();
+        for e in log.iter() {
+            acc.push(&e);
+        }
+        let snap: Vec<EventEnvelope> = log.iter().collect();
+        let full = context_breakdown(snap.iter());
+        assert_eq!(acc.snapshot(), full);
     }
 }

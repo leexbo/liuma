@@ -10,7 +10,7 @@ fn committed(envelopes: Vec<EventEnvelope>) -> Vec<EventEnvelope> {
     for ev in envelopes {
         log.append(ev).expect("log append");
     }
-    log.iter().cloned().collect()
+    log.iter().collect()
 }
 
 fn user_msg(content: &str, time: i64) -> EventEnvelope {

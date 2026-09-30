@@ -309,12 +309,6 @@ pub struct TrajectoryData {
 
 /// 宿主驻留记录上限:轨迹驻留态只保留最近 N 条,超出丢最旧并前移
 /// `base_index`(绝对 index / 分页语义不变)。
-///
-/// 宿主与桌面**同进程**,故这里省的是应用常驻而非「服务端内存」:一条记录
-/// 带 payload / output_detail / thinking_detail / system_prompt,长会话下
-/// 全会话驻留是内存的主要构成之一
-pub const MAX_RETAINED_RECORDS: usize = 2000;
-
 /// 分页结果(`session.trajectory` 出口;桌面进程内消费 typed 形态)。
 /// records 为尾窗,requests 恒为全量
 #[derive(Debug, Clone, Serialize)]
@@ -394,9 +388,11 @@ pub struct TrajectoryFolder {
     /// 折叠期暂存(审计先落、摘要后落;摘要到达时合成一条台账行)
     fold_stash: Option<FoldStash>,
     cumulative: TrajectoryUsage,
-    /// 台账记录(显示序);不变式:records[i].index == base_index + i + 1
+    /// 台账记录(显示序);不变式:records[i].index == base_index + i + 1。
+    /// 驻留**不裁剪**(实测长会话全量 ~10 MB 量级,「加载更早」深分页
+    /// 依赖全量在场;响应侧由 page_of 按请求参数开窗)
     records: Vec<TrajectoryRecord>,
-    /// 已丢头部记录数(驻留窗裁剪的 index 基准;见 [`MAX_RETAINED_RECORDS`])
+    /// index 编号基准(恒 0,保留作不变式与 total 语义的机械部分)
     base_index: u64,
     /// 已完成请求(number 升序)
     requests: Vec<TrajectoryRequest>,
@@ -535,34 +531,16 @@ impl TrajectoryFolder {
         if let Some(open) = &self.open_request {
             requests.push(self.error_request(open));
         }
-        // 冷尾冲刷可能把条数推过上限(在途调用插回):出口再裁一次,
-        // 保证**返回值**也是有界窗口,基准同步前移
-        let mut base_index = self.base_index;
-        if records.len() > MAX_RETAINED_RECORDS {
-            let drop = records.len() - MAX_RETAINED_RECORDS;
-            records.drain(..drop);
-            base_index += drop as u64;
-        }
         TrajectoryData {
             records,
             requests,
-            base_index,
+            base_index: self.base_index,
         }
     }
 
     /// 分页快照(桌面出口;语义与批量折叠后裁窗一致)
     pub fn snapshot(&self, max_records: usize, before_index: Option<u64>) -> TrajectoryPage {
         page_of(self.data(), max_records, before_index)
-    }
-
-    /// 驻留窗裁剪:超 [`MAX_RETAINED_RECORDS`] 丢最旧并前移基准。
-    /// 绝对 index 与 `before_index` 分页语义不变(丢的正是最早那批)
-    fn trim_retained(&mut self) {
-        if self.records.len() > MAX_RETAINED_RECORDS {
-            let drop = self.records.len() - MAX_RETAINED_RECORDS;
-            self.records.drain(..drop);
-            self.base_index += drop as u64;
-        }
     }
 
     /// 在途请求 → error 占位(批量折叠尾部同构)
@@ -597,7 +575,6 @@ impl TrajectoryFolder {
 
     /// 追加一条记录(显示序尾;index = 行序不变式)
     fn stage_record(&mut self, mut rec: TrajectoryRecord) {
-        self.trim_retained();
         rec.index = self.base_index + self.records.len() as u64 + 1;
         self.dirty.records.push(rec.clone());
         self.records.push(rec);
@@ -607,7 +584,6 @@ impl TrajectoryFolder {
     /// 插入)时后段整体重编号 → 脏缓冲全量重发(桌面按 index upsert
     /// 收敛);常态追加只重发自身
     fn insert_record_ordered(&mut self, mut rec: TrajectoryRecord) {
-        self.trim_retained();
         let pos = self
             .records
             .iter()
@@ -971,7 +947,6 @@ impl TrajectoryFolder {
                             // 显示层钉在台账首位;Turn 标签仍归属用户行)。
                             // 插队首 + 全量重编号,脏缓冲全量重发
                             self.records.insert(0, rec);
-                            self.trim_retained();
                             let base = self.base_index;
                             for (i, r) in self.records.iter_mut().enumerate() {
                                 r.index = base + i as u64 + 1;
@@ -2423,15 +2398,15 @@ mod tests {
         ]
     }
 
-    /// 驻留窗上限:超 [`MAX_RETAINED_RECORDS`] 丢最旧,但**绝对 index /
-    /// total / before_index 分页语义不变**(基准前移);且裁剪后批量折叠与
-    /// 增量直播仍逐字节一致(裁剪发生在同一份 stage 路径上)
+    /// 驻留**不裁剪**:记录全量在场(「加载更早」深分页依赖),
+    /// 绝对 index 稳定、before_index 可一路分页到第 1 条;
+    /// 响应侧由 page_of 按请求参数开窗。批量折叠与增量直播逐字节一致
     #[test]
-    fn retained_window_preserves_index_and_pagination() {
-        // 每条 cycle 产出一条 tool 记录,造出超上限的长日志
+    fn retained_records_are_complete_and_deeply_pageable() {
+        // 每条 cycle 产出一条 tool 记录,造出长日志
         let mut events = Vec::new();
         let mut seq = 1u64;
-        let cycles = MAX_RETAINED_RECORDS + 20;
+        let cycles = 2500;
         for _ in 0..cycles {
             let call_seq = seq + 2;
             events.push(ev_seq("turn/start", seq, 0, json!({})));
@@ -2457,37 +2432,52 @@ mod tests {
             seq += 1;
         }
         let batch = fold_trajectory(&events);
-        assert!(
-            batch.records.len() <= MAX_RETAINED_RECORDS,
-            "窗内条数应受上限约束,实际 {}",
-            batch.records.len()
-        );
-        assert!(batch.base_index > 0, "超上限应发生裁剪(基准前移)");
+        assert_eq!(batch.records.len(), cycles, "记录应全量驻留,不裁剪");
+        assert_eq!(batch.base_index, 0);
         // 不变式:records[i].index == base_index + i + 1
         for (i, r) in batch.records.iter().enumerate() {
             assert_eq!(r.index, batch.base_index + i as u64 + 1, "第 {i} 行 index");
         }
-        // total = 基准 + 窗内条数(全会话计数不受裁剪影响)
+        // total = 基准 + 条数
         let page = page_of(batch.clone(), 10, None);
         assert_eq!(page.total, batch.base_index + batch.records.len() as u64);
         assert_eq!(page.records.len(), 10);
-        assert!(page.has_older, "窗内多于尾窗应有「更早」");
-        // before_index 分页:严格更早的窗内记录
-        let before = page.records.first().expect("尾窗非空").index;
-        let older = page_of(batch.clone(), 5, Some(before));
-        assert!(!older.records.is_empty(), "窗内还有更早记录");
-        assert!(
-            older.records.iter().all(|r| r.index < before),
-            "before_index 应只取严格更早的行"
-        );
-        // 增量直播 == 批量折叠(裁剪后仍逐字节一致)
+        assert!(page.has_older, "多于尾窗应有「更早」");
+        // 深分页:before_index 一路向前可取到第 1 条(含)
+        let mut before = page.records.first().expect("尾窗非空").index;
+        let mut oldest_seen = u64::MAX;
+        let mut hops = 0;
+        loop {
+            hops += 1;
+            assert!(hops < 1000, "分页应收敛");
+            let older = page_of(batch.clone(), 100, Some(before));
+            let Some(first) = older.records.first() else {
+                break;
+            };
+            oldest_seen = first.index;
+            assert!(
+                older.records.iter().all(|r| r.index < before),
+                "before_index 应只取严格更早的行"
+            );
+            before = oldest_seen;
+        }
+        assert_eq!(oldest_seen, 1, "深分页应可达第 1 条记录");
+        // 增量直播 == 批量折叠(data() 全量对比;snapshot 走 page_of 的
+        // 每请求 wire 上界,另行断言)
         let mut folder = TrajectoryFolder::new();
         for ev in &events {
             folder.feed(ev);
         }
-        let inc = folder.snapshot(usize::MAX, None);
-        assert_eq!(inc.records, batch.records, "裁剪后批量/增量应一致");
-        assert_eq!(inc.total, page.total, "total 语义一致");
+        let inc = folder.data();
+        assert_eq!(inc.records, batch.records, "批量/增量应一致");
+        assert_eq!(inc.base_index, batch.base_index);
+        let wire = folder.snapshot(usize::MAX, None);
+        assert!(
+            wire.records.len() <= 2000,
+            "响应窗口受 page_of 上界约束,实际 {}",
+            wire.records.len()
+        );
+        assert_eq!(wire.total, page.total, "total 语义一致");
     }
 
     /// 差分基石:同一 folder 逐事件喂入后,任意前缀的快照必须与
@@ -2504,6 +2494,68 @@ mod tests {
             assert_eq!(page.records, batch.records, "前缀 {i} records");
             assert_eq!(page.requests, batch.requests, "前缀 {i} requests");
         }
+    }
+
+    /// 差分锁(打包常驻):同一逻辑流经 `EventLog` 打包行驻留(append
+    /// 触发 delta 连段合并)后展开喂入,与未打包镜像直接批量折叠,
+    /// 终态分页逐字节一致(读侧布局盲的轨迹面锁)
+    #[test]
+    fn packed_resident_log_folds_identically_to_unpacked() {
+        let d_reasoning = |seq: u64, ts: i64, text: &str| {
+            let mut e =
+                EventEnvelope::new_ignorable("assistant/reasoning", ts, json!({ "text": text }));
+            e.seq = seq;
+            e
+        };
+        let events: Vec<EventEnvelope> = vec![
+            ev_seq("turn/start", 1, 1000, json!({})),
+            ev_seq("user/message", 2, 1010, json!({ "content": "修复 bug" })),
+            ev_seq("step/start", 3, 1020, json!({})),
+            ev_seq(
+                "audit/call",
+                4,
+                1030,
+                json!({ "boundary": "llm", "operation": "request",
+                        "detail": { "model": "m", "systemChars": 500, "toolsChars": 2000 } }),
+            ),
+            // 4 连 reasoning delta:EventLog 内合并为打包行
+            d_reasoning(5, 1040, "先"),
+            d_reasoning(6, 1041, "看"),
+            d_reasoning(7, 1042, "文"),
+            d_reasoning(8, 1043, "件"),
+            ev_seq(
+                "assistant/message",
+                9,
+                1050,
+                json!({ "content": "", "tool_calls": [
+                    { "id": "c1", "name": "read", "arguments": { "path": "x.rs" } }
+                ] }),
+            ),
+            ev_seq(
+                "tool/call",
+                10,
+                1060,
+                json!({ "name": "read", "arguments": { "path": "x.rs" } }),
+            ),
+            ev_seq(
+                "tool/result",
+                11,
+                1070,
+                json!({ "call": 10, "output": "fn main() {}", "success": true }),
+            ),
+            ev_seq("turn/end", 12, 1080, json!({})),
+        ];
+        // 打包常驻构造(append 校验 seq 连续)
+        let mut log = liuma_session::EventLog::new();
+        for ev in &events {
+            log.append(ev.clone()).unwrap();
+        }
+        let expanded: Vec<EventEnvelope> = log.iter().collect();
+        assert_eq!(expanded, events, "展开面 = 未打包镜像");
+        // 终态分页逐字节一致
+        let a = serde_json::to_string(&page_of(fold_trajectory(&expanded), 2000, None)).unwrap();
+        let b = serde_json::to_string(&page_of(fold_trajectory(&events), 2000, None)).unwrap();
+        assert_eq!(a, b, "打包/未打包折叠终态分页应逐字节一致");
     }
 
     /// turn/end 冲刷:取消轮的未配对调用照常落表(时长从审计表补读)、

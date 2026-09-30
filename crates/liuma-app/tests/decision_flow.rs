@@ -361,7 +361,7 @@ async fn context_judge_prunes_and_derivation_replaces_output() {
     assert_eq!(out, Some(1), "恰一条修剪落档");
 
     // pruned 落档 → 派生层策略④:seq2 输出替换占位符,seq3/seq4 原样
-    let events: Vec<_> = log.lock().unwrap().iter().cloned().collect();
+    let events: Vec<_> = log.lock().unwrap().iter().collect();
     assert!(events.iter().any(|e| e.r#type == "decision/pruned"));
     let derived = liuma_session::derive_visible_messages(events.iter());
     let tools: Vec<&serde_json::Value> = derived
@@ -505,7 +505,7 @@ async fn context_judge_fails_open() {
     .await
     .unwrap();
     assert_eq!(out, None, "fail-open");
-    let events: Vec<_> = log.lock().unwrap().iter().cloned().collect();
+    let events: Vec<_> = log.lock().unwrap().iter().collect();
     assert!(!events.iter().any(|e| e.r#type == "decision/pruned"));
     let answered = events
         .iter()

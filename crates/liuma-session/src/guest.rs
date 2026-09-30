@@ -57,7 +57,7 @@ impl event_log::Guest for SessionComponent {
     }
 
     fn get(seq: u64) -> Result<Option<event_log::Event>, String> {
-        with_log(|log| Ok(log.get(seq).map(envelope_to_wit_event)))
+        with_log(|log| Ok(log.get(seq).map(|ev| envelope_to_wit_event(&ev))))
     }
 
     fn query(type_filter: Option<String>) -> Vec<event_log::Event> {
@@ -65,7 +65,7 @@ impl event_log::Guest for SessionComponent {
             Ok(log
                 .query(type_filter.as_deref())
                 .into_iter()
-                .map(envelope_to_wit_event)
+                .map(|ev| envelope_to_wit_event(&ev))
                 .collect())
         })
         .unwrap_or_default()

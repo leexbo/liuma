@@ -19,7 +19,7 @@ fn real_log_packed_roundtrip() {
         let ev = liuma_session::decode_envelope_str(line).expect("源行解码");
         src.append(ev).expect("append");
     }
-    let src_events: Vec<liuma_session::EventEnvelope> = src.iter().cloned().collect();
+    let src_events: Vec<liuma_session::EventEnvelope> = src.iter().collect();
 
     let dir = std::env::temp_dir().join(format!("liuma-rt-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("临时目录");
@@ -33,8 +33,11 @@ fn real_log_packed_roundtrip() {
     let write_elapsed = t.elapsed();
 
     let src_lines = text.lines().filter(|l| !l.trim().is_empty()).count();
-    let out_lines =
-        std::fs::read_to_string(&out).unwrap().lines().filter(|l| !l.trim().is_empty()).count();
+    let out_lines = std::fs::read_to_string(&out)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .count();
     let src_bytes = text.len();
     let out_bytes = std::fs::metadata(&out).unwrap().len() as usize;
 
