@@ -221,7 +221,9 @@ impl Child {
         self.inner.id()
     }
 
-    /// 读全部 stdout(到 EOF;配合 wait 使用)
+    /// 读全部 stdout(到 EOF;配合 wait 使用)。一次性调用方(hooks)
+    /// 的便捷面;需要部分输出/移交的调用方(bash 前台)走
+    /// [`Self::take_stdout`] 增量读
     pub async fn stdout(&mut self) -> Result<Vec<u8>, ProcessError> {
         use tokio::io::AsyncReadExt;
         let mut buf = Vec::new();
@@ -231,6 +233,21 @@ impl Child {
                 .map_err(|e| ProcessError::Wait(e.to_string()))?;
         }
         Ok(buf)
+    }
+
+    /// 取出 stdout 管道(增量读/移交给 watcher;None = 已被取走)
+    pub fn take_stdout(&mut self) -> Option<tokio::process::ChildStdout> {
+        self.inner.stdout.take()
+    }
+
+    /// 非阻塞探测退出(Some = 已退出并落定状态;None = 还在跑)。
+    /// 超时裁决用:与 [`Self::wait`] 同一状态形态,不消费等待语义
+    /// (wait 之后的重复 try_wait 返回缓存状态)
+    pub fn try_wait(&mut self) -> Result<Option<ExitStatus>, ProcessError> {
+        self.inner
+            .try_wait()
+            .map(|s| s.map(to_status))
+            .map_err(|e| ProcessError::Wait(e.to_string()))
     }
 
     /// 等待退出
@@ -360,15 +377,46 @@ impl GroupKiller {
         ))
     }
 
-    /// SIGTERM → grace → SIGKILL;**不等待回收**——回收与状态收尾
-    /// 由持有 Child 的一方(watcher)负责
+    /// SIGTERM → grace(轮询组存活,清场即提前返回)→ SIGKILL;
+    /// **不等待回收**——回收与状态收尾由持有 Child 的一方(watcher)负责。
+    /// 僵尸未 reap 仍算在场:最坏退化为等满 grace,与固定睡眠等价,不劣化
     pub async fn kill_detached(&self, grace: Duration) -> bool {
         if self.signal(SIGTERM).is_err() {
             return false;
         }
-        tokio::time::sleep(grace).await;
+        let poll = Duration::from_millis(50);
+        let deadline = tokio::time::Instant::now() + grace;
+        loop {
+            if self.group_gone() {
+                return true;
+            }
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            tokio::time::sleep(poll.min(deadline - now)).await;
+        }
         let _ = self.signal(SIGKILL);
         true
+    }
+
+    /// 组清场探测(ESRCH = 组长已回收)。与 [`Self::signal`] 相反,
+    /// ESRCH 在此是「完成」信号而非可忽略的错误
+    #[cfg(unix)]
+    fn group_gone(&self) -> bool {
+        match self.pgid {
+            Some(pgid) => {
+                let rc = unsafe { libc::kill(-pgid, 0) };
+                rc == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            }
+            None => true,
+        }
+    }
+
+    /// 非 Unix:无进程组语义,无从探测(恒在场,由 grace 兜底)
+    #[cfg(not(unix))]
+    fn group_gone(&self) -> bool {
+        false
     }
 }
 

@@ -23,7 +23,7 @@ pub mod winacl;
 pub use process::{
     Child, ExitClass, ExitStatus, GroupKiller, ProcessError, SpawnOptions, classify_exit, spawn,
 };
-pub use pty::{PtyError, PtySession, spawn_pty};
+pub use pty::{PtyError, PtyKiller, PtyReadBuffer, PtySession, spawn_pty};
 pub use sandbox::{
     Confined, ProbeResult, Rung, RunnerFailureRule, SandboxEnforcement, SandboxError, SandboxMode,
     SandboxPolicy, probe, wrap_argv,

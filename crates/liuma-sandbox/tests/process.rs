@@ -345,3 +345,42 @@ async fn stdin_payload_reaches_child_and_closes() {
         "子进程未原样读回 stdin 载荷"
     );
 }
+
+/// try_wait 三态:运行中 None → 退出后 Some(wait 之后的重复探测返回
+/// 缓存状态)
+#[cfg(unix)]
+#[tokio::test]
+async fn try_wait_reports_running_then_exited() {
+    let mut child = spawn("/bin/sleep", &["1".into()], &SpawnOptions::default())
+        .await
+        .expect("spawn");
+    assert!(
+        child.try_wait().expect("try_wait").is_none(),
+        "运行中应报 None"
+    );
+    let status = child.wait().await.expect("wait");
+    assert_eq!(child.try_wait().expect("try_wait"), Some(status));
+}
+
+/// kill_detached 提前返回:SIGTERM 后组清场(watcher reap)即返回,
+/// 不等满 grace。回收方并发 wait 模拟 watcher
+#[cfg(unix)]
+#[tokio::test]
+async fn kill_detached_returns_early_once_group_is_gone() {
+    let mut child = spawn("/bin/sleep", &["30".into()], &SpawnOptions::default())
+        .await
+        .expect("spawn");
+    let killer = child.group_killer();
+    let reaper = tokio::spawn(async move {
+        child.wait().await.ok();
+    });
+    let start = std::time::Instant::now();
+    let killed = killer.kill_detached(Duration::from_secs(5)).await;
+    assert!(killed, "组信号发出且清场");
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "组已清场应提前返回(等了 {elapsed:?})"
+    );
+    reaper.await.ok();
+}

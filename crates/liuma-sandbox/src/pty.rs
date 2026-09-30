@@ -34,9 +34,38 @@ pub enum PtyError {
 pub struct PtySession {
     child: Option<Box<dyn Child + Send>>,
     master: Box<dyn MasterPty + Send>,
-    killer: Option<Box<dyn ChildKiller + Send + Sync>>,
-    /// 已等待过的退出结果(重复 wait 幂等返回)
+    killer: Option<PtyKiller>,
+    /// 已等待过的退出结果(重复 wait/try_wait 幂等返回)
     exit: Option<crate::process::ExitStatus>,
+}
+
+/// PTY 增量读缓冲(阻塞读任务逐块写入;运行中可随时取已读部分)
+pub type PtyReadBuffer = std::sync::Arc<std::sync::Mutex<Vec<u8>>>;
+
+/// PTY 终止句柄(与 [`PtySession`] 分离,克隆自由):后台任务的 stop
+/// 不持会话也能杀。killer 消费式(首次 kill 后句柄空转);无宽限语义
+/// (killer 即杀,平台等价 SIGKILL/TerminateProcess)
+#[derive(Clone)]
+pub struct PtyKiller {
+    killer: std::sync::Arc<std::sync::Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>>,
+}
+
+impl PtyKiller {
+    /// 以 portable-pty killer 装配(会话与句柄共享同一消费式盒子)
+    fn from_boxed(killer: Box<dyn ChildKiller + Send + Sync>) -> Self {
+        Self {
+            killer: std::sync::Arc::new(std::sync::Mutex::new(Some(killer))),
+        }
+    }
+
+    /// 立即终止(killer 语义;已消费/已退出则无操作)
+    pub fn kill(&self) {
+        if let Ok(mut guard) = self.killer.lock()
+            && let Some(mut killer) = guard.take()
+        {
+            killer.kill().ok();
+        }
+    }
 }
 
 /// 在 PTY 中 spawn(program + argv 已按沙箱策略包装)。
@@ -89,26 +118,78 @@ pub fn spawn_pty(
     Ok(PtySession {
         child: Some(child),
         master: pair.master,
-        killer: Some(killer),
+        killer: Some(PtyKiller::from_boxed(killer)),
         exit: None,
     })
 }
 
 impl PtySession {
-    /// 读取全部输出直到 EOF(阻塞 IO 经 spawn_blocking;取消/超时由
-    /// 调用方在 select 层处理并 kill)
-    pub async fn read_to_end(&mut self) -> Result<String, PtyError> {
-        let mut reader = self
+    /// 起增量读任务:clone reader 阻塞读逐块写入共享缓冲,返回
+    /// (缓冲, 任务句柄)。运行中可随时取缓冲的已读部分(超时移交/
+    /// 取消拿部分输出);任务收尾即 EOF 读完
+    pub fn start_read(&self) -> Result<(PtyReadBuffer, tokio::task::JoinHandle<()>), PtyError> {
+        let reader = self
             .master
             .try_clone_reader()
             .map_err(|e| PtyError::Io(e.to_string()))?;
-        tokio::task::spawn_blocking(move || {
-            let mut buf = Vec::new();
-            std::io::Read::read_to_end(&mut reader, &mut buf).ok();
-            crate::text::decode_output(&buf)
-        })
-        .await
-        .map_err(|e| PtyError::Io(e.to_string()))
+        let buf: PtyReadBuffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let target = buf.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            let mut reader = reader;
+            let mut chunk = [0u8; 8192];
+            loop {
+                match std::io::Read::read(&mut reader, &mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if let Ok(mut buf) = target.lock() {
+                            buf.extend_from_slice(&chunk[..n]);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        Ok((buf, task))
+    }
+
+    /// 读取全部输出直到 EOF(便捷面 = start_read + await 任务 + 取缓冲;
+    /// 取消/超时由调用方在 select 层处理并 kill)
+    pub async fn read_to_end(&mut self) -> Result<String, PtyError> {
+        let (buf, task) = self.start_read()?;
+        task.await.map_err(|e| PtyError::Io(e.to_string()))?;
+        let bytes = buf.lock().map(|b| b.clone()).unwrap_or_default();
+        Ok(crate::text::decode_output(&bytes))
+    }
+
+    /// 分离终止句柄(后台任务 stop 用;与 [`PtySession::kill`] 共享
+    /// 同一消费式 killer,先到先杀)
+    pub fn killer(&self) -> Option<PtyKiller> {
+        self.killer.clone()
+    }
+
+    /// 非阻塞探测退出(Some = 已退出;None = 还在跑)。探测到即
+    /// 缓存,后续 wait/try_wait 幂等返回同一状态
+    pub fn try_wait(&mut self) -> Result<Option<crate::process::ExitStatus>, PtyError> {
+        if let Some(exit) = self.exit {
+            return Ok(Some(exit));
+        }
+        let Some(child) = self.child.as_mut() else {
+            // 句柄已失:仅 wait 消费后可达,彼时 exit 已落定走首分支,
+            // 此处不可达的保守值
+            return Ok(None);
+        };
+        let status = child
+            .try_wait()
+            .map_err(|e| PtyError::Io(e.to_string()))?
+            .map(|s| crate::process::ExitStatus {
+                // portable-pty 的 ExitStatus 只携带 successful 布尔(见 wait)
+                code: if s.success() { Some(0) } else { None },
+                signal: None,
+            });
+        if status.is_some() {
+            self.exit = status;
+        }
+        Ok(status)
     }
 
     /// 等待子进程退出(幂等;阻塞 wait 经 spawn_blocking)。
@@ -141,8 +222,8 @@ impl PtySession {
 
     /// 杀死子进程(killer 组信号;已退出则无操作)
     pub fn kill(&mut self) {
-        if let Some(mut killer) = self.killer.take() {
-            killer.kill().ok();
+        if let Some(killer) = &self.killer {
+            killer.kill();
         }
     }
 }
@@ -184,6 +265,43 @@ mod tests {
         assert!(
             output.contains("tty-ok"),
             "PTY 下 stdout 是 tty;got: {output}"
+        );
+    }
+
+    // try_wait 与分离句柄:运行中 None → 退出后 Some;killer 不持会话也能杀
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pty_try_wait_and_detached_killer() {
+        if std::process::Command::new("/usr/bin/sandbox-exec")
+            .args(["-p", "(version 1)", "true"])
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(false)
+        {
+            eprintln!("嵌套沙箱内 openpty 不可用:环境性跳过断言");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("liuma-pty-tw-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut session = spawn_pty(
+            "/bin/bash",
+            &["-c".into(), "sleep 30".into()],
+            Some(&dir),
+            None,
+        )
+        .expect("pty spawn");
+        assert!(
+            session.try_wait().expect("try_wait").is_none(),
+            "运行中应报 None"
+        );
+        let killer = session.killer().expect("killer");
+        killer.kill();
+        let status = session.wait().await.expect("wait");
+        assert!(!status.success(), "被 killer 终止的进程不应成功退出");
+        assert_eq!(
+            session.try_wait().expect("try_wait"),
+            Some(status),
+            "退出后探测返回缓存状态"
         );
     }
 
