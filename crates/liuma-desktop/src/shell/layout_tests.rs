@@ -3672,6 +3672,13 @@ fn trajectory_ledger_rows_anchor_to_list_width(cx: &mut TestAppContext) {
         );
     }
 
+    // 短台账(不可滚,在顶也在底):两个悬浮跳转钮都不显
+    assert!(
+        wcx.debug_bounds("traj-jump-top").is_none()
+            && wcx.debug_bounds("traj-jump-bottom").is_none(),
+        "不可滚台账不应显悬浮跳转钮"
+    );
+
     // 开检查器(压缩台账到最小宽)后再验:行仍锚定台账宽
     cx.update(|app| {
         store.update(app, |st, cx| st.select_trajectory_record(4, cx));
@@ -3686,6 +3693,114 @@ fn trajectory_ledger_rows_anchor_to_list_width(cx: &mut TestAppContext) {
         "开检查器后行右缘仍不得越台账右缘({:?} > {:?})",
         b.right(),
         scroll.right()
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 悬浮回顶/回底钮回归锁:长台账(可滚)下按滚动位显隐——Tail 跟随
+/// 落底 ⇒ 顶钮在场/底钮缺席;jump 到顶反转;jump 回底再反转。两钮均
+/// 水平居中于台账列,且点击生效(点击后位置翻转)。
+#[gpui_kit::test]
+fn trajectory_float_jump_buttons_visibility(cx: &mut TestAppContext) {
+    use crate::features::trajectory::TrajectoryView;
+    use liuma_core::trajectory::TrajectoryRecord;
+
+    let (store, mut wcx, root) = menu_harness(cx, "traj-float");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.run_until_parked();
+    };
+    let rec = |index: u64| TrajectoryRecord {
+        index,
+        seq: index,
+        kind: "message".into(),
+        turn: Some(1),
+        group: "Message".into(),
+        turn_start: index == 1,
+        text: format!("记录 {index}"),
+        result: None,
+        is_error: false,
+        time_seconds: Some(1.0),
+        started_at: Some(1000 + index as i64 * 10),
+        request_number: None,
+        input: None,
+        output: None,
+        think: None,
+        ttft_ms: None,
+        payload: None,
+        output_detail: None,
+        thinking_detail: None,
+        system_prompt: None,
+        tools_catalog: None,
+        schema_detail: None,
+        source: None,
+        decision: None,
+        fold: None,
+    };
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            st.trajectory.trajectory = TrajectoryView {
+                records: (1..=80).map(rec).collect(),
+                requests: vec![],
+                has_older: false,
+                total: 80,
+                loading: false,
+                loading_older: false,
+            };
+            st.trajectory.trajectory_session = Some(id);
+            st.panel_open = true;
+            st.panel_tabs = vec![crate::shell::panel::PanelTab::Trajectory];
+            st.panel_active_tab = Some(crate::shell::panel::PanelTab::Trajectory);
+        });
+    });
+    wcx.simulate_resize(gpui_kit::size(gpui_kit::px(1512.), gpui_kit::px(900.)));
+    redraw(cx, &mut wcx);
+
+    let scroll = wcx.debug_bounds("trajectory-scroll").expect("台账缺失");
+    let center_of =
+        |b: gpui_kit::Bounds<gpui_kit::Pixels>| f32::from(b.origin.x + b.size.width / 2.);
+
+    // Tail 跟随落底:顶钮在场、底钮缺席
+    let top = wcx.debug_bounds("traj-jump-top").expect("底部态应显回顶钮");
+    assert!(
+        wcx.debug_bounds("traj-jump-bottom").is_none(),
+        "在底部不应显回底钮"
+    );
+    assert!(
+        (center_of(top) - center_of(scroll)).abs() < 1.,
+        "回顶钮应水平居中于台账列(钮心 {:.0} vs 列心 {:.0})",
+        center_of(top),
+        center_of(scroll)
+    );
+
+    // 跳顶:反转
+    cx.update(|app| {
+        store.update(app, |st, cx| st.jump_trajectory_top(cx));
+    });
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("traj-jump-top").is_none(),
+        "在顶部不应显回顶钮"
+    );
+    let bottom = wcx
+        .debug_bounds("traj-jump-bottom")
+        .expect("顶部态应显回底钮");
+    assert!(
+        (center_of(bottom) - center_of(scroll)).abs() < 1.,
+        "回底钮应水平居中于台账列"
+    );
+
+    // 点击回底钮:回到底部,顶钮重新在场
+    click_sel(&mut wcx, "traj-jump-bottom");
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("traj-jump-top").is_some(),
+        "点击回底后应重新显回顶钮"
+    );
+    assert!(
+        wcx.debug_bounds("traj-jump-bottom").is_none(),
+        "点击回底后回底钮应隐去"
     );
     let _ = std::fs::remove_dir_all(root);
 }
@@ -6426,31 +6541,17 @@ fn trajectory_toolbar_geometry_and_roving_focus(cx: &mut TestAppContext) {
     }
     assert!(entered, "Tab 环上前 16 站未进入轨迹工具条(按钮不可聚焦?)");
 
-    // 条内钮序:回顶 / 回底 / 时长 / 轮次 / 调用。回顶回底是跳转动作,
-    // Enter 不翻任何开关;焦点从首钮(回顶)起
+    // 条内钮序:时长 / 轮次 / 调用(回顶/回底已迁出台账工具条,改悬浮
+    // 钮,不在此 Tab 环)。焦点从首钮(时长)起
     press_enter(&mut wcx);
     redraw(cx, &mut wcx);
     assert_eq!(
         flags(cx),
-        (false, false, false),
-        "Enter 在回顶钮上不应翻开关"
+        (true, false, false),
+        "Enter 未激活「时长」(首钮)"
     );
 
-    // Right → 回底(动作钮,不翻开关)
-    wcx.simulate_keystrokes("right");
-    redraw(cx, &mut wcx);
-    press_enter(&mut wcx);
-    redraw(cx, &mut wcx);
-    assert_eq!(flags(cx), (false, false, false), "回底钮不翻开关");
-
-    // Right → 时长:Enter 翻起它
-    wcx.simulate_keystrokes("right");
-    redraw(cx, &mut wcx);
-    press_enter(&mut wcx);
-    redraw(cx, &mut wcx);
-    assert_eq!(flags(cx), (true, false, false), "Enter 未激活「时长」");
-
-    // Right → 下一个钮(轮次);Enter 应触发轮次而非时长
+    // Right → 轮次;Enter 应触发轮次而非时长
     wcx.simulate_keystrokes("right");
     redraw(cx, &mut wcx);
     press_enter(&mut wcx);
@@ -6472,13 +6573,11 @@ fn trajectory_toolbar_geometry_and_roving_focus(cx: &mut TestAppContext) {
         "Left 后 Enter 未激活「时长」"
     );
 
-    // 环绕:聚焦首个钮(回顶)时 Left 绕到条尾的搜索框。落点用「键入
+    // 环绕:聚焦首个钮(时长)时 Left 绕到条尾的搜索框。落点用「键入
     // 落到搜索框」证身——条内只有它收字符,而 Enter 在此不翻任何开关。
-    // 时长为第三钮:三次 Left 途经回底、回顶后才环绕
-    for _ in 0..3 {
-        wcx.simulate_keystrokes("left");
-        redraw(cx, &mut wcx);
-    }
+    // 时长为首钮:一次 Left 即环绕
+    wcx.simulate_keystrokes("left");
+    redraw(cx, &mut wcx);
     press_enter(&mut wcx);
     redraw(cx, &mut wcx);
     assert_eq!(flags(cx), (false, true, false), "Left 未绕出按钮组");
@@ -6486,23 +6585,16 @@ fn trajectory_toolbar_geometry_and_roving_focus(cx: &mut TestAppContext) {
     redraw(cx, &mut wcx);
     assert_eq!(search_val(cx), "q", "Left 未从首个钮环绕到条尾搜索框");
 
-    // 再从搜索框 Right 绕回首个钮(回顶),两次 Right 到「时长」翻起
+    // 再从搜索框 Right 绕回首个钮(时长),Enter 翻起
     wcx.simulate_keystrokes("right");
     redraw(cx, &mut wcx);
     press_enter(&mut wcx);
     redraw(cx, &mut wcx);
     assert_eq!(
         flags(cx),
-        (false, true, false),
-        "Right 从条尾环绕回了首钮(回顶,不翻开关)"
+        (true, true, false),
+        "Right 从条尾环绕回了首钮(时长)"
     );
-    wcx.simulate_keystrokes("right");
-    redraw(cx, &mut wcx);
-    wcx.simulate_keystrokes("right");
-    redraw(cx, &mut wcx);
-    press_enter(&mut wcx);
-    redraw(cx, &mut wcx);
-    assert_eq!(flags(cx), (true, true, false), "两次 Right 后应到「时长」");
     let _ = std::fs::remove_dir_all(root);
 }
 

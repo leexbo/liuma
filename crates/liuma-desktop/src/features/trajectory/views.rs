@@ -1078,32 +1078,6 @@ fn toolbar(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 .border_color(theme::BORDER())
                 .content(toggle_button(
                     cx,
-                    "traj-toolbar-jump-top",
-                    t!("trajectory.jump_top"),
-                    false,
-                    fixed(IconName::ChevronUp, 12.),
-                    {
-                        let s = store.clone();
-                        move |_, _, cx| {
-                            s.update(cx, |st, cx| st.jump_trajectory_top(cx));
-                        }
-                    },
-                ))
-                .content(toggle_button(
-                    cx,
-                    "traj-toolbar-jump-bottom",
-                    t!("trajectory.jump_bottom"),
-                    false,
-                    fixed(IconName::ChevronDown, 12.),
-                    {
-                        let s = store.clone();
-                        move |_, _, cx| {
-                            s.update(cx, |st, cx| st.jump_trajectory_bottom(cx));
-                        }
-                    },
-                ))
-                .content(toggle_button(
-                    cx,
                     "traj-toolbar-duration",
                     t!("trajectory.toolbar_duration"),
                     s.duration,
@@ -1751,6 +1725,15 @@ fn ledger(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     // 点表空白:关检查器 + 清时间线选区(行内点击已 stop_propagation,
     // 到达此处的必是背景点击,一并清空选中态)
     let s2 = store.clone();
+    // 悬浮回顶/回底钮(顶/底水平居中,内容区回底钮同形态):可见性读
+    // 渲染期权威滚动位(`trajectory_at_top/bottom`);滚动跟手 notify 见
+    // `on_trajectory_scroll`
+    let (at_top, at_bottom) = {
+        let st = store.read(cx);
+        (st.trajectory_at_top(), st.trajectory_at_bottom())
+    };
+    let top_store = store.clone();
+    let bottom_store = store.clone();
     div()
         .id("trajectory-scroll")
         .debug_selector(|| "trajectory-scroll".to_string())
@@ -1758,6 +1741,8 @@ fn ledger(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .flex_1()
         .min_w(px(0.))
         .min_h(px(0.))
+        // 悬浮钮定位锚(相对此容器,只覆盖台账列不含检查器)
+        .relative()
         .on_click(move |_, _, cx| {
             s2.update(cx, |st, cx| {
                 st.close_inspector(cx);
@@ -1766,7 +1751,80 @@ fn ledger(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         })
         // 列表须显式占满包裹层(taffy 下 auto 尺寸会塌成 0 高 → 零行)
         .child(list.h_full().w_full())
+        // 回顶钮:不在顶部时出现(惰性 wrapper 无 id 不接命中,点击
+        // 穿透到行;仅钮本体接事件)
+        .when(!at_top, |el| {
+            el.child(
+                div()
+                    .absolute()
+                    .top(px(10.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(float_jump_button(
+                        "traj-jump-top",
+                        IconName::ArrowUp,
+                        t!("trajectory.jump_top").to_string(),
+                        move |_, _, cx| {
+                            top_store.update(cx, |st, cx| st.jump_trajectory_top(cx));
+                        },
+                    )),
+            )
+        })
+        // 回底钮:不在底部时出现
+        .when(!at_bottom, |el| {
+            el.child(
+                div()
+                    .absolute()
+                    .bottom(px(10.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(float_jump_button(
+                        "traj-jump-bottom",
+                        IconName::ArrowDown,
+                        t!("trajectory.jump_bottom").to_string(),
+                        move |_, _, cx| {
+                            bottom_store.update(cx, |st, cx| st.jump_trajectory_bottom(cx));
+                        },
+                    )),
+            )
+        })
         .into_any_element()
+}
+
+/// 台账悬浮跳转钮(34px 圆形药丸;内容区回底钮同款形态)。挡点击不挡
+/// 滚轮(悬浮于滚动区上);stop_propagation 免触发「点表空白清选中」
+fn float_jump_button(
+    id: &'static str,
+    icon: IconName,
+    tip_text: String,
+    on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let sel = id.to_string();
+    div()
+        .id(id)
+        .debug_selector(move || sel.clone())
+        .flex()
+        .size(px(34.))
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .bg(theme::DOCK())
+        .border_1()
+        .border_color(theme::BORDER_2())
+        .shadow_sm()
+        .cursor_pointer()
+        .block_mouse_except_scroll()
+        .hover(|s| s.opacity(0.85))
+        .tooltip(crate::shell::tip(tip_text))
+        .child(fixed(icon, 14.).text_color(theme::LABEL()))
+        .on_click(move |ev, window, cx| {
+            cx.stop_propagation();
+            on_click(ev, window, cx);
+        })
 }
 
 /// 「加载更早」行(30px;has_older 时置行首)

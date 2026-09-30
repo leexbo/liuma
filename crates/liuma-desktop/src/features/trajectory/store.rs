@@ -97,6 +97,10 @@ pub(crate) struct TrajectoryStore {
     /// 期间翻页行 Spinner 常转 = 整窗 60fps 十余秒)。故只在 reset 之后真的
     /// 滚动过时才认位置
     pub scroll_pos_known: bool,
+    /// 悬浮回底钮可见性的滚动跟随镜像(事件字段 `is_following_tail`,
+    /// 仅翻转时 notify——与聊天列 `at_bottom_ui` 同款去重缓存;渲染期
+    /// 读 `trajectory_at_bottom()` 权威值)
+    pub at_bottom_ui: bool,
     /// Duration 切换(时间线按耗时投影;进程内状态,不持久化)
     pub trajectory_duration: bool,
     /// 折叠的 turn(turn 号)
@@ -175,6 +179,7 @@ impl Default for TrajectoryStore {
             scroll_handler_installed: false,
             trajectory_scroll_dirty: false,
             scroll_pos_known: false,
+            at_bottom_ui: true,
             trajectory_duration: false,
             collapsed_turns: HashSet::new(),
             all_turns_collapsed: false,
@@ -516,21 +521,50 @@ impl AppStore {
         let store = cx.entity();
         list.set_scroll_handler(move |ev, _, cx| {
             // 只落脏标记 + 镜像:需回读 ListState 的判断留到渲染期
-            store.update(cx, |st, _| st.on_trajectory_scroll(ev));
+            store.update(cx, |st, cx| st.on_trajectory_scroll(ev, cx));
         });
     }
 
     /// 滚动事件副作用(在 list 的 `borrow_mut` 内被调用:**禁止**回读
     /// `ListState`,见 [`Self::install_trajectory_scroll_handler`])。
-    /// 只做两件安全的事:同步「跟随尾部」镜像(取自事件字段,库已维护)、
-    /// 落脏标记让渲染期去做需要回读的判断
-    pub fn on_trajectory_scroll(&mut self, _ev: &gpui_kit::ListScrollEvent) {
+    /// 只做安全的事:同步「跟随尾部」镜像(取自事件字段,库已维护)、
+    /// 落脏标记让渲染期去做需要回读的判断、悬浮回顶/回底钮可见性跟手
+    /// notify(回底 = 镜像翻转;回顶无事件字段,近顶区逐 tick notify,
+    /// 渲染期读权威位置)
+    pub fn on_trajectory_scroll(&mut self, ev: &gpui_kit::ListScrollEvent, cx: &mut Context<Self>) {
         // 滚轮/触控板/滚动条拖拽一律只置位:跟随态与翻页判断都在渲染期
         // 用当前真实位置算(见 `flush_trajectory_scroll`)
         self.trajectory.trajectory_scroll_dirty = true;
         // 真滚动过:gpui 在 scroll 内已把 logical_scroll_top 置为 Some,
         // 此后读到的位置可信(见 `scroll_pos_known`)
         self.trajectory.scroll_pos_known = true;
+        // 回底钮:is_following_tail 翻转才 notify(聊天列同款去重)
+        let at_bottom = ev.is_following_tail;
+        if self.trajectory.at_bottom_ui != at_bottom {
+            self.trajectory.at_bottom_ui = at_bottom;
+            cx.notify();
+        } else if ev.visible_range.start <= 2 {
+            // 回顶钮无事件字段:近顶区(前 2 行)逐 tick notify,渲染期
+            // 读权威 `trajectory_at_top()`;远离顶部时它恒 false,免 notify
+            cx.notify();
+        }
+    }
+
+    /// 台账在顶(首行入视口;渲染期权威读)
+    pub fn trajectory_at_top(&self) -> bool {
+        let top = self.trajectory.trajectory_list.logical_scroll_top();
+        top.item_ix == 0 && f32::from(top.offset_in_item) <= 48.
+    }
+
+    /// 台账在底(镜像聊天列 `at_bottom` 判据:跟随态或距底 ≤24px)
+    pub fn trajectory_at_bottom(&self) -> bool {
+        let list = &self.trajectory.trajectory_list;
+        if list.logical_scroll_top().item_ix >= list.item_count() {
+            return true; // 钉底跟随态
+        }
+        let max = f32::from(list.max_offset_for_scrollbar().y);
+        let cur = f32::from(-list.scroll_px_offset_for_scrollbar().y);
+        max - cur <= 24.
     }
 
     /// 轨迹列表跳到顶部(已载首行;置脏 + 置信,渲染期 flush 在
