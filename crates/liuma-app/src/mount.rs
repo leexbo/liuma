@@ -100,9 +100,9 @@ impl<'a> MountContext<'a> {
     fn jobs_registry(&self) -> liuma_tools::JobsRegistry {
         let mut slot = self.shared.jobs.lock().unwrap_or_else(|p| p.into_inner());
         if slot.is_none() {
-            *slot = Some(Arc::new(Mutex::new(Vec::new())));
+            *slot = Some(liuma_tools::JobsRegistry::new());
         }
-        Arc::clone(slot.as_ref().expect("已构造"))
+        slot.as_ref().expect("已构造").clone()
     }
 }
 

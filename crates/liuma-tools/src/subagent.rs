@@ -393,7 +393,7 @@ async fn prepare_child_parts(
         child_root,
         header,
         log,
-        jobs: Arc::new(Mutex::new(Vec::new())),
+        jobs: crate::JobsRegistry::new(),
     })
 }
 

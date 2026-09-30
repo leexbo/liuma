@@ -983,9 +983,9 @@ async fn background_job_runs_reads_and_stops() {
 
     let dir = std::env::temp_dir().join(format!("liuma-jobs-e2e-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let registry: JobsRegistry = Arc::new(Mutex::new(Vec::new()));
-    let mut bash = BashTool::new(&dir).with_jobs(Arc::clone(&registry));
-    let mut jobs = JobTool::new(Arc::clone(&registry));
+    let registry = JobsRegistry::new();
+    let mut bash = BashTool::new(&dir).with_jobs(registry.clone());
+    let mut jobs = JobTool::new(registry.clone());
 
     fn bash_call(args: serde_json::Value) -> ToolCallRequest {
         ToolCallRequest {
@@ -1086,4 +1086,68 @@ async fn background_job_runs_reads_and_stops() {
     )
     .await;
     assert!(!denied.success);
+}
+
+/// 流式落盘:任务运行中 `jobs read` 即有内容(watcher 逐块写,
+/// 不等 EOF 收尾)
+#[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
+#[tokio::test]
+async fn jobs_read_streams_output_while_running() {
+    use liuma_agent_loop::{ToolCallRequest, ToolPort};
+    use liuma_tools::{JobTool, JobsRegistry};
+
+    let dir = std::env::temp_dir().join(format!("liuma-jobs-stream-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let registry = JobsRegistry::new();
+    let mut bash = BashTool::new(&dir).with_jobs(registry.clone());
+    let mut jobs = JobTool::new(registry.clone());
+
+    let out = ToolPort::execute(
+        &mut bash,
+        &ToolCallRequest {
+            name: "bash".into(),
+            arguments: json!({
+                "command": "echo part1 && sleep 2 && echo part2",
+                "description": "Emit output then linger",
+                "run_in_background": true
+            }),
+        },
+    )
+    .await;
+    assert!(out.success, "{}", out.output);
+
+    // 停留窗内(sleep 2)读取:已产出的 part1 应可见
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        registry
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|j| j.status == "running"),
+        "任务应仍在运行"
+    );
+    let read = ToolPort::execute(
+        &mut jobs,
+        &ToolCallRequest {
+            name: "jobs".into(),
+            arguments: json!({ "action": "read", "id": 1 }),
+        },
+    )
+    .await;
+    assert!(
+        read.output.contains("part1"),
+        "运行中 read 应含已流式落盘的输出: {}",
+        read.output
+    );
+
+    // 收尾:stop 终止残留任务,状态落定 stopped
+    let stop = ToolPort::execute(
+        &mut jobs,
+        &ToolCallRequest {
+            name: "jobs".into(),
+            arguments: json!({ "action": "stop", "id": 1 }),
+        },
+    )
+    .await;
+    assert!(stop.success, "{}", stop.output);
 }

@@ -76,7 +76,7 @@ pub const ESCALATION_HINT: &str = "[sandbox: escalation available — retry this
 pub use ask_question::{AskQuestionPort, AskQuestionTool, QuestionItem, QuestionOption};
 pub use file::FileTools;
 pub use goal::GoalTool;
-pub use jobs::{JobRecord, JobTool, JobsRegistry, next_job_id};
+pub use jobs::{JobKiller, JobRecord, JobTool, JobsRegistry, WeakJobsRegistry, next_job_id};
 pub use subagent::{SubagentControlTool, SubagentRecord, SubagentRegistry, SubagentTool};
 pub use todo::TodoWriteTool;
 pub use workflow::{RALPH_DONE, RalphTool, WorkflowTool};
@@ -285,7 +285,7 @@ impl BashTool {
         }
     }
 
-    /// 后台执行:沙箱 spawn + 注册表登记 + watcher 任务(输出落盘、
+    /// 后台执行:沙箱 spawn + 注册表登记 + watcher 任务(流式落盘、
     /// 状态收尾);立即返回 job id。后台任务不随父取消终止(它是
     /// 「后台」的全部意义),由 jobs 工具显式 stop。
     async fn execute_background(&mut self, command: &str) -> ToolOutput {
@@ -306,71 +306,156 @@ impl BashTool {
             Ok(v) => v,
             Err(e) => return fail_output(format!("shell unavailable: {e}")),
         };
-        let child = match spawn_child(&program, &args, &opts).await {
+        let mut child = match spawn_child(&program, &args, &opts).await {
             Ok(child) => child,
             Err(e) => return fail_output(format!("spawn failed: {e}")),
         };
-        let id = next_job_id(&registry);
-        let jobs_dir = self.cwd.join(".liuma/jobs");
-        if let Err(e) = std::fs::create_dir_all(&jobs_dir) {
-            return ToolOutput {
-                output: format!("jobs dir create failed: {e}"),
-                success: false,
-                ..Default::default()
-            };
-        }
-        let log_path = jobs_dir.join(format!("{id}.log"));
-        let path_str = log_path.display().to_string();
-
-        let killer = child.group_killer();
-        registry
-            .lock()
-            .map(|mut r| {
-                r.push(JobRecord {
-                    id,
-                    command: command.to_string(),
-                    status: "running".into(),
-                    log_path: log_path.clone(),
-                    killer: Some(killer),
-                    // 分离终止宽限:SIGTERM 后 1s 即 SIGKILL(不等前台 grace)
-                    grace: Duration::from_secs(1),
-                })
-            })
-            .ok();
-
-        // watcher:stdout/stderr 收尾 → 落盘 → 状态收尾(kill 后也经此路径)。
-        // stderr 一并落盘:沙箱拒绝/脚本错误文本不进 log 则排查无据
-        let mut child = child;
-        let watcher = async move {
-            let out = child.stdout().await.unwrap_or_default();
-            let status = child.wait().await.ok();
-            let mut log = out;
-            log.extend_from_slice(child.stderr_text().await.as_bytes());
-            let _ = std::fs::write(&log_path, &log);
-            let (status_label, exited_ok) = if let Some(s) = status {
-                (if s.success() { "done" } else { "failed" }, s.success())
-            } else {
-                ("failed", false)
-            };
-            if let Ok(mut r) = registry.lock()
-                && let Some(job) = r.iter_mut().find(|j| j.id == id)
-            {
-                // stop 抢先标记 stopped(watcher 只改 running,不覆盖)
-                if job.status == "running" {
-                    job.status = status_label.into();
-                }
-                job.killer = None;
+        let stdout = child.take_stdout();
+        // 分离终止宽限:SIGTERM 后 1s 即 SIGKILL(不等前台 grace)
+        let killer = JobKiller::Group(child.group_killer());
+        let (id, log_path) = match start_job(
+            &registry,
+            &self.cwd,
+            command,
+            killer,
+            Duration::from_secs(1),
+        )
+        .await
+        {
+            Ok(v) => v,
+            // 登记失败即无收尾方:杀掉刚 spawn 的进程再报错,不留孤儿
+            Err(msg) => {
+                let _ = child.kill_with_grace(self.grace).await;
+                return fail_output(msg);
             }
-            exited_ok
         };
-        tokio::spawn(watcher);
-
+        tokio::spawn(run_job_watcher(
+            child,
+            stdout,
+            Vec::new(),
+            registry,
+            id,
+            log_path.clone(),
+        ));
         ToolOutput {
-            output: format!("started job {id} (log: {path_str}; jobs tool: list/read/stop)"),
+            output: format!(
+                "started job {id} (log: {}; jobs tool: list/read/stop)",
+                log_path.display()
+            ),
             success: true,
             ..Default::default()
         }
     }
+}
+
+/// 后台 job 登记:目录就绪 + 注册表 push + 变更通知。
+/// `run_in_background` 启动与前台超时移交共用
+async fn start_job(
+    registry: &JobsRegistry,
+    cwd: &std::path::Path,
+    command: &str,
+    killer: JobKiller,
+    grace: Duration,
+) -> Result<(u64, PathBuf), String> {
+    let id = next_job_id(registry);
+    let jobs_dir = cwd.join(".liuma/jobs");
+    tokio::fs::create_dir_all(&jobs_dir)
+        .await
+        .map_err(|e| format!("jobs dir create failed: {e}"))?;
+    let log_path = jobs_dir.join(format!("{id}.log"));
+    registry
+        .lock()
+        .map(|mut r| {
+            r.push(JobRecord {
+                id,
+                command: command.to_string(),
+                status: "running".into(),
+                log_path: log_path.clone(),
+                killer: Some(killer),
+                grace,
+                started_at: jobs::now_ms(),
+                ended_at: None,
+            })
+        })
+        .map_err(|_| "jobs registry unavailable".to_string())?;
+    registry.changed();
+    Ok((id, log_path))
+}
+
+/// 尾窗推进(有界;结算通知 tail 的来源,不随日志大小增长)
+fn advance_tail(tail: &mut Vec<u8>, chunk: &[u8]) {
+    const TAIL_LIMIT: usize = 2048;
+    tail.extend_from_slice(chunk);
+    let len = tail.len();
+    if len > TAIL_LIMIT {
+        tail.drain(..len - TAIL_LIMIT);
+    }
+}
+
+/// 后台 watcher(pipes 形态):stdout 逐块流式落盘(任务运行中
+/// `jobs read` 即有内容)→ 退出 → stderr 一并落盘(沙箱拒绝/脚本
+/// 错误文本不进 log 则排查无据)→ 状态收尾。stop 先置位 stopped、
+/// watcher 只改 running 的竞争机制保持(kill 后也经此路径)。
+/// 落盘失败不阻断收尾(创建失败 = 全程无文件,read 如实报读不了)
+async fn run_job_watcher(
+    mut child: liuma_sandbox::Child,
+    mut stdout: Option<tokio::process::ChildStdout>,
+    prefix: Vec<u8>,
+    registry: JobsRegistry,
+    id: u64,
+    log_path: PathBuf,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut log = tokio::fs::File::create(&log_path).await.ok();
+    let mut tail: Vec<u8> = Vec::new();
+    if !prefix.is_empty() {
+        if let Some(f) = log.as_mut() {
+            let _ = f.write_all(&prefix).await;
+        }
+        advance_tail(&mut tail, &prefix);
+    }
+    if let Some(stdout) = stdout.as_mut() {
+        let mut chunk = [0u8; 8192];
+        loop {
+            match stdout.read(&mut chunk).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    if let Some(f) = log.as_mut() {
+                        let _ = f.write_all(&chunk[..n]).await;
+                    }
+                    advance_tail(&mut tail, &chunk[..n]);
+                }
+                Err(_) => break,
+            }
+        }
+    }
+    let status = child.wait().await.ok();
+    let stderr = child.stderr_text().await;
+    if let Some(f) = log.as_mut() {
+        if !stderr.is_empty() {
+            let _ = f.write_all(stderr.as_bytes()).await;
+            advance_tail(&mut tail, stderr.as_bytes());
+        }
+        let _ = f.flush().await;
+    }
+    let status_label = if let Some(s) = status
+        && s.success()
+    {
+        "done"
+    } else {
+        "failed"
+    };
+    if let Ok(mut r) = registry.lock()
+        && let Some(job) = r.iter_mut().find(|j| j.id == id)
+    {
+        // stop 抢先标记 stopped(watcher 只改 running,不覆盖)
+        if job.status == "running" {
+            job.status = status_label.into();
+        }
+        job.killer = None;
+        job.ended_at = Some(jobs::now_ms());
+    }
+    registry.changed();
 }
 
 impl ToolPort for BashTool {
