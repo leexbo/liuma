@@ -11,4 +11,5 @@ pub(crate) mod search;
 pub(crate) mod sessions;
 pub(crate) mod settings;
 pub(crate) mod subagents;
+pub(crate) mod terminal;
 pub(crate) mod trajectory;
