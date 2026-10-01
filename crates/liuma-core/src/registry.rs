@@ -9134,6 +9134,54 @@ mod tests {
         assert!(host.decision_settings().enabled);
     }
 
+    /// 决策阈值位:配置过的 high 进快照(camelCase)与内存面;未配置的
+    /// 不落键(skip_serializing_if,文件形状不漂移);旧形状文件(无阈
+    /// 值键)经重载读回 = None → to_settings 展开内置默认
+    #[test]
+    fn decision_thresholds_round_trip_and_legacy_file_compat() {
+        let host = temp_host("ws-decision-thresholds");
+        host.upsert_decision_settings(crate::settings::DecisionEntry {
+            guard_high: Some(0.95),
+            context_high: Some(0.6),
+            fold_high: Some(0.2),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let view = host.settings_view()["decision"].clone();
+        assert_eq!(view["guardHigh"], 0.95, "阈值随快照出境:{view}");
+        assert_eq!(view["contextHigh"], 0.6);
+        assert_eq!(view["foldHigh"], 0.2);
+        assert_eq!(host.decision_settings().guard_high, Some(0.95));
+
+        // 落盘形状:三键都在(本轮配置过);随后手改文件抹掉阈值键,
+        // 模拟旧形状文件 → 重载读回 None
+        let path = host.settings.path().to_path_buf();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("guardHigh"), "配置过的阈值应落盘:{text}");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let legacy: String = text
+            .lines()
+            .filter(|l| {
+                !l.trim_start().starts_with("guardHigh")
+                    && !l.trim_start().starts_with("contextHigh")
+                    && !l.trim_start().starts_with("foldHigh")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&path, legacy).unwrap();
+
+        let entry = host.decision_settings();
+        assert_eq!(entry.guard_high, None, "旧形状文件读回 None");
+        assert_eq!(entry.context_high, None);
+        assert_eq!(entry.fold_high, None);
+        assert_eq!(
+            entry.to_settings().guard.high,
+            None,
+            "装配面 None → 引擎展开内置默认"
+        );
+    }
+
     /// 目录各计费预设对官方/实测示例响应可提取(路径与响应形态逐字对应)
     #[test]
     fn catalog_preset_paths_hit_documented_response_shapes() {

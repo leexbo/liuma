@@ -9302,51 +9302,70 @@ fn settle(wcx: &mut gpui_kit::VisualTestContext) {
     wcx.run_until_parked();
 }
 
-/// 决策表单三输入的当前文本(None 字段回空串)
-fn read_decision_inputs(
-    store: &Entity<AppStore>,
-    cx: &mut TestAppContext,
-) -> (String, String, String) {
+/// 决策表单七输入的当前文本
+#[derive(Debug, Default)]
+struct DecisionFormValues {
+    url: String,
+    model: String,
+    key: String,
+    timeout: String,
+    guard_high: String,
+    context_high: String,
+    fold_high: String,
+}
+
+/// 写入决策表单的载荷(None = 该字段不动)
+#[derive(Default)]
+struct DecisionFormText<'a> {
+    url: Option<&'a str>,
+    model: Option<&'a str>,
+    key: Option<&'a str>,
+    timeout: Option<&'a str>,
+    guard_high: Option<&'a str>,
+    context_high: Option<&'a str>,
+    fold_high: Option<&'a str>,
+}
+
+fn read_decision_inputs(store: &Entity<AppStore>, cx: &mut TestAppContext) -> DecisionFormValues {
     cx.update(|app| {
         let st = store.read(app);
-        (
-            st.settings
-                .decision_form_url
-                .as_ref()
+        let val = |e: &Option<gpui_kit::Entity<gpui_kit::component::input::InputState>>| {
+            e.as_ref()
                 .map(|e| e.read(app).value().to_string())
-                .unwrap_or_default(),
-            st.settings
-                .decision_form_model
-                .as_ref()
-                .map(|e| e.read(app).value().to_string())
-                .unwrap_or_default(),
-            st.settings
-                .decision_form_key
-                .as_ref()
-                .map(|e| e.read(app).value().to_string())
-                .unwrap_or_default(),
-        )
+                .unwrap_or_default()
+        };
+        DecisionFormValues {
+            url: val(&st.settings.decision_form_url),
+            model: val(&st.settings.decision_form_model),
+            key: val(&st.settings.decision_form_key),
+            timeout: val(&st.settings.decision_form_timeout),
+            guard_high: val(&st.settings.decision_form_guard_high),
+            context_high: val(&st.settings.decision_form_context_high),
+            fold_high: val(&st.settings.decision_form_fold_high),
+        }
     })
 }
 
-/// 写入决策表单(None = 该字段不动)
 fn set_decision_inputs(
     store: &Entity<AppStore>,
     wcx: &mut gpui_kit::VisualTestContext,
-    url: Option<&str>,
-    model: Option<&str>,
-    key: Option<&str>,
+    text: DecisionFormText<'_>,
 ) {
     wcx.update(|window, cx| {
         store.update(cx, |st, cx| {
-            if let (Some(i), Some(v)) = (&st.settings.decision_form_url, url) {
-                i.update(cx, |s, cx| s.set_value(v, window, cx));
-            }
-            if let (Some(i), Some(v)) = (&st.settings.decision_form_model, model) {
-                i.update(cx, |s, cx| s.set_value(v, window, cx));
-            }
-            if let (Some(i), Some(v)) = (&st.settings.decision_form_key, key) {
-                i.update(cx, |s, cx| s.set_value(v, window, cx));
+            let fields = [
+                (&st.settings.decision_form_url, text.url),
+                (&st.settings.decision_form_model, text.model),
+                (&st.settings.decision_form_key, text.key),
+                (&st.settings.decision_form_timeout, text.timeout),
+                (&st.settings.decision_form_guard_high, text.guard_high),
+                (&st.settings.decision_form_context_high, text.context_high),
+                (&st.settings.decision_form_fold_high, text.fold_high),
+            ];
+            for (input, value) in fields {
+                if let (Some(i), Some(v)) = (input, value) {
+                    i.update(cx, |s, cx| s.set_value(v, window, cx));
+                }
             }
         });
     });
@@ -9369,6 +9388,11 @@ fn decision_config_form_round_trip(cx: &mut TestAppContext) {
         "decision-key-input",
         "decision-key-state",
         "decision-attach-hint",
+        "decision-timeout-input",
+        "decision-threshold-intro",
+        "decision-guard-high-input",
+        "decision-context-high-input",
+        "decision-fold-high-input",
         "decision-save",
     ] {
         assert!(wcx.debug_bounds(sel).is_some(), "{sel} 未渲染");
@@ -9382,25 +9406,35 @@ fn decision_config_form_round_trip(cx: &mut TestAppContext) {
     assert!(url_w >= gpui_kit::px(120.), "端点输入宽度不足:{url_w:?}");
 
     // 进入该区即回填快照值
-    let (want_url, want_model) = cx.update(|app| {
+    let (want_url, want_model, want_timeout) = cx.update(|app| {
         let snap = store.read(app).settings.settings_snapshot["decision"].clone();
         (
             snap["baseUrl"].as_str().unwrap_or_default().to_string(),
             snap["model"].as_str().unwrap_or_default().to_string(),
+            snap["timeoutMs"].as_u64().unwrap_or_default().to_string(),
         )
     });
-    let (got_url, got_model, got_key) = read_decision_inputs(&store, cx);
-    assert_eq!(got_url, want_url, "端点未回填");
-    assert_eq!(got_model, want_model, "模型未回填");
-    assert!(got_key.is_empty(), "key 输入不得回填明文");
+    let got = read_decision_inputs(&store, cx);
+    assert_eq!(got.url, want_url, "端点未回填");
+    assert_eq!(got.model, want_model, "模型未回填");
+    assert_eq!(got.timeout, want_timeout, "超时未回填快照值");
+    // 未配置的阈值回填内置默认字面量(NumberInput 步进从当前文本起算,
+    // 空框按 + 只会从区间下限起步);「空 = 默认」由手动清空承担
+    assert_eq!(got.guard_high, "0.9", "未配置阈值应回填默认值");
+    assert_eq!(got.context_high, "0.85");
+    assert_eq!(got.fold_high, "0.15");
+    assert!(got.key.is_empty(), "key 输入不得回填明文");
 
     // 三项一起改并保存
     set_decision_inputs(
         &store,
         &mut wcx,
-        Some("https://endpoint.test/v1"),
-        Some("jev-test"),
-        Some("sk-decision-test"),
+        DecisionFormText {
+            url: Some("https://endpoint.test/v1"),
+            model: Some("jev-test"),
+            key: Some("sk-decision-test"),
+            ..Default::default()
+        },
     );
     click_sel(&mut wcx, "decision-save");
     settle(&mut wcx);
@@ -9411,16 +9445,22 @@ fn decision_config_form_round_trip(cx: &mut TestAppContext) {
         assert_eq!(snap["apiKeySet"], true, "key 未落盘");
         assert!(snap.get("apiKey").is_none(), "明文 key 不得进快照");
     });
-    let (_, _, got_key) = read_decision_inputs(&store, cx);
-    assert!(got_key.is_empty(), "保存后 key 输入应清空,实为 {got_key:?}");
+    let got = read_decision_inputs(&store, cx);
+    assert!(
+        got.key.is_empty(),
+        "保存后 key 输入应清空,实为 {:?}",
+        got.key
+    );
 
     // key 留空再保存 = 不改已存(host 侧 api_key == None 保留原值)
     set_decision_inputs(
         &store,
         &mut wcx,
-        Some("https://endpoint.test/v2"),
-        Some("jev-test2"),
-        None,
+        DecisionFormText {
+            url: Some("https://endpoint.test/v2"),
+            model: Some("jev-test2"),
+            ..Default::default()
+        },
     );
     click_sel(&mut wcx, "decision-save");
     settle(&mut wcx);
@@ -9438,7 +9478,14 @@ fn decision_config_form_round_trip(cx: &mut TestAppContext) {
             crate::kits::i18n::t!("settings.decision_url_invalid"),
         ),
     ] {
-        set_decision_inputs(&store, &mut wcx, Some(bad), None, None);
+        set_decision_inputs(
+            &store,
+            &mut wcx,
+            DecisionFormText {
+                url: Some(bad),
+                ..Default::default()
+            },
+        );
         click_sel(&mut wcx, "decision-save");
         settle(&mut wcx);
         cx.update(|app| {
@@ -9459,9 +9506,11 @@ fn decision_config_form_round_trip(cx: &mut TestAppContext) {
     set_decision_inputs(
         &store,
         &mut wcx,
-        Some("https://endpoint.test/v3"),
-        Some(""),
-        None,
+        DecisionFormText {
+            url: Some("https://endpoint.test/v3"),
+            model: Some(""),
+            ..Default::default()
+        },
     );
     click_sel(&mut wcx, "decision-save");
     settle(&mut wcx);
@@ -9478,6 +9527,116 @@ fn decision_config_form_round_trip(cx: &mut TestAppContext) {
             "模型为空的通告不对"
         );
     });
+
+    // 超时 + 三条阈值一起改并保存:毫秒直落盘;小数与 % 两种写法都收,
+    // 快照 camelCase(数值以 f64 差值比较)
+    set_decision_inputs(
+        &store,
+        &mut wcx,
+        DecisionFormText {
+            url: Some("https://endpoint.test/v2"),
+            model: Some("jev-test2"),
+            timeout: Some("1500"),
+            guard_high: Some("0.95"),
+            context_high: Some("0.88"),
+            fold_high: Some("0.2"),
+            ..Default::default()
+        },
+    );
+    click_sel(&mut wcx, "decision-save");
+    settle(&mut wcx);
+    cx.update(|app| {
+        let snap = store.read(app).settings.settings_snapshot["decision"].clone();
+        assert_eq!(snap["timeoutMs"], 1500, "超时(毫秒)未落盘");
+        assert_eq!(snap["guardHigh"], 0.95);
+        let ctx_high = snap["contextHigh"].as_f64().expect("contextHigh 数值");
+        assert!(
+            (ctx_high - 0.88).abs() < 1e-9,
+            "contextHigh 应为 0.88:{ctx_high}"
+        );
+        let fold_high = snap["foldHigh"].as_f64().expect("foldHigh 数值");
+        assert!(
+            (fold_high - 0.2).abs() < 1e-9,
+            "foldHigh 应为 0.2:{fold_high}"
+        );
+    });
+
+    // 四项全清 = 内置默认:timeoutMs 回 2000;阈值键从快照缺席
+    // (skip_serializing_if,未配置不落键,文件形状不漂移)
+    set_decision_inputs(
+        &store,
+        &mut wcx,
+        DecisionFormText {
+            timeout: Some(""),
+            guard_high: Some(""),
+            context_high: Some(""),
+            fold_high: Some(""),
+            ..Default::default()
+        },
+    );
+    click_sel(&mut wcx, "decision-save");
+    settle(&mut wcx);
+    cx.update(|app| {
+        let snap = store.read(app).settings.settings_snapshot["decision"].clone();
+        assert_eq!(snap["timeoutMs"], 2000, "清空超时应回内置默认");
+        assert!(
+            snap.get("guardHigh").is_none() && snap.get("contextHigh").is_none(),
+            "清空阈值不得落键:{snap}"
+        );
+    });
+
+    // 非法超时矩阵:各自拒绝 + 对应通告,落盘值不变
+    for bad in ["0", "abc", "90000"] {
+        set_decision_inputs(
+            &store,
+            &mut wcx,
+            DecisionFormText {
+                timeout: Some(bad),
+                ..Default::default()
+            },
+        );
+        click_sel(&mut wcx, "decision-save");
+        settle(&mut wcx);
+        cx.update(|app| {
+            let snap = store.read(app).settings.settings_snapshot["decision"].clone();
+            assert_eq!(snap["timeoutMs"], 2000, "非法超时 {bad:?} 不得落盘");
+            let notice = store.read(app).settings.settings_notice.clone();
+            assert_eq!(
+                notice.map(|(_, msg)| msg),
+                Some(crate::kits::i18n::t!("settings.decision_timeout_invalid").to_string()),
+                "非法超时 {bad:?} 的通告不对"
+            );
+        });
+    }
+    // 非法阈值矩阵:小数越界 / 负数 / 裸百分数歧义串,各自拒绝。
+    // 超时一并重置为合法默认:上轮矩阵留在输入里的非法值会先于阈值
+    // 校验触发超时通告,淹没本矩阵要钉的通告
+    for bad in ["1.5", "-0.1", "90"] {
+        set_decision_inputs(
+            &store,
+            &mut wcx,
+            DecisionFormText {
+                timeout: Some(""),
+                guard_high: Some(bad),
+                ..Default::default()
+            },
+        );
+        click_sel(&mut wcx, "decision-save");
+        settle(&mut wcx);
+        cx.update(|app| {
+            let snap = store.read(app).settings.settings_snapshot["decision"].clone();
+            assert!(
+                snap.get("guardHigh").is_none(),
+                "非法阈值 {bad:?} 不得落盘:{snap}"
+            );
+            let notice = store.read(app).settings.settings_notice.clone();
+            assert_eq!(
+                notice.map(|(_, msg)| msg),
+                Some(crate::kits::i18n::t!("settings.decision_high_invalid").to_string()),
+                "非法阈值 {bad:?} 的通告不对"
+            );
+        });
+    }
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -9501,7 +9660,8 @@ fn decision_scenario_mode_selection(cx: &mut TestAppContext) {
         "两态行不该有「拦截」项"
     );
     // 布局不得塌:每项都要有可点面积(库的 horizontal 组内用 w_full,
-    // 外层若不给宽度会塌成零宽)
+    // 外层若不给宽度会塌成零宽)。Small 档下最短的「关闭」项约 39px,
+    // 下界从 Medium 时代的 40px 放宽到 32px——仍足以逮住塌成零宽
     for sel in [
         "decision-mode-guard-off",
         "decision-mode-guard-shadow",
@@ -9512,8 +9672,22 @@ fn decision_scenario_mode_selection(cx: &mut TestAppContext) {
             .unwrap_or_else(|| panic!("{sel} 缺失"))
             .size
             .width;
-        assert!(w >= gpui_kit::px(40.), "{sel} 宽度不足:{w:?}");
+        assert!(w >= gpui_kit::px(32.), "{sel} 宽度不足:{w:?}");
     }
+    // 主开关用 Small 档(轨道 28×16;Medium 是 36×20)——行主文 13px,
+    // 开关与单选圆点一起缩才与字号纪律协调。库的 Switch 内部 track 不
+    // 注册 debug bounds,故 views 侧包了一层持 selector 的 div,层高即
+    // 开关高;上界按「不得回到 Medium」的意图取 18。单选圆点无独立
+    // bounds 通路,Small 档靠项宽 ≥32px 下限兜住「不塌」
+    let switch_h = wcx
+        .debug_bounds("decision-master-switch")
+        .expect("主开关包装层 bounds")
+        .size
+        .height;
+    assert!(
+        switch_h <= gpui_kit::px(18.),
+        "主开关应保持 Small 档:{switch_h:?}"
+    );
 
     // 读底层两位(快照 camelCase)
     let bits = |cx: &mut TestAppContext, store: &Entity<AppStore>| -> (bool, bool) {
@@ -9622,17 +9796,24 @@ fn decision_form_sync_never_clobbers_typing(cx: &mut TestAppContext) {
     click_sel(&mut wcx, "settings-nav-Decision");
     settle(&mut wcx);
 
-    set_decision_inputs(&store, &mut wcx, Some("draft-typing"), None, None);
+    set_decision_inputs(
+        &store,
+        &mut wcx,
+        DecisionFormText {
+            url: Some("draft-typing"),
+            ..Default::default()
+        },
+    );
     // 刷快照(settings/changed 帧走同一个函数)不得回填覆盖
     cx.update(|app| store.update(app, |st, cx| st.settings_refresh(cx)));
     settle(&mut wcx);
-    let (url, _, _) = read_decision_inputs(&store, cx);
+    let url = read_decision_inputs(&store, cx).url;
     assert_eq!(url, "draft-typing", "刷快照覆盖了用户输入");
 
     // 重复点当前导航项 = 无变化,不得重填
     click_sel(&mut wcx, "settings-nav-Decision");
     settle(&mut wcx);
-    let (url, _, _) = read_decision_inputs(&store, cx);
+    let url = read_decision_inputs(&store, cx).url;
     assert_eq!(url, "draft-typing", "重复点当前项覆盖了用户输入");
 
     // 切走再切回 = 显式重入,重新预填快照值
@@ -9646,7 +9827,7 @@ fn decision_form_sync_never_clobbers_typing(cx: &mut TestAppContext) {
             .unwrap_or_default()
             .to_string()
     });
-    let (url, _, _) = read_decision_inputs(&store, cx);
+    let url = read_decision_inputs(&store, cx).url;
     assert_eq!(url, want, "重入该区应重新预填");
     let _ = std::fs::remove_dir_all(root);
 }

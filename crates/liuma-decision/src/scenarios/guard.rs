@@ -24,6 +24,11 @@ pub struct ToolGuard {
     sink: crate::scenarios::ReceiptSink,
     /// shadow(只记录)/ enforce(高置信才拦)
     enforce: bool,
+    /// enforce 拦截置信下限(装配层注入;None 在 liuma-app 展开为
+    /// thresholds::GUARD_ENFORCE_CONFIDENCE)。只放开这一旋钮——选中
+    /// 概率的防平票线(`GUARD_ENFORCE_CHOICE_PROBABILITY`)保持内置,
+    /// 双阈值语义不因配置拆散
+    enforce_confidence: f64,
 }
 
 impl ToolGuard {
@@ -34,6 +39,7 @@ impl ToolGuard {
         log: Arc<Mutex<liuma_session::EventLog>>,
         sink: crate::scenarios::ReceiptSink,
         enforce: bool,
+        enforce_confidence: f64,
     ) -> Self {
         Self {
             port,
@@ -41,6 +47,7 @@ impl ToolGuard {
             log,
             sink,
             enforce,
+            enforce_confidence,
         }
     }
 
@@ -190,7 +197,7 @@ impl liuma_agent_loop::hooks::HookPort for ToolGuard {
                 // 过线才拦(防平票误拦);shadow/未过线恒放行
                 let should_deny = self.enforce
                     && verdict == "block"
-                    && confidence >= crate::thresholds::GUARD_ENFORCE_CONFIDENCE
+                    && confidence >= self.enforce_confidence
                     && chosen_prob >= crate::thresholds::GUARD_ENFORCE_CHOICE_PROBABILITY;
                 if should_deny {
                     PreToolVerdict::Deny {
@@ -325,7 +332,14 @@ mod tests {
         let port = Arc::new(FakeDecisionPort::scripted(vec![Ok(guard_answers(
             "block", 0.99, 0.99,
         ))]));
-        let guard = ToolGuard::new(port, "m".into(), empty_log(), sink, false);
+        let guard = ToolGuard::new(
+            port,
+            "m".into(),
+            empty_log(),
+            sink,
+            false,
+            crate::thresholds::GUARD_ENFORCE_CONFIDENCE,
+        );
         assert_eq!(
             HookPort::pre_tool(&guard, &call(), 1).await,
             PreToolVerdict::Proceed
@@ -346,7 +360,14 @@ mod tests {
         let port = Arc::new(FakeDecisionPort::scripted(vec![Ok(guard_answers(
             "block", 0.99, 0.99,
         ))]));
-        let guard = ToolGuard::new(port, "m".into(), empty_log(), sink, true);
+        let guard = ToolGuard::new(
+            port,
+            "m".into(),
+            empty_log(),
+            sink,
+            true,
+            crate::thresholds::GUARD_ENFORCE_CONFIDENCE,
+        );
         assert!(matches!(
             HookPort::pre_tool(&guard, &call(), 1).await,
             PreToolVerdict::Deny { .. }
@@ -357,7 +378,14 @@ mod tests {
         let port = Arc::new(FakeDecisionPort::scripted(vec![Ok(guard_answers(
             "block", 0.7, 0.99,
         ))]));
-        let guard = ToolGuard::new(port, "m".into(), empty_log(), sink, true);
+        let guard = ToolGuard::new(
+            port,
+            "m".into(),
+            empty_log(),
+            sink,
+            true,
+            crate::thresholds::GUARD_ENFORCE_CONFIDENCE,
+        );
         assert_eq!(
             HookPort::pre_tool(&guard, &call(), 1).await,
             PreToolVerdict::Proceed
@@ -368,18 +396,66 @@ mod tests {
         let port = Arc::new(FakeDecisionPort::scripted(vec![Ok(guard_answers(
             "block", 0.95, 0.6,
         ))]));
-        let guard = ToolGuard::new(port, "m".into(), empty_log(), sink, true);
+        let guard = ToolGuard::new(
+            port,
+            "m".into(),
+            empty_log(),
+            sink,
+            true,
+            crate::thresholds::GUARD_ENFORCE_CONFIDENCE,
+        );
         assert_eq!(
             HookPort::pre_tool(&guard, &call(), 1).await,
             PreToolVerdict::Proceed
         );
     }
 
+    /// 拦截线可注入:同答案在默认 0.9 下放行、注入 0.5 后拦截——
+    /// 钉住「参数真的生效」,不是摆设
+    #[tokio::test]
+    async fn enforce_threshold_is_injectable() {
+        // block@confidence 0.7:默认线(0.9)下放行
+        let (sink, _) = recording_sink();
+        let port = Arc::new(FakeDecisionPort::scripted(vec![Ok(guard_answers(
+            "block", 0.7, 0.99,
+        ))]));
+        let guard = ToolGuard::new(
+            port,
+            "m".into(),
+            empty_log(),
+            sink,
+            true,
+            crate::thresholds::GUARD_ENFORCE_CONFIDENCE,
+        );
+        assert_eq!(
+            HookPort::pre_tool(&guard, &call(), 1).await,
+            PreToolVerdict::Proceed
+        );
+
+        // 注入 0.5:同答案被拦
+        let (sink, _) = recording_sink();
+        let port = Arc::new(FakeDecisionPort::scripted(vec![Ok(guard_answers(
+            "block", 0.7, 0.99,
+        ))]));
+        let guard = ToolGuard::new(port, "m".into(), empty_log(), sink, true, 0.5);
+        assert!(matches!(
+            HookPort::pre_tool(&guard, &call(), 1).await,
+            PreToolVerdict::Deny { .. }
+        ));
+    }
+
     #[tokio::test]
     async fn port_failure_fails_open() {
         let (sink, seen) = recording_sink();
         let port = Arc::new(FakeDecisionPort::failing(DecisionError::Timeout));
-        let guard = ToolGuard::new(port, "m".into(), empty_log(), sink, true);
+        let guard = ToolGuard::new(
+            port,
+            "m".into(),
+            empty_log(),
+            sink,
+            true,
+            crate::thresholds::GUARD_ENFORCE_CONFIDENCE,
+        );
         assert_eq!(
             HookPort::pre_tool(&guard, &call(), 1).await,
             PreToolVerdict::Proceed
@@ -397,7 +473,14 @@ mod tests {
         let port = Arc::new(FakeDecisionPort::scripted(vec![Ok(guard_answers(
             "proceed", 0.9, 0.1,
         ))]));
-        let guard = ToolGuard::new(port.clone(), "m".into(), empty_log(), sink, false);
+        let guard = ToolGuard::new(
+            port.clone(),
+            "m".into(),
+            empty_log(),
+            sink,
+            false,
+            crate::thresholds::GUARD_ENFORCE_CONFIDENCE,
+        );
         let wire = liuma_agent_loop::ToolCallRequest {
             name: "bash".into(),
             arguments: Value::String(json!({ "command": "rm -rf /tmp/x" }).to_string()),
@@ -432,7 +515,14 @@ mod tests {
                 json!({ "content": "[injected context]", "source": { "kind": "plugin" } }),
             ))
             .unwrap();
-        let guard = ToolGuard::new(port, "m".into(), log, sink, false);
+        let guard = ToolGuard::new(
+            port,
+            "m".into(),
+            log,
+            sink,
+            false,
+            crate::thresholds::GUARD_ENFORCE_CONFIDENCE,
+        );
         assert_eq!(guard.recent_task(), "clean up");
     }
 }

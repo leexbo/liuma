@@ -42,6 +42,12 @@ pub struct FoldJudge {
     sink: crate::scenarios::ReceiptSink,
     /// shadow(只记录)/ enforce(落 pruned,派生层生效)
     enforce: bool,
+    /// 裁掉线(装配层注入;None 在 liuma-app 展开为
+    /// thresholds::FOLD_DROP_PROBABILITY)。**反向极性**:价值 noul
+    /// ≤ 此值才裁掉,与 guard/context 的「≥ 高置信线才动作」方向相反
+    /// (见 `disposable` 与顶部 crate 文档);配置面统一「每场景一个
+    /// 阈值」,极性由消费点与文案承担
+    drop_probability: f64,
 }
 
 impl FoldJudge {
@@ -52,6 +58,7 @@ impl FoldJudge {
         log: Arc<Mutex<liuma_session::EventLog>>,
         sink: crate::scenarios::ReceiptSink,
         enforce: bool,
+        drop_probability: f64,
     ) -> Self {
         Self {
             port,
@@ -59,6 +66,7 @@ impl FoldJudge {
             log,
             sink,
             enforce,
+            drop_probability,
         }
     }
 
@@ -186,11 +194,7 @@ impl liuma_agent_loop::value_judge::ValueJudge for FoldJudge {
                 Ok(answers) => {
                     let duration_ms =
                         i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
-                    let lost = disposable(
-                        picked,
-                        &answers.answers,
-                        crate::thresholds::FOLD_DROP_PROBABILITY,
-                    );
+                    let lost = disposable(picked, &answers.answers, self.drop_probability);
                     let no_value_chars: usize = picked
                         .iter()
                         .filter(|c| lost.iter().any(|(seq, _)| *seq == c.seq))
@@ -383,6 +387,7 @@ mod tests {
             Arc::clone(&log),
             type_sink(&receipts),
             false,
+            crate::thresholds::FOLD_DROP_PROBABILITY,
         );
         let advice = judge.judge(&cands).await.expect("裁定成功");
         assert_eq!(advice.no_value, 1);
@@ -422,6 +427,7 @@ mod tests {
             Arc::clone(&log),
             sink,
             true,
+            crate::thresholds::FOLD_DROP_PROBABILITY,
         );
         let advice = judge
             .judge(&[candidate(3, 2_000), candidate(5, 9_000)])
@@ -441,6 +447,38 @@ mod tests {
         assert_eq!(p[0]["pruned"][0]["score"], json!(0.02));
     }
 
+    /// 裁掉线可注入:noul 0.3 在默认线(0.15)下留下、注入 0.4 后裁掉
+    /// ——钉住「参数真的生效」,且极性保持反向(线调高 = 更激进地裁)
+    #[tokio::test]
+    async fn drop_probability_is_injectable() {
+        let log = Arc::new(Mutex::new(EventLog::new()));
+        let receipts = Arc::new(Mutex::new(Vec::<String>::new()));
+        let judge = |drop_probability: f64| {
+            // 端口不可复用:scripted 队列被首次 ask 消费后二次 ask 即超时
+            let port = Arc::new(port_answering(&[(3, 0.3)]));
+            FoldJudge::new(
+                port as Arc<dyn crate::DecisionPort>,
+                "m".into(),
+                Arc::clone(&log),
+                type_sink(&receipts),
+                false,
+                drop_probability,
+            )
+        };
+        let advice = judge(crate::thresholds::FOLD_DROP_PROBABILITY)
+            .judge(&[candidate(3, 2_000)])
+            .await
+            .expect("裁定成功");
+        assert_eq!(advice.no_value, 0, "默认线下 0.3 留下");
+
+        let advice = judge(0.4)
+            .judge(&[candidate(3, 2_000)])
+            .await
+            .expect("裁定成功");
+        assert_eq!(advice.no_value, 1, "注入 0.4 后 0.3 ≤ 线,裁掉");
+        assert!(!advice.applied, "shadow 只记账不生效");
+    }
+
     /// fail-open:端口 Err 上抛给引擎(照常折叠),receipt 仍收口
     /// (ok:false)——不落 pruned
     #[tokio::test]
@@ -455,6 +493,7 @@ mod tests {
             Arc::clone(&log),
             type_sink(&receipts),
             true,
+            crate::thresholds::FOLD_DROP_PROBABILITY,
         );
         let err = judge
             .judge(&[candidate(3, 2_000)])
@@ -482,6 +521,7 @@ mod tests {
             Arc::clone(&log),
             type_sink(&receipts),
             false,
+            crate::thresholds::FOLD_DROP_PROBABILITY,
         );
         let advice = judge.judge(&cands).await.expect("裁定成功");
         assert_eq!(advice.judged, cap);

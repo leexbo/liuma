@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 
 use gpui_kit::component::IndexPath;
-use gpui_kit::component::input::{EditorState, InputEvent, InputState};
+use gpui_kit::component::input::{EditorState, InputEvent, InputState, MaskPattern};
 use gpui_kit::component::select::{SelectEvent, SelectState};
 use gpui_kit::{AppContext, Context, Entity, Window};
 
@@ -39,6 +39,35 @@ pub(crate) fn parse_context_window_tokens(raw: &str) -> Result<Option<u64>, ()> 
         Ok(v) => v.checked_mul(scale).filter(|t| *t > 0).map(Some).ok_or(()),
         Err(_) => Err(()),
     }
+}
+
+/// 决策超时输入:空 = 内置默认(2000ms,与
+/// `liuma_decision::thresholds::DEFAULT_TIMEOUT_MS` 同源;desktop 不依赖
+/// 该 crate,此处字面量由测试钉住)。纯数字毫秒,限 [100, 60000]——
+/// 下限之下询问立即超时(功能假死式 fail-open),上限之上守卫的前置
+/// 询问会把每个工具调用都挂住
+pub(crate) fn parse_decision_timeout(raw: &str) -> Result<u64, ()> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(2000);
+    }
+    let ms: u64 = trimmed.parse().map_err(|_| ())?;
+    (100..=60_000).contains(&ms).then_some(ms).ok_or(())
+}
+
+/// 决策置信输入:空 = None(内置默认,由装配层展开);0–1 纯小数。
+/// 控件侧 NumberInput 自带步进与失焦 clamp(min/max),但键入自由文本
+/// 不受其约束,保存前的这道校验仍是门槛。NaN/∞ 落不进 [0,1],同非法
+pub(crate) fn parse_decision_high(raw: &str) -> Result<Option<f64>, ()> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let value = trimmed.parse::<f64>().map_err(|_| ())?;
+    if !(0.0..=1.0).contains(&value) {
+        return Err(());
+    }
+    Ok(Some(value))
 }
 
 /// 千分位分组(仅展示用;输入解析容忍分组符)
@@ -139,6 +168,14 @@ pub(crate) struct SettingsStore {
     pub decision_form_model: Option<Entity<InputState>>,
     /// 决策表单:API key 输入(write-only——明文永不回填,保存成功即清空)
     pub decision_form_key: Option<Entity<InputState>>,
+    /// 决策表单:询问超时输入(毫秒;空 = 内置默认)
+    pub decision_form_timeout: Option<Entity<InputState>>,
+    /// 决策表单:守卫拦截线输入(0–1 小数或带 % 百分数;空 = 内置默认)
+    pub decision_form_guard_high: Option<Entity<InputState>>,
+    /// 决策表单:裁判修剪线输入
+    pub decision_form_context_high: Option<Entity<InputState>>,
+    /// 决策表单:折叠裁掉线输入
+    pub decision_form_fold_high: Option<Entity<InputState>>,
     /// 设置页导航(两栏壳:左 nav + 单区内容)
     pub settings_nav: SettingsNav,
     /// MCP 分区详情页(None = 列表页;Some = 详情:新增/编辑/JSON 导入)
@@ -256,6 +293,10 @@ impl Default for SettingsStore {
             decision_form_url: None,
             decision_form_model: None,
             decision_form_key: None,
+            decision_form_timeout: None,
+            decision_form_guard_high: None,
+            decision_form_context_high: None,
+            decision_form_fold_high: None,
             settings_nav: SettingsNav::Models,
             mcp_detail: None,
             hooks_detail: None,
@@ -2462,7 +2503,7 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 决策表单三输入惰建(挂窗一次;`sync_decision_form` 亦会自足调用,
+    /// 决策表单七输入惰建(挂窗一次;`sync_decision_form` 亦会自足调用,
     /// 不依赖 attach 先后)
     pub(crate) fn ensure_decision_form_inputs(
         &mut self,
@@ -2484,12 +2525,51 @@ impl AppStore {
                 InputState::new(window, cx).placeholder(t!("settings.decision_key_placeholder"))
             }));
         }
+        // 阈值/超时的 placeholder 直接写内置默认值:空输入 = 用默认,
+        // placeholder 就是那份默认的可视形态。四行都是 NumberInput:
+        // Number mask + step/min/max 给步进按钮与失焦 clamp(键入自由
+        // 文本仍不受约束,保存前由 parse_* 把关)
+        let number_input = |placeholder: &'static str,
+                            step: f64,
+                            min: f64,
+                            max: f64,
+                            window: &mut Window,
+                            cx: &mut Context<Self>| {
+            cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(placeholder)
+                    .mask_pattern(MaskPattern::Number {
+                        separator: None,
+                        fraction: None,
+                    })
+                    .step(step)
+                    .min(min)
+                    .max(max)
+            })
+        };
+        if self.settings.decision_form_timeout.is_none() {
+            self.settings.decision_form_timeout =
+                Some(number_input("2000", 500., 100., 60000., window, cx));
+        }
+        if self.settings.decision_form_guard_high.is_none() {
+            self.settings.decision_form_guard_high =
+                Some(number_input("0.9", 0.05, 0., 1., window, cx));
+        }
+        if self.settings.decision_form_context_high.is_none() {
+            self.settings.decision_form_context_high =
+                Some(number_input("0.85", 0.05, 0., 1., window, cx));
+        }
+        if self.settings.decision_form_fold_high.is_none() {
+            self.settings.decision_form_fold_high =
+                Some(number_input("0.15", 0.05, 0., 1., window, cx));
+        }
     }
 
     /// 决策表单回填(唯一入口:切到 Decision 分区,或开设置页时当前
     /// 已在该区)。**不得在渲染期或 [`Self::settings_refresh`] 内调用**:
     /// 那会覆盖用户正在输入的内容(同 `ask_custom_input_not_rewritten_each_frame`
     /// 锁住的契约)。key 恒不回填、只清空(write-only;明文不回显)。
+    /// 阈值/超时回填现值:None(未配置)回空串 = 用内置默认。
     pub(crate) fn sync_decision_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.ensure_decision_form_inputs(window, cx);
         let entry = self.decision_entry();
@@ -2502,12 +2582,46 @@ impl AppStore {
         if let Some(input) = &self.settings.decision_form_key {
             input.update(cx, |s, cx| s.set_value("", window, cx));
         }
+        if let Some(input) = &self.settings.decision_form_timeout {
+            let v = entry.timeout_ms.to_string();
+            input.update(cx, |s, cx| s.set_value(&v, window, cx));
+        }
+        for (input, high, default_text) in [
+            (
+                &self.settings.decision_form_guard_high,
+                entry.guard_high,
+                "0.9",
+            ),
+            (
+                &self.settings.decision_form_context_high,
+                entry.context_high,
+                "0.85",
+            ),
+            (
+                &self.settings.decision_form_fold_high,
+                entry.fold_high,
+                "0.15",
+            ),
+        ] {
+            if let Some(input) = input {
+                // 回填生效值:配置过 = 原样小数字面量(会话内保存往返不
+                // 丢精度);未配置 = 内置默认字面量——NumberInput 的步进
+                // 从当前文本起算,placeholder 不参与运算,空框按 + 会从
+                // 区间下限起步而非默认值。手动清空仍是「回默认」入口
+                // (保存时空串解析为 None)
+                let v = high
+                    .map(|h| h.to_string())
+                    .unwrap_or_else(|| default_text.to_string());
+                input.update(cx, |s, cx| s.set_value(&v, window, cx));
+            }
+        }
     }
 
-    /// 决策配置保存(端点 / 模型 / 密钥)。key 留空 = 不改已存(后端
-    /// `api_key == None` 保留原值);端点或模型为空、端点无 http(s) 前缀
-    /// 一律拒绝并内联通告——空端点会让 `build_decision_port` 返回 `None`,
-    /// 整个功能无声失效。成功即清空 key 明文并刷快照(圆点转「已配置」)。
+    /// 决策配置保存(端点 / 模型 / 密钥 / 超时 / 置信阈值)。key 留空 =
+    /// 不改已存(后端 `api_key == None` 保留原值);端点或模型为空、端点
+    /// 无 http(s) 前缀、超时或阈值非法一律拒绝并内联通告——空端点会让
+    /// `build_decision_port` 返回 `None`,整个功能无声失效。成功即清空
+    /// key 明文并刷快照(圆点转「已配置」)。
     pub fn apply_decision_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let base_url = self
             .settings
@@ -2527,6 +2641,21 @@ impl AppStore {
             .as_ref()
             .map(|i| i.read(cx).value().trim().to_string())
             .unwrap_or_default();
+        let timeout_raw = self
+            .settings
+            .decision_form_timeout
+            .as_ref()
+            .map(|i| i.read(cx).value().trim().to_string())
+            .unwrap_or_default();
+        let high_raw = |field: &Option<Entity<InputState>>| {
+            field
+                .as_ref()
+                .map(|i| i.read(cx).value().trim().to_string())
+                .unwrap_or_default()
+        };
+        let guard_high_raw = high_raw(&self.settings.decision_form_guard_high);
+        let context_high_raw = high_raw(&self.settings.decision_form_context_high);
+        let fold_high_raw = high_raw(&self.settings.decision_form_fold_high);
         if base_url.is_empty() {
             self.set_settings_notice(false, t!("settings.decision_url_empty"), cx);
             return;
@@ -2539,10 +2668,28 @@ impl AppStore {
             self.set_settings_notice(false, t!("settings.decision_model_empty"), cx);
             return;
         }
+        let Ok(timeout_ms) = parse_decision_timeout(&timeout_raw) else {
+            self.set_settings_notice(false, t!("settings.decision_timeout_invalid"), cx);
+            return;
+        };
+        let (Ok(guard_high), Ok(context_high), Ok(fold_high)) = (
+            parse_decision_high(&guard_high_raw),
+            parse_decision_high(&context_high_raw),
+            parse_decision_high(&fold_high_raw),
+        ) else {
+            self.set_settings_notice(false, t!("settings.decision_high_invalid"), cx);
+            return;
+        };
         let mut entry = self.decision_entry();
         entry.base_url = base_url;
         entry.model = model;
-        // 空 key = 保持 None,交给 host 保留原值(与 provider upsert 同惯例)
+        entry.timeout_ms = timeout_ms;
+        entry.guard_high = guard_high;
+        entry.context_high = context_high;
+        entry.fold_high = fold_high;
+        // 空 key = 保持 None,交给 host 保留原值(与 provider upsert 同惯例)。
+        // 阈值/超时的「空」与此不同:不是「不改」而是「内置默认」——key 是
+        // write-only 特例,其余字段以表单为准
         if !key.is_empty() {
             entry.api_key = Some(key);
         }
@@ -2680,5 +2827,49 @@ mod context_window_tests {
         assert_eq!(grouped_tokens(128), "128");
         assert_eq!(grouped_tokens(65_536), "65,536");
         assert_eq!(grouped_tokens(1_000_000), "1,000,000");
+    }
+}
+
+#[cfg(test)]
+mod decision_form_parse_tests {
+    use super::{parse_decision_high, parse_decision_timeout};
+
+    /// 空 = 内置默认(2000,与 liuma_decision thresholds 同源的字面量);
+    /// 纯数字毫秒限 [100, 60000];负数/小数/非数字/越界均非法
+    #[test]
+    fn parses_decision_timeout_draft() {
+        assert_eq!(parse_decision_timeout(""), Ok(2000));
+        assert_eq!(parse_decision_timeout("   "), Ok(2000));
+        assert_eq!(parse_decision_timeout("2000"), Ok(2000));
+        assert_eq!(parse_decision_timeout(" 1500 "), Ok(1500));
+        assert_eq!(parse_decision_timeout("100"), Ok(100), "下边界含");
+        assert_eq!(parse_decision_timeout("60000"), Ok(60000), "上边界含");
+        assert_eq!(parse_decision_timeout("99"), Err(()));
+        assert_eq!(parse_decision_timeout("0"), Err(()));
+        assert_eq!(parse_decision_timeout("60001"), Err(()));
+        assert_eq!(parse_decision_timeout("-1"), Err(()));
+        assert_eq!(parse_decision_timeout("1.5"), Err(()));
+        assert_eq!(parse_decision_timeout("2000ms"), Err(()));
+        assert_eq!(parse_decision_timeout("abc"), Err(()));
+    }
+
+    /// 空 = None(内置默认);0–1 纯小数;越界、非数字、NaN/∞ 均非法
+    /// (控件侧 NumberInput 的失焦 clamp 会先把可解析的越界值收敛,
+    /// 这里是键入自由文本与手改路径的最后一道门)
+    #[test]
+    fn parses_decision_high_draft() {
+        assert_eq!(parse_decision_high(""), Ok(None));
+        assert_eq!(parse_decision_high("   "), Ok(None));
+        assert_eq!(parse_decision_high("0.9"), Ok(Some(0.9)));
+        assert_eq!(parse_decision_high(" 0.85 "), Ok(Some(0.85)));
+        assert_eq!(parse_decision_high("0"), Ok(Some(0.0)));
+        assert_eq!(parse_decision_high("1"), Ok(Some(1.0)));
+        assert_eq!(parse_decision_high("90"), Err(()), "越上界");
+        assert_eq!(parse_decision_high("1.5"), Err(()));
+        assert_eq!(parse_decision_high("-0.1"), Err(()));
+        assert_eq!(parse_decision_high("90%"), Err(()), "% 格式不再收");
+        assert_eq!(parse_decision_high("abc"), Err(()));
+        assert_eq!(parse_decision_high("NaN"), Err(()));
+        assert_eq!(parse_decision_high("inf"), Err(()));
     }
 }

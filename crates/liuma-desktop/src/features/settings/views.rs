@@ -104,11 +104,19 @@ fn section_title(text: impl Into<gpui_kit::SharedString>) -> impl IntoElement {
 }
 
 /// MCP Servers 区:server 行卡(id/command/enabled 开关/移除)+ 添加卡。
-/// 通用字段输入行(标签 + 输入实体)。`sel` = 输入包装的布局回归锚
-fn field_input(
+/// 字段控件构造器(fn 指针 + AnyElement:闭包泛型在此会撞上
+/// HRTB 推断,函数指针直接绕开)
+type FieldControl =
+    fn(&gpui_kit::Entity<gpui_kit::component::input::InputState>) -> gpui_kit::AnyElement;
+
+/// 通用字段输入行核心(标签 + 由 `control` 构建的控件)。`sel` = 输入
+/// 包装的布局回归锚;标签用 LABEL_2——表头是行内主控的名称,38% 的
+/// CAPTION 让它淡得像禁用态,72% 的次级档才是表单标签的常规层级
+fn field_row(
     label: impl Into<gpui_kit::SharedString>,
     sel: &'static str,
     input: &Option<gpui_kit::Entity<gpui_kit::component::input::InputState>>,
+    control: FieldControl,
 ) -> impl IntoElement {
     let label = label.into();
     div()
@@ -120,7 +128,7 @@ fn field_input(
                 .w(px(64.))
                 .flex_shrink_0()
                 .text_size(px(11.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::LABEL_2())
                 .child(label.to_string()),
         )
         .children(input.as_ref().map(|e| {
@@ -130,8 +138,72 @@ fn field_input(
                 .flex_1()
                 .min_w(px(0.))
                 .h(px(32.))
-                .child(Input::new(e).small())
+                .child(control(e))
         }))
+}
+
+/// 文本字段行
+fn field_input(
+    label: impl Into<gpui_kit::SharedString>,
+    sel: &'static str,
+    input: &Option<gpui_kit::Entity<gpui_kit::component::input::InputState>>,
+) -> impl IntoElement {
+    field_row(label, sel, input, |e| {
+        Input::new(e).small().into_any_element()
+    })
+}
+
+/// 数字控件(NumberInput:步进按钮 + 失焦 clamp,区间/步长在
+/// InputState 构造侧配,见 `ensure_decision_form_inputs`)
+fn field_number_control(
+    e: &gpui_kit::Entity<gpui_kit::component::input::InputState>,
+) -> gpui_kit::AnyElement {
+    gpui_kit::component::input::NumberInput::new(e)
+        .small()
+        .into_any_element()
+}
+
+/// 定宽数字字段行 + 尾随 hint(决策区的阈值/超时行;hint 是 11px
+/// CAPTION)。四个数字行共用固定 160px 输入宽:hint 文字长短不一,若
+/// 让输入框吃 flex_1,各行右缘会参差不齐;定宽后输入列对齐,hint 由
+/// 弹性空档统一贴行尾
+fn field_number_hinted(
+    label: impl Into<gpui_kit::SharedString>,
+    sel: &'static str,
+    input: &Option<gpui_kit::Entity<gpui_kit::component::input::InputState>>,
+    hint: impl Into<gpui_kit::SharedString>,
+) -> impl IntoElement {
+    let label = label.into();
+    let hint = hint.into();
+    div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .child(
+            div()
+                .w(px(64.))
+                .flex_shrink_0()
+                .text_size(px(11.))
+                .text_color(theme::LABEL_2())
+                .child(label.to_string()),
+        )
+        .children(input.as_ref().map(|e| {
+            div()
+                .id(gpui_kit::SharedString::from(sel))
+                .debug_selector(move || sel.to_string())
+                .w(px(160.))
+                .flex_shrink_0()
+                .h(px(32.))
+                .child(field_number_control(e))
+        }))
+        .child(div().flex_1().min_w(px(0.)))
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_size(px(11.))
+                .text_color(theme::CAPTION())
+                .child(hint.to_string()),
+        )
 }
 
 fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
@@ -3394,6 +3466,39 @@ fn decision_config_block(store: &Entity<AppStore>, cx: &App) -> impl IntoElement
                 .text_color(theme::CAPTION())
                 .child(t!("settings.decision_attach_hint")),
         )
+        .child(field_number_hinted(
+            t!("settings.decision_timeout_label"),
+            "decision-timeout-input",
+            &st.settings.decision_form_timeout,
+            t!("settings.decision_timeout_hint"),
+        ))
+        // 阈值组说明:极性写明(守卫/裁判「≥ 才动作」,折叠反向「≤ 才裁」)
+        .child(
+            div()
+                .id("decision-threshold-intro")
+                .debug_selector(|| "decision-threshold-intro".to_string())
+                .text_size(px(11.))
+                .text_color(theme::CAPTION())
+                .child(t!("settings.decision_threshold_intro")),
+        )
+        .child(field_number_hinted(
+            t!("settings.decision_guard_high_label"),
+            "decision-guard-high-input",
+            &st.settings.decision_form_guard_high,
+            t!("settings.decision_guard_high_hint"),
+        ))
+        .child(field_number_hinted(
+            t!("settings.decision_context_high_label"),
+            "decision-context-high-input",
+            &st.settings.decision_form_context_high,
+            t!("settings.decision_context_high_hint"),
+        ))
+        .child(field_number_hinted(
+            t!("settings.decision_fold_high_label"),
+            "decision-fold-high-input",
+            &st.settings.decision_form_fold_high,
+            t!("settings.decision_fold_high_hint"),
+        ))
         .children(st.settings.settings_notice.as_ref().map(|(ok, msg)| {
             div()
                 .debug_selector(|| "decision-settings-notice".to_string())
@@ -3459,11 +3564,15 @@ fn decision_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         has_enforce: bool|
      -> gpui_kit::AnyElement {
         let st_row = store.clone();
-        // 每项挂独立 selector,测试才能点到具体那一项
+        // 每项挂独立 selector,测试才能点到具体那一项。`.small()`:圆点
+        // 14px + 标签 14px——Medium 档(16px 圆点 + 16px 标签)比行主文
+        // (13px)还大,与字号纪律不符;XSmall 的 12px 标签又低于行主文,
+        // 模式词是行内主控不该更小
         let item = |kind: &'static str, label: gpui_kit::SharedString| {
             let sel = format!("decision-mode-{id}-{kind}");
             Radio::new(gpui_kit::SharedString::from(sel.clone()))
                 .debug_selector(move || sel.clone())
+                .small()
                 .label(label)
         };
         let mut items = vec![item("off", t!("settings.decision_mode_off").into())];
@@ -3545,12 +3654,21 @@ fn decision_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                     .child(t!("settings.decision_master")),
             )
             .child(
-                Switch::new("decision-master-toggle")
-                    .checked(entry.enabled)
-                    .color(theme::BRAND())
-                    .on_click(move |_, _, cx| {
-                        st_master.update(cx, |st, cx| st.toggle_decision_enabled(cx));
-                    }),
+                // 包装层只为布局回归测试持有 selector:库 Switch 的内部
+                // track 不注册 debug bounds,层高即开关高(Small 16/Medium 20)
+                div()
+                    .id("decision-master-switch")
+                    .debug_selector(|| "decision-master-switch".to_string())
+                    .flex_shrink_0()
+                    .child(
+                        Switch::new("decision-master-toggle")
+                            .checked(entry.enabled)
+                            .small()
+                            .color(theme::BRAND())
+                            .on_click(move |_, _, cx| {
+                                st_master.update(cx, |st, cx| st.toggle_decision_enabled(cx));
+                            }),
+                    ),
             ),
     );
     // 主开关关闭时场景行整体退灰(仍可查看,不可交互的语义由分段选中态承担)

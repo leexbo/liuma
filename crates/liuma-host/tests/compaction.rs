@@ -1035,6 +1035,7 @@ async fn enforced_fold_replaces_outputs_in_the_prefix_only() {
         Arc::clone(&log),
         receipts,
         true,
+        liuma_decision::thresholds::FOLD_DROP_PROBABILITY,
     );
     engine.set_value_judge(Arc::new(judge));
     let mut provider = FakeProvider::new();

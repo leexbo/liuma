@@ -513,3 +513,135 @@ async fn context_judge_fails_open() {
         .expect("失败也收口");
     assert_eq!(answered.data["ok"], false);
 }
+
+/// 阈值映射:entry 三条 high 位进 DecisionScenario.high,两态场景恒
+/// None;非有限值 → 内置默认(None),越界值 clamp 进 [0,1](fail-open
+/// 收敛,不拒载)
+#[test]
+fn to_settings_maps_scenario_thresholds_and_normalizes() {
+    use liuma_app::DecisionEntry;
+
+    let entry = DecisionEntry {
+        guard_high: Some(0.95),
+        context_high: Some(0.6),
+        fold_high: Some(0.2),
+        ..Default::default()
+    };
+    let s = entry.to_settings();
+    assert_eq!(s.guard.high, Some(0.95));
+    assert_eq!(s.context.high, Some(0.6));
+    assert_eq!(s.fold.high, Some(0.2));
+    assert_eq!(s.approvals.high, None, "两态场景无阈值位");
+    assert_eq!(s.stop.high, None);
+
+    let entry = DecisionEntry {
+        guard_high: Some(1.7),
+        context_high: Some(f64::NAN),
+        fold_high: Some(-0.3),
+        ..Default::default()
+    };
+    let s = entry.to_settings();
+    assert_eq!(s.guard.high, Some(1.0), "越上界 clamp");
+    assert_eq!(s.context.high, None, "非有限 → 内置默认");
+    assert_eq!(s.fold.high, Some(0.0), "越下界 clamp");
+}
+
+/// 上下文裁判修剪线可注入:同一份答案(noul 0.7)在默认线(0.85)下
+/// 零修剪,配置 high=0.6 后修剪——钉住「配置真的到达引擎」
+#[tokio::test]
+async fn context_judge_honors_high_override() {
+    use liuma_app::DecisionSettings;
+
+    // 每次裁决独立 log:receipt 追加不污染下一次的候选选择
+    let fresh_log = || {
+        let log = Arc::new(Mutex::new(EventLog::new()));
+        {
+            let mut l = log.lock().unwrap();
+            let append = |l: &mut EventLog, ty: &str, data: serde_json::Value| {
+                let mut ev = liuma_session::EventEnvelope::new(ty, 0, data);
+                ev.seq = l.high_water() + 1;
+                l.append(ev).unwrap();
+            };
+            append(
+                &mut l,
+                "user/message",
+                json!({ "content": "build the thing", "source": { "kind": "user" } }),
+            ); // seq1
+            append(
+                &mut l,
+                "tool/result",
+                json!({ "call": 1, "output": "old ".repeat(1250) }),
+            ); // seq2 ≈5000 chars(可裁)
+            append(
+                &mut l,
+                "tool/result",
+                json!({ "call": 2, "output": "mid ".repeat(1250) }),
+            ); // seq3(保留尾界)
+            append(
+                &mut l,
+                "tool/result",
+                json!({ "call": 3, "output": "fresh ".repeat(1000) }),
+            ); // seq4(保留尾内)
+            append(&mut l, "assistant/message", json!({ "content": "done" })); // seq5
+            append(
+                &mut l,
+                "audit/call",
+                json!({
+                    "boundary": "llm", "operation": "request-done",
+                    "detail": { "usage": { "input_tokens": 15000 } }
+                }),
+            ); // seq6(压力源)
+        }
+        log
+    };
+    let answers = || {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("s2".to_string(), liuma_decision::Answer::Noul { noul: 0.7 });
+        m.insert(
+            "s3".to_string(),
+            liuma_decision::Answer::Noul { noul: 0.05 },
+        );
+        liuma_decision::DecisionAnswers {
+            model: "fake".into(),
+            answers: m,
+            usage: Default::default(),
+            request_id: None,
+        }
+    };
+    let base = DecisionSettings {
+        enabled: true,
+        context: liuma_app::DecisionScenario {
+            enabled: true,
+            enforce: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut lowered = base.clone();
+    lowered.context.high = Some(0.6);
+
+    let out = liuma_app::judge_context(
+        &fresh_log(),
+        &(Arc::new(FakeDecisionPort::scripted(vec![Ok(answers())]))
+            as Arc<dyn liuma_decision::DecisionPort>),
+        &base,
+        10_000,
+        &liuma_app::log_only_receipt_sink(&fresh_log()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out, Some(0), "默认线 0.85:0.7 不修剪");
+
+    let log = fresh_log();
+    let out = liuma_app::judge_context(
+        &log,
+        &(Arc::new(FakeDecisionPort::scripted(vec![Ok(answers())]))
+            as Arc<dyn liuma_decision::DecisionPort>),
+        &lowered,
+        10_000,
+        &liuma_app::log_only_receipt_sink(&log),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out, Some(1), "线降到 0.6:0.7 ≥ 线,修剪");
+}

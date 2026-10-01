@@ -613,8 +613,8 @@ settings:
     en: "Model can't be empty"
 
   decision_attach_hint:
-    zh-CN: "端点、模型与密钥在下次会话附着时生效。"
-    en: "Endpoint, model and key take effect when the next session attaches."
+    zh-CN: "端点、模型、密钥与超时在下次会话附着时生效;置信阈值保存即热生效。"
+    en: "Endpoint, model, key and timeout take effect when the next session attaches; confidence thresholds apply live once saved."
 
   decision_saved:
     zh-CN: "决策模型配置已保存"
@@ -627,6 +627,50 @@ settings:
   decision_key_missing:
     zh-CN: "key 未配置"
     en: "key not configured"
+
+  decision_timeout_label:
+    zh-CN: "超时(毫秒)"
+    en: "Timeout (ms)"
+
+  decision_timeout_hint:
+    zh-CN: "留空 = 2000"
+    en: "Empty = 2000"
+
+  decision_timeout_invalid:
+    zh-CN: "超时需为 100–60000 的整数毫秒"
+    en: "Timeout must be an integer between 100 and 60000 ms"
+
+  decision_threshold_intro:
+    zh-CN: "置信阈值:留空 = 内置默认。守卫与裁判按「≥ 此值才动作」理解,折叠相反按「价值 ≤ 此值即裁掉」理解;守卫线仅拦截模式生效,裁判与折叠在仅记录模式也按此线统计。"
+    en: "Confidence thresholds: leave empty for the built-in default. Guard and judge fire at or above the line; fold is reversed — drops at or below the line. The guard line only gates block mode; judge and fold also apply it while logging."
+
+  decision_guard_high_label:
+    zh-CN: "守卫拦截线"
+    en: "Guard block line"
+
+  decision_guard_high_hint:
+    zh-CN: "≥ 才拦 · 默认 0.9"
+    en: "Block at ≥ · default 0.9"
+
+  decision_context_high_label:
+    zh-CN: "裁判修剪线"
+    en: "Judge prune line"
+
+  decision_context_high_hint:
+    zh-CN: "≥ 才修剪 · 默认 0.85"
+    en: "Prune at ≥ · default 0.85"
+
+  decision_fold_high_label:
+    zh-CN: "折叠裁掉线"
+    en: "Fold drop line"
+
+  decision_fold_high_hint:
+    zh-CN: "≤ 才裁 · 默认 0.15"
+    en: "Drop at ≤ · default 0.15"
+
+  decision_high_invalid:
+    zh-CN: "置信阈值需为 0–1 的小数"
+    en: "Confidence must be a decimal between 0 and 1"
 
   hooks_edit_card:
     zh-CN: "编辑 Hooks 桥"

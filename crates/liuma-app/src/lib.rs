@@ -124,6 +124,19 @@ pub struct DecisionEntry {
     pub fold: bool,
     /// 折叠价值裁定 enforce(默认 shadow 只记录)
     pub fold_enforce: bool,
+    /// 工具守卫拦截置信下限(None = thresholds::GUARD_ENFORCE_CONFIDENCE;
+    /// choice=block 且 confidence ≥ 此值才 Deny)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard_high: Option<f64>,
+    /// 上下文裁判修剪线(None = PRUNE_NO_VALUE_PROBABILITY;
+    /// no_value ≥ 此值才修剪)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_high: Option<f64>,
+    /// 折叠裁掉线(None = FOLD_DROP_PROBABILITY;**反向极性**:价值
+    /// noul ≤ 此值才裁掉,与 guard/context 的高置信线方向相反——配置面
+    /// 统一「每场景一个阈值」,极性由消费点与设置页文案承担)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fold_high: Option<f64>,
 }
 
 impl Default for DecisionEntry {
@@ -142,6 +155,9 @@ impl Default for DecisionEntry {
             context_enforce: false,
             fold: false,
             fold_enforce: false,
+            guard_high: None,
+            context_high: None,
+            fold_high: None,
         }
     }
 }
@@ -149,10 +165,13 @@ impl Default for DecisionEntry {
 impl DecisionEntry {
     /// 转装配层设置(enforce 位仅 guard/context/fold 有意义)
     pub fn to_settings(&self) -> DecisionSettings {
-        let scenario = |enabled: bool, enforce: bool| DecisionScenario {
+        let scenario = |enabled: bool, enforce: bool, high: Option<f64>| DecisionScenario {
             enabled,
             enforce,
-            high: None,
+            // 手改文件塞进来的非有限/越界值收敛到无害区间:NaN/∞ → 内置
+            // 默认,越界 → clamp 进 [0,1](fail-open 不拒载——拒载会让
+            // 整个决策面静默消失,比一根错线更糟)
+            high: high.filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 1.0)),
             low: None,
         };
         DecisionSettings {
@@ -161,11 +180,11 @@ impl DecisionEntry {
             base_url: self.base_url.clone(),
             model: self.model.clone(),
             timeout_ms: self.timeout_ms,
-            approvals: scenario(self.approvals, false),
-            stop: scenario(self.stop, false),
-            guard: scenario(self.guard, self.guard_enforce),
-            context: scenario(self.context, self.context_enforce),
-            fold: scenario(self.fold, self.fold_enforce),
+            approvals: scenario(self.approvals, false, None),
+            stop: scenario(self.stop, false, None),
+            guard: scenario(self.guard, self.guard_enforce, self.guard_high),
+            context: scenario(self.context, self.context_enforce, self.context_high),
+            fold: scenario(self.fold, self.fold_enforce, self.fold_high),
         }
     }
 }
@@ -280,6 +299,10 @@ pub fn decision_hook_ports(
             Arc::clone(log),
             sink,
             settings.guard.enforce,
+            settings
+                .guard
+                .high
+                .unwrap_or(liuma_decision::thresholds::GUARD_ENFORCE_CONFIDENCE),
         )));
     }
     hooks
@@ -321,6 +344,10 @@ pub fn build_fold_judge(
         Arc::clone(log),
         sink,
         settings.fold.enforce,
+        settings
+            .fold
+            .high
+            .unwrap_or(liuma_decision::thresholds::FOLD_DROP_PROBABILITY),
     )) as Arc<dyn liuma_agent_loop::value_judge::ValueJudge>)
 }
 
@@ -1010,7 +1037,10 @@ pub async fn judge_context(
             let lost = ctx::losing_seqs(
                 &candidates,
                 &answers.answers,
-                liuma_decision::thresholds::PRUNE_NO_VALUE_PROBABILITY,
+                settings
+                    .context
+                    .high
+                    .unwrap_or(liuma_decision::thresholds::PRUNE_NO_VALUE_PROBABILITY),
             );
             sink(
                 "decision/asked",
