@@ -2867,7 +2867,9 @@ impl AppStore {
         self.settings.archived_loading = true;
         let store = cx.entity().clone();
         let host = self.bridge.host().clone();
-        let rx = self.bridge.call_blocking(move || host.list_archived_sessions());
+        let rx = self
+            .bridge
+            .call_blocking(move || host.list_archived_sessions());
         cx.spawn(async move |_this, cx| {
             let items = rx.await;
             store.update(cx, |s, cx| {
@@ -2954,25 +2956,26 @@ impl AppStore {
             ArchivedOrder::Updated => "updated",
             ArchivedOrder::Alpha => "alpha",
         };
-        self.settings.archived_order_select =
-            Some(build_archived_select(options, current, window, cx, move |this, id, cx| {
+        self.settings.archived_order_select = Some(build_archived_select(
+            options,
+            current,
+            window,
+            cx,
+            move |this, id, cx| {
                 let order = match id.as_str() {
                     "alpha" => ArchivedOrder::Alpha,
                     _ => ArchivedOrder::Updated,
                 };
                 this.set_archived_order(order, cx);
-            }));
+            },
+        ));
     }
 
     /// 项目下拉构建/同步:选项集相对上次构建有增减(或首建)才整体重建;
     /// 当前筛选值仍在新选项集内则保持选中
     fn ensure_archived_project_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let choices = self.archived_project_choices();
-        let keys: Vec<String> = choices
-            .iter()
-            .skip(1)
-            .map(|(v, _)| v.clone())
-            .collect();
+        let keys: Vec<String> = choices.iter().skip(1).map(|(v, _)| v.clone()).collect();
         let built = self.settings.archived_project_select.is_some();
         if built && keys == self.settings.archived_project_options {
             return;
@@ -2980,19 +2983,11 @@ impl AppStore {
         self.settings.archived_project_options = keys;
         // 当前筛选项目已不在选项集(其归档被清空)→ 复位为全部项目,
         // 避免显示「全部」而实际仍按失效 pkey 过滤的错位
-        let current = self
-            .settings
-            .archived_project
-            .clone()
-            .unwrap_or_default();
+        let current = self.settings.archived_project.clone().unwrap_or_default();
         if !current.is_empty() && !choices.iter().any(|(v, _)| *v == current) {
             self.settings.archived_project = None;
         }
-        let current = self
-            .settings
-            .archived_project
-            .clone()
-            .unwrap_or_default();
+        let current = self.settings.archived_project.clone().unwrap_or_default();
         let select = build_archived_select(choices, &current, window, cx, |this, id, cx| {
             let pkey = if id.is_empty() { None } else { Some(id) };
             this.set_archived_project(pkey, cx);
@@ -3084,12 +3079,12 @@ impl AppStore {
     ) {
         let host = self.bridge.host().clone();
         let rx = self.bridge.call_blocking(move || match kind {
-            ArchivedConfirmKind::Delete { archive_id } => host
-                .delete_archived_session(&archive_id)
-                .map(|_| ()),
-            ArchivedConfirmKind::PurgeProject { pkey } => host
-                .clear_archived_sessions(Some(&pkey))
-                .map(|_| ()),
+            ArchivedConfirmKind::Delete { archive_id } => {
+                host.delete_archived_session(&archive_id).map(|_| ())
+            }
+            ArchivedConfirmKind::PurgeProject { pkey } => {
+                host.clear_archived_sessions(Some(&pkey)).map(|_| ())
+            }
             ArchivedConfirmKind::ClearAll => host.clear_archived_sessions(None).map(|_| ()),
         });
         cx.spawn(async move |this, cx| {
@@ -3117,7 +3112,9 @@ impl AppStore {
     /// 归档区,不切会话
     pub fn unarchive_archived(&mut self, archive_id: String, cx: &mut Context<Self>) {
         let host = self.bridge.host().clone();
-        let rx = self.bridge.call_blocking(move || host.unarchive_session(&archive_id));
+        let rx = self
+            .bridge
+            .call_blocking(move || host.unarchive_session(&archive_id));
         cx.spawn(async move |this, cx| {
             let result = rx.await.unwrap_or_else(|_| {
                 Err(liuma_core::proto::RpcError::internal(

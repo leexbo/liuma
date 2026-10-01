@@ -21,8 +21,8 @@ use gpui_kit::component::select::{Select, SelectState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Anchor, App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
-    Styled, Window, div, px,
+    Anchor, App, Entity, InteractiveElement, IntoElement, ParentElement,
+    StatefulInteractiveElement, Styled, Window, div, px,
 };
 use liuma_core::proto::ArchivedSessionSummary;
 
@@ -4126,11 +4126,7 @@ fn archived_view(
     if order == ArchivedOrder::Alpha {
         groups.sort_by_key(|a| a.1.to_lowercase());
         for (_, _, members) in &mut groups {
-            members.sort_by(|&a, &b| {
-                title_of(a)
-                    .to_lowercase()
-                    .cmp(&title_of(b).to_lowercase())
-            });
+            members.sort_by(|&a, &b| title_of(a).to_lowercase().cmp(&title_of(b).to_lowercase()));
         }
     }
     groups
@@ -4243,12 +4239,7 @@ fn archived_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                     .w(px(150.))
                     .h(px(32.))
                     .line_height(gpui_kit::relative(1.4))
-                    .children(
-                        st.settings
-                            .archived_order_select
-                            .as_ref()
-                            .map(Select::new),
-                    ),
+                    .children(st.settings.archived_order_select.as_ref().map(Select::new)),
             )
             .child(
                 div()
@@ -4268,13 +4259,11 @@ fn archived_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     // 态分流:加载 / 空清单 / 零命中 = 余高内居中(不进滚动区);
     // 分组列表 = 内部滚动区
     let body: gpui_kit::AnyElement = if st.settings.archived_loading {
-        centered_state("archived-loading", t!("settings.archived_loading"))
-            .into_any_element()
+        centered_state("archived-loading", t!("settings.archived_loading")).into_any_element()
     } else if items.is_empty() {
         centered_state("archived-empty", t!("settings.archived_empty")).into_any_element()
     } else if groups.is_empty() {
-        centered_state("archived-no-match", t!("settings.archived_no_match"))
-            .into_any_element()
+        centered_state("archived-no-match", t!("settings.archived_no_match")).into_any_element()
     } else {
         let mut list = div()
             .id("archived-list")
@@ -4431,10 +4420,7 @@ fn archived_group_menu(
 }
 
 /// 归档行:标题(截断)+ 更新时间 + 垃圾桶 + 取消归档胶囊
-fn archived_row(
-    store: &Entity<AppStore>,
-    item: &ArchivedSessionSummary,
-) -> impl IntoElement {
+fn archived_row(store: &Entity<AppStore>, item: &ArchivedSessionSummary) -> impl IntoElement {
     let title = item
         .projections
         .as_ref()
