@@ -5935,14 +5935,14 @@ fn ask_card_stays_at_the_app_text_scale(cx: &mut TestAppContext) {
     assert!(popped, "问答卡应弹出");
     let title = wcx.debug_bounds("ask-title").expect("题面在场");
     assert!(
-        f32::from(title.size.height) <= 22.,
-        "题面行高 {} 超出本仓正文体量(14px 档 = 20;库默认 Medium 是 28)",
+        f32::from(title.size.height) <= 26.,
+        "题面行高 {} 超出本仓正文体量(small 档 = 24;库默认 Medium 是 28)",
         f32::from(title.size.height)
     );
     let opt = wcx.debug_bounds("ask-opt-0").expect("选项壳在场");
     assert!(
-        f32::from(opt.size.height) <= 32.,
-        "选项行高 {} 超出本仓正文体量(xsmall 档 = 28;库默认 Medium 是 44)",
+        f32::from(opt.size.height) <= 40.,
+        "选项行高 {} 超出本仓正文体量(small 档 = 38;库默认 Medium 是 44)",
         f32::from(opt.size.height)
     );
     let _ = std::fs::remove_dir_all(root);

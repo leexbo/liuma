@@ -109,12 +109,14 @@ pub fn render(
             .p(px(14.))
             .gap(px(10.))
             .child(
-                // xsmall 是全卡唯一的尺寸来源(根节点发布,各部按 state id
-                // 取回):库排版走 token 基准(md=16px),本仓正文是 11–13px,
-                // 取默认 Medium 会让题面 18px、选项 14px 地整体放大一档。
-                // xsmall 落到题面 14px / 选项与描述 12px,与卡壳同体量。
+                // small 是全卡唯一的尺寸来源(根节点发布,各部按 state id
+                // 取回):库档位驱动选项/圆点/输入/按钮的整套 metric——
+                // small 落到选项 14px、圆点与输入比 12px 档大一号,与本仓
+                // 13px 正文同体量。xsmall 曾用于整体压字号,但其控件层
+                // (12px 圆点/输入)与题面失衡;题面是自定义子元素不吃库
+                // 档,压档实际只压小了控件。
                 Questionnaire::new(&state)
-                    .xsmall()
+                    .small()
                     .gap(px(10.))
                     .child(
                         QuestionnaireItem::new(&state, name.clone())
