@@ -347,7 +347,7 @@ fn remove_button(
                 .active(theme::DOCK().into())
                 .foreground(theme::LABEL().into()),
         )
-        .accessibility_label(t!("remove").to_string())
+        .accessibility_label(t!("common.remove").to_string())
         .debug_selector(move || sel.clone())
         .child(fixed(IconName::Close, 10.).text_color(theme::LABEL()))
         .size(px(REMOVE_BUTTON_SIZE))
