@@ -100,7 +100,7 @@ pub use file::FileTools;
 pub use goal::GoalTool;
 pub use jobs::{
     JobKiller, JobRecord, JobTool, JobsRegistry, WeakJobsRegistry, job_settlement_notice,
-    next_job_id,
+    max_disk_job_id, next_job_id,
 };
 pub use subagent::{SubagentControlTool, SubagentRecord, SubagentRegistry, SubagentTool};
 pub use todo::TodoWriteTool;
@@ -734,11 +734,14 @@ async fn start_job(
     killer: JobKiller,
     grace: Duration,
 ) -> Result<(u64, PathBuf), String> {
-    let id = next_job_id(registry);
+    // 目录先就绪:id 分配要播种磁盘现存日志(跨重启不复用旧号,
+    // 否则截断写会销毁旧日志)
     let jobs_dir = cwd.join(".liuma/jobs");
     tokio::fs::create_dir_all(&jobs_dir)
         .await
         .map_err(|e| format!("jobs dir create failed: {e}"))?;
+    let floor = max_disk_job_id(&jobs_dir);
+    let id = next_job_id(registry, floor);
     let log_path = jobs_dir.join(format!("{id}.log"));
     registry
         .lock()

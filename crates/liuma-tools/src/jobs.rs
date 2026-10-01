@@ -138,12 +138,31 @@ impl std::ops::Deref for JobsRegistry {
     }
 }
 
-/// 下一个任务 id
-pub fn next_job_id(registry: &JobsRegistry) -> u64 {
+/// 下一个任务 id:内存峰值与 `floor`(磁盘现存日志的最大 id)取大者
+/// 再 +1。日志跨重启驻留于工作区而注册表纯内存,仅按内存计数会让
+/// 重启后的新任务复用旧 id——`File::create` 截断写,旧日志随之被静默
+/// 销毁;磁盘即事实源,用户手删旧日志则自然回落
+pub fn next_job_id(registry: &JobsRegistry, floor: u64) -> u64 {
     registry
         .lock()
-        .map(|r| r.iter().map(|j| j.id).max().unwrap_or(0) + 1)
-        .unwrap_or(1)
+        .map(|r| r.iter().map(|j| j.id).max().unwrap_or(0).max(floor) + 1)
+        .unwrap_or(floor + 1)
+}
+
+/// 目录里现存日志的最大 id(`N.log` 命名;目录缺席/无文件/非数字名
+/// 一律跳过)= 0
+pub fn max_disk_job_id(jobs_dir: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(jobs_dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            name.strip_suffix(".log")?.parse::<u64>().ok()
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// shell job 结算通知拼装(结算摘要 + 输出尾部 → 模型可见文本;
@@ -359,7 +378,7 @@ mod tests {
     #[test]
     fn next_id_is_monotonic() {
         let registry = JobsRegistry::new();
-        assert_eq!(next_job_id(&registry), 1);
+        assert_eq!(next_job_id(&registry, 0), 1);
         registry.lock().unwrap().push(JobRecord {
             id: 1,
             command: "x".into(),
@@ -370,7 +389,49 @@ mod tests {
             started_at: 0,
             ended_at: None,
         });
-        assert_eq!(next_job_id(&registry), 2);
+        assert_eq!(next_job_id(&registry, 0), 2);
+    }
+
+    /// 重启回归锁:注册表清零后新 id 不得复用磁盘上的旧日志号——
+    /// 日志文件以 `File::create` 截断写,复用即静默销毁旧输出
+    #[test]
+    fn next_id_seeds_from_disk_floor_after_restart() {
+        let dir = std::env::temp_dir().join(format!("liuma-jobs-floor-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("3.log"), b"old").unwrap();
+        std::fs::write(dir.join("7.log"), b"old").unwrap();
+        std::fs::write(dir.join("not-a-number.log"), b"skip").unwrap();
+
+        let fresh = JobsRegistry::new();
+        assert_eq!(max_disk_job_id(&dir), 7);
+        assert_eq!(
+            next_job_id(&fresh, max_disk_job_id(&dir)),
+            8,
+            "越过磁盘峰值"
+        );
+
+        // 内存峰值与磁盘取大者
+        fresh.lock().unwrap().push(JobRecord {
+            id: 9,
+            command: "x".into(),
+            status: "running".into(),
+            log_path: PathBuf::from("/tmp/x.log"),
+            killer: None,
+            grace: std::time::Duration::from_secs(1),
+            started_at: 0,
+            ended_at: None,
+        });
+        assert_eq!(next_job_id(&fresh, max_disk_job_id(&dir)), 10);
+
+        // 目录缺席 = 0 下限,行为与旧实现的空注册表一致
+        assert_eq!(
+            next_job_id(
+                &JobsRegistry::new(),
+                max_disk_job_id(&std::env::temp_dir().join("liuma-jobs-absent-seed"))
+            ),
+            1
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 变更回调:登记与状态收尾后触发;回调内再锁 records 不死锁
