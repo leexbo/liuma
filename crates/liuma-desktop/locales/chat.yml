@@ -228,45 +228,15 @@ chat:
     zh-CN: "立即投递"
     en: "Deliver now"
 
-  subagent_message:
-    zh-CN: "子代理·消息"
-    en: "Subagent · message"
 
-  subagent_stopped:
-    zh-CN: "子代理·已停止"
-    en: "Subagent · stopped"
 
-  subagent_resumed:
-    zh-CN: "子代理·已恢复"
-    en: "Subagent · resumed"
 
-  subagent_failed:
-    zh-CN: "子代理·已失败"
-    en: "Subagent · failed"
 
-  subagent_done:
-    zh-CN: "子代理·已完成"
-    en: "Subagent · completed"
 
-  no_closing:
-    zh-CN: "无收尾消息"
-    en: "No closing message"
 
-  job_done:
-    zh-CN: "后台任务·已完成"
-    en: "Background job · completed"
 
-  job_failed:
-    zh-CN: "后台任务·已失败"
-    en: "Background job · failed"
 
-  job_stopped:
-    zh-CN: "后台任务·已停止"
-    en: "Background job · stopped"
 
-  view_subsession:
-    zh-CN: "查看子会话"
-    en: "View subagent"
 
   usage_tok:
     zh-CN: "用量 %{v} tok"

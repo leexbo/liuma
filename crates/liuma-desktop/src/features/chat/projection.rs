@@ -527,7 +527,8 @@ impl ChatState {
                 // 分流(分类权威 source.kind):kind=user → 真实用户
                 // 消息;否则注入上下文 → 折叠「注入行」。事件序已由引擎保证
                 // 「真实用户先、注入后」,故无需 buffering,按 seq 直接追加。
-                if ev.data["source"]["kind"].as_str().unwrap_or("user") == "user" {
+                let kind = ev.data["source"]["kind"].as_str().unwrap_or("user");
+                if kind == "user" {
                     self.push_node(ChatNode::User {
                         key: format!("user:{}", ev.seq),
                         text: content_text(&ev.data["content"]),
@@ -541,6 +542,16 @@ impl ChatState {
                     if let Some(id) = ev.data["id"].as_str() {
                         self.pending_user.retain(|p| p.id != id);
                     }
+                } else if matches!(
+                    kind,
+                    "subagent-settled" | "subagent-message" | "shell-job-settled"
+                ) {
+                    // 结算/回发通知是**模型侧 turn 输入**(steer 注入),
+                    // 不是对话内容:不建节点,转录完全不渲染(与 Claude
+                    // Code 的 task-notification 同款形态——通知给模型,
+                    // 用户看任务面板)。直播帧与历史折叠同走本分支,一处
+                    // 判定即无「先渲染后折叠」的闪现;历史里消息本体仍在
+                    // (模型可见),只是不进 UI
                 } else {
                     self.push_node(ChatNode::Context {
                         key: format!("ctx:{}", ev.seq),
@@ -1015,16 +1026,7 @@ pub(crate) fn process_mask(nodes: &[ChatNode]) -> Vec<bool> {
                 answer_taken = true;
                 continue;
             }
-            ChatNode::Context { source, .. } => {
-                // 结算通知(subagent/shell job 的 notice 卡)是内容不是
-                // 过程:恒可见。此前按过程项折叠——通知-only 段产出
-                // 「已思考」空组头把通知藏进折叠,通知卡对用户不可见
-                let kind = source["kind"].as_str().unwrap_or_default();
-                mask[i] = !matches!(
-                    kind,
-                    "subagent-settled" | "subagent-message" | "shell-job-settled"
-                );
-            }
+            ChatNode::Context { .. } => mask[i] = true,
             ChatNode::Tool { .. } | ChatNode::Retry { .. } => mask[i] = true,
             ChatNode::Assistant { text, .. } => {
                 let is_answer = !text.is_empty() && !answer_taken;
@@ -2054,37 +2056,40 @@ mod tests {
         }
     }
 
-    /// subagent 结算通知(user/message + source.kind=subagent-settled)
-    /// 同走注入行分流,source 原样保留(chat_pane 凭 kind 渲染独立通知卡)
+    /// 结算/回发通知(user/message + 非用户 source.kind)是模型侧
+    /// turn 输入:投影不为其建任何节点——转录完全不渲染(与 Claude
+    /// Code 的 task-notification 同款形态:通知给模型,用户看任务面板);
+    /// 直播与历史同走本分支,无「先渲染后折叠」的闪现
     #[test]
-    fn subagent_settled_notice_projects_as_context_row() {
+    fn settlement_notices_project_to_nothing() {
         let mut st = ChatState::default();
+        for kind in ["subagent-settled", "subagent-message", "shell-job-settled"] {
+            st.apply(&ev(
+                "user/message",
+                1,
+                json!({
+                    "id": "notice-1",
+                    "role": "user",
+                    "content": [ { "type": "text", "text": "Background job settled." } ],
+                    "source": {
+                        "kind": kind,
+                        "form": "notice",
+                        "summary": "Background job settled.",
+                        "senderSessionId": "s-1",
+                    },
+                }),
+            ));
+        }
+        // 真实用户消息不受影响
         st.apply(&ev(
             "user/message",
-            1,
-            json!({
-                "id": "notice-1",
-                "role": "user",
-                "content": [ { "type": "text", "text": "Background subagent s-1 finished and will do no further work unless you send it more.\n\nIts closing message:\n\nthe report" } ],
-                "source": {
-                    "kind": "subagent-settled",
-                    "form": "notice",
-                    "summary": "Background subagent s-1 finished and will do no further work unless you send it more.",
-                    "senderSessionId": "s-1",
-                },
-            }),
+            2,
+            json!({ "content": [ { "type": "text", "text": "hi" } ] }),
         ));
-        assert_eq!(st.nodes.len(), 1);
+        assert_eq!(st.nodes.len(), 1, "通知零节点,仅剩用户消息");
         match &st.nodes[0] {
-            ChatNode::Context {
-                content, source, ..
-            } => {
-                assert!(content.contains("Its closing message:"));
-                assert_eq!(source["kind"], "subagent-settled");
-                assert_eq!(source["form"], "notice");
-                assert_eq!(source["senderSessionId"], "s-1");
-            }
-            other => panic!("通知应为注入行(通知卡),实际 {other:?}"),
+            ChatNode::User { text, .. } => assert_eq!(text, "hi"),
+            other => panic!("唯一节点应为用户消息,实际 {other:?}"),
         }
     }
 
@@ -2600,11 +2605,10 @@ mod tests {
         st.nodes
     }
 
-    /// 结算通知是内容不是过程项:通知卡恒可见(折叠态平铺),通知-only
-    /// 段不再产出「已思考」空组头(此前通知被折进组,组头 0 工具 0 消息
-    /// 兜底成「已思考」,通知卡对用户不可见)
+    /// 通知不产节点后的轮次形状:通知+答案的轮(轮 1)按普通轮折叠;
+    /// 通知-only 段(轮 2)只剩答案——平铺可见,不产「已思考」空组头
     #[test]
-    fn notice_context_renders_as_content() {
+    fn settlement_notice_turns_collapse_like_plain_turns() {
         let none = SlotSet::new();
         let evs = vec![
             // 轮 1:工具 + 中途通知(shell job 结算)+ 答案
@@ -2675,38 +2679,29 @@ mod tests {
             ),
         ];
         let nodes = project(evs);
-        // 节点序:user0 a1 ctx2(tool-call? 否——通知)tool3 ctx4 a5 tail6 ctx7 a8 tail9
-        let mask = process_mask(&nodes);
-        let notice_ix = nodes
-            .iter()
-            .position(|n| matches!(n, ChatNode::Context { source, .. } if source["kind"] == "shell-job-settled"))
-            .expect("通知 Context 节点应在场");
-        assert!(!mask[notice_ix], "结算通知必须是内容节点(mask=false)");
+        // 通知零节点:流里只剩用户消息/助手/工具/收尾
+        assert!(
+            !nodes.iter().any(|n| matches!(n, ChatNode::Context { .. })),
+            "通知不得产出 Context 节点"
+        );
 
         let slots = build_row_slots(&nodes, &none);
         let shapes = slot_shapes(&slots);
-        // 折叠态:通知以平铺内容行出现(非组内隐藏成员)
-        assert!(
-            shapes.contains(&format!("n{notice_ix}")),
-            "通知卡在折叠态必须平铺可见: {shapes:?}"
+        // 节点序(通知剔除后):user0 a1(starting) tool2 a3(答案)
+        // tail4 | a5(noted) tail6——轮 1 有过程项照常折叠;轮 2(原
+        // 通知-only)只剩答案,平铺不产组(无「已思考」空组头)
+        assert_eq!(
+            shapes,
+            vec![
+                "n0",                 // 用户消息
+                "g[1..=2]turn-end:7", // 轮 1 过程组(插叙 + bash)
+                "n3",
+                "n4", // 轮 1 答案 + 收尾行
+                "n5",
+                "n6", // 轮 2 纯答案平铺 + 收尾行
+            ],
+            "通知剔除后的槽形状: {shapes:?}"
         );
-        // 通知-only 段(轮 2)不产组:notice 与答案都是内容,无过程项
-        assert!(
-            !shapes.iter().any(|s| s.contains("turn-end:10")),
-            "通知-only 段不得产出折叠组: {shapes:?}"
-        );
-        // 计数口径:组内消息不含通知卡
-        let group = slots.iter().find_map(|s| match s {
-            RowSlot::Group { first, last, .. } => Some((*first, *last)),
-            _ => None,
-        });
-        if let Some((first, last)) = group {
-            assert_eq!(
-                group_message_count(&nodes, first, last),
-                1,
-                "组内消息只计助手文本"
-            );
-        }
     }
 
     /// 基本收拢:think-only + 工具收进组行;正文与收尾行在外;

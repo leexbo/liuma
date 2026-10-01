@@ -918,7 +918,8 @@ pub fn context_provenance(source: &serde_json::Value) -> (&'static str, String) 
 
 /// 上下文注入行:折叠头为图标+标题(注入·来源)+摘要;
 /// 点击展开主体(模型可见文本)。recall → 会话图标,其余 → 文件图标。
-/// source.kind=subagent-settled 分流为独立通知卡(通知形态)。
+/// (结算/回发通知不进本行:投影层已不为其建节点——通知是模型侧
+/// turn 输入,用户侧信号由任务面板承担)
 fn context_block(
     store: &Entity<AppStore>,
     _cx: &App,
@@ -928,12 +929,6 @@ fn context_block(
     content: &str,
     source: &serde_json::Value,
 ) -> impl IntoElement {
-    if matches!(
-        source["kind"].as_str(),
-        Some("subagent-settled") | Some("subagent-message") | Some("shell-job-settled")
-    ) {
-        return notice_card(store, open_context, ix, key, content, source).into_any_element();
-    }
     let open = open_context.contains(key);
     let s = store.clone();
     let key = key.to_string();
@@ -1271,166 +1266,6 @@ fn compaction_block(
                 st.inspect_record("compacted", seq, cx);
             });
         })
-}
-
-/// 子代理通知卡:Bot 图标+状态标题+折叠摘要
-/// (closing 首行)+展开正文与「查看子会话」跳转(senderSessionId → open_session,
-/// 血缘会话不经侧栏)。
-/// 形态:kind=subagent-settled(已完成/已停止/已失败/已恢复,状态标题自结算摘要
-/// 动词派生)/ kind=subagent-message(子代理·消息,正文=消息本体)。
-fn notice_card(
-    store: &Entity<AppStore>,
-    open_context: &std::collections::HashSet<String>,
-    ix: usize,
-    key: &str,
-    content: &str,
-    source: &serde_json::Value,
-) -> impl IntoElement {
-    let open = open_context.contains(key);
-    let s = store.clone();
-    let click_key = key.to_string();
-    let child_id = source["senderSessionId"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
-    let kind = source["kind"].as_str().unwrap_or("subagent-settled");
-    // 状态标签从结算摘要派生(settlementSummary 变体的动词)
-    let summary = source["summary"].as_str().unwrap_or_default();
-    let (status, closing) = if kind == "subagent-message" {
-        // 回发消息:正文 = 前缀行之后的消息本体
-        (
-            t!("chat.subagent_message"),
-            content
-                .split_once(":\n\n")
-                .map(|(_, rest)| rest.trim().to_string()),
-        )
-    } else if kind == "shell-job-settled" {
-        // shell job 结算:标签不带「子代理」(后台任务 ≠ 子代理);
-        // 折叠摘要/正文 = 输出尾部,无尾部不渲染占位(sleep 类本无输出)
-        let status = if summary.contains("was stopped") {
-            t!("chat.job_stopped")
-        } else if summary.contains("failed")
-            || summary.contains("exited with code")
-            || summary.contains("terminated by")
-            || summary.contains("ended abnormally")
-        {
-            t!("chat.job_failed")
-        } else {
-            t!("chat.job_done")
-        };
-        (status, closing_of_settlement(content))
-    } else if summary.contains("was stopped") {
-        (t!("chat.subagent_stopped"), closing_of_settlement(content))
-    } else if summary.contains("was interrupted") {
-        (t!("chat.subagent_resumed"), closing_of_settlement(content))
-    } else if summary.contains("failed")
-        || summary.contains("declined")
-        || summary.contains("ended abnormally")
-    {
-        (t!("chat.subagent_failed"), closing_of_settlement(content))
-    } else {
-        (t!("chat.subagent_done"), closing_of_settlement(content))
-    };
-    let is_job = kind == "shell-job-settled";
-    let folded_summary = closing
-        .as_ref()
-        .map(|c| summary_line(c))
-        .unwrap_or_else(|| {
-            // shell job 无输出尾部(sleep 类)不造占位;子代理无闭场
-            // 才显示「无收尾消息」
-            if is_job {
-                String::new()
-            } else {
-                t!("chat.no_closing").to_string()
-            }
-        });
-    let jump = child_id.clone();
-    let grp = format!("mr-notice-{ix}");
-    let row_sel = format!("notice-row-{ix}");
-    let s_jump = s.clone();
-    let row = member_row(
-        store,
-        // shell job 结算 = 后台任务图标;子代理 = Bot
-        if kind == "shell-job-settled" {
-            fixed(LiumaIcon::Briefcase, 14.).into_any_element()
-        } else {
-            fixed(IconName::Bot, 14.).into_any_element()
-        },
-        grp,
-        status.to_string(),
-        Some(MemberSummary::Text(folded_summary)),
-        None,
-        None,
-        open,
-        false,
-        Some(row_sel),
-    )
-    .id(("notice", ix))
-    .on_click(move |_, _, cx| {
-        let key = click_key.clone();
-        s.update(cx, |st, cx| st.toggle_context(&key, cx));
-    });
-    let mut col = div().v_flex().flex_shrink_0();
-    col = col.child(row);
-    if open {
-        // shell job 无输出尾部时不渲染正文占位(sleep 类本无输出,
-        // 「无收尾消息」是子代理语义)
-        if let Some(body) = closing.clone() {
-            col = col.child(
-                div()
-                    .mt(px(4.))
-                    .text_size(px(13.))
-                    .text_color(theme::LABEL_3())
-                    .line_height(gpui_kit::relative(1.5))
-                    .whitespace_normal()
-                    .child(body),
-            );
-        } else if !is_job {
-            col = col.child(
-                div()
-                    .mt(px(4.))
-                    .text_size(px(13.))
-                    .text_color(theme::LABEL_3())
-                    .line_height(gpui_kit::relative(1.5))
-                    .whitespace_normal()
-                    .child(t!("chat.no_closing").into_owned()),
-            );
-        }
-        if !child_id.is_empty() {
-            let s = s_jump;
-            col = col.child(
-                div()
-                    .id(("notice-jump", ix))
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .mt(px(6.))
-                    .text_size(px(12.))
-                    .text_color(theme::BRAND())
-                    .cursor_pointer()
-                    // 嵌套点击:跳转不触发卡片折叠切换
-                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-                        cx.stop_propagation()
-                    })
-                    .on_click(move |_, _, cx| {
-                        s.update(cx, |st, cx| st.open_session(&jump, cx));
-                    })
-                    .child(t!("chat.view_subsession"))
-                    .child(fixed(IconName::ArrowRight, 12.)),
-            );
-        }
-    }
-    col.into_any_element()
-}
-
-/// 结算通知的 closing message(固定分节之后;无收尾 → None)
-fn closing_of_settlement(content: &str) -> Option<String> {
-    // 子代理结算 = closing message;shell job 结算 = 输出尾部
-    content
-        .split_once("Its closing message:\n\n")
-        .or_else(|| content.split_once("Tail of its output:\n\n"))
-        .map(|(_, rest)| rest.trim().to_string())
-        .filter(|c| !c.is_empty())
 }
 
 /// 成员行摘要槽内容:纯文本 / 可点文件链接(路径渲染为下划线
