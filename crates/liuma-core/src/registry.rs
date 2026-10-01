@@ -6115,6 +6115,58 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             .insert(parent_id.to_string(), registry.downgrade());
     }
 
+    /// 宿主侧停止后台 shell job(任务面板行直呼;与 jobs 工具 stop
+    /// 同序:**先置位 stopped 再分离终止**——watcher 只改 running 状态,
+    /// 先行置位不会被退出收尾覆盖为 failed)。id 形态 = 帧行的
+    /// `job-N`(容错裸数字);找到且在跑且有终止句柄 = true。
+    pub async fn stop_shell_job(&self, job_id: &str) -> bool {
+        let Ok(n) = job_id.strip_prefix("job-").unwrap_or(job_id).parse::<u64>() else {
+            return false;
+        };
+        // 锁内取句柄并置位,锁外 kill:guard 非 Send,跨 await 会剥掉
+        // future 的 Send 界(UI 经 spawn_on_host 在宿主 runtime 上跑)
+        let taken = {
+            let sources = self.shell_job_sources.lock_recover();
+            let mut found = None;
+            for weak in sources.values() {
+                let Some(registry) = weak.upgrade() else {
+                    continue;
+                };
+                let hit = {
+                    let mut records = registry.lock_recover();
+                    match records
+                        .iter_mut()
+                        .find(|j| j.id == n && j.status == "running")
+                    {
+                        // 句柄与置位同锁内完成:无句柄不置位(fail-closed,
+                        // 半 stopped 会让 watcher 的退出收尾覆盖语义失真)
+                        Some(job) => match job.killer.take() {
+                            Some(killer) => {
+                                job.status = "stopped".into();
+                                Some((killer, job.grace))
+                            }
+                            None => continue,
+                        },
+                        _ => continue,
+                    }
+                };
+                if let Some((killer, grace)) = hit {
+                    registry.changed();
+                    found = Some((killer, grace));
+                    break;
+                }
+            }
+            found
+        };
+        match taken {
+            Some((killer, grace)) => {
+                killer.kill_detached(grace).await;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// 宿主侧打断子代理(任务面板行直呼;与 interrupt_agent 工具
     /// 同一信号——stop 唤醒 → 当前 turn 令牌取消,LLM 流/bash 即时中断,
     /// 子代理保持可续话)。找到且在跑 = true;已结束/idle = false。
@@ -9630,6 +9682,38 @@ mod tests {
                 && e.seq > notice_seq
                 && e.data["content"] == "notice processed"
         }));
+    }
+
+    /// 宿主侧停止 shell job:id 双形态解析(job-N / 裸数字)、未命中 =
+    /// false;命中但无终止句柄 = false 且状态**不得半置位**——半 stopped
+    /// 会让 watcher 的退出收尾覆盖语义失真(fail-closed:宁可不置位)
+    #[tokio::test]
+    async fn stop_shell_job_routes_and_never_half_flips() {
+        let host = temp_host("job-stop");
+        let registry = liuma_tools::JobsRegistry::new();
+        AppHost::bind_shell_jobs(&host, "s-parent", registry.clone());
+        {
+            let mut records = registry.lock().unwrap();
+            records.push(liuma_tools::JobRecord {
+                id: 7,
+                command: "sleep 30".into(),
+                status: "running".into(),
+                log_path: std::path::PathBuf::from("/tmp/x.log"),
+                killer: None,
+                grace: std::time::Duration::from_secs(1),
+                started_at: 1,
+                ended_at: None,
+            });
+        }
+        assert!(!host.stop_shell_job("job-8").await, "未命中 id");
+        assert!(!host.stop_shell_job("job-7").await, "命中但无句柄");
+        assert!(!host.stop_shell_job("7").await, "裸数字同解析");
+        assert_eq!(
+            registry.lock().unwrap()[0].status,
+            "running",
+            "无句柄不得半置位 stopped"
+        );
+        assert!(!host.stop_shell_job("abc").await, "非 id 形态");
     }
 
     /// prompt → 有序翻译事件

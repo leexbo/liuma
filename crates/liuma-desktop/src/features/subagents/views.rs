@@ -96,18 +96,34 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
     let running_n = chips.iter().filter(|r| r.running).count();
     let open = st.subagents.task_bar_open;
     let s = store.clone();
+    // 头行随内容组成分流:纯子代理 = 「子代理」,纯 shell job = 「后台
+    // 任务」(公文包图标),混合 = 合称——shell job 不是子代理,混排
+    // 在单一标题下会把后台命令误报成子代理
+    let has_sub = chips.iter().any(|r| r.kind != "shell");
+    let has_shell = chips.iter().any(|r| r.kind == "shell");
+    let (head_icon, head_title) = match (has_sub, has_shell) {
+        (false, true) => (
+            LiumaIcon::Briefcase,
+            t!("misc.shell_jobs_title").into_owned(),
+        ),
+        (true, true) => (
+            LiumaIcon::Workflow,
+            t!("misc.tasks_mixed_title").into_owned(),
+        ),
+        _ => (LiumaIcon::Workflow, t!("misc.subagents_title").into_owned()),
+    };
     // 头行内容(尾部 chevron 由库 Accordion 追加,开合态自驱);
     // 头行几何 / 容器 chrome 见 kits::collapse_strip
     let mut head = div()
         .flex()
         .items_center()
         .gap(px(8.))
-        .child(fixed(LiumaIcon::Workflow, 14.).text_color(theme::LABEL_2()))
+        .child(fixed(head_icon, 14.).text_color(theme::LABEL_2()))
         .child(
             div()
                 .text_size(px(12.))
                 .text_color(theme::LABEL_2())
-                .child(t!("misc.subagents_title")),
+                .child(head_title),
         )
         .child(
             div()
@@ -185,6 +201,10 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                         })
                 })
                 .when_some(chip.dot, |el, dot| el.child(state_dot(dot)))
+                // shell 行缀公文包图标:与子代理行同列时可辨
+                .when(chip.kind == "shell", |el| {
+                    el.child(fixed(LiumaIcon::Briefcase, 12.).text_color(theme::LABEL_2()))
+                })
                 .child(
                     div()
                         .min_w(px(0.))
@@ -217,6 +237,7 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                 .when(running, |el| {
                     let s_stop = store.clone();
                     let stop_id = chip.session_id.clone();
+                    let stop_kind = chip.kind.clone();
                     el.child(
                         div()
                             .id(gpui_kit::SharedString::from(format!(
@@ -243,7 +264,8 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                             .on_click(move |_, _, cx| {
                                 cx.stop_propagation();
                                 let id = stop_id.clone();
-                                s_stop.update(cx, |st, cx| st.interrupt_subagent(&id, cx));
+                                let kind = stop_kind.clone();
+                                s_stop.update(cx, |st, cx| st.interrupt_task(&kind, &id, cx));
                             }),
                     )
                 })

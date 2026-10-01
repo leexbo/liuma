@@ -572,10 +572,19 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 打断运行中的子代理(任务面板行直呼;信号经宿主注册表,
-    /// 与 interrupt_agent 工具同语义)
-    pub fn interrupt_subagent(&mut self, child_id: &str, cx: &mut Context<Self>) {
-        self.bridge.host().interrupt_subagent(child_id);
+    /// 打断任务面板行(subagent 行 = 打断子代理,信号经宿主注册表与
+    /// interrupt_agent 工具同语义;shell 行 = 停止后台 job,置位 +
+    /// 分离终止经宿主 runtime 派发)
+    pub fn interrupt_task(&mut self, kind: &str, id: &str, cx: &mut Context<Self>) {
+        if kind == "shell" {
+            let host = std::sync::Arc::clone(self.bridge.host());
+            let job_id = id.to_string();
+            self.bridge.spawn_on_host(async move {
+                host.stop_shell_job(&job_id).await;
+            });
+        } else {
+            self.bridge.host().interrupt_subagent(id);
+        }
         cx.notify();
     }
 

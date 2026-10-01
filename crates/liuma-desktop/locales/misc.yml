@@ -20,6 +20,14 @@ misc:
     zh-CN: "子代理"
     en: "Subagents"
 
+  shell_jobs_title:
+    zh-CN: "后台任务"
+    en: "Background jobs"
+
+  tasks_mixed_title:
+    zh-CN: "子代理与后台任务"
+    en: "Subagents & jobs"
+
   running_n:
     zh-CN: "%{n} 个运行中"
     en: "%{n} running"
