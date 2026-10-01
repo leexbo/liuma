@@ -7,6 +7,6 @@ mod views;
 
 pub(crate) use store::{FullAccessAsk, SettingsNav, SettingsStore};
 pub(crate) use views::{
-    menu, onboarding_modal, open_delete_provider_dialog, open_fetch_models_dialog,
-    open_full_access_dialog, render, settings_row, usage_bar,
+    menu, onboarding_modal, open_archived_confirm_dialog, open_delete_provider_dialog,
+    open_fetch_models_dialog, open_full_access_dialog, render, settings_row, usage_bar,
 };

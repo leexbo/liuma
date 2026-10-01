@@ -37,6 +37,11 @@ pub enum LiumaIcon {
     GitBranch,
     /// 归档
     Archive,
+    /// 取消归档(archive-restore.svg,lucide 同源;归档管理页恢复钮)
+    ArchiveRestore,
+    /// 删除(垃圾桶;trash.svg,lucide 同源。内置 Delete 是退格键形,
+    /// 语义不符——归档管理页删单条用)
+    Trash,
     /// 计划 / todo 类
     ListChecks,
     /// 会话行
@@ -76,6 +81,10 @@ pub enum LiumaIcon {
     Wrench,
     /// 附件入口(输入卡底排独立钮)
     Paperclip,
+    /// token 用量(statusbar chip/详情卡、聊天尾部用量 pill;database.svg,
+    /// lucide 同源。组件默认集不含——gpui_kit::assets 全目录变体在本应用
+    /// 静默空白,见 liuma-icon-asset 教训)
+    Database,
     // ── 文件类型族(lucide;组件默认 101 图标集缺,自有内嵌)──
     /// 文件树标签/目录树
     FolderTree,
@@ -141,6 +150,8 @@ impl IconNamed for LiumaIcon {
             Self::Pencil => "file-pen",
             Self::GitBranch => "git-branch",
             Self::Archive => "archive",
+            Self::ArchiveRestore => "archive-restore",
+            Self::Trash => "trash",
             Self::ListChecks => "list-checks",
             Self::Message => "message-circle",
             Self::Pin => "pin",
@@ -160,6 +171,7 @@ impl IconNamed for LiumaIcon {
             Self::RefreshCw => "refresh-cw",
             Self::Wrench => "wrench",
             Self::Paperclip => "paperclip",
+            Self::Database => "database",
             Self::FolderTree => "folder-tree",
             Self::FileImage => "file-image",
             Self::FileCode => "file-code",
@@ -248,6 +260,14 @@ const LIUMA_ICONS: &[(&str, &[u8])] = &[
         include_bytes!("../../assets/icons/archive.svg"),
     ),
     (
+        "icons/_liuma/archive-restore.svg",
+        include_bytes!("../../assets/icons/archive-restore.svg"),
+    ),
+    (
+        "icons/_liuma/trash.svg",
+        include_bytes!("../../assets/icons/trash.svg"),
+    ),
+    (
         "icons/_liuma/list-checks.svg",
         include_bytes!("../../assets/icons/list-checks.svg"),
     ),
@@ -310,6 +330,10 @@ const LIUMA_ICONS: &[(&str, &[u8])] = &[
     (
         "icons/_liuma/paperclip.svg",
         include_bytes!("../../assets/icons/paperclip.svg"),
+    ),
+    (
+        "icons/_liuma/database.svg",
+        include_bytes!("../../assets/icons/database.svg"),
     ),
     (
         "icons/_liuma/folder-tree.svg",
@@ -508,7 +532,7 @@ mod tests {
     /// 枚举全变体的 path 必须命中 LIUMA_ICONS 静态表(防加枚举忘加 SVG)
     #[test]
     fn liuma_icon_paths_all_embedded() {
-        const ALL: [LiumaIcon; 53] = [
+        const ALL: [LiumaIcon; 56] = [
             LiumaIcon::Sparkles,
             LiumaIcon::Zap,
             LiumaIcon::Brain,
@@ -519,6 +543,8 @@ mod tests {
             LiumaIcon::Pencil,
             LiumaIcon::GitBranch,
             LiumaIcon::Archive,
+            LiumaIcon::ArchiveRestore,
+            LiumaIcon::Trash,
             LiumaIcon::ListChecks,
             LiumaIcon::Message,
             LiumaIcon::Pin,
@@ -538,6 +564,7 @@ mod tests {
             LiumaIcon::RefreshCw,
             LiumaIcon::Wrench,
             LiumaIcon::Paperclip,
+            LiumaIcon::Database,
             LiumaIcon::FolderTree,
             LiumaIcon::FileImage,
             LiumaIcon::FileCode,

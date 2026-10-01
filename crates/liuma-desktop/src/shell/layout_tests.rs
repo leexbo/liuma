@@ -1748,6 +1748,7 @@ fn allow_host_parking(cx: &mut TestAppContext) {
     cx.background_executor.allow_parking();
 }
 
+
 /// 轮询宿主会话权限直到期望值或超时(异步 set_permission 落盘日志事件,
 /// 与 liuma-core 侧 wait_log_sandbox 同义;desktop 测试环境用真实线程阻塞)。
 fn wait_permission(host: &liuma_core::registry::AppHost, id: &str, want: &str) {
@@ -5418,6 +5419,27 @@ fn wait_bounds(
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
     panic!("selector {sel} 等待超时");
+}
+
+/// [`wait_bounds`] 的出现/消失双档:want = 期望在场态。归档动作的
+/// 回填 oneshot 唤醒自 tokio 线程跨入,run_until_parked 不等外部线程,
+/// 异步断言须真实线程轮询承接(同 wait_permission 纪律)
+fn wait_bounds_state(
+    cx: &mut TestAppContext,
+    wcx: &mut gpui_kit::VisualTestContext,
+    sel: &'static str,
+    want: bool,
+) {
+    for _ in 0..300 {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+        if wcx.debug_bounds(sel).is_some() == want {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+    panic!("selector {sel} 等待超时(期望在场={want})");
 }
 
 /// 文件标签:「+」清单/空态清单收录 + 进出视图(轨迹同构回归锁)
@@ -13751,5 +13773,316 @@ fn compaction_progress_row_and_settle(cx: &mut TestAppContext) {
         wcx.debug_bounds("compact-settle").is_none(),
         "收尾态清掉后完成闪即摘(不常驻)"
     );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+// ── 归档会话管理(设置页数据与统计组) ─────────────────────────────
+
+/// host 侧造会话(默认工作区)并归档,返回 archive_id(`<pkey>/<stem>`)
+fn seed_archived(store: &Entity<AppStore>, cx: &mut TestAppContext, stem: &str) -> String {
+    cx.update(|app| {
+        let host = store.read(app).bridge.host().clone();
+        host.create_session(Some(stem.into()), None, None);
+        host.archive_session(stem).expect("归档成功");
+        host.list_archived_sessions()
+            .into_iter()
+            .find(|s| s.session_id == stem)
+            .expect("归档项在场")
+            .archive_id
+    })
+}
+
+/// 进入设置页归档区(设置行 + 归档导航项)。首拉回填的 oneshot 唤醒
+/// 自 tokio 线程跨入,run_until_parked 不等外部线程——以 loading 态
+/// 摘除为「清单就绪」信号轮询承接(同 wait_permission 纪律)
+fn open_archived_section_ui(cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext) {
+    click_sel(wcx, "settings-row");
+    settle(wcx);
+    click_sel(wcx, "settings-nav-ArchivedChats");
+    settle(wcx);
+    wait_bounds_state(cx, wcx, "archived-loading", false);
+}
+
+/// 归档区入口:数据与统计组导航项进入,区块与空态在场、路由落位
+#[gpui_kit::test]
+fn settings_archived_nav_entry(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "archnav");
+    open_archived_section_ui(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("archived-section").is_some(),
+        "归档区在场"
+    );
+    assert!(
+        cx.update(|app| store.read(app).settings.settings_nav)
+            == crate::features::settings::SettingsNav::ArchivedChats,
+        "路由落在归档区"
+    );
+    assert!(
+        wcx.debug_bounds("archived-empty").is_some(),
+        "无归档时空态在场"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 取消归档闭环:归档行在场 → 取消归档 → 行消失、空态回位,且广播帧
+/// 经既有 Effect 链路把会话回填侧栏清单
+#[gpui_kit::test]
+fn archived_roundtrip_ui(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "archrt");
+    let aid = seed_archived(&store, cx, "rt-one");
+    open_archived_section_ui(cx, &mut wcx);
+    let row_sel: &'static str = Box::leak(format!("archived-row-{aid}").into_boxed_str());
+    let restore_sel: &'static str =
+        Box::leak(format!("archived-restore-{aid}").into_boxed_str());
+    assert!(wcx.debug_bounds(row_sel).is_some(), "归档行在场");
+    click_sel(&mut wcx, restore_sel);
+    // 两拍起步:归档区重拉一拍 + session-added 广播 → Effect::Sessions
+    // 回填一拍;回填自 tokio 线程跨入,run_until_parked 不等外部线程,
+    // 行消失以轮询兜底
+    settle(&mut wcx);
+    settle(&mut wcx);
+    wait_bounds_state(cx, &mut wcx, row_sel, false);
+    assert!(wcx.debug_bounds("archived-empty").is_some(), "清单清空空态");
+    let back = cx.update(|app| {
+        store
+            .read(app)
+            .state
+            .sessions
+            .iter()
+            .any(|s| s.session_id == "rt-one")
+    });
+    assert!(back, "侧栏清单含恢复的会话");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 删单条确认流:垃圾桶 → 弹层在场 → 取消不删 → 再走确认 → 行消失、
+/// 宿主归档清单清空
+#[gpui_kit::test]
+fn archived_delete_confirm_flow(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "archdel");
+    let aid = seed_archived(&store, cx, "del-one");
+    open_archived_section_ui(cx, &mut wcx);
+    let del_sel: &'static str = Box::leak(format!("archived-del-{aid}").into_boxed_str());
+    let row_sel: &'static str = Box::leak(format!("archived-row-{aid}").into_boxed_str());
+    click_sel(&mut wcx, del_sel);
+    settle(&mut wcx);
+    assert!(
+        wcx.debug_bounds("dialog-layer").is_some() && wcx.debug_bounds("archived-confirm-card").is_some(),
+        "确认弹层在场"
+    );
+    click_sel(&mut wcx, "archived-confirm-cancel");
+    settle(&mut wcx);
+    assert!(
+        wcx.debug_bounds("dialog-layer").is_none(),
+        "取消后弹层关闭"
+    );
+    assert!(wcx.debug_bounds(row_sel).is_some(), "取消后行仍在");
+    click_sel(&mut wcx, del_sel);
+    settle(&mut wcx);
+    click_sel(&mut wcx, "archived-del-confirm");
+    settle(&mut wcx);
+    settle(&mut wcx);
+    wait_bounds_state(cx, &mut wcx, row_sel, false);
+    let gone = cx.update(|app| {
+        store
+            .read(app)
+            .bridge
+            .host()
+            .list_archived_sessions()
+            .is_empty()
+    });
+    assert!(gone, "宿主归档清单清空");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 全部删除:右上危险钮 → 确认 → 空态回位、宿主清单清空
+#[gpui_kit::test]
+fn archived_clear_all(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "archclr");
+    seed_archived(&store, cx, "cl-one");
+    seed_archived(&store, cx, "cl-two");
+    open_archived_section_ui(cx, &mut wcx);
+    click_sel(&mut wcx, "archived-clear");
+    settle(&mut wcx);
+    click_sel(&mut wcx, "archived-clear-confirm");
+    settle(&mut wcx);
+    settle(&mut wcx);
+    wait_bounds_state(cx, &mut wcx, "archived-empty", true);
+    let gone = cx.update(|app| {
+        store
+            .read(app)
+            .bridge
+            .host()
+            .list_archived_sessions()
+            .is_empty()
+    });
+    assert!(gone);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 搜索与项目筛选:搜索词命中收缩行集;项目下拉态直驱后只余目标组。
+/// Select 弹层在测试窗内难点开,筛选走 store 动作直驱(选项映射由
+/// archived_view 纯函数语义保证)
+#[gpui_kit::test]
+fn archived_search_and_project_filter(cx: &mut TestAppContext) {
+    use crate::features::settings::store::ArchivedOrder;
+
+    let (store, mut wcx, root) = menu_harness(cx, "archfilter");
+    let (aid_a, pkey_b, aid_b) = cx.update(|app| {
+        let host = store.read(app).bridge.host().clone();
+        host.create_session(Some("alpha-one".into()), None, None);
+        host.archive_session("alpha-one").unwrap();
+        let ws2 = host
+            .workspace()
+            .parent()
+            .unwrap_or(&host.workspace().clone())
+            .join("archfilter-ws2");
+        std::fs::create_dir_all(&ws2).expect("mkdir ws2");
+        let name = host.add_workspace(&ws2.display().to_string()).unwrap();
+        host.create_session(Some("beta-two".into()), None, Some(name));
+        host.archive_session("archfilter-ws2/beta-two").unwrap();
+        let items = host.list_archived_sessions();
+        let a = items
+            .iter()
+            .find(|s| s.session_id == "alpha-one")
+            .expect("默认项目归档项")
+            .archive_id
+            .clone();
+        let b_item = items
+            .iter()
+            .find(|s| s.session_id == "archfilter-ws2/beta-two")
+            .expect("二项目归档项");
+        (a, b_item.project_key.clone(), b_item.archive_id.clone())
+    });
+    open_archived_section_ui(cx, &mut wcx);
+    let row_a: &'static str = Box::leak(format!("archived-row-{aid_a}").into_boxed_str());
+    let row_b: &'static str = Box::leak(format!("archived-row-{aid_b}").into_boxed_str());
+    assert!(wcx.debug_bounds(row_a).is_some() && wcx.debug_bounds(row_b).is_some());
+
+    // 搜索「beta」:只剩二项目那条
+    wcx.update(|window, cx| {
+        store.update(cx, |st, cx| {
+            if let Some(input) = &st.settings.archived_search {
+                input.update(cx, |s, cx| s.set_value("beta", window, cx));
+            }
+        });
+    });
+    settle(&mut wcx);
+    assert!(wcx.debug_bounds(row_a).is_none(), "搜索未命中行不渲染");
+    assert!(wcx.debug_bounds(row_b).is_some(), "搜索命中行在场");
+
+    // 清搜索 + 项目筛选到二项目:同样只剩 beta 行
+    wcx.update(|window, cx| {
+        store.update(cx, |st, cx| {
+            if let Some(input) = &st.settings.archived_search {
+                input.update(cx, |s, cx| s.set_value("", window, cx));
+            }
+            st.set_archived_project(Some(pkey_b.clone()), cx);
+        });
+    });
+    settle(&mut wcx);
+    assert!(wcx.debug_bounds(row_a).is_none(), "筛选外项目行不渲染");
+    assert!(wcx.debug_bounds(row_b).is_some(), "筛选内项目行在场");
+
+    // 排序态直驱走同一 store 动作面(Alpha 档不改变此单行可见性)
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.set_archived_order(ArchivedOrder::Alpha, cx);
+            st.set_archived_project(None, cx);
+        });
+    });
+    settle(&mut wcx);
+    assert!(wcx.debug_bounds(row_a).is_some() && wcx.debug_bounds(row_b).is_some());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 排序切换:Updated 档更新时间倒序(m-new 在前),Alpha 档按标题
+/// 字母序(a-old 在前)——行序随档翻转
+#[gpui_kit::test]
+fn archived_order_alpha_flip(cx: &mut TestAppContext) {
+    use crate::features::settings::store::ArchivedOrder;
+
+    let (store, mut wcx, root) = menu_harness(cx, "archorder");
+    let (aid_old, aid_new) = cx.update(|app| {
+        let host = store.read(app).bridge.host().clone();
+        host.create_session(Some("a-old".into()), None, None);
+        host.archive_session("a-old").unwrap();
+        // mtime 分辨率内区分新旧:旧项在前档应排后
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        host.create_session(Some("m-new".into()), None, None);
+        host.archive_session("m-new").unwrap();
+        let items = host.list_archived_sessions();
+        let get = |stem: &str| {
+            items
+                .iter()
+                .find(|s| s.session_id == stem)
+                .expect("归档项在场")
+                .archive_id
+                .clone()
+        };
+        (get("a-old"), get("m-new"))
+    });
+    open_archived_section_ui(cx, &mut wcx);
+    let row_old: &'static str = Box::leak(format!("archived-row-{aid_old}").into_boxed_str());
+    let row_new: &'static str = Box::leak(format!("archived-row-{aid_new}").into_boxed_str());
+    let y_of = |wcx: &mut gpui_kit::VisualTestContext, sel: &'static str| {
+        wcx.debug_bounds(sel)
+            .unwrap_or_else(|| panic!("{sel} bounds 缺失"))
+            .origin
+            .y
+    };
+    assert!(
+        y_of(&mut wcx, row_new) < y_of(&mut wcx, row_old),
+        "Updated 档新归档在前"
+    );
+    cx.update(|app| {
+        store.update(app, |st, cx| st.set_archived_order(ArchivedOrder::Alpha, cx));
+    });
+    settle(&mut wcx);
+    assert!(
+        y_of(&mut wcx, row_old) < y_of(&mut wcx, row_new),
+        "Alpha 档字母序 a-old 在前"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 长清单内滚:归档区 h_full 占满右列,区块不超出视口且列表在内部
+/// 滚动区(settings-options 行向 flex 把 720 包装层 stretch 成视口高,
+/// 外层滚动范围恒等于视口——长清单靠外层滚不动,回归锁防回退)
+#[gpui_kit::test]
+fn archived_long_list_scrolls_internally(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "archscroll");
+    cx.update(|app| {
+        let host = store.read(app).bridge.host().clone();
+        for i in 0..30 {
+            let stem = format!("bulk-{i:02}");
+            host.create_session(Some(stem.clone()), None, None);
+            host.archive_session(&stem).expect("归档成功");
+        }
+    });
+    open_archived_section_ui(cx, &mut wcx);
+    wait_bounds_state(cx, &mut wcx, "archived-list", true);
+    let sec = wcx
+        .debug_bounds("archived-section")
+        .expect("归档区在场")
+        .size
+        .height;
+    // 右列视口 = settings-page 高 − 顶部拖拽条 40(settings-options 无
+    // debug_selector,以页面根为基准折算)
+    let page = wcx
+        .debug_bounds("settings-page")
+        .expect("设置页在场")
+        .size
+        .height;
+    assert!(
+        sec <= page - px(40.),
+        "归档区不得超出右列视口(此前整页外溢且外层滚不动)"
+    );
+    let list = wcx
+        .debug_bounds("archived-list")
+        .expect("内部滚动区在场")
+        .size
+        .height;
+    assert!(list < sec, "滚动区应只占区块余部(标题/控制行固定)");
     let _ = std::fs::remove_dir_all(root);
 }

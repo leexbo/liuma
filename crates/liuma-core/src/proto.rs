@@ -318,6 +318,36 @@ pub struct Projections {
     pub values: Value,
 }
 
+/// 归档会话摘要(archive 清单行;AppHost::list_archived_sessions)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivedSessionSummary {
+    /// 原会话标识(<ws 名>/<stem>,默认工作区裸 stem)。titles 表查找键,
+    /// 恢复后侧栏即以此 id 呈现;孤儿归档(工作区已移除)= 裸 stem
+    pub session_id: String,
+    /// 归档寻址标识(<projectKey>/<stem>)。恢复/删除的入参——不依赖
+    /// workspaces 表,工作区移除后原 id 无法解析,projectKey 恒可定位
+    pub archive_id: String,
+    /// 项目目录键(分组与按项目清空的锚点)
+    pub project_key: String,
+    /// 所属工作区名(孤儿归档 = None;显示名由客方查 workspace 标题)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    /// 末次更新(ms;归档日志 mtime)
+    pub updated_at: u64,
+    /// 是否空会话(无 turn/start)
+    pub blank: bool,
+    /// 父会话(归档只移日志,header.json 留在原目录,照常可读)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    /// 来源标记
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// 投影基线(title 等;重命名 > 日志首条 user/message)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projections: Option<Projections>,
+}
+
 /// 历史条目(事件 + 可选视图意图)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HistoryEntry {

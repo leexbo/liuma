@@ -11,6 +11,7 @@ use gpui_kit::{AppContext, Context, Entity, Window};
 
 use crate::kits::i18n::{self, t};
 use crate::shell::store::AppStore;
+use liuma_core::proto::ArchivedSessionSummary;
 
 /// 解析上下文窗口草稿:空串 = 不覆盖(None);接受 1 以上的整数,可带
 /// 单位后缀——`K`/`M` 十进制(1K = 1,000、1M = 1,000,000,与默认值
@@ -105,6 +106,8 @@ pub enum SettingsNav {
     Hooks,
     /// 决策模型(System One 协议)
     Decision,
+    /// 已归档的聊天(数据与统计组)
+    ArchivedChats,
     /// 关于
     About,
 }
@@ -121,9 +124,33 @@ impl SettingsNav {
             Self::Mcp => "Mcp",
             Self::Hooks => "Hooks",
             Self::Decision => "Decision",
+            Self::ArchivedChats => "ArchivedChats",
             Self::About => "About",
         }
     }
+}
+
+/// 归档区排序方式(Updated = updated_at 倒序,core 正典序直出;
+/// Alpha = 标题字母序,视图层重排)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArchivedOrder {
+    #[default]
+    /// 按更新时间
+    Updated,
+    /// 按字母顺序
+    Alpha,
+}
+
+/// 归档确认动作(弹窗确认钮直派的载荷;Clone 随闭包携带,不经旗标中转
+/// ——同 provider 删除确认的直派模式)
+#[derive(Debug, Clone)]
+pub(crate) enum ArchivedConfirmKind {
+    /// 删除单条归档
+    Delete { archive_id: String },
+    /// 删除单项目全部归档
+    PurgeProject { pkey: String },
+    /// 清空全部归档
+    ClearAll,
 }
 
 /// 通用区偏好下拉菜单种类(根级坐标锚定,同行菜单模式)
@@ -266,6 +293,23 @@ pub(crate) struct SettingsStore {
     /// Some 记录确认来源:设置页默认预设 / composer 会话权限——确认后
     /// 各自落不同的目标(默认预设落盘 / 会话 set_permission)
     pub full_access_confirm: Option<FullAccessAsk>,
+    /// 归档区清单(None = 未加载;进入归档区首拉,动作后重拉)
+    pub archived: Option<Vec<ArchivedSessionSummary>>,
+    /// 归档区首拉进行中(区分加载态与空态)
+    pub archived_loading: bool,
+    /// 归档区搜索输入(挂窗惰建;实时过滤 render 期读 value)
+    pub archived_search: Option<Entity<InputState>>,
+    /// 归档区排序(默认按更新时间)
+    pub archived_order: ArchivedOrder,
+    /// 归档区项目筛选(None = 全部项目;值 = project_key)
+    pub archived_project: Option<String>,
+    /// 归档区排序下拉(惰建;静态两项)
+    pub archived_order_select: Option<Entity<SelectState<Vec<gpui_kit::SharedString>>>>,
+    /// 归档区项目下拉(惰建;选项集变化时整体重建——SelectState 构造后
+    /// labels 不可变)
+    pub archived_project_select: Option<Entity<SelectState<Vec<gpui_kit::SharedString>>>>,
+    /// 项目下拉构建时刻的选项集(pkey 增减的重建判据)
+    pub archived_project_options: Vec<String>,
 }
 
 /// full-access 风险确认的来源(确认动作随来源分流)
@@ -340,6 +384,14 @@ impl Default for SettingsStore {
             busy_enter_select: None,
             selects_lang: i18n::DEFAULT,
             full_access_confirm: None,
+            archived: None,
+            archived_loading: false,
+            archived_search: None,
+            archived_order: ArchivedOrder::default(),
+            archived_project: None,
+            archived_order_select: None,
+            archived_project_select: None,
+            archived_project_options: Vec::new(),
         }
     }
 }
@@ -653,6 +705,10 @@ impl AppStore {
             if self.settings.settings_nav == SettingsNav::Decision {
                 self.sync_decision_form(window, cx);
             }
+            // 归档区同理:落在此区开页即建控件 + 首拉清单
+            if self.settings.settings_nav == SettingsNav::ArchivedChats {
+                self.open_archived_section(window, cx);
+            }
         }
         cx.notify();
     }
@@ -820,6 +876,9 @@ impl AppStore {
         self.settings.permission_select = None;
         self.settings.language_select = None;
         self.settings.busy_enter_select = None;
+        // 归档区两下拉(下次进入归档区按新档重建)
+        self.settings.archived_order_select = None;
+        self.settings.archived_project_select = None;
         self.ensure_pref_selects(window, cx);
         if self.settings.editing_provider.is_none() && !self.settings.adding_provider {
             self.settings.set_form_id = None;
@@ -884,6 +943,10 @@ impl AppStore {
         self.settings.settings_nav = nav;
         if changed && nav == SettingsNav::Decision {
             self.sync_decision_form(window, cx);
+        }
+        // 进入归档区:惰建控件 + 首拉清单(重复进入不重置筛选态)
+        if changed && nav == SettingsNav::ArchivedChats {
+            self.open_archived_section(window, cx);
         }
         cx.notify();
     }
@@ -2779,6 +2842,334 @@ impl AppStore {
         }
         cx.notify();
     }
+
+    // ── 归档会话管理(数据与统计组) ──────────────────────────────
+
+    /// 进入归档区(nav 钩子):惰建搜索输入与两下拉 + 首拉清单。
+    /// 重复进入不重置筛选态(回导航再进,搜索词/排序/项目筛选保留)
+    pub(crate) fn open_archived_section(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.archived_search.is_none() {
+            self.settings.archived_search = Some(cx.new(|cx| {
+                InputState::new(window, cx).placeholder(t!("settings.archived_search_ph"))
+            }));
+        }
+        self.ensure_archived_order_select(window, cx);
+        self.ensure_archived_project_select(window, cx);
+        if self.settings.archived.is_none() {
+            self.refresh_archived(cx);
+        }
+    }
+
+    /// 归档清单异步重拉:全项目 .archive 扫描要读日志派生事实(标题/blank),
+    /// 照清单刷新先例上 blocking 池,不占 runtime worker。回填后项目选项集
+    /// 可能已变(归档项首次出现/清空),经窗桥惰重建下拉
+    pub fn refresh_archived(&mut self, cx: &mut Context<Self>) {
+        self.settings.archived_loading = true;
+        let store = cx.entity().clone();
+        let host = self.bridge.host().clone();
+        let rx = self.bridge.call_blocking(move || host.list_archived_sessions());
+        cx.spawn(async move |_this, cx| {
+            let items = rx.await;
+            store.update(cx, |s, cx| {
+                s.settings.archived_loading = false;
+                if let Ok(items) = items {
+                    s.settings.archived = Some(items);
+                }
+                // 下拉重建需要 window,store 侧无窗上下文 → 窗桥延迟执行
+                if s.archived_project_keys() != s.settings.archived_project_options {
+                    let deferred = store.clone();
+                    s.with_window_deferred(cx, move |window, cx| {
+                        deferred.update(cx, |s, cx| s.ensure_archived_project_select(window, cx));
+                    });
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 归档项目下拉选项集(「全部项目」置首 + 清单内 pkey 按首见序;
+    /// 显示名 = 工作区标题回退名,孤儿 = pkey slug)
+    fn archived_project_choices(&self) -> Vec<(String, String)> {
+        let mut choices = vec![(
+            String::new(),
+            t!("settings.archived_project_all").into_owned(),
+        )];
+        let Some(items) = &self.settings.archived else {
+            return choices;
+        };
+        for pkey in items.iter().map(|i| i.project_key.clone()) {
+            if choices.iter().any(|(v, _)| *v == pkey) {
+                continue;
+            }
+            let ws = items
+                .iter()
+                .find(|i| i.project_key == pkey)
+                .and_then(|i| i.workspace.clone());
+            let name = self.archived_group_name(&pkey, ws.as_deref());
+            choices.push((pkey, name));
+        }
+        choices
+    }
+
+    /// 归档分组显示名:工作区标题(侧栏同源)> 工作区名;孤儿归档 = pkey
+    /// 去首尾 `-` 的 slug(`--Volumes-…-x--` → `Volumes-…-x`)
+    pub(crate) fn archived_group_name(&self, pkey: &str, ws: Option<&str>) -> String {
+        match ws {
+            Some(name) => self.title_for_workspace(name),
+            None => pkey.trim_matches('-').to_string(),
+        }
+    }
+
+    /// 归档清单内出现过的 pkey(首见序;下拉选项集的重建判据)
+    pub(crate) fn archived_project_keys(&self) -> Vec<String> {
+        let Some(items) = &self.settings.archived else {
+            return Vec::new();
+        };
+        let mut keys: Vec<String> = Vec::new();
+        for pkey in items.iter().map(|i| &i.project_key) {
+            if !keys.contains(pkey) {
+                keys.push(pkey.clone());
+            }
+        }
+        keys
+    }
+
+    /// 排序下拉构建(静态两项;Confirm 回写排序态)
+    fn ensure_archived_order_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.archived_order_select.is_some() {
+            return;
+        }
+        let options = vec![
+            (
+                "updated".to_string(),
+                t!("settings.archived_order_updated").into_owned(),
+            ),
+            (
+                "alpha".to_string(),
+                t!("settings.archived_order_alpha").into_owned(),
+            ),
+        ];
+        let current = match self.settings.archived_order {
+            ArchivedOrder::Updated => "updated",
+            ArchivedOrder::Alpha => "alpha",
+        };
+        self.settings.archived_order_select =
+            Some(build_archived_select(options, current, window, cx, move |this, id, cx| {
+                let order = match id.as_str() {
+                    "alpha" => ArchivedOrder::Alpha,
+                    _ => ArchivedOrder::Updated,
+                };
+                this.set_archived_order(order, cx);
+            }));
+    }
+
+    /// 项目下拉构建/同步:选项集相对上次构建有增减(或首建)才整体重建;
+    /// 当前筛选值仍在新选项集内则保持选中
+    fn ensure_archived_project_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let choices = self.archived_project_choices();
+        let keys: Vec<String> = choices
+            .iter()
+            .skip(1)
+            .map(|(v, _)| v.clone())
+            .collect();
+        let built = self.settings.archived_project_select.is_some();
+        if built && keys == self.settings.archived_project_options {
+            return;
+        }
+        self.settings.archived_project_options = keys;
+        // 当前筛选项目已不在选项集(其归档被清空)→ 复位为全部项目,
+        // 避免显示「全部」而实际仍按失效 pkey 过滤的错位
+        let current = self
+            .settings
+            .archived_project
+            .clone()
+            .unwrap_or_default();
+        if !current.is_empty() && !choices.iter().any(|(v, _)| *v == current) {
+            self.settings.archived_project = None;
+        }
+        let current = self
+            .settings
+            .archived_project
+            .clone()
+            .unwrap_or_default();
+        let select = build_archived_select(choices, &current, window, cx, |this, id, cx| {
+            let pkey = if id.is_empty() { None } else { Some(id) };
+            this.set_archived_project(pkey, cx);
+        });
+        self.settings.archived_project_select = Some(select);
+    }
+
+    /// 归档排序切换(视图层重排;core 正典序不受影响)
+    pub fn set_archived_order(&mut self, order: ArchivedOrder, cx: &mut Context<Self>) {
+        if self.settings.archived_order != order {
+            self.settings.archived_order = order;
+            cx.notify();
+        }
+    }
+
+    /// 归档项目筛选切换(None = 全部项目)
+    pub fn set_archived_project(&mut self, pkey: Option<String>, cx: &mut Context<Self>) {
+        if self.settings.archived_project != pkey {
+            self.settings.archived_project = pkey;
+            cx.notify();
+        }
+    }
+
+    /// 删除单条归档(确认弹窗;文案点名会话标题)
+    pub fn ask_delete_archived(
+        &mut self,
+        archive_id: String,
+        title: String,
+        cx: &mut Context<Self>,
+    ) {
+        let store = cx.entity().clone();
+        self.with_window_deferred(cx, move |window, cx| {
+            crate::features::settings::open_archived_confirm_dialog(
+                &store,
+                ArchivedConfirmKind::Delete { archive_id },
+                t!("settings.archived_delete_title"),
+                t!("settings.archived_delete_desc", title = title),
+                window,
+                cx,
+            );
+        });
+        cx.notify();
+    }
+
+    /// 删除单项目全部归档(确认弹窗;文案点名项目与条数)
+    pub fn ask_purge_project_archived(
+        &mut self,
+        pkey: String,
+        project: String,
+        n: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let store = cx.entity().clone();
+        self.with_window_deferred(cx, move |window, cx| {
+            crate::features::settings::open_archived_confirm_dialog(
+                &store,
+                ArchivedConfirmKind::PurgeProject { pkey },
+                t!("settings.archived_purge_title"),
+                t!("settings.archived_purge_desc", project = project, n = n),
+                window,
+                cx,
+            );
+        });
+        cx.notify();
+    }
+
+    /// 清空全部归档(确认弹窗;文案点名总条数)
+    pub fn ask_clear_archived(&mut self, n: usize, cx: &mut Context<Self>) {
+        let store = cx.entity().clone();
+        self.with_window_deferred(cx, move |window, cx| {
+            crate::features::settings::open_archived_confirm_dialog(
+                &store,
+                ArchivedConfirmKind::ClearAll,
+                t!("settings.archived_clear_title"),
+                t!("settings.archived_clear_desc", n = n),
+                window,
+                cx,
+            );
+        });
+        cx.notify();
+    }
+
+    /// 归档确认动作(弹窗确认钮直派):删除/清空上 blocking 池(递归删
+    /// 目录可能大),完成后重拉归档区;失败走设置页内通告
+    pub(crate) fn confirm_archived_action(
+        &mut self,
+        kind: ArchivedConfirmKind,
+        cx: &mut Context<Self>,
+    ) {
+        let host = self.bridge.host().clone();
+        let rx = self.bridge.call_blocking(move || match kind {
+            ArchivedConfirmKind::Delete { archive_id } => host
+                .delete_archived_session(&archive_id)
+                .map(|_| ()),
+            ArchivedConfirmKind::PurgeProject { pkey } => host
+                .clear_archived_sessions(Some(&pkey))
+                .map(|_| ()),
+            ArchivedConfirmKind::ClearAll => host.clear_archived_sessions(None).map(|_| ()),
+        });
+        cx.spawn(async move |this, cx| {
+            // 桥接掉线(回执通道断)与宿主业务失败同路呈现
+            let result = rx.await.unwrap_or_else(|_| {
+                Err(liuma_core::proto::RpcError::internal(
+                    t!("settings.archived_ack_lost").into_owned(),
+                ))
+            });
+            this.update(cx, |s, cx| match result {
+                Ok(()) => s.refresh_archived(cx),
+                Err(e) => s.set_settings_notice(
+                    false,
+                    t!("settings.archived_delete_failed", msg = &e.message),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// 取消归档:恢复到侧栏原项目分组。宿主广播 host/session-added →
+    /// 既有 Effect::Sessions 链路自动刷侧栏(不手动双刷);此处只重拉
+    /// 归档区,不切会话
+    pub fn unarchive_archived(&mut self, archive_id: String, cx: &mut Context<Self>) {
+        let host = self.bridge.host().clone();
+        let rx = self.bridge.call_blocking(move || host.unarchive_session(&archive_id));
+        cx.spawn(async move |this, cx| {
+            let result = rx.await.unwrap_or_else(|_| {
+                Err(liuma_core::proto::RpcError::internal(
+                    t!("settings.archived_ack_lost").into_owned(),
+                ))
+            });
+            this.update(cx, |s, cx| match result {
+                Ok(()) => s.refresh_archived(cx),
+                Err(e) => s.set_settings_notice(
+                    false,
+                    t!("settings.archived_unarchive_failed", msg = &e.message),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+
+/// 归档区下拉构建(labels + 当前项 + Confirm 经闭包回写)。与
+/// `build_pref_select` 同款,动作面由闭包注入(归档区两下拉动作各异,
+/// 不入 PrefMenuKind 分派)
+fn build_archived_select(
+    options: Vec<(String, String)>,
+    current: &str,
+    window: &mut Window,
+    cx: &mut Context<AppStore>,
+    on_pick: impl Fn(&mut AppStore, String, &mut Context<AppStore>) + 'static,
+) -> Entity<SelectState<Vec<gpui_kit::SharedString>>> {
+    let labels: Vec<gpui_kit::SharedString> = options
+        .iter()
+        .map(|(_, l)| gpui_kit::SharedString::from(l.clone()))
+        .collect();
+    let index = options
+        .iter()
+        .position(|(id, _)| id == current)
+        .map(|ix| IndexPath::default().row(ix));
+    let state = cx.new(|cx| SelectState::new(labels, index, window, cx));
+    cx.subscribe(
+        &state,
+        move |this, _s, event: &SelectEvent<Vec<gpui_kit::SharedString>>, cx| {
+            if let SelectEvent::Confirm(Some(label)) = event {
+                let label_s = label.to_string();
+                if let Some((id, _)) = options.iter().find(|(_, l)| *l == label_s) {
+                    on_pick(this, id.clone(), cx);
+                }
+            }
+        },
+    )
+    .detach();
+    state
 }
 
 #[cfg(test)]

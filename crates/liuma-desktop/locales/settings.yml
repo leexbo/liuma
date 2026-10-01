@@ -784,6 +784,106 @@ settings:
     zh-CN: "决策"
     en: "Decision"
 
+  nav_data:
+    zh-CN: "数据与统计"
+    en: "Data"
+
+  nav_archived:
+    zh-CN: "已归档的聊天"
+    en: "Archived chats"
+
+  archived_title:
+    zh-CN: "已归档的聊天"
+    en: "Archived chats"
+
+  archived_desc:
+    zh-CN: "归档的会话仍保留在本机,可随时恢复或删除。"
+    en: "Archived chats stay on this device. Restore or delete them anytime."
+
+  archived_clear_all:
+    zh-CN: "全部删除"
+    en: "Delete All"
+
+  archived_search_ph:
+    zh-CN: "搜索已归档的聊天"
+    en: "Search archived chats"
+
+  archived_order_updated:
+    zh-CN: "按更新时间"
+    en: "Last updated"
+
+  archived_order_alpha:
+    zh-CN: "按字母顺序"
+    en: "Alphabetical"
+
+  archived_project_all:
+    zh-CN: "所有项目"
+    en: "All projects"
+
+  archived_count:
+    zh-CN: "%{n} 个聊天"
+    en: "%{n} chats"
+
+  archived_empty:
+    zh-CN: "没有归档的会话"
+    en: "No archived chats"
+
+  archived_no_match:
+    zh-CN: "没有匹配的归档"
+    en: "No matching archived chats"
+
+  archived_loading:
+    zh-CN: "加载中…"
+    en: "Loading…"
+
+  archived_unarchive:
+    zh-CN: "取消归档"
+    en: "Unarchive"
+
+  archived_purge_item:
+    zh-CN: "删除此项目归档"
+    en: "Delete project archives"
+
+  archived_confirm_delete:
+    zh-CN: "删除"
+    en: "Delete"
+
+  archived_delete_title:
+    zh-CN: "删除归档会话"
+    en: "Delete archived chat"
+
+  archived_delete_desc:
+    zh-CN: "「%{title}」将从磁盘永久删除,此操作不可撤销。"
+    en: "\"%{title}\" will be permanently deleted from disk. This cannot be undone."
+
+  archived_purge_title:
+    zh-CN: "删除项目归档"
+    en: "Delete project archives"
+
+  archived_purge_desc:
+    zh-CN: "「%{project}」的 %{n} 个归档会话将被永久删除,此操作不可撤销。"
+    en: "%{n} archived chats in \"%{project}\" will be permanently deleted. This cannot be undone."
+
+  archived_clear_title:
+    zh-CN: "删除全部归档"
+    en: "Delete all archived chats"
+
+  archived_clear_desc:
+    zh-CN: "全部 %{n} 个归档会话将被永久删除,此操作不可撤销。"
+    en: "All %{n} archived chats will be permanently deleted. This cannot be undone."
+
+  archived_unarchive_failed:
+    zh-CN: "取消归档失败:%{msg}"
+    en: "Unarchive failed: %{msg}"
+
+  archived_delete_failed:
+    zh-CN: "删除失败:%{msg}"
+    en: "Delete failed: %{msg}"
+
+  archived_ack_lost:
+    zh-CN: "归档动作回执丢失,请重试。"
+    en: "The archived-chat action response was lost. Try again."
+
   mcp_servers_title:
     zh-CN: "MCP 服务"
     en: "MCP servers"

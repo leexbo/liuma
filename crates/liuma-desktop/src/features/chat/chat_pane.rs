@@ -2891,7 +2891,7 @@ fn turn_tail(
                 store,
                 format!("{key}-usage"),
                 format!("turn-tail-{key}-usage"),
-                fixed(gpui_kit::assets::IconName::Database, 12.).into_any_element(),
+                fixed(LiumaIcon::Database, 12.).into_any_element(),
                 t!(
                     "chat.usage_tok",
                     v = crate::kits::fmt::fmt_tokens_abbrev(total)
@@ -3049,7 +3049,7 @@ pub(crate) fn turn_usage_card(
         None => (None, vec![]),
     };
     card = card.child(card_head(
-        fixed(gpui_kit::assets::IconName::Database, 14.).into_any_element(),
+        fixed(LiumaIcon::Database, 14.).into_any_element(),
         t!("chat.turn_usage"),
         total.map(|t| format!("{} tok", crate::kits::fmt::fmt_exact_count(t))),
     ));

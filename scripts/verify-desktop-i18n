@@ -108,7 +108,7 @@ EXEMPT_TEXT = {
     "PDF", "JSON", "HTTP", "TOML", "Markdown", "Mermaid", "PPT", "IMG", "FILE",
     "OUT", "IN", "HEAD", "HOME", "Downloads", "Skill",
     # 稳定 ASCII slug(debug selector 用,非文案;见 SettingsNav::slug)
-    "General", "Models", "Mcp", "Hooks", "Decision", "About",
+    "General", "Models", "Mcp", "Hooks", "Decision", "ArchivedChats", "About",
     "system-ui, sans-serif", "Helvetica", "Times New Roman", "Menlo",
     "PingFang SC", "Step",
 }

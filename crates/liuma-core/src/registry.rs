@@ -33,9 +33,10 @@ use uuid::Uuid;
 use crate::credentials::resolve_credential;
 use crate::lock::{LockRecover as _, RwLockRecover as _};
 use crate::proto::{
-    HistoryEntry, HistoryValue, HostSessionAdded, HostSessionStatus, ProjectionFrame, Projections,
-    Question, QuestionOption, QuestionRequestedFrame, QuestionResolvedFrame, RespondReceipt,
-    RpcError, RpcResult, ServerRequest, SessionEventFrame, SessionSummary, SubscribedFrame,
+    ArchivedSessionSummary, HistoryEntry, HistoryValue, HostSessionAdded, HostSessionStatus,
+    ProjectionFrame, Projections, Question, QuestionOption, QuestionRequestedFrame,
+    QuestionResolvedFrame, RespondReceipt, RpcError, RpcResult, ServerRequest, SessionEventFrame,
+    SessionSummary, SubscribedFrame,
 };
 use crate::settings::{
     BillingConfig, BillingKind, BillingSnapshot, ProviderEntry, SettingsStore, json_path,
@@ -3902,6 +3903,41 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
 
     // ── 会话数据面 ─────────────────────────────────────────────────
 
+    /// 清单派生事实(blank/日志侧标题)读取:stat 指纹未变直接命中缓存。
+    /// list_sessions 与归档清单共用(归档日志路径作键天然成立)
+    fn cached_list_facts(&self, log: &Path) -> (bool, Option<String>) {
+        let text_meta = log.metadata().ok().and_then(|m| {
+            let len = m.len();
+            let mtime = m.modified().ok()?;
+            Some((len, mtime))
+        });
+        match text_meta {
+            Some((len, mtime)) => {
+                let mut cache = self.list_cache.lock_recover();
+                match cache.get(log) {
+                    Some(facts) if facts.len == len && facts.mtime == mtime => {
+                        (facts.blank, facts.log_title.clone())
+                    }
+                    _ => {
+                        let (blank, log_title) = derive_list_facts(log);
+                        cache.insert(
+                            log.to_path_buf(),
+                            ListFacts {
+                                len,
+                                mtime,
+                                blank,
+                                log_title: log_title.clone(),
+                            },
+                        );
+                        (blank, log_title)
+                    }
+                }
+            }
+            // stat 失败的病态路径:原样即时读(缓存旁路)
+            None => derive_list_facts(log),
+        }
+    }
+
     /// session.list:各工作区顶层 *.jsonl 扫描 + 运行态。
     /// 非默认工作区会话 id = "<ws 名>/<stem>"
     pub fn list_sessions(&self) -> Vec<SessionSummary> {
@@ -3953,40 +3989,10 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                     .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
-                let text_meta = log.metadata().ok().and_then(|m| {
-                    let len = m.len();
-                    let mtime = m.modified().ok()?;
-                    Some((len, mtime))
-                });
                 // 派生事实(blank/日志侧标题)经 stat 缓存:全文读仅为
                 // 「contains turn/start + 首条 user/message 标题」,清单
                 // 高频重拉下是主要读放大;stat 未变直接复用
-                let derived = match text_meta {
-                    Some((len, mtime)) => {
-                        let mut cache = self.list_cache.lock_recover();
-                        match cache.get(&log) {
-                            Some(facts) if facts.len == len && facts.mtime == mtime => {
-                                (facts.blank, facts.log_title.clone())
-                            }
-                            _ => {
-                                let (blank, log_title) = derive_list_facts(&log);
-                                cache.insert(
-                                    log.clone(),
-                                    ListFacts {
-                                        len,
-                                        mtime,
-                                        blank,
-                                        log_title: log_title.clone(),
-                                    },
-                                );
-                                (blank, log_title)
-                            }
-                        }
-                    }
-                    // stat 失败的病态路径:原样即时读(缓存旁路)
-                    None => derive_list_facts(&log),
-                };
-                let (blank, log_title) = derived;
+                let (blank, log_title) = self.cached_list_facts(&log);
                 // title 投影:重命名 > 首条 user/message 内容(60 字)
                 let title = self.session_title(&id).or(log_title);
                 let projections = title.map(|t| Projections {
@@ -4317,6 +4323,242 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             .host
             .send(frame("host/session-removed", json!({ "sessionId": id })));
         Ok(())
+    }
+
+    // ── 归档管理面 ─────────────────────────────────────────────────
+    // 归档 = <pkey>/<stem>/session.jsonl 移入 <pkey>/.archive/<stem>/
+    // (archive_session 只移日志单文件,header.json 血缘留在原目录)。
+    // 寻址用 <projectKey>/<stem> 双段:projectKey 恒以 `--` 开头(或恰为
+    // root),与工作区名永不冲突,且不依赖 workspaces 表——孤儿归档
+    // (工作区已移除)仍可定位与删除。
+
+    /// 归档寻址解析:<projectKey>/<stem> → (项目目录, stem)。
+    /// 恢复/删除的统一定位;孤儿归档的工作区可能已移除,不走 resolve_session
+    fn resolve_archive(&self, archive_id: &str) -> Result<(PathBuf, String), RpcError> {
+        let Some((pkey, stem)) = archive_id.split_once('/') else {
+            return Err(RpcError::bad_request("归档标识缺少项目段"));
+        };
+        if pkey.is_empty() || stem.is_empty() || stem.contains('/') {
+            return Err(RpcError::bad_request("归档标识格式非法"));
+        }
+        Ok((self.sessions_root.join(pkey), stem.to_string()))
+    }
+
+    /// projectKey → (工作区路径, 该项目下的原会话 id 前缀形态)。
+    /// 孤儿归档(项目目录无对应工作区)= None:不可恢复但可删除
+    fn workspace_of_project_key(&self, pkey: &str) -> Option<(PathBuf, String)> {
+        let workspaces = self.workspaces.read_recover().clone();
+        for ws in &workspaces {
+            if project_key(&ws.display().to_string()) == pkey {
+                // id 前缀形态与 list_sessions 同源:默认工作区(表首位)
+                // 裸 stem,其余 "<ws 名>/<stem>"
+                let default = self.default_workspace();
+                let prefix = if ws == &default {
+                    String::new()
+                } else {
+                    format!(
+                        "{}/",
+                        ws.file_name().and_then(|n| n.to_str()).unwrap_or_default()
+                    )
+                };
+                return Some((ws.clone(), prefix));
+            }
+        }
+        None
+    }
+
+    /// 归档清单:全项目 .archive 扫描(孤儿项目目录含在内——「全部删除」
+    /// 才真正清得干净)。updated_at 倒序(与 list_sessions 同正典序;
+    /// 字母序由客方视图层重排)
+    pub fn list_archived_sessions(&self) -> Vec<ArchivedSessionSummary> {
+        let mut items: Vec<ArchivedSessionSummary> = Vec::new();
+        let entries = match std::fs::read_dir(&self.sessions_root) {
+            Ok(e) => e,
+            Err(_) => return items,
+        };
+        for pkey_dir in entries.flatten() {
+            let pkey_path = pkey_dir.path();
+            if !pkey_path.is_dir() {
+                continue;
+            }
+            let Some(pkey) = pkey_path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let pkey = pkey.to_string();
+            let (ws, prefix) = match self.workspace_of_project_key(&pkey) {
+                Some((ws, prefix)) => (
+                    Some(
+                        ws.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                    ),
+                    prefix,
+                ),
+                // 孤儿项目目录:标题无从反查,裸 stem 进 titles 查询(自然 miss)
+                None => (None, String::new()),
+            };
+            let archived = match std::fs::read_dir(pkey_path.join(".archive")) {
+                Ok(e) => e,
+                // 该项目无归档
+                Err(_) => continue,
+            };
+            for entry in archived.flatten() {
+                let dir = entry.path();
+                if !dir.is_dir() {
+                    continue;
+                }
+                let Some(stem) = dir.file_name().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                let log = dir.join("session.jsonl");
+                if !log.exists() {
+                    // 半残目录(日志缺席)不列
+                    continue;
+                }
+                let updated_at = log
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let (blank, log_title) = self.cached_list_facts(&log);
+                // 血缘在遗留原目录(archive 只移走了日志)
+                let (parent_id, origin) = read_session_header(&pkey_path.join(stem));
+                let orig_id = format!("{prefix}{stem}");
+                let title = self.session_title(&orig_id).or(log_title);
+                let projections = title.map(|t| Projections {
+                    as_of_seq: 0,
+                    values: serde_json::json!({ "title": t }),
+                });
+                items.push(ArchivedSessionSummary {
+                    session_id: orig_id,
+                    archive_id: format!("{pkey}/{stem}"),
+                    project_key: pkey.clone(),
+                    workspace: ws.clone(),
+                    updated_at,
+                    blank,
+                    parent_session_id: parent_id,
+                    origin,
+                    projections,
+                });
+            }
+        }
+        items.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
+        items
+    }
+
+    /// 取消归档:.archive/<stem>/session.jsonl 移回 <pkey>/<stem>/
+    /// (镜像 archive_session 的单文件移动,header.json 本就留在原目录)。
+    /// 原项目已移除 / 同名会话已在 → 拒绝;成功广播 host/session-added
+    /// (客方侧栏经既有 Effect 链路自动归位)
+    pub fn unarchive_session(&self, archive_id: &str) -> Result<(), RpcError> {
+        let (pkey_dir, stem) = self.resolve_archive(archive_id)?;
+        let src = pkey_dir.join(".archive").join(&stem).join("session.jsonl");
+        if !src.exists() {
+            return Err(RpcError::session_not_found(archive_id));
+        }
+        let Some((_, prefix)) = self.workspace_of_project_key(
+            pkey_dir.file_name().and_then(|n| n.to_str()).unwrap_or_default(),
+        ) else {
+            return Err(RpcError::bad_request("原项目已移除,请先重新添加该工作区"));
+        };
+        let dst_dir = pkey_dir.join(&stem);
+        let dst = dst_dir.join("session.jsonl");
+        // 冲突以文件为准:残留空目录/仅 header.json 是归档常态,不算冲突
+        if dst.exists() {
+            return Err(RpcError::bad_request("同名会话已存在"));
+        }
+        std::fs::create_dir_all(&dst_dir)
+            .map_err(|e| RpcError::internal(format!("会话目录创建失败:{e}")))?;
+        std::fs::rename(&src, &dst)
+            .map_err(|e| RpcError::internal(format!("取消归档移动失败:{e}")))?;
+        let _ = std::fs::remove_dir(src.parent().unwrap_or(Path::new(".")));
+        let orig_id = format!("{prefix}{stem}");
+        let _ = self
+            .host
+            .send(frame("host/session-added", json!({ "sessionId": orig_id })));
+        Ok(())
+    }
+
+    /// 删除归档会话(递归删 .archive/<stem>/;归档无运行态,无运行中拒绝)。
+    /// 镜像活动路径级联(delete_session 删父级联 subagent 子):同项目
+    /// .archive 内遗留 header 指向本会话的子归档一并删——否则删父后子行
+    /// 仍列在归档页、指向永不可达的父。级联判据是遗留 header.json,手工
+    /// 清过原目录则无从判定,不级联(best-effort)。不广播:归档项对
+    /// 活动清单不可见,清单刷新由发起方(设置页)自理
+    pub fn delete_archived_session(&self, archive_id: &str) -> Result<(), RpcError> {
+        let (pkey_dir, stem) = self.resolve_archive(archive_id)?;
+        let archive_dir = pkey_dir.join(".archive");
+        let dir = archive_dir.join(&stem);
+        if !dir.join("session.jsonl").exists() {
+            return Err(RpcError::session_not_found(archive_id));
+        }
+        // 先级联子归档:原会话 id 由项目工作区反查(孤儿归档无前缀形态,
+        // 与其子归档的 parentSessionId 记录形态一致性无从保证,跳过级联)
+        if let Some((_, prefix)) = self.workspace_of_project_key(
+            pkey_dir.file_name().and_then(|n| n.to_str()).unwrap_or_default(),
+        ) {
+            let orig_id = format!("{prefix}{stem}");
+            if let Ok(siblings) = std::fs::read_dir(&archive_dir) {
+                for sibling in siblings.flatten() {
+                    let sib_path = sibling.path();
+                    let sib_name = match sibling.file_name().into_string() {
+                        Ok(n) => n,
+                        Err(_) => continue,
+                    };
+                    if sib_name == stem || !sib_path.is_dir() {
+                        continue;
+                    }
+                    let (parent, origin) = read_session_header(&pkey_dir.join(&sib_name));
+                    if parent.as_deref() == Some(orig_id.as_str())
+                        && origin.as_deref() == Some("subagent")
+                    {
+                        let _ = std::fs::remove_dir_all(sib_path);
+                    }
+                }
+            }
+        }
+        std::fs::remove_dir_all(&dir)
+            .map_err(|e| RpcError::internal(format!("归档删除失败:{e}")))?;
+        let _ = std::fs::remove_dir(&archive_dir);
+        Ok(())
+    }
+
+    /// 清空归档(None = 全部项目;Some = 单项目 projectKey)。
+    /// 返回清除的会话数(桌面端「已删除 N 条」提示用)
+    pub fn clear_archived_sessions(&self, project: Option<&str>) -> Result<u32, RpcError> {
+        let roots: Vec<PathBuf> = match project {
+            Some(pkey) => vec![self.sessions_root.join(pkey)],
+            None => match std::fs::read_dir(&self.sessions_root) {
+                Ok(entries) => entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect(),
+                Err(_) => vec![],
+            },
+        };
+        let mut cleared: u32 = 0;
+        for root in roots {
+            let archive_dir = root.join(".archive");
+            let Ok(entries) = std::fs::read_dir(&archive_dir) else {
+                // 该项目无归档,清 0 条不算错
+                continue;
+            };
+            for entry in entries.flatten() {
+                let dir = entry.path();
+                if !dir.is_dir() {
+                    continue;
+                }
+                std::fs::remove_dir_all(&dir)
+                    .map_err(|e| RpcError::internal(format!("归档清理失败:{e}")))?;
+                cleared += 1;
+            }
+            let _ = std::fs::remove_dir(&archive_dir);
+        }
+        Ok(cleared)
     }
 
     /// 附着(懒装配 + worker)。幂等:已附着直接返回。
@@ -11739,6 +11981,141 @@ mod tests {
             s4.projections.as_ref().map(|p| p.values["title"].clone()),
             "新缓存命中同值"
         );
+    }
+
+    /// 归档闭环:归档 → 清单 → 恢复 → 再归档 → 删除。归档清单寻址、
+    /// 标题(titles 表)、工作区归属、恢复后回到活动清单,全链各验一拍
+    #[tokio::test]
+    async fn archived_roundtrip() {
+        let host = temp_host("archrt");
+        host.create_session(Some("arc-a".into()), None, None);
+        host.rename("arc-a", "归档标题").unwrap();
+
+        // 归档后:活动清单不可见,归档清单恰一条且字段齐备
+        host.archive_session("arc-a").unwrap();
+        assert!(host.list_sessions().iter().all(|s| s.session_id != "arc-a"));
+        let archived = host.list_archived_sessions();
+        assert_eq!(archived.len(), 1);
+        let item = &archived[0];
+        assert_eq!(item.session_id, "arc-a");
+        assert_eq!(
+            item.archive_id,
+            format!("{}/arc-a", project_key(&host.workspace.display().to_string()))
+        );
+        assert_eq!(item.workspace.as_deref(), Some(host.default_workspace_name().as_str()));
+        let t = item.projections.as_ref().and_then(|p| p.values["title"].as_str());
+        assert_eq!(t, Some("归档标题"), "titles 表在归档态仍可查");
+
+        // 恢复:回活动清单(同 id、标题仍在),归档清单清零
+        host.unarchive_session(&item.archive_id).unwrap();
+        let active = host.list_sessions();
+        assert!(active.iter().any(|s| s.session_id == "arc-a"));
+        assert!(host.list_archived_sessions().is_empty());
+
+        // 再归档 → 删除:.archive 目录消失
+        host.archive_session("arc-a").unwrap();
+        let aid = host.list_archived_sessions()[0].archive_id.clone();
+        host.delete_archived_session(&aid).unwrap();
+        assert!(host.list_archived_sessions().is_empty());
+        assert!(!proj_dir(&host, &host.workspace).join(".archive").exists());
+    }
+
+    /// 恢复冲突:目标同名会话已存在 → 拒绝且两边清单均不变
+    #[tokio::test]
+    async fn archived_unarchive_conflict() {
+        let host = temp_host("archconf");
+        host.create_session(Some("dup".into()), None, None);
+        host.archive_session("dup").unwrap();
+        host.create_session(Some("dup".into()), None, None);
+
+        let err = host.unarchive_session(&format!(
+            "{}/dup",
+            project_key(&host.workspace.display().to_string())
+        ))
+        .unwrap_err();
+        assert_eq!(err.code, "bad-request");
+        assert!(host.list_sessions().iter().any(|s| s.session_id == "dup"));
+        assert_eq!(host.list_archived_sessions().len(), 1, "拒绝后归档清单不动");
+    }
+
+    /// 删父级联:同项目 .archive 内 header 指向本会话的 subagent 子归档
+    /// 一并删(镜像 delete_session 的级联语义,不留指向不可达父的孤儿行)
+    #[tokio::test]
+    async fn archived_subagent_cascade() {
+        let host = temp_host("archcasc");
+        host.create_session(Some("par".into()), None, None);
+        let child = host.create_subagent_session("par");
+        host.archive_session("par").unwrap();
+        host.archive_session(&child).unwrap();
+        assert_eq!(host.list_archived_sessions().len(), 2);
+
+        let aid = host.list_archived_sessions()
+            .iter()
+            .find(|s| s.session_id == "par")
+            .unwrap()
+            .archive_id
+            .clone();
+        host.delete_archived_session(&aid).unwrap();
+        let rest = host.list_archived_sessions();
+        assert!(
+            rest.iter().all(|s| s.session_id != child),
+            "子归档随父级联删除"
+        );
+        assert!(rest.is_empty());
+    }
+
+    /// 清空范围:按项目清只动该项目;全清覆盖所有项目且返回清除数
+    #[tokio::test]
+    async fn archived_clear_scoped() {
+        let host = temp_host("archclr");
+        let ws2 = host.workspace.parent().unwrap_or(&host.workspace).join("archclr-ws2");
+        std::fs::create_dir_all(&ws2).unwrap();
+        let ws2_name = host.add_workspace(&ws2.display().to_string()).unwrap();
+        host.create_session(Some("one".into()), None, None);
+        host.create_session(Some("two".into()), None, Some(ws2_name.clone()));
+        host.archive_session("one").unwrap();
+        host.archive_session(&format!("{ws2_name}/two")).unwrap();
+
+        // 按项目清:只清工作区二
+        let pkey2 = proj_dir(&host, &ws2);
+        let cleared = host
+            .clear_archived_sessions(Some(pkey2.file_name().unwrap().to_str().unwrap()))
+            .unwrap();
+        assert_eq!(cleared, 1);
+        let rest = host.list_archived_sessions();
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0].session_id, "one");
+
+        // 全清:两个项目各一条,计数与清单双验(清掉的 two 需重建再归档)
+        host.create_session(Some("two".into()), None, Some(ws2_name.clone()));
+        host.archive_session(&format!("{ws2_name}/two")).unwrap();
+        let cleared = host.clear_archived_sessions(None).unwrap();
+        assert_eq!(cleared, 2);
+        assert!(host.list_archived_sessions().is_empty());
+    }
+
+    /// 孤儿归档:工作区移除后归档仍列出(workspace = None)、恢复从严
+    /// 拒绝(放行会造出侧栏永不可见的会话)、删除照常可达
+    #[tokio::test]
+    async fn archived_orphan() {
+        let host = temp_host("archorph");
+        let ws2 = host.workspace.parent().unwrap_or(&host.workspace).join("archorph-ws2");
+        std::fs::create_dir_all(&ws2).unwrap();
+        let ws2_name = host.add_workspace(&ws2.display().to_string()).unwrap();
+        let id = format!("{ws2_name}/lost");
+        host.create_session(Some("lost".into()), None, Some(ws2_name.clone()));
+        host.archive_session(&id).unwrap();
+        host.remove_workspace(&ws2_name).unwrap();
+
+        let archived = host.list_archived_sessions();
+        assert_eq!(archived.len(), 1, "孤儿归档仍可达(全部删除要清得干净)");
+        assert_eq!(archived[0].workspace, None);
+        assert_eq!(archived[0].session_id, "lost");
+
+        let err = host.unarchive_session(&archived[0].archive_id).unwrap_err();
+        assert_eq!(err.code, "bad-request");
+        host.delete_archived_session(&archived[0].archive_id).unwrap();
+        assert!(host.list_archived_sessions().is_empty());
     }
 
     /// setter 落盘工作区默认,重启(重建宿主)后冷会话沿用。

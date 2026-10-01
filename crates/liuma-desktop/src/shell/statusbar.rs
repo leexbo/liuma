@@ -127,7 +127,7 @@ fn stats_pills(store: &Entity<AppStore>, cx: &App) -> Option<AnyElement> {
         row = row.child(stats_chip(
             store,
             "statusbar-stats-usage",
-            fixed(gpui_kit::assets::IconName::Database, 12.).into_any_element(),
+            fixed(LiumaIcon::Database, 12.).into_any_element(),
             label,
             token_usage_card,
         ));
@@ -261,7 +261,7 @@ pub(crate) fn token_usage_card(store: &Entity<AppStore>, cx: &App) -> AnyElement
         None => (None, vec![]),
     };
     card = card.child(card_head(
-        fixed(gpui_kit::assets::IconName::Database, 14.).into_any_element(),
+        fixed(LiumaIcon::Database, 14.).into_any_element(),
         crate::kits::i18n::t!("shell.stats_token_usage"),
         total.map(|t| format!("{} tok", fmt_exact_count(t))),
     ));

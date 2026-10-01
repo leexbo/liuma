@@ -15,19 +15,25 @@ use gpui_kit::component::InteractiveElementExt as _;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::StyledExt;
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::popover::{Popover, PopoverState};
 use gpui_kit::component::radio::{Radio, RadioGroup};
 use gpui_kit::component::select::{Select, SelectState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    Anchor, App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
     Styled, Window, div, px,
 };
+use liuma_core::proto::ArchivedSessionSummary;
 
 use crate::features::settings::SettingsNav;
-use crate::features::settings::store::{McpDetailMode, grouped_tokens};
+use crate::features::settings::store::{
+    ArchivedConfirmKind, ArchivedOrder, McpDetailMode, grouped_tokens,
+};
+use crate::kits::fmt::fmt_clock_md;
 use crate::kits::i18n::{self, t};
 use crate::kits::icons::{LiumaIcon, fixed};
+use crate::kits::popup::PopTrigger;
 use crate::kits::theme;
 use crate::shell::store::AppStore;
 
@@ -80,6 +86,9 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         SettingsNav::Hooks => hooks_section(store, cx).into_any_element(),
                         SettingsNav::Decision => decision_section(store, cx).into_any_element(),
                         SettingsNav::General => general_section(store, cx).into_any_element(),
+                        SettingsNav::ArchivedChats => {
+                            archived_section(store, cx).into_any_element()
+                        }
                         SettingsNav::About => about_section(store, cx).into_any_element(),
                     },
                 )),
@@ -3239,7 +3248,7 @@ pub(crate) fn menu(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let st = store.read(cx);
     let back = store.clone();
     // 「基础设置」组:常规 / 模型设置(模型行名为「模型」);
-    // 「Agent 能力」「数据与统计」无已实装项,不渲染空组头
+    // 「数据与统计」组承载归档会话管理,见 basic 数组之后
     let basic: [(
         SettingsNav,
         std::borrow::Cow<'static, str>,
@@ -3276,6 +3285,15 @@ pub(crate) fn menu(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     for (nav, label, icon) in basic {
         list = list.child(nav_item(store, nav, label, icon, st.settings.settings_nav));
     }
+    // 「数据与统计」组:归档会话管理
+    list = list.child(nav_group_header(t!("settings.nav_data")));
+    list = list.child(nav_item(
+        store,
+        SettingsNav::ArchivedChats,
+        t!("settings.nav_archived"),
+        fixed(LiumaIcon::Archive, 15.),
+        st.settings.settings_nav,
+    ));
     div()
         .id("settings-menu")
         .debug_selector(|| "settings-menu".to_string())
@@ -4065,6 +4083,531 @@ fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 .child(t!("common.save")),
         );
     col.into_any_element()
+}
+
+// ── 已归档的聊天(数据与统计组) ─────────────────────────────────
+
+/// 归档区视图纯函数:项目筛选 + 搜索词过滤(标题)+ 排序 + 按 pkey
+/// 分组,返回 (pkey, 显示名, 成员下标) 列表。render 与测试共用。
+/// 组序:Updated = 清单序首见(core 已按 updated 倒序);Alpha = 显示名
+/// 字母序,组内行按标题字母序(更新时间倒序破并列)
+fn archived_view(
+    items: &[ArchivedSessionSummary],
+    query: &str,
+    project: Option<&str>,
+    order: ArchivedOrder,
+    name_of: impl Fn(&str, Option<&str>) -> String,
+) -> Vec<(String, String, Vec<usize>)> {
+    let query = query.trim().to_lowercase();
+    let title_of = |i: usize| -> String {
+        items[i]
+            .projections
+            .as_ref()
+            .and_then(|p| p.values["title"].as_str())
+            .unwrap_or(&items[i].session_id)
+            .to_string()
+    };
+    let mut groups: Vec<(String, String, Vec<usize>)> = Vec::new();
+    for (ix, item) in items.iter().enumerate() {
+        if project.is_some_and(|p| p != item.project_key) {
+            continue;
+        }
+        if !query.is_empty() && !title_of(ix).to_lowercase().contains(&query) {
+            continue;
+        }
+        match groups.iter_mut().find(|(k, _, _)| *k == item.project_key) {
+            Some((_, _, members)) => members.push(ix),
+            None => {
+                let name = name_of(&item.project_key, item.workspace.as_deref());
+                groups.push((item.project_key.clone(), name, vec![ix]));
+            }
+        }
+    }
+    if order == ArchivedOrder::Alpha {
+        groups.sort_by_key(|a| a.1.to_lowercase());
+        for (_, _, members) in &mut groups {
+            members.sort_by(|&a, &b| {
+                title_of(a)
+                    .to_lowercase()
+                    .cmp(&title_of(b).to_lowercase())
+            });
+        }
+    }
+    groups
+}
+
+/// 归档区主渲染:标题 + 全部删除(危险胶囊)/ 搜索 + 排序 + 项目筛选
+/// 控制行 / 加载、空态、零命中分流 / 按项目分组的行列表。
+///
+/// 高度骨架:h_full 占满设置右列(720 包装层被 settings-options 行向
+/// flex stretch 拉成视口高),标题与控制行固定,分组列表在 **内部滚动
+/// 区** 滚动(flex_1 + overflow_y_scroll)——外层滚动容器的滚动范围
+/// 恒等于视口(包装层 stretch 所致),长清单靠外层滚不动,必须内滚
+fn archived_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
+    let st = store.read(cx);
+    let query = st
+        .settings
+        .archived_search
+        .as_ref()
+        .map(|e| e.read(cx).value().trim().to_lowercase())
+        .unwrap_or_default();
+    let items: &[ArchivedSessionSummary] = st.settings.archived.as_deref().unwrap_or(&[]);
+    let name_of = |pkey: &str, ws: Option<&str>| st.archived_group_name(pkey, ws);
+    let groups = archived_view(
+        items,
+        &query,
+        st.settings.archived_project.as_deref(),
+        st.settings.archived_order,
+        name_of,
+    );
+
+    // 头部行:标题 + 说明 | 右侧「全部删除」(危险色胶囊;清空动作
+    // 自带确认弹窗,按钮恒在场——空清单点了也只会弹确认后清 0 条,
+    // 与「无归档」空态不冲突)。失败通告行缀在标题块下,不与按钮抢位
+    let mut col = div()
+        .debug_selector(|| "archived-section".to_string())
+        .v_flex()
+        .h_full()
+        .min_h(px(0.))
+        .gap(px(12.))
+        .child(
+            div()
+                .flex()
+                .items_start()
+                .justify_between()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .v_flex()
+                        .gap(px(4.))
+                        .child(section_title(t!("settings.archived_title")))
+                        .child(intro_line(t!("settings.archived_desc")))
+                        .children(st.settings.settings_notice.as_ref().map(|(ok, msg)| {
+                            div()
+                                .debug_selector(|| "archived-settings-notice".to_string())
+                                .text_size(px(12.))
+                                .text_color(if *ok {
+                                    theme::SUCCESS()
+                                } else {
+                                    theme::DANGER()
+                                })
+                                .child(format!("{} {msg}", if *ok { "✓" } else { "⚠" }))
+                        })),
+                )
+                .child({
+                    let s = store.clone();
+                    let n = items.len();
+                    div()
+                        .id("archived-clear")
+                        .debug_selector(|| "archived-clear".to_string())
+                        .flex()
+                        .flex_shrink_0()
+                        .h(px(28.))
+                        .items_center()
+                        .px(px(10.))
+                        .rounded(px(14.))
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(theme::DANGER())
+                        .hover(|s| s.bg(theme::DOCK()))
+                        .child(t!("settings.archived_clear_all"))
+                        .on_click(move |_, _, cx| {
+                            s.update(cx, |st, cx| st.ask_clear_archived(n, cx));
+                        })
+                }),
+        );
+
+    // 控制行:搜索(flex_1)+ 排序 + 项目筛选。三个控件统一默认档
+    // (库内 input_h:Medium = 32px)+ h32 容器——Input small(24px)与
+    // Select medium(32px)混排会肉眼可见参差;Select 自带 size_full,
+    // 定尺寸容器仍是纪律
+    let search = st.settings.archived_search.clone();
+    col = col.child(
+        div()
+            .debug_selector(|| "archived-controls".to_string())
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(8.))
+            .child(
+                div()
+                    .id("archived-search")
+                    .flex_1()
+                    .h(px(32.))
+                    .line_height(gpui_kit::relative(1.4))
+                    .children(search.as_ref().map(Input::new)),
+            )
+            .child(
+                div()
+                    .id("archived-order-box")
+                    .w(px(150.))
+                    .h(px(32.))
+                    .line_height(gpui_kit::relative(1.4))
+                    .children(
+                        st.settings
+                            .archived_order_select
+                            .as_ref()
+                            .map(Select::new),
+                    ),
+            )
+            .child(
+                div()
+                    .id("archived-project-box")
+                    .w(px(200.))
+                    .h(px(32.))
+                    .line_height(gpui_kit::relative(1.4))
+                    .children(
+                        st.settings
+                            .archived_project_select
+                            .as_ref()
+                            .map(Select::new),
+                    ),
+            ),
+    );
+
+    // 态分流:加载 / 空清单 / 零命中 = 余高内居中(不进滚动区);
+    // 分组列表 = 内部滚动区
+    let body: gpui_kit::AnyElement = if st.settings.archived_loading {
+        centered_state("archived-loading", t!("settings.archived_loading"))
+            .into_any_element()
+    } else if items.is_empty() {
+        centered_state("archived-empty", t!("settings.archived_empty")).into_any_element()
+    } else if groups.is_empty() {
+        centered_state("archived-no-match", t!("settings.archived_no_match"))
+            .into_any_element()
+    } else {
+        let mut list = div()
+            .id("archived-list")
+            .debug_selector(|| "archived-list".to_string())
+            .flex_1()
+            .min_h(px(0.))
+            .overflow_y_scroll()
+            .v_flex()
+            .gap(px(12.))
+            .pr(px(2.));
+        for (pkey, name, members) in groups {
+            list = list.child(
+                div()
+                    .v_flex()
+                    .gap(px(4.))
+                    .child(archived_group_header(store, &pkey, &name, members.len()))
+                    .children(
+                        members
+                            .into_iter()
+                            .map(|ix| archived_row(store, &items[ix])),
+                    ),
+            );
+        }
+        list.into_any_element()
+    };
+    col.child(body)
+}
+
+/// 归档区居中态(加载/空/零命中):余高内水平垂直居中
+fn centered_state(sel: &'static str, text: impl Into<String>) -> impl IntoElement {
+    div()
+        .debug_selector(move || sel.to_string())
+        .flex_1()
+        .min_h(px(0.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(caption_line(text))
+}
+
+/// 归档组头:文件夹 + 项目名 + 计数(全量,不受搜索影响)+ ⋯ 菜单
+/// (删除此项目归档;组件库 Popover,库托管开合/定位)
+fn archived_group_header(
+    store: &Entity<AppStore>,
+    pkey: &str,
+    name: &str,
+    count: usize,
+) -> impl IntoElement {
+    let grp_sel = sid("archived-grp", pkey);
+    let more_sel = sid("archived-more", pkey);
+    let pop_id = sid("archived-pop", pkey);
+    div()
+        .id(grp_sel.clone())
+        .debug_selector(move || grp_sel.to_string())
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .h(px(32.))
+        .px(px(2.))
+        .child(fixed(LiumaIcon::FolderClose, 14.))
+        .child(
+            div()
+                .text_size(px(13.))
+                .text_color(theme::LABEL())
+                .child(name.to_string()),
+        )
+        .child(
+            div()
+                .text_size(px(12.))
+                .text_color(theme::CAPTION())
+                .child(t!("settings.archived_count", n = count).into_owned()),
+        )
+        .child(div().flex_1())
+        .child(
+            Popover::new(pop_id)
+                .appearance(false)
+                .anchor(Anchor::TopRight)
+                .trigger(PopTrigger(
+                    div()
+                        .id(more_sel.clone())
+                        .debug_selector(move || more_sel.to_string())
+                        .flex()
+                        .size(px(20.))
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .text_color(theme::CAPTION())
+                        .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL()))
+                        .child(fixed(IconName::Ellipsis, 14.)),
+                ))
+                .content({
+                    let s = store.clone();
+                    let pkey = pkey.to_string();
+                    let name = name.to_string();
+                    move |_, _, cx| {
+                        let pop = cx.entity();
+                        archived_group_menu(&s, &pkey, &name, count, pop).into_any_element()
+                    }
+                }),
+        )
+}
+
+/// 归档组头菜单卡:「删除此项目归档」(危险色;先开确认弹窗再收菜单)
+fn archived_group_menu(
+    store: &Entity<AppStore>,
+    pkey: &str,
+    name: &str,
+    count: usize,
+    pop: Entity<PopoverState>,
+) -> impl IntoElement {
+    let s = store.clone();
+    let purge_sel = sid("archived-purge", pkey);
+    let pkey_click = pkey.to_string();
+    let name_click = name.to_string();
+    div()
+        .id("archived-group-menu-card")
+        .debug_selector(|| "archived-group-menu-card".to_string())
+        .v_flex()
+        .w(px(180.))
+        .gap(px(2.))
+        .rounded(px(10.))
+        .border_1()
+        .border_color(theme::BORDER())
+        .bg(theme::LAYER())
+        .p(px(4.))
+        .shadow_md()
+        .child(
+            div()
+                .id(purge_sel.clone())
+                .debug_selector(move || purge_sel.to_string())
+                .flex()
+                .h(px(26.))
+                .items_center()
+                .gap(px(6.))
+                .px(px(8.))
+                .rounded(px(6.))
+                .cursor_pointer()
+                .text_size(px(12.))
+                .text_color(theme::DANGER())
+                .hover(|st| st.bg(theme::DOCK()))
+                .child(fixed(LiumaIcon::Trash, 13.))
+                .child(t!("settings.archived_purge_item"))
+                .on_click(move |_, window, cx| {
+                    // 先开模态再收菜单:dismiss 在前会在点击对完成前移除
+                    // 自身(同工作区菜单的竞态规避)
+                    let pkey = pkey_click.clone();
+                    s.update(cx, |st, cx| {
+                        st.ask_purge_project_archived(pkey, name_click.clone(), count, cx)
+                    });
+                    pop.update(cx, |state, cx| state.dismiss(window, cx));
+                }),
+        )
+}
+
+/// 归档行:标题(截断)+ 更新时间 + 垃圾桶 + 取消归档胶囊
+fn archived_row(
+    store: &Entity<AppStore>,
+    item: &ArchivedSessionSummary,
+) -> impl IntoElement {
+    let title = item
+        .projections
+        .as_ref()
+        .and_then(|p| p.values["title"].as_str())
+        .unwrap_or(&item.session_id);
+    let aid = item.archive_id.clone();
+    let row_sel = sid("archived-row", &aid);
+    let del_sel = sid("archived-del", &aid);
+    let restore_sel = sid("archived-restore", &aid);
+    let s_del = store.clone();
+    let s_restore = store.clone();
+    let title_del = title.to_string();
+    let title_shared: gpui_kit::SharedString = title.to_string().into();
+    div()
+        .id(row_sel.clone())
+        .debug_selector(move || row_sel.to_string())
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .h(px(40.))
+        .px(px(10.))
+        .rounded(px(8.))
+        .hover(|s| s.bg(theme::LAYER()))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .text_size(px(13.))
+                .text_color(theme::LABEL())
+                .truncate()
+                .child(title_shared),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_size(px(12.))
+                .text_color(theme::CAPTION())
+                .child(fmt_clock_md(item.updated_at as i64)),
+        )
+        .child(
+            div()
+                .id(del_sel.clone())
+                .debug_selector(move || del_sel.to_string())
+                .flex()
+                .size(px(26.))
+                .flex_shrink_0()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.))
+                .cursor_pointer()
+                .text_color(theme::CAPTION())
+                .hover(|s| s.bg(theme::DOCK()).text_color(theme::DANGER()))
+                .tooltip(crate::shell::tip(t!("settings.archived_confirm_delete")))
+                .child(fixed(LiumaIcon::Trash, 14.))
+                .on_click(move |_, _, cx| {
+                    let aid = aid.clone();
+                    let title = title_del.clone();
+                    s_del.update(cx, |st, cx| st.ask_delete_archived(aid, title, cx));
+                }),
+        )
+        .child({
+            let aid = item.archive_id.clone();
+            div()
+                .id(restore_sel.clone())
+                .debug_selector(move || restore_sel.to_string())
+                .flex()
+                .flex_shrink_0()
+                .h(px(24.))
+                .items_center()
+                .gap(px(4.))
+                .px(px(10.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(theme::BORDER())
+                .cursor_pointer()
+                .text_size(px(12.))
+                .text_color(theme::LABEL_2())
+                .hover(|s| s.bg(theme::DOCK()))
+                .child(fixed(LiumaIcon::ArchiveRestore, 13.))
+                .child(t!("settings.archived_unarchive"))
+                .on_click(move |_, _, cx| {
+                    let aid = aid.clone();
+                    s_restore.update(cx, |st, cx| st.unarchive_archived(aid, cx));
+                })
+        })
+}
+
+/// 归档确认弹窗(删单条 / 删项目归档 / 全部删除三态共用;footer 取消 +
+/// 红色结果钮,文案点名对象与后果)。store 经 with_window 桥打开
+pub(crate) fn open_archived_confirm_dialog(
+    store: &Entity<AppStore>,
+    kind: ArchivedConfirmKind,
+    title: std::borrow::Cow<'static, str>,
+    desc: std::borrow::Cow<'static, str>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    use gpui_kit::component::WindowExt as _;
+    let s_confirm = store.clone();
+    let confirm_sel = match &kind {
+        ArchivedConfirmKind::Delete { .. } => "archived-del-confirm",
+        ArchivedConfirmKind::PurgeProject { .. } => "archived-purge-confirm",
+        ArchivedConfirmKind::ClearAll => "archived-clear-confirm",
+    };
+    window.open_dialog(cx, move |dialog, _, _| {
+        let s_confirm = s_confirm.clone();
+        let kind = kind.clone();
+        dialog
+            .title(title.clone())
+            .w(px(420.))
+            .bg(theme::LAYER())
+            .content({
+                // 嵌套闭包 move 持有自己的克隆:借用外层捕获变量不满足
+                // content_builder 的 'static(Rc 装箱)
+                let desc = desc.clone();
+                move |content, _, _| {
+                    content.child(
+                        div()
+                            .debug_selector(|| "archived-confirm-card".to_string())
+                            .child(caption_line(desc.clone())),
+                    )
+                }
+            })
+            .footer(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .id("archived-confirm-cancel")
+                            .debug_selector(|| "archived-confirm-cancel".to_string())
+                            .flex()
+                            .h(px(32.))
+                            .items_center()
+                            .px(px(14.))
+                            .rounded(px(16.))
+                            .border_1()
+                            .border_color(theme::BORDER())
+                            .cursor_pointer()
+                            .text_size(px(12.))
+                            .text_color(theme::LABEL_2())
+                            .hover(|s| s.bg(theme::DOCK()))
+                            .child(t!("common.cancel"))
+                            .on_click(|_, window, cx| {
+                                window.close_dialog(cx);
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id(confirm_sel)
+                            .debug_selector(|| confirm_sel.to_string())
+                            .flex()
+                            .h(px(32.))
+                            .items_center()
+                            .px(px(14.))
+                            .rounded(px(16.))
+                            .border_1()
+                            .border_color(theme::DANGER())
+                            .cursor_pointer()
+                            .text_size(px(12.))
+                            .text_color(theme::DANGER())
+                            .hover(|s| s.bg(theme::DOCK()))
+                            .child(t!("settings.archived_confirm_delete"))
+                            .on_click(move |_, window, cx| {
+                                s_confirm.update(cx, |st, cx| {
+                                    st.confirm_archived_action(kind.clone(), cx)
+                                });
+                                window.close_dialog(cx);
+                            }),
+                    ),
+            )
+    });
 }
 
 /// 重置倒计时格式化:剩余窗按量级取「天/时/分」,已过或非时间戳缺席
