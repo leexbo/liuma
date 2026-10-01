@@ -44,6 +44,16 @@ cargo build --workspace    # 全部 crate;首次构建含 wasm 组件与桌面�
 just desktop               # 只构建 GPUI 桌面客户端
 ```
 
+### macOS 应用打包
+
+```bash
+just package-macos    # 产出 dist/Liuma.app + zip + dmg(仅 Darwin)
+```
+
+release 构建(Liuma-<版本>-<架构>.zip / .dmg,版本号取自根 `Cargo.toml`)加 ad-hoc 签名,本机直接可用;未经公证,分发给他人时 Gatekeeper 首次打开需右键打开或 `xattr -cr`。应用图标与运行时 Dock 图标同源:由 `logo.svg` 经 resvg 离线栅格化(`examples/emit-app-icon`)+ `iconutil` 出 `.icns`;bundle 模板见 `crates/liuma-desktop/packaging/`。
+
+打包链路目前仅覆盖 macOS,Windows / Linux 平台尚未适配。
+
 ## 快速开始
 
 前置工具链见[安装](#安装);以下命令均在仓库根目录执行。
@@ -77,6 +87,7 @@ just verify    # 格式 / clippy / 测试 / WIT / 组件契约 / e2e / 链接检
 | `crates/liuma-app` | 会话装配层(配置合并 / prompt 组装 / preset 工具组装) |
 | `crates/liuma-core` | 多会话应用核心(注册表 / 客方协议类型 / 轨迹与统计投影) |
 | `crates/liuma-desktop` | GPUI 桌面客户端 |
+| `crates/liuma-desktop/packaging/` | macOS bundle 模板(Info.plist) |
 | `crates/liuma-host` | 组件宿主(wasmtime 组件管理器 / 事件总线 / 持久化 / 网关) |
 | `crates/liuma-llm` | LLM 接入(方言引擎 / HTTP+SSE transport / 不变式闸门) |
 | `crates/liuma-sandbox` | 执行原语(沙箱链 / 受控 spawn / PTY) |
@@ -95,7 +106,7 @@ just verify    # 格式 / clippy / 测试 / WIT / 组件契约 / e2e / 链接检
 | `crates/liuma-wit` | host 侧 bindgen 与组件契约测试 |
 | `crates/liuma-example-tool` | 示例工具组件(`liuma:tools` world 参考实现) |
 | `presets/` | 内置能力 preset manifest(standard / minimal) |
-| `scripts/` | verify 脚本 |
+| `scripts/` | verify 与打包脚本 |
 
 ## 文档
 

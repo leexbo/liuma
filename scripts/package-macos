@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# package-macos:liuma-desktop → dist/ 可分发产物(Liuma.app + zip + dmg)。
+#
+# 不引 cargo-bundle 类打包工具:bundle 只是「一棵目录树 + Info.plist +
+# PkgInfo + 图标 + 一条 ad-hoc codesign」,自持脚本少一层工具链依赖。
+# 资源全部编译期内嵌进二进制(include_bytes!),bundle 不携带 assets。
+# 图标离线栅格化走 workspace 已锁定的 resvg(examples/emit-app-icon),
+# 与运行时 Dock 绘制(app_icon.rs)同源;qlmanage 转 SVG 全黑,见其注释。
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+if [ "$(uname -s)" != "Darwin" ]; then
+    echo "package-macos:仅支持 macOS(当前 $(uname -s))" >&2
+    exit 1
+fi
+
+# 版本唯一源 = 根 Cargo.toml [workspace.package] version
+version=$(awk -F'"' '/^\[workspace\.package\]/{s=1;next} /^\[/{s=0} s && $1 ~ /^version *= *$/ {print $2; exit}' Cargo.toml)
+[ -n "$version" ] || { echo "package-macos:未能从根 Cargo.toml [workspace.package] 读出版本号" >&2; exit 1; }
+arch=$(uname -m)
+app=dist/Liuma.app
+
+echo "package-macos:构建 release(liuma-desktop,lto=thin + strip)…"
+cargo build --release -p liuma-desktop
+
+echo "package-macos:生成图标(--release 复用上面的产物)…"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+cargo run --release --quiet -p liuma-desktop --example emit-app-icon -- "$work/Liuma.iconset"
+iconutil -c icns "$work/Liuma.iconset" -o "$work/AppIcon.icns"
+
+echo "package-macos:组装 $app …"
+rm -rf "$app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+cp target/release/liuma-desktop "$app/Contents/MacOS/"
+sed "s/@VERSION@/$version/g" crates/liuma-desktop/packaging/macos/Info.plist > "$app/Contents/Info.plist"
+printf 'APPL????' > "$app/Contents/PkgInfo"
+cp "$work/AppIcon.icns" "$app/Contents/Resources/"
+
+# ad-hoc 签名:本机构建无开发者证书、未公证;Gatekeeper 首次打开须
+# 右键打开或 xattr -cr(纯 Rust 依赖,无嵌套框架,签 bundle 一层即可)
+codesign --force --sign - "$app"
+
+zip_path="dist/Liuma-$version-$arch.zip"
+echo "package-macos:压缩 $zip_path …"
+rm -f "$zip_path"
+# ditto 而非 zip:保留 code signature 与扩展属性,解压后不触发重签名
+ditto -c -k --sequesterRsrc --keepParent "$app" "$zip_path"
+
+dmg_path="dist/Liuma-$version-$arch.dmg"
+echo "package-macos:制作 $dmg_path(拖入 Applications 安装)…"
+rm -f "$dmg_path"
+# Applications 替身:Finder 里的拖拽安装目标
+dmg_stage="$work/dmg"
+mkdir -p "$dmg_stage"
+ditto "$app" "$dmg_stage/Liuma.app"
+ln -s /Applications "$dmg_stage/Applications"
+hdiutil create -volname Liuma -srcfolder "$dmg_stage" -ov -format UDZO "$dmg_path" >/dev/null 2>&1
+
+echo
+echo "打包完成(dist/):"
+for artifact in "$app" "$zip_path" "$dmg_path"; do
+    # du 须带 -s:BSD du 不带时逐子目录列行,多行会灌进 printf
+    printf '  %6s  %s\n' "$(du -sh "$artifact" | cut -f1)" "$artifact"
+done

@@ -28,6 +28,10 @@ desktop:
 desktop-run ARGS='':
     cargo run -p liuma-desktop -- {{ARGS}}
 
+# macOS 应用打包:Liuma.app + zip + dmg → dist/(仅 Darwin,ad-hoc 签名)
+package-macos:
+    bash scripts/package-macos
+
 wit:
     bash scripts/verify-wit
 

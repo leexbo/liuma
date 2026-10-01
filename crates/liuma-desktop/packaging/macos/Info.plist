@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- scripts/package-macos 的 bundle 描述:sed 替换 @VERSION@ 后进
+     Contents/Info.plist。资源全部编译期内嵌进二进制(include_bytes!),
+     bundle 只需可执行文件与图标两件资源。 -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleName</key>
+	<string>Liuma</string>
+	<key>CFBundleDisplayName</key>
+	<string>Liuma</string>
+	<key>CFBundleExecutable</key>
+	<string>liuma-desktop</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.leexbo.liuma</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>12.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>
