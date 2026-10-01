@@ -1,6 +1,7 @@
 //! PTY spawn:portable-pty 包装 + 沙箱 argv 包装。
 //!
-//! 用途:需要终端语义的工具(isatty、彩色输出、行缓冲交互)。
+//! 用途:需要终端语义的工具(isatty、彩色输出、行缓冲交互),以及
+//! 交互式终端会话(带尺寸 spawn + master 写入口 + resize)。
 //! codex 同款包法(portable-pty + 宿主侧进程管理)。
 //!
 //! 沙箱:portable-pty 的 CommandBuilder 不暴露 pre_exec,故沙箱只能经
@@ -8,10 +9,11 @@
 //! Landlock-only 系统(无法 argv 包装)按 fail-closed **拒绝** PTY 执行,
 //! 不静默降级为无沙箱。
 //!
-//! 读取是阻塞 IO,经 `spawn_blocking` 桥接;master drop 即向会话送
-//! SIGHUP(PTY 语义),配合 `kill` 的组信号。
+//! 读写均为阻塞 IO,各自经 `spawn_blocking` 桥接成通道;master drop 即
+//! 向会话送 SIGHUP(PTY 语义),配合 `kill` 的组信号。
 
 use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use std::io::Write;
 use thiserror::Error;
 
 use crate::sandbox::{Rung, SandboxPolicy, wrap_argv};
@@ -75,6 +77,19 @@ pub fn spawn_pty(
     cwd: Option<&std::path::Path>,
     sandbox: Option<&SandboxPolicy>,
 ) -> Result<PtySession, PtyError> {
+    spawn_pty_sized(program, args, cwd, sandbox, PtySize::default(), &[])
+}
+
+/// 带初始尺寸与环境注入的 PTY spawn(交互终端用: TERM 等、行列数
+/// 需与渲染面一致,否则 TUI 程序按错误网格排版)。其余语义同 [`spawn_pty`]。
+pub fn spawn_pty_sized(
+    program: &str,
+    args: &[String],
+    cwd: Option<&std::path::Path>,
+    sandbox: Option<&SandboxPolicy>,
+    size: PtySize,
+    env: &[(&str, &str)],
+) -> Result<PtySession, PtyError> {
     // 沙箱 argv 包装(bwrap/seatbelt);landlock-only 返回 Err 即拒绝
     let (program, args) = match sandbox {
         Some(policy) => {
@@ -101,10 +116,13 @@ pub fn spawn_pty(
 
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize::default())
+        .openpty(size)
         .map_err(|e| PtyError::Io(e.to_string()))?;
     let mut command = CommandBuilder::new(&program);
     command.args(&args);
+    for (key, value) in env {
+        command.env(key, value);
+    }
     if let Some(dir) = cwd {
         command.cwd(dir);
     }
@@ -198,6 +216,52 @@ impl PtySession {
     /// 同一消费式 killer,先到先杀)
     pub fn killer(&self) -> Option<PtyKiller> {
         self.killer.clone()
+    }
+
+    /// 调整 PTY 行列(内核 TIOCSWINSZ,前台进程组收 SIGWINCH)。
+    /// 纯 ioctl,任意线程直调;与网格侧 resize 由调用方保持一致
+    pub fn resize(&self, size: PtySize) -> Result<(), PtyError> {
+        self.master
+            .resize(size)
+            .map_err(|e| PtyError::Io(e.to_string()))
+    }
+
+    /// 取 master 写入口(交互终端的键入/查询应答通道)。每次调用
+    /// dup 一个新 fd,会话内不缓存—— [`PtySession::start_write_chunks`]
+    /// 消费一次即可;直接拿裸 writer 的调用方自行管理写时机
+    pub fn take_writer(&self) -> Result<Box<dyn Write + Send>, PtyError> {
+        self.master
+            .take_writer()
+            .map_err(|e| PtyError::Io(e.to_string()))
+    }
+
+    /// 起通道化写任务:与 [`PtySession::start_read_chunks`] 对称,写入
+    /// 端 clone 自由、`send` 永不阻塞(PTY 内核缓冲满/`^S` 流控时阻塞
+    /// 落在 blocking 池的写任务里,不冻结调用线程)。写失败即收尾;
+    /// 发送端全 drop 后 `blocking_recv` 返回 None 自退
+    pub fn start_write_chunks(
+        &self,
+    ) -> Result<
+        (
+            tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+            tokio::task::JoinHandle<()>,
+        ),
+        PtyError,
+    > {
+        let writer = self.take_writer()?;
+        let (tx, mut rx): (
+            tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+            tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+        ) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::task::spawn_blocking(move || {
+            let mut writer = writer;
+            while let Some(bytes) = rx.blocking_recv() {
+                if writer.write_all(&bytes).is_err() || writer.flush().is_err() {
+                    break;
+                }
+            }
+        });
+        Ok((tx, task))
     }
 
     /// 非阻塞探测退出(Some = 已退出;None = 还在跑)。探测到即
@@ -383,5 +447,125 @@ mod tests {
             }
             Err(e) => panic!("unexpected: {e}"),
         }
+    }
+
+    // 带尺寸 spawn:子进程的 stty 应看到传入的行列(而非 PtySize 默认值)。
+    // 载荷是 POSIX 语义(`stty size`),Windows 侧对应用例随阶段 4 落
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pty_sized_spawn_reports_rows_cols() {
+        let dir = std::env::temp_dir().join(format!("liuma-pty-sized-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut session = spawn_pty_sized(
+            "/bin/bash",
+            &["-c".into(), "stty size".into()],
+            Some(&dir),
+            None,
+            portable_pty::PtySize {
+                rows: 33,
+                cols: 111,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+            &[],
+        )
+        .expect("pty spawn");
+        let output = session.read_to_end().await.expect("read");
+        let status = session.wait().await.expect("wait");
+        assert!(status.success(), "exit 应成功");
+        assert!(
+            output.contains("33 111"),
+            "stty 应报初始行列 33 111;got: {output}"
+        );
+    }
+
+    // 环境注入:CommandBuilder.env 对子进程可见
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pty_env_injection_reaches_child() {
+        let dir = std::env::temp_dir().join(format!("liuma-pty-env-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut session = spawn_pty_sized(
+            "/bin/bash",
+            &["-c".into(), "echo $LIUMA_PTY_TEST_VAR".into()],
+            Some(&dir),
+            None,
+            portable_pty::PtySize::default(),
+            &[("LIUMA_PTY_TEST_VAR", "env-ok")],
+        )
+        .expect("pty spawn");
+        let output = session.read_to_end().await.expect("read");
+        session.wait().await.expect("wait");
+        assert!(output.contains("env-ok"), "env 注入应可达;got: {output}");
+    }
+
+    // 写通道回路 + resize:writer 写入经 PTY 到达子进程(read 消费),
+    // resize 后 stty 应看到新行列。bash 在首个 read 处阻塞等 writer,
+    // 以此做读写两端同步;resize 发生在两次 stty 之间。载荷是 POSIX
+    // 语义,Windows 侧对应用例随阶段 4 落
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pty_write_chunks_and_resize() {
+        let dir = std::env::temp_dir().join(format!("liuma-pty-write-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut session = spawn_pty_sized(
+            "/bin/bash",
+            &[
+                "-c".into(),
+                "stty size; read line; stty size; echo got-$line".into(),
+            ],
+            Some(&dir),
+            None,
+            portable_pty::PtySize {
+                rows: 10,
+                cols: 40,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+            &[],
+        )
+        .expect("pty spawn");
+        let (writer, _write_task) = session.start_write_chunks().expect("writer");
+        let (buf, read_task) = session.start_read().expect("read");
+        // 同步点 1:bash 打印初始行列并阻塞在 read
+        wait_for(&buf, "10 40").await;
+        session
+            .resize(portable_pty::PtySize {
+                rows: 20,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("resize");
+        // 同步点 2:放行 read,bash 打印 resize 后行列并回显写入内容
+        writer.send(b"written-ok\n".to_vec()).expect("send write");
+        wait_for(&buf, "got-written-ok").await;
+        read_task.await.expect("read task");
+        let output = String::from_utf8_lossy(&buf.lock().unwrap()).into_owned();
+        let status = session.wait().await.expect("wait");
+        assert!(status.success(), "exit 应成功");
+        assert!(
+            output.contains("got-written-ok"),
+            "写入应经 PTY 到达子进程;got: {output}"
+        );
+        assert!(
+            output.contains("20 80"),
+            "resize 后 stty 应报新行列;got: {output}"
+        );
+    }
+
+    // 轮询共享读缓冲直到出现目标片段(阻塞读任务异步落盘,需让出;
+    // 5 秒封顶防悬挂)
+    #[cfg(unix)]
+    async fn wait_for(buf: &PtyReadBuffer, needle: &str) {
+        for _ in 0..100 {
+            if let Ok(guard) = buf.lock()
+                && String::from_utf8_lossy(&guard).contains(needle)
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("等待 {needle:?} 超时");
     }
 }
