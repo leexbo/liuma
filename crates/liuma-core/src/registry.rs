@@ -1115,12 +1115,17 @@ fn trajectory_delta_frame(
     )
 }
 
-/// 直播统计推送态:用量聚合(`StatsAgg`)与构成增量(`BreakdownAcc`)
-/// 同生命周期——预热一次建好,sink 逐事件喂入
+/// 直播统计推送态:用量聚合(`StatsAgg`)、构成增量(`BreakdownAcc`)
+/// 与**事件翻译器**同生命周期——预热一次建好,sink 逐事件喂入。
+/// 翻译器驻留于此:turn/step 计数必须跨认领连续(帧流键 `a:turn:step`
+/// 供桌面定位流式节点),每认领新建会让第二轮起计数归 1,键撞上首轮
+/// 节点就地改写(回复被吞);预热窗口与 `bd` 水位同步,首次认领从
+/// seq 1 等价全史重建
 #[derive(Default)]
 struct LiveStats {
     agg: stats::StatsAgg,
     bd: crate::context::BreakdownAcc,
+    translator: Option<crate::translate::Translator>,
 }
 
 /// 统计帧:事件属统计面即 apply 并推 `session/stats`(事件驱动,替代
@@ -8306,14 +8311,23 @@ async fn driver_loop(
         }
         // 队列帧(认领后待运行条目已出队)
         let _ = host0.mux.send(queue_frame(&session_id, inner));
-        // 翻译器计数预热(扫描既有日志;零分配 prime——全量 translate
-        // 每事件构造 JSON 后丢弃,长会话是纯浪费)
-        let mut translator = Translator::new(provider_info.clone());
+        // 翻译器计数预热(驻留 `live.translator`,跨认领连续——每认领
+        // 新建会让第二轮起 turn 计数归 1,帧流键撞首轮节点;扫描既有
+        // 日志做零分配 prime——全量 translate 每事件构造 JSON 后丢弃,
+        // 长会话是纯浪费)
         // 统计聚合跨 turn 复用(SlotInner 持有):按 `bd.next_seq()` 补洞,
-        // 首次认领从 seq 1 起等价全量重建,后续认领只追增量。
+        // 首次认领从 seq 1 起等价全量重建,后续认领只追增量。预热窗与
+        // `bd` 水位同源,翻译器与聚合的状态推进保持一致。
         // 窗口随会话模型解析(与引擎压缩阈值同源)
         let context_window = host0.session_context_window(&session_id);
         let mut live = std::mem::take(&mut *inner.live.lock_recover());
+        if live.translator.is_none() {
+            live.translator = Some(Translator::new(provider_info.clone()));
+        }
+        let mut translator = live
+            .translator
+            .take()
+            .unwrap_or_else(|| Translator::new(provider_info.clone()));
         if let Ok(l) = inner.log.lock() {
             l.for_each_from(live.bd.next_seq(), |ev| {
                 translator.prime(ev);
@@ -8417,7 +8431,9 @@ async fn driver_loop(
                 },
             )
             .await;
-        // 归还跨 turn 复用的统计态(下次认领/压缩取同一份续扫)
+        // 归还跨 turn 复用的统计态(下次认领/压缩取同一份续扫);
+        // 翻译器随(turn sink 的可变借用已随 turn_with 结束)
+        live.translator = Some(translator);
         *inner.live.lock_recover() = live;
         slot.running
             .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -9714,6 +9730,47 @@ mod tests {
             "无句柄不得半置位 stopped"
         );
         assert!(!host.stop_shell_job("abc").await, "非 id 形态");
+    }
+
+    /// 连续多轮的帧内 turn 号必须连续:直播翻译器每认领重建,若预热窗
+    /// 只盖增量,第二轮起 turn 计数归 1,帧流键 a:1:x 撞上首轮节点
+    /// (桌面流式/定稿按键改写 → 回复被吞;重开走全史预热才正确)
+    #[tokio::test]
+    async fn live_frames_keep_turn_numbers_continuous_across_claims() {
+        let host = temp_host("turn-frames");
+        host.set_fake_script(script(&["one", "two", "three"]));
+        let mut mux = host.mux_subscribe();
+        let id = host.create_session(None, None, None);
+
+        // 三个连续 turn,各收帧到 turn/end,记录 assistant/message 帧的
+        // turn 字段
+        let mut answer_turns = Vec::new();
+        for round in 0..3 {
+            host.prompt(
+                &id,
+                &[json!({ "type": "text", "text": format!("q{round}") })],
+                "queue",
+            )
+            .await
+            .unwrap();
+            loop {
+                let f = recv_until(&mut mux, |f| f.method == "session/event")
+                    .await
+                    .expect("事件帧");
+                let ty = f.payload["event"]["type"].as_str().unwrap().to_string();
+                if ty == "assistant/message" {
+                    answer_turns.push(f.payload["event"]["data"]["turn"].as_u64().unwrap_or(0));
+                }
+                if ty == "turn/end" {
+                    break;
+                }
+            }
+        }
+        assert_eq!(
+            answer_turns,
+            vec![1, 2, 3],
+            "各轮 assistant 帧的 turn 号必须连续: {answer_turns:?}"
+        );
     }
 
     /// prompt → 有序翻译事件
