@@ -1,0 +1,17 @@
+# 终端面板文案(key 根段 == 文件 stem)。
+# 值一律加引号(YAML 裸标量会被解析成非字符串,rust-i18n 只收字符串叶子)。
+_version: 2
+
+terminal:
+
+  starting:
+    zh-CN: "正在启动 shell…"
+    en: "Starting shell…"
+
+  exited:
+    zh-CN: "终端会话已退出"
+    en: "Terminal session has exited"
+
+  restart:
+    zh-CN: "重新打开"
+    en: "Restart"

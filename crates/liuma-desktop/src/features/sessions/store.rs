@@ -180,6 +180,9 @@ impl AppStore {
         if self.files_visible() {
             self.files_ensure(cx);
         }
+        // 终端会话归属工作区(不随会话):cwd 失配即杀,下次打开惰性
+        // 重 spawn 到新根(杀时机后置,避免切会话顺手 spawn 的浪费)
+        self.terminal_on_workspace_change(cx);
         self.sync_run_tick(cx);
         cx.notify();
     }
@@ -354,6 +357,8 @@ impl AppStore {
         self.state.current_id = None;
         self.sessions.collapsed_workspaces.remove(ws);
         self.refresh_branches();
+        // 终端会话归属工作区:cwd 失配即杀(下次打开惰性重 spawn 到新根)
+        self.terminal_on_workspace_change(cx);
         cx.notify();
     }
 

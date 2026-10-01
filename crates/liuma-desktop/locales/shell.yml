@@ -28,6 +28,10 @@ shell:
     zh-CN: "文件"
     en: "Files"
 
+  terminal_tab:
+    zh-CN: "终端"
+    en: "Terminal"
+
   preview_tab:
     zh-CN: "预览"
     en: "Preview"

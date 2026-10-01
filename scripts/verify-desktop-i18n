@@ -84,6 +84,8 @@ DEV_METHODS = {"expect"}
 EXEMPT_CALLS = {
     # element id / debug selector / 键名
     "id", "debug_selector", "ElementId", "key", "name", "tag", "lang", "language",
+    # 键上下文域(gpui key_context;标识符非文案,终端面板首例)
+    "key_context",
     # 路径/环境/进程
     "join", "var", "var_os", "args", "arg", "parse", "starts_with", "ends_with",
     "contains", "split", "split_once", "trim_start_matches", "trim_end_matches",
@@ -107,6 +109,8 @@ EXEMPT_TEXT = {
     "English",  # `LOCALES` 的语言原文名(两档同显)
     "PDF", "JSON", "HTTP", "TOML", "Markdown", "Mermaid", "PPT", "IMG", "FILE",
     "OUT", "IN", "HEAD", "HOME", "Downloads", "Skill",
+    # 终端 PTY 环境变量名(协议面标识,非文案)
+    "TERM_PROGRAM", "COLORTERM",
     # 稳定 ASCII slug(debug selector 用,非文案;见 SettingsNav::slug)
     "General", "Models", "Mcp", "Hooks", "Decision", "ArchivedChats", "About",
     "system-ui, sans-serif", "Helvetica", "Times New Roman", "Menlo",

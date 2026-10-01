@@ -1748,7 +1748,6 @@ fn allow_host_parking(cx: &mut TestAppContext) {
     cx.background_executor.allow_parking();
 }
 
-
 /// 轮询宿主会话权限直到期望值或超时(异步 set_permission 落盘日志事件,
 /// 与 liuma-core 侧 wait_log_sandbox 同义;desktop 测试环境用真实线程阻塞)。
 fn wait_permission(host: &liuma_core::registry::AppHost, id: &str, want: &str) {
@@ -13808,10 +13807,7 @@ fn open_archived_section_ui(cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualT
 fn settings_archived_nav_entry(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "archnav");
     open_archived_section_ui(cx, &mut wcx);
-    assert!(
-        wcx.debug_bounds("archived-section").is_some(),
-        "归档区在场"
-    );
+    assert!(wcx.debug_bounds("archived-section").is_some(), "归档区在场");
     assert!(
         cx.update(|app| store.read(app).settings.settings_nav)
             == crate::features::settings::SettingsNav::ArchivedChats,
@@ -13832,8 +13828,7 @@ fn archived_roundtrip_ui(cx: &mut TestAppContext) {
     let aid = seed_archived(&store, cx, "rt-one");
     open_archived_section_ui(cx, &mut wcx);
     let row_sel: &'static str = Box::leak(format!("archived-row-{aid}").into_boxed_str());
-    let restore_sel: &'static str =
-        Box::leak(format!("archived-restore-{aid}").into_boxed_str());
+    let restore_sel: &'static str = Box::leak(format!("archived-restore-{aid}").into_boxed_str());
     assert!(wcx.debug_bounds(row_sel).is_some(), "归档行在场");
     click_sel(&mut wcx, restore_sel);
     // 两拍起步:归档区重拉一拍 + session-added 广播 → Effect::Sessions
@@ -13867,15 +13862,13 @@ fn archived_delete_confirm_flow(cx: &mut TestAppContext) {
     click_sel(&mut wcx, del_sel);
     settle(&mut wcx);
     assert!(
-        wcx.debug_bounds("dialog-layer").is_some() && wcx.debug_bounds("archived-confirm-card").is_some(),
+        wcx.debug_bounds("dialog-layer").is_some()
+            && wcx.debug_bounds("archived-confirm-card").is_some(),
         "确认弹层在场"
     );
     click_sel(&mut wcx, "archived-confirm-cancel");
     settle(&mut wcx);
-    assert!(
-        wcx.debug_bounds("dialog-layer").is_none(),
-        "取消后弹层关闭"
-    );
+    assert!(wcx.debug_bounds("dialog-layer").is_none(), "取消后弹层关闭");
     assert!(wcx.debug_bounds(row_sel).is_some(), "取消后行仍在");
     click_sel(&mut wcx, del_sel);
     settle(&mut wcx);
@@ -14036,7 +14029,9 @@ fn archived_order_alpha_flip(cx: &mut TestAppContext) {
         "Updated 档新归档在前"
     );
     cx.update(|app| {
-        store.update(app, |st, cx| st.set_archived_order(ArchivedOrder::Alpha, cx));
+        store.update(app, |st, cx| {
+            st.set_archived_order(ArchivedOrder::Alpha, cx)
+        });
     });
     settle(&mut wcx);
     assert!(
@@ -14084,5 +14079,233 @@ fn archived_long_list_scrolls_internally(cx: &mut TestAppContext) {
         .size
         .height;
     assert!(list < sec, "滚动区应只占区块余部(标题/控制行固定)");
+    let _ = std::fs::remove_dir_all(root);
+}
+/// 终端面板:空态清单有终端行;开标签 → 视图在场,真 shell 装配(PTY
+/// 面用例,同 pty.rs 单测的 unix 前提);同工作区重复激活不重启(长驻
+/// 语义);关闭标签即杀会话(VS Code 心智)。跑法:单测并行偶发仲裁
+/// 惯例 —— 失败先 `-- --test-threads=1` 单跑复判归属
+#[gpui_kit::test]
+fn panel_terminal_lifecycle(cx: &mut TestAppContext) {
+    // PTY 面用例前提:至少一个登录 shell 可用;环境早退必须带断言防假绿
+    let zsh = std::path::Path::new("/bin/zsh").exists();
+    let bash = std::path::Path::new("/bin/bash").exists();
+    assert!(zsh || bash, "测试环境应至少有 /bin/zsh 或 /bin/bash");
+    let (store, mut wcx, root) = menu_harness(cx, "terminal-panel");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+    };
+    // 开面板(无标签 = 空态快捷菜单)
+    cx.update(|app| {
+        store.update(app, |st, cx| st.toggle_panel(cx));
+    });
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("panel-empty-row-terminal").is_some(),
+        "空态清单应有终端行"
+    );
+    // 开终端标签:标签与视图在场;shell 装配跨执行器(blocking 池 →
+    // oneshot → gpui 任务),deadline 轮询到会话就位
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.open_panel_tab(crate::shell::panel::PanelTab::Terminal, cx)
+        });
+    });
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("panel-tab-terminal").is_some(),
+        "标签条应有终端标签"
+    );
+    assert!(
+        wcx.debug_bounds("panel-terminal-view").is_some(),
+        "终端视图应在场"
+    );
+    let mut assembled: Option<(std::path::PathBuf, u64)> = None;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        cx.run_until_parked();
+        let state = cx.update(|app| {
+            store.update(app, |st, _| {
+                (
+                    st.terminal.session.as_ref().map(|s| s.cwd.clone()),
+                    st.terminal.generation,
+                    st.terminal.spawning,
+                )
+            })
+        });
+        if let (Some(cwd), generation, spawning) = state
+            && !spawning
+        {
+            assembled = Some((cwd, generation));
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let (cwd, generation) = assembled.expect("真 shell 应在时限内装配完成");
+    // 会话归属工作区:cwd = 工作区根(harness 的 ws 目录)
+    assert!(cwd.ends_with("ws"), "终端 cwd 应为工作区根;got {cwd:?}");
+    // 同工作区重复激活:不重启(代次不变 = 长驻语义)
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.activate_panel_tab(crate::shell::panel::PanelTab::Terminal, cx)
+        });
+    });
+    cx.run_until_parked();
+    let generation_after = cx.update(|app| store.update(app, |st, _| st.terminal.generation));
+    assert_eq!(generation, generation_after, "同工作区激活不应重启会话");
+    // 关闭标签即杀会话(VS Code 心智);重开代次前移
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.close_panel_tab(crate::shell::panel::PanelTab::Terminal, cx)
+        });
+    });
+    let alive = cx.update(|app| store.update(app, |st, _| st.terminal.session.is_some()));
+    assert!(!alive, "关闭标签应杀会话");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 终端交互链路端到端:开标签即聚焦(wants_focus 消费);点击终端区
+/// 聚焦;键入经编码 → PTY → 回显进网格;长输出进滚回,滚到顶可见最早
+/// 行(历史不丢)。PTY 面用例,前提与仲裁惯例同 panel_terminal_lifecycle
+#[gpui_kit::test]
+fn panel_terminal_focus_input_scroll(cx: &mut TestAppContext) {
+    let zsh = std::path::Path::new("/bin/zsh").exists();
+    let bash = std::path::Path::new("/bin/bash").exists();
+    assert!(zsh || bash, "测试环境应至少有 /bin/zsh 或 /bin/bash");
+    let (store, mut wcx, root) = menu_harness(cx, "terminal-interact");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut gpui_kit::App| {});
+        cx.run_until_parked();
+    };
+    let wait_grid = |cx: &mut TestAppContext,
+                     wcx: &mut gpui_kit::VisualTestContext,
+                     needle: &'static str,
+                     take: fn(&[String], &str) -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut hit = false;
+        while std::time::Instant::now() < deadline {
+            cx.run_until_parked();
+            let text = wcx.update(|_window, app| {
+                let st = store.read(app);
+                st.terminal
+                    .session
+                    .as_ref()
+                    .map(|s| s.visible_text().join("\n"))
+                    .unwrap_or_default()
+            });
+            if take(&[text], needle) {
+                hit = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        hit
+    };
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.toggle_panel(cx);
+            st.open_panel_tab(crate::shell::panel::PanelTab::Terminal, cx);
+        });
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        cx.run_until_parked();
+        let ready = cx.update(|app| {
+            store.update(app, |st, _| {
+                st.terminal.session.is_some() && !st.terminal.spawning
+            })
+        });
+        if ready {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let assembled = cx.update(|app| store.update(app, |st, _| st.terminal.session.is_some()));
+    assert!(assembled, "真 shell 应在时限内装配完成");
+    redraw(cx, &mut wcx);
+    // 1) 开标签即聚焦(wants_focus 渲染期消费)
+    let focused = wcx.update(|window, app| {
+        let handle = store.read(app).terminal.focus.clone();
+        handle.is_focused(window)
+    });
+    assert!(focused, "开标签后终端应持有焦点");
+    // 2) 点击终端区聚焦
+    let center = wcx
+        .debug_bounds("panel-terminal-view")
+        .expect("终端视图在场");
+    wcx.simulate_mouse_down(
+        gpui_kit::point(center.center().x, center.center().y),
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::none(),
+    );
+    wcx.simulate_mouse_up(
+        gpui_kit::point(center.center().x, center.center().y),
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    let focused_after_click = wcx.update(|window, app| {
+        let handle = store.read(app).terminal.focus.clone();
+        handle.is_focused(window)
+    });
+    assert!(focused_after_click, "点击终端区应聚焦");
+    // 3) 键入 → 编码 → PTY → 回显进网格(端到端焦点证明)
+    wcx.simulate_input("echo diag-ok");
+    wcx.simulate_keystrokes("enter");
+    assert!(
+        wait_grid(cx, &mut wcx, "diag-ok", |text, needle| text[0]
+            .contains(needle)),
+        "键入回显应出现在网格(diag-ok)"
+    );
+    // 4) 长输出 → 滚回:滚到顶最早行可见(历史不丢)
+    wcx.simulate_input("for i in $(seq 1 120); do echo L$i; done");
+    wcx.simulate_keystrokes("enter");
+    assert!(
+        wait_grid(cx, &mut wcx, "L120", |text, needle| text[0]
+            .contains(needle)),
+        "长输出尾行应在视口(L120)"
+    );
+    let bottom_sees_top = wcx.update(|_window, app| {
+        let st = store.read(app);
+        st.terminal
+            .session
+            .as_ref()
+            .map(|s| s.visible_text().join("\n"))
+            .unwrap_or_default()
+            .contains("L1\n")
+    });
+    assert!(!bottom_sees_top, "视口在底部时最早行不应可见");
+    cx.update(|app| {
+        store.update(app, |st, cx| st.terminal_scroll(10_000, cx));
+    });
+    cx.run_until_parked();
+    let (offset, rows, top_text) = wcx.update(|_window, app| {
+        use alacritty_terminal::grid::Dimensions as _;
+        let st = store.read(app);
+        st.terminal
+            .session
+            .as_ref()
+            .map(|s| {
+                (
+                    s.term.renderable_content().display_offset,
+                    s.term.grid().screen_lines(),
+                    s.visible_text().join("\n"),
+                )
+            })
+            .unwrap_or((0, 0, String::new()))
+    });
+    eprintln!("[diag] offset={offset} rows={rows}");
+    assert!(
+        offset > 0,
+        "滚到顶后 display_offset 应 > 0;offset={offset} rows={rows}"
+    );
+    assert!(
+        top_text.contains("L1\n") || top_text.lines().any(|l| l.trim_end() == "L1"),
+        "滚到顶应看到最早输出行;got: {}",
+        top_text.lines().take(6).collect::<Vec<_>>().join(" | ")
+    );
     let _ = std::fs::remove_dir_all(root);
 }

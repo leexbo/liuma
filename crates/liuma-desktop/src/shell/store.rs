@@ -118,6 +118,11 @@ pub struct AppStore {
     pub preview: crate::features::preview::PreviewStore,
     /// 预览变更轮询任务(1s stat;仅存在预览 tab 时活,自退)
     pub preview_poll: Option<gpui_kit::Task<()>>,
+    /// 终端功能切片状态(右栏「终端」标签:PTY 会话/网格尺寸/焦点;
+    /// 域与行为见 features::terminal)
+    pub terminal: crate::features::terminal::store::TerminalStore,
+    /// 终端输出泵任务(PTY 增量块 → VT 状态机;kill 换代后自退)
+    pub(crate) terminal_pump: Option<gpui_kit::Task<()>>,
     /// 状态边沿刷新的延迟任务(重触发即替换;见 Effect::StatusRefresh)
     pub(crate) status_refresh: Option<gpui_kit::Task<()>>,
     /// 状态边沿刷新代次(替换任务时 +1,过期任务到期自弃)
@@ -268,6 +273,8 @@ impl AppStore {
             files: crate::features::files::FilesStore::mount(cx),
             preview: crate::features::preview::PreviewStore::default(),
             preview_poll: None,
+            terminal: crate::features::terminal::store::TerminalStore::new(cx.focus_handle()),
+            terminal_pump: None,
             status_refresh: None,
             status_refresh_gen: 0,
             local_notice_seq: 0,
@@ -1288,14 +1295,21 @@ impl AppStore {
         {
             self.files_ensure(cx);
         }
+        if matches!(self.panel_active_tab, Some(PanelTab::Terminal)) {
+            self.terminal_ensure(cx);
+        }
         cx.notify();
     }
 
     /// 关闭面板标签:关的是激活页则激活余下最后一张;无余 = 空态
-    /// (panel_open 不动,面板保持开)。预览标签关闭即焚桶(纯内存态)
+    /// (panel_open 不动,面板保持开)。预览标签关闭即焚桶(纯内存态);
+    /// 终端标签关闭即杀会话(VS Code 心智;重开即新 shell)
     pub fn close_panel_tab(&mut self, tab: PanelTab, cx: &mut Context<Self>) {
         if let PanelTab::Preview(p) = &tab {
             self.preview_forget(&p.path);
+        }
+        if matches!(tab, PanelTab::Terminal) {
+            self.terminal_kill(cx);
         }
         self.panel_tabs.retain(|t| *t != tab);
         if self.panel_active_tab == Some(tab) {
@@ -1323,6 +1337,9 @@ impl AppStore {
             if let Some(PanelTab::Preview(p)) = self.panel_active_tab.as_ref() {
                 let target = (p.path.clone(), p.line);
                 self.preview_ensure_bucket(&target.0, target.1, cx);
+            }
+            if matches!(self.panel_active_tab, Some(PanelTab::Terminal)) {
+                self.terminal_ensure(cx);
             }
             cx.notify();
         }

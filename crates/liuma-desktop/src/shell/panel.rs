@@ -41,13 +41,20 @@ pub enum PanelTab {
     Trajectory,
     /// 文件(工作区文件树,lazy 逐层装载;点文件开预览)
     Files,
+    /// 终端(交互式 shell 会话,长驻至关闭标签;features::terminal)
+    Terminal,
     /// 文档预览(渲染器注册表见 kits::filetype)
     Preview(PreviewTab),
 }
 
 impl PanelTab {
     /// 全部静态标签(「+」菜单与空态清单共用的视图源;Preview 不列)
-    pub const ALL: [PanelTab; 3] = [PanelTab::Plan, PanelTab::Trajectory, PanelTab::Files];
+    pub const ALL: [PanelTab; 4] = [
+        PanelTab::Plan,
+        PanelTab::Trajectory,
+        PanelTab::Files,
+        PanelTab::Terminal,
+    ];
 
     /// 是否文件树标签(切会话换根门控判据)
     pub fn is_files(&self) -> bool {
@@ -61,6 +68,7 @@ impl PanelTab {
             PanelTab::Plan => t!("shell.plan_tab").to_string(),
             PanelTab::Trajectory => t!("shell.trajectory_tab").to_string(),
             PanelTab::Files => t!("shell.files_tab").to_string(),
+            PanelTab::Terminal => t!("shell.terminal_tab").to_string(),
             PanelTab::Preview(p) => p
                 .path
                 .file_name()
@@ -75,6 +83,7 @@ impl PanelTab {
             PanelTab::Plan => fixed(LiumaIcon::ListChecks, size),
             PanelTab::Trajectory => fixed(LiumaIcon::Trajectory, size),
             PanelTab::Files => fixed(LiumaIcon::FolderTree, size),
+            PanelTab::Terminal => fixed(IconName::SquareTerminal, size),
             PanelTab::Preview(p) => {
                 let name = p
                     .path
@@ -94,6 +103,7 @@ impl PanelTab {
             PanelTab::Plan => "plan".to_string(),
             PanelTab::Trajectory => "trajectory".to_string(),
             PanelTab::Files => "files".to_string(),
+            PanelTab::Terminal => "terminal".to_string(),
             PanelTab::Preview(p) => {
                 use std::hash::{Hash, Hasher};
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -426,6 +436,13 @@ fn tab_body(
             .min_h(px(0.))
             .min_w(px(0.))
             .child(crate::features::files::render(store, window, cx))
+            .into_any_element(),
+        PanelTab::Terminal => div()
+            .debug_selector(|| "panel-terminal-view".to_string())
+            .flex_1()
+            .min_h(px(0.))
+            .min_w(px(0.))
+            .child(crate::features::terminal::render(store, window, cx))
             .into_any_element(),
         PanelTab::Preview(preview) => div()
             .debug_selector(|| format!("panel-preview-view-{}", preview.path.display()))
