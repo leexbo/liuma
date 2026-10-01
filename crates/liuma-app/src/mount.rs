@@ -408,8 +408,9 @@ fn make_subagent(
 }
 
 /// subagent:子代理工具 + 控制对(共享 registry;注册表统一,全可见)。
-/// 装配即做重启恢复扫描:父会话下中断的驻留子代理重挂 + 投
-/// 「已恢复」通知,已结算的重挂为可续话。
+/// 装配即做重启恢复扫描:父会话下中断的驻留子代理冷修夏后重挂为
+/// idle(不投父通知——通知即 turn 输入,重启不自动续跑),已结算的
+/// 重挂为可续话。
 fn mount_subagent(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPortObj>>> {
     let mut subagent = make_subagent(ctx, true)?;
     subagent.resume_children();

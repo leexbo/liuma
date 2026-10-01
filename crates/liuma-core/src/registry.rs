@@ -13248,9 +13248,9 @@ mod tests {
         }
     }
 
-    /// 重启恢复三态:中断子会话(有 descriptor 无 settled)= 重挂 +
-    /// 「已恢复」通知 + 可续话;已结算子会话 = 静默重挂;认领幂等,
-    /// release 后可再恢复。
+    /// 重启恢复三态:中断子会话(有 descriptor 无 settled)= 冷修夏 +
+    /// 静默重挂(不投父通知——通知即 turn 输入,重启不自动续跑);
+    /// 已结算子会话 = 静默重挂;认领幂等,release 后可再恢复。
     #[tokio::test]
     async fn subagent_children_resume_after_restart() {
         let host = temp_host("subresume");
@@ -13333,7 +13333,7 @@ mod tests {
         liuma_tools::subagent::SessionFactory::release_child(&factory, &settled_child);
 
         // 全链重挂:SubagentTool + resume_children → 注册表即刻有两个驻留,
-        // 中断者向父投「已恢复」通知(已结算者静默)
+        // 两者都不向父投通知(重开自动续跑是「无人确认就重跑工作」)
         let notify = ResumeRecordingNotify::default();
         let transport: liuma_tools::subagent::TransportFactory<liuma_llm::FakeProvider> = {
             // 两个驻留各消费一次工厂调用(重挂即建传输);组内容相同,
@@ -13368,25 +13368,13 @@ mod tests {
         // 两子会话都已重挂为可续话驻留
         wait_registry_idle(&tool, 2).await;
 
-        // 「已恢复」通知恰一条:发给父、含 interrupted 摘要、kind 染色
-        for _ in 0..1000 {
-            if notify.calls.lock().unwrap().len() == 1 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-        {
-            let calls = notify.calls.lock().unwrap();
-            assert_eq!(calls.len(), 1, "已结算者静默,只有中断者通知");
-            let (p, text, source) = &calls[0];
-            assert_eq!(p, &parent);
-            assert!(text.contains("was interrupted by a host restart"), "{text}");
-            assert_eq!(source["kind"], "subagent-settled");
-            assert_eq!(
-                source["senderSessionId"].as_str(),
-                Some(interrupted_child.as_str())
-            );
-        }
+        // 零通知:重挂不驱动父会话(回归锁——曾投「已恢复」通知,空闲
+        // 驱动认领即自动起 turn,重启后子代理被无声重跑)
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            notify.calls.lock().unwrap().is_empty(),
+            "重挂不得向父投任何通知"
+        );
 
         // 续话:send_message 到重挂的中断者 → 新 turn(脚本回复)→ 结算通知
         let mut control = liuma_tools::subagent::SubagentControlTool::new(tool.registry.clone());
@@ -13403,14 +13391,16 @@ mod tests {
         .await;
         assert!(sent.success, "{}", sent.output);
         for _ in 0..1000 {
-            if notify.calls.lock().unwrap().len() == 2 {
+            if notify.calls.lock().unwrap().len() == 1 {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         {
             let calls = notify.calls.lock().unwrap();
-            let (_, text, _) = &calls[1];
+            assert_eq!(calls.len(), 1, "用户驱动的续话才有结算通知");
+            let (p, text, _) = &calls[0];
+            assert_eq!(p, &parent);
             assert!(text.contains("resumed reply"), "{text}");
             assert!(
                 text.contains("finished and will do no further work"),

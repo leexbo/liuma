@@ -108,23 +108,6 @@ pub fn settlement_notice(
     (text, source)
 }
 
-/// 重启恢复通知(中断重挂时投父)
-fn resumed_notice(child_id: &str) -> (String, Value) {
-    let summary = format!(
-        "Background subagent {child_id} was interrupted by a host restart and has been resumed."
-    );
-    let text = format!(
-        "{summary} Its last turn did not finish; send it a message with `send_message` to continue."
-    );
-    let source = json!({
-        "kind": "subagent-settled",
-        "form": "notice",
-        "summary": summary,
-        "senderSessionId": child_id,
-    });
-    (text, source)
-}
-
 /// 子代理回发父消息拼装(kind=subagent-message,桌面独立卡形态)
 fn child_message_notice(self_id: &str, message: &str) -> (String, Value) {
     let text = format!("Message from subagent {self_id}:\n\n{message}");
@@ -968,7 +951,8 @@ where
     }
 
     /// 重启恢复:扫描父会话下有 descriptor 标记的子会话并重挂为
-    /// 驻留(实现方已认领防双挂;中断者先冷修夏并投「已恢复」通知)。
+    /// 驻留(实现方已认领防双挂;中断者先冷修夏并落「已恢复」settled
+    /// 标记,**不投父通知**——通知即 turn 输入,重启不自动续跑)。
     /// 无 factory/notify 或无 tokio runtime(纯装配单测)→ no-op。
     pub fn resume_children(&mut self) {
         let Some(factory) = self.factory.clone() else {
@@ -1051,7 +1035,7 @@ struct ResidentChild<T> {
     release: Arc<dyn Fn() + Send + Sync>,
     /// 初始 prompt(委派即带;与续话统一走消息循环)
     first: Option<ChildMsg>,
-    /// 重挂且上次被中断(投「已恢复」通知)
+    /// 重挂且上次被中断(落「已恢复」settled 标记,下次扫描视为已结)
     resumed_interrupted: bool,
 }
 
@@ -1144,10 +1128,12 @@ where
     // 中途插话:引擎 step 边界认领(steer 语义)
     engine.set_steer_buf(Arc::clone(&steer));
 
-    // 重挂且中断:投「已恢复」通知 + settled 标记(下次扫描视为已结)
+    // 重挂且中断:只落 settled 标记(下次扫描视为已结),**不投父通知**
+    // ——通知经 Notice 泵即变父会话 turn 输入,空闲驱动认领 = 无用户
+    // 确认就续跑/重跑上次中断的工作(退出时在跑的子代理每次重开必被
+    // 重放)。中断痕迹留在子日志:冷修夏的合成失败结果 + 本标记,父
+    // 模型经 list_agents 可见 idle 态,用户让继续再 send_message
     if resumed_interrupted {
-        let (text, source) = resumed_notice(&handle.session_id);
-        notify.notify(&parent_id, text, source).await;
         commit_child_marker(
             &parts.log,
             "subagent/settled",
@@ -2209,9 +2195,5 @@ mod tests {
             text.contains("It left no closing message."),
             "空白 closing 视同无"
         );
-
-        let (text, source) = resumed_notice("s-4");
-        assert!(text.contains("was interrupted by a host restart"), "{text}");
-        assert_eq!(source["kind"], "subagent-settled");
     }
 }
