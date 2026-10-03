@@ -1,5 +1,5 @@
 //! 请求重试策略:有界指数退避 + 对称抖动
-//! (normal 模式默认值:5 次 / 500ms 起 / ×2 指数 / 封顶 10s / ±10% 抖动)。
+//! (normal 模式默认值:5 次 / 2s 起 / ×2 指数 / 封顶 30s / ±10% 抖动)。
 //!
 //! 决策入口是 [`RetryPolicy::decide`]:按 [`TransportError`] 分类与
 //! 第 retry 次序号给出等待时长或放行。延迟计算为纯函数(`random`
@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use crate::transport::TransportError;
 
-/// 有界指数退避策略(默认 normal 模式:5 次 / 500ms 起 /
-/// ×2 指数 / 封顶 10s / ±10% 抖动)
+/// 有界指数退避策略(默认 normal 模式:5 次 / 2s 起 /
+/// ×2 指数 / 封顶 30s / ±10% 抖动)
 #[derive(Debug, Clone, PartialEq)]
 pub struct RetryPolicy {
     /// 首次请求后最多重试次数(重试编号 > max_retries 即放行错误)
@@ -27,8 +27,8 @@ impl Default for RetryPolicy {
     fn default() -> Self {
         Self {
             max_retries: 5,
-            initial_delay_ms: 500,
-            max_delay_ms: 10_000,
+            initial_delay_ms: 2_000,
+            max_delay_ms: 30_000,
             jitter_ratio: 0.1,
         }
     }
@@ -78,33 +78,33 @@ mod tests {
         RetryPolicy::default()
     }
 
-    /// 退避序列(抖动中点):500 → 1000 → 2000 → 4000 → 8000
+    /// 退避序列(抖动中点):2s → 4s → 8s → 16s → 30s(封顶)
     #[test]
     fn backoff_sequence_doubles() {
         let p = policy();
         let seq: Vec<u64> = (1..=5).map(|r| p.local_delay_ms(r, 0.5)).collect();
-        assert_eq!(seq, vec![500, 1000, 2000, 4000, 8000]);
+        assert_eq!(seq, vec![2000, 4000, 8000, 16_000, 30_000]);
     }
 
-    /// 指数延迟封顶 10s(±10% 抖动后仍不越界)
+    /// 指数延迟封顶 30s(±10% 抖动后仍不越界)
     #[test]
     fn exponential_capped_at_max_delay() {
         let p = policy();
-        // retry 6 本应 16s,封顶 10s;抖动上界 1.1× 亦封在 10s
-        assert_eq!(p.local_delay_ms(6, 0.5), 10_000);
-        assert_eq!(p.local_delay_ms(6, 1.0), 10_000);
+        // retry 7 本应 64s,封顶 30s;抖动上界 1.1× 亦封在 30s
+        assert_eq!(p.local_delay_ms(7, 0.5), 30_000);
+        assert_eq!(p.local_delay_ms(7, 1.0), 30_000);
         // 深位重试(超大指数)不溢出
-        assert_eq!(p.local_delay_ms(2000, 0.5), 10_000);
+        assert_eq!(p.local_delay_ms(2000, 0.5), 30_000);
     }
 
     /// 抖动界:[1-j, 1+j] × 指数值(random=0 下界、1 上界)
     #[test]
     fn jitter_bounds_symmetric() {
         let p = policy();
-        assert_eq!(p.local_delay_ms(1, 0.0), 450); // 500 × 0.9
-        assert_eq!(p.local_delay_ms(1, 1.0), 550); // 500 × 1.1
-        assert_eq!(p.local_delay_ms(2, 0.0), 900);
-        assert_eq!(p.local_delay_ms(2, 1.0), 1100);
+        assert_eq!(p.local_delay_ms(1, 0.0), 1800); // 2s × 0.9
+        assert_eq!(p.local_delay_ms(1, 1.0), 2200); // 2s × 1.1
+        assert_eq!(p.local_delay_ms(2, 0.0), 3600);
+        assert_eq!(p.local_delay_ms(2, 1.0), 4400);
     }
 
     /// 可重试分类放行,不可重试直通

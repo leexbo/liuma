@@ -54,6 +54,12 @@ pub struct ProviderEntry {
     /// 最近一次计费查询快照(持久化;重启后状态栏/卡片显示「N 小时前」)
     #[serde(default)]
     pub billing_cache: Option<BillingSnapshot>,
+    /// 厂商托管工具启用清单(如 ["web_search"];装配时按方言声明表 ∧
+    /// 模型门控注入——模型不在门控内静默不注入,能力不存在是事实。
+    /// 写法注意:不在此硬编码工具 kind,合法值域由
+    /// liuma_llm behaviors 声明表定义)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosted_tools: Vec<String>,
     /// 每模型上下文窗口覆盖(model id → token 数;缺席 = 内置默认
     /// [`liuma_compaction::DEFAULT_CONTEXT_WINDOW`])。压缩压力阈值/保留尾
     /// 与 UI context meter 读它;设置页目前不渲染此字段(手改设置文件),
@@ -122,8 +128,8 @@ pub fn provider_catalog() -> Vec<CatalogEntry> {
         CatalogEntry {
             id: "deepseek".into(),
             display_name: "DeepSeek".into(),
-            dialect: "openai-responses".into(),
-            base_url: "https://api.deepseek.com/v1".into(),
+            dialect: "anthropic-messages".into(),
+            base_url: "https://api.deepseek.com/anthropic".into(),
             models: vec!["deepseek-flash".into(), "deepseek-v4-pro".into()],
             billing: Some(BillingConfig {
                 kind: BillingKind::Balance,
@@ -139,8 +145,8 @@ pub fn provider_catalog() -> Vec<CatalogEntry> {
         CatalogEntry {
             id: "glm".into(),
             display_name: "GLM(智谱)".into(),
-            dialect: "glm-responses".into(),
-            base_url: "https://open.bigmodel.cn/api/v1".into(),
+            dialect: "anthropic-messages".into(),
+            base_url: "https://open.bigmodel.cn/api/anthropic".into(),
             models: vec!["glm-5.3-flash".into()],
             billing: Some(BillingConfig {
                 kind: BillingKind::Usage,
@@ -584,6 +590,7 @@ pub fn builtin_provider() -> ProviderEntry {
         models: Vec::new(),
         billing: None,
         billing_cache: None,
+        hosted_tools: Vec::new(),
         model_context_windows: BTreeMap::new(),
     }
 }
@@ -1087,6 +1094,7 @@ mod tests {
                 resets: Some("4d22h".into()),
                 resets_7d: Some("1770000000000".into()),
             }),
+            hosted_tools: vec!["web_search".to_string()],
             model_context_windows: BTreeMap::from([("glm-4.7".to_string(), 128_000)]),
         };
         let json = serde_json::to_value(&entry).unwrap();

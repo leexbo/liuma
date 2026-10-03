@@ -72,6 +72,7 @@ impl CommonOpts {
     fn resolve(&self) -> anyhow::Result<Resolved> {
         Resolved::resolve(
             ResolveArgs {
+                hosted_tools: None,
                 model: self.model.clone(),
                 base_url: self.base_url.clone(),
                 session: self.session.clone(),

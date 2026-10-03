@@ -1620,7 +1620,27 @@ impl AppHost {
 
     /// GET `{base}/models` 并解析 `data[].id`;鉴权头按方言
     async fn models_request(base_url: &str, dialect: &str, key: Option<String>) -> Vec<String> {
-        let url = format!("{}/models", base_url.trim_end_matches('/'));
+        // 候选链:anthropic 面主路 {base}/v1/models;部分厂商(deepseek)
+        // 不在 anthropic 面挂 models 端点,回落剥掉 /anthropic 后的
+        // API 根(open.bigmodel.cn/api/anthropic 的 GLM 主路即命中)。
+        // 候选按序试,首个非空清单胜出;全失败返回空(不缓存,可重探)。
+        let mut candidates = vec![Self::models_url(base_url, dialect)];
+        if dialect == "anthropic-messages"
+            && let Some(root) = base_url.strip_suffix("/anthropic")
+        {
+            candidates.push(format!("{root}/v1/models"));
+        }
+        for url in &candidates {
+            let models = Self::models_request_at(url.clone(), dialect, key.clone()).await;
+            if !models.is_empty() {
+                return models;
+            }
+        }
+        Vec::new()
+    }
+
+    /// 单候选探测(URL 已定;models_request 的候选链终点)
+    async fn models_request_at(url: String, dialect: &str, key: Option<String>) -> Vec<String> {
         let client = reqwest::Client::new();
         let mut req = client.get(&url);
         if let Some(key) = key {
@@ -1631,32 +1651,43 @@ impl AppHost {
                 req.header("Authorization", format!("Bearer {key}"))
             };
         }
-        let res = match req.send().await {
-            Ok(r) => r,
+        match req.send().await {
+            Ok(res) if res.status().is_success() => match res.json::<serde_json::Value>().await {
+                Ok(body) => body["data"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|m| m["id"].as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                Err(e) => {
+                    eprintln!("[liuma-core] 模型探测解析失败: {e}");
+                    vec![]
+                }
+            },
+            Ok(res) => {
+                eprintln!("[liuma-core] 模型探测 HTTP {}", res.status());
+                vec![]
+            }
             Err(e) => {
                 eprintln!("[liuma-core] 模型探测请求失败: {e}");
-                return vec![];
+                vec![]
             }
-        };
-        if !res.status().is_success() {
-            eprintln!("[liuma-core] 模型探测 HTTP {}", res.status());
-            return vec![];
         }
-        let body = match res.json::<serde_json::Value>().await {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("[liuma-core] 模型探测解析失败: {e}");
-                return vec![];
-            }
+    }
+
+    /// 模型探测 URL(方言感知):anthropic-messages 面 = `{base}/v1/models`
+    /// (Anthropic 规范路径;GLM anthropic 端点实测可用),OpenAI 系 =
+    /// `{base}/models`。路径写死 `/models` 时 anthropic 面探测恒 404
+    /// (bigmodel 回 200+`{"code":500,"msg":"404 NOT_FOUND"}` 形)。
+    pub(crate) fn models_url(base_url: &str, dialect: &str) -> String {
+        let tail = if dialect == "anthropic-messages" {
+            "v1/models"
+        } else {
+            "models"
         };
-        body["data"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|m| m["id"].as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default()
+        format!("{}/{}", base_url.trim_end_matches('/'), tail)
     }
 
     /// 确保模型清单就绪(describe 前调用):显式配置 > 探测缓存 > fake 演示 > 空。
@@ -3530,14 +3561,9 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         if !entry.base_url.starts_with("http://") && !entry.base_url.starts_with("https://") {
             return Err(RpcError::bad_request("base_url 须以 http(s):// 开头"));
         }
-        if ![
-            "openai-completions",
-            "anthropic-messages",
-            "openai-responses",
-            "glm-responses",
-        ]
-        .contains(&entry.dialect.as_str())
-        {
+        // 方言取值域单一事实源在 liuma-llm(此前本处硬编码 4 项,
+        // 与实际注册表 6 项不一致——deepseek 系曾被误拒)
+        if !liuma_llm::DIALECT_NAMES.contains(&entry.dialect.as_str()) {
             return Err(RpcError::bad_request("未知方言"));
         }
         if let Some(r) = &entry.credential_ref
@@ -4460,7 +4486,10 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             return Err(RpcError::session_not_found(archive_id));
         }
         let Some((_, prefix)) = self.workspace_of_project_key(
-            pkey_dir.file_name().and_then(|n| n.to_str()).unwrap_or_default(),
+            pkey_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default(),
         ) else {
             return Err(RpcError::bad_request("原项目已移除,请先重新添加该工作区"));
         };
@@ -4498,7 +4527,10 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         // 先级联子归档:原会话 id 由项目工作区反查(孤儿归档无前缀形态,
         // 与其子归档的 parentSessionId 记录形态一致性无从保证,跳过级联)
         if let Some((_, prefix)) = self.workspace_of_project_key(
-            pkey_dir.file_name().and_then(|n| n.to_str()).unwrap_or_default(),
+            pkey_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default(),
         ) {
             let orig_id = format!("{prefix}{stem}");
             if let Ok(siblings) = std::fs::read_dir(&archive_dir) {
@@ -4603,6 +4635,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 reasoning_effort: self.session_effort(id),
                 base_url: cfg.base_url.clone().or(Some(provider.base_url.clone())),
                 dialect: cfg.dialect.clone().or(Some(provider.dialect.clone())),
+                hosted_tools: Some(provider.hosted_tools.clone()),
                 ..Default::default()
             },
             &ws_root.join("liuma.toml"),
@@ -12000,10 +12033,19 @@ mod tests {
         assert_eq!(item.session_id, "arc-a");
         assert_eq!(
             item.archive_id,
-            format!("{}/arc-a", project_key(&host.workspace.display().to_string()))
+            format!(
+                "{}/arc-a",
+                project_key(&host.workspace.display().to_string())
+            )
         );
-        assert_eq!(item.workspace.as_deref(), Some(host.default_workspace_name().as_str()));
-        let t = item.projections.as_ref().and_then(|p| p.values["title"].as_str());
+        assert_eq!(
+            item.workspace.as_deref(),
+            Some(host.default_workspace_name().as_str())
+        );
+        let t = item
+            .projections
+            .as_ref()
+            .and_then(|p| p.values["title"].as_str());
         assert_eq!(t, Some("归档标题"), "titles 表在归档态仍可查");
 
         // 恢复:回活动清单(同 id、标题仍在),归档清单清零
@@ -12028,11 +12070,12 @@ mod tests {
         host.archive_session("dup").unwrap();
         host.create_session(Some("dup".into()), None, None);
 
-        let err = host.unarchive_session(&format!(
-            "{}/dup",
-            project_key(&host.workspace.display().to_string())
-        ))
-        .unwrap_err();
+        let err = host
+            .unarchive_session(&format!(
+                "{}/dup",
+                project_key(&host.workspace.display().to_string())
+            ))
+            .unwrap_err();
         assert_eq!(err.code, "bad-request");
         assert!(host.list_sessions().iter().any(|s| s.session_id == "dup"));
         assert_eq!(host.list_archived_sessions().len(), 1, "拒绝后归档清单不动");
@@ -12049,7 +12092,8 @@ mod tests {
         host.archive_session(&child).unwrap();
         assert_eq!(host.list_archived_sessions().len(), 2);
 
-        let aid = host.list_archived_sessions()
+        let aid = host
+            .list_archived_sessions()
             .iter()
             .find(|s| s.session_id == "par")
             .unwrap()
@@ -12068,7 +12112,11 @@ mod tests {
     #[tokio::test]
     async fn archived_clear_scoped() {
         let host = temp_host("archclr");
-        let ws2 = host.workspace.parent().unwrap_or(&host.workspace).join("archclr-ws2");
+        let ws2 = host
+            .workspace
+            .parent()
+            .unwrap_or(&host.workspace)
+            .join("archclr-ws2");
         std::fs::create_dir_all(&ws2).unwrap();
         let ws2_name = host.add_workspace(&ws2.display().to_string()).unwrap();
         host.create_session(Some("one".into()), None, None);
@@ -12099,7 +12147,11 @@ mod tests {
     #[tokio::test]
     async fn archived_orphan() {
         let host = temp_host("archorph");
-        let ws2 = host.workspace.parent().unwrap_or(&host.workspace).join("archorph-ws2");
+        let ws2 = host
+            .workspace
+            .parent()
+            .unwrap_or(&host.workspace)
+            .join("archorph-ws2");
         std::fs::create_dir_all(&ws2).unwrap();
         let ws2_name = host.add_workspace(&ws2.display().to_string()).unwrap();
         let id = format!("{ws2_name}/lost");
@@ -12114,7 +12166,8 @@ mod tests {
 
         let err = host.unarchive_session(&archived[0].archive_id).unwrap_err();
         assert_eq!(err.code, "bad-request");
-        host.delete_archived_session(&archived[0].archive_id).unwrap();
+        host.delete_archived_session(&archived[0].archive_id)
+            .unwrap();
         assert!(host.list_archived_sessions().is_empty());
     }
 
@@ -12187,10 +12240,11 @@ mod tests {
             liuma_compaction::DEFAULT_CONTEXT_WINDOW,
             "无配置落内置默认"
         );
-        // provider 层:per-model 映射
+        // provider 层:per-model 映射(默认模型 deepseek-flash——2026-10-02
+        // 默认切 anthropic 系的连带)
         let mut p = crate::settings::builtin_provider();
         p.model_context_windows =
-            std::collections::BTreeMap::from([("deepseek-chat".to_string(), 128_000)]);
+            std::collections::BTreeMap::from([("deepseek-flash".to_string(), 128_000)]);
         host.upsert_provider(p).unwrap();
         assert_eq!(
             host.session_context_window("s1"),
@@ -12210,6 +12264,28 @@ mod tests {
         );
     }
 
+    /// 模型探测 URL 方言锁:anthropic 面 = {base}/v1/models(写死
+    /// /models 时 bigmodel anthropic 端点回 200+404 形错误体,
+    /// 「获取可用模型」在 GLM 卡上恒失败的事故回归)
+    #[test]
+    fn models_url_is_dialect_aware() {
+        assert_eq!(
+            crate::registry::AppHost::models_url(
+                "https://open.bigmodel.cn/api/anthropic",
+                "anthropic-messages",
+            ),
+            "https://open.bigmodel.cn/api/anthropic/v1/models"
+        );
+        assert_eq!(
+            crate::registry::AppHost::models_url(
+                "https://api.deepseek.com/v1/",
+                "openai-responses"
+            ),
+            "https://api.deepseek.com/v1/models",
+            "尾斜杠容忍"
+        );
+    }
+
     /// provider 注册表 CRUD + 凭据录入(settings `api_key`)+ 状态翻转
     #[tokio::test]
     async fn provider_registry_and_credential_surface() {
@@ -12225,7 +12301,7 @@ mod tests {
 
         // 初始:内置 deepseek,各级缺席
         assert!(!host.credential_status("deepseek"));
-        assert_eq!(host.default_model(), "deepseek-chat");
+        assert_eq!(host.default_model(), "deepseek-flash");
 
         // upsert 校验:非法方言 / 非法 id / 非法 base_url
         let mut bad = crate::settings::builtin_provider();
@@ -12275,7 +12351,7 @@ mod tests {
 
         // 删除 provider:工作区引用悬空 → 内置回落
         host.remove_provider("acme").unwrap();
-        assert_eq!(host.default_model(), "deepseek-chat");
+        assert_eq!(host.default_model(), "deepseek-flash");
         assert!(host.set_workspace_provider(&ws_name, "ghost").is_err());
     }
 

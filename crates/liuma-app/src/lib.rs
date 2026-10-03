@@ -23,7 +23,6 @@ use liuma_agent_loop::{
     TurnOutcome,
 };
 use liuma_host::{JsonlBackend, LiumaConfig, MountSpec, PresetManifest};
-use liuma_llm::streaming::StreamMode;
 use liuma_llm::{HttpTransport, ProviderConfig};
 use liuma_session::{EventEnvelope, EventLog};
 use serde_json::Value;
@@ -378,6 +377,8 @@ pub struct ResolveArgs {
     pub reasoning_effort: Option<String>,
     /// 可选模型清单(模型选择菜单;缺省 = 内置默认)
     pub models: Option<Vec<String>>,
+    /// 厂商托管工具启用清单(provider 条目;缺省 = 不启用)
+    pub hosted_tools: Option<Vec<String>>,
 }
 
 /// 合并后的装配参数(CLI > liuma.toml > 默认)
@@ -402,6 +403,9 @@ pub struct Resolved {
     pub context_window: u64,
     /// 能力 preset(k8s 形态 YAML manifest:组件装配清单)
     pub preset: PresetManifest,
+    /// 厂商托管工具启用清单(空 = 不启用;装配时按方言声明表 ∧ 模型
+    /// 门控解析,命中才注入 header.tools)
+    pub hosted_tools: Vec<String>,
 }
 
 impl Resolved {
@@ -428,12 +432,12 @@ impl Resolved {
                 .model
                 .clone()
                 .or(cfg.model)
-                .unwrap_or_else(|| "deepseek-chat".into()),
+                .unwrap_or_else(|| "deepseek-flash".into()),
             base_url: args
                 .base_url
                 .clone()
                 .or(cfg.base_url)
-                .unwrap_or_else(|| "https://api.deepseek.com/v1".into()),
+                .unwrap_or_else(|| "https://api.deepseek.com/anthropic".into()),
             session: args
                 .session
                 .clone()
@@ -443,9 +447,11 @@ impl Resolved {
                 .dialect
                 .clone()
                 .or(cfg.dialect)
-                // 未配置 dialect 时 DeepSeek 走 Responses 形态(事件流
-                // 语义/usage 天然齐全);chat 形态经显式配置选择
-                .unwrap_or_else(|| "deepseek-responses".into()),
+                // 未配置 dialect 时默认 anthropic 系(2026-10-02 拍板):
+                // anthropic-messages 已成 agent 生态通用方言(DeepSeek/GLM/
+                // Kimi/百炼等皆提供 /anthropic 端点,智谱订阅面仅此形态;
+                // 见 docs/plans/dialect-first-class.md「兼容性重查」)
+                .unwrap_or_else(|| "anthropic-messages".into()),
             reasoning_effort: args.reasoning_effort.clone().or(cfg.reasoning_effort),
             models: cfg.models.clone(),
             context_window: cfg
@@ -454,6 +460,7 @@ impl Resolved {
                 .unwrap_or(liuma_compaction::DEFAULT_CONTEXT_WINDOW),
             workspace,
             preset,
+            hosted_tools: args.hosted_tools.unwrap_or_default(),
         })
     }
 
@@ -634,7 +641,6 @@ pub fn build_raw_transport(
         ProviderConfig {
             base_url: resolved.base_url.clone(),
             api_key: api_key.to_string(),
-            stream_mode: StreamMode::Sse,
         },
         adapter,
     )
@@ -691,7 +697,61 @@ pub fn build_tools(
         subagent_bridge,
     )?;
     tools.append(&mut extra_tools);
+    tools.append(&mut hosted_tool_ports(resolved));
     ToolSet::new(tools).map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// 厂商托管工具条目(服务端执行,非客户端工具):仅贡献 specs——
+/// header.tools 的 `{"type":"web_search",…}` 条目,由 liuma-llm 按方言
+/// 译 wire 形态。解析规则 = 方言声明表 ∧ 模型门控(两侧相与):
+/// 模型不在门控内**静默不注入**(能力不存在是事实而非错误,header 每
+/// turn 重建重解析);请求前 fail-fast 保留在 liuma-llm engine,兜住
+/// 绕过装配面的手写脏条目。
+fn hosted_tool_ports(resolved: &Resolved) -> Vec<Box<dyn liuma_agent_loop::tools::ToolPortObj>> {
+    if resolved.hosted_tools.is_empty() {
+        return Vec::new();
+    }
+    let Some(adapter) = liuma_llm::adapter_by_name(&resolved.dialect) else {
+        return Vec::new();
+    };
+    let mut ports = Vec::new();
+    for kind in &resolved.hosted_tools {
+        if adapter.hosted_tool(kind, &resolved.model).is_some() {
+            ports.push(Box::new(HostedToolSpecs {
+                entry: serde_json::json!({ "type": kind, "name": kind }),
+            })
+                as Box<dyn liuma_agent_loop::tools::ToolPortObj>);
+        }
+    }
+    ports
+}
+
+/// specs-only 的 hosted 工具端口(不可执行:服务端执行面,模型发不出
+/// 对它的调用请求,即使发出也会被引擎工具面拒绝——名字不匹配任何
+/// function 工具)
+struct HostedToolSpecs {
+    entry: serde_json::Value,
+}
+
+impl liuma_agent_loop::tools::ToolPortObj for HostedToolSpecs {
+    fn specs(&self) -> Vec<serde_json::Value> {
+        vec![self.entry.clone()]
+    }
+    fn execute<'a>(
+        &'a mut self,
+        _call: &'a liuma_agent_loop::ToolCallRequest,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = liuma_agent_loop::ToolOutput> + Send + 'a>,
+    > {
+        Box::pin(async {
+            liuma_agent_loop::ToolOutput {
+                output: "hosted 工具由 provider 服务端执行,不可本地调用".into(),
+                success: false,
+                view: None,
+                images: Vec::new(),
+            }
+        })
+    }
 }
 
 /// 会话装配:engine + 闸门 + 工具 + 持久化,跨 turn 保留(REPL/GUI 的
@@ -1167,6 +1227,73 @@ impl liuma_session::EventStore for JsonlEventStore {
 }
 
 #[cfg(test)]
+mod hosted_tests {
+    use super::*;
+
+    fn resolved(dialect: &str, model: &str, hosted: Vec<String>) -> Resolved {
+        Resolved {
+            model: model.into(),
+            base_url: String::new(),
+            session: String::new(),
+            workspace: std::path::PathBuf::from("."),
+            dialect: dialect.into(),
+            reasoning_effort: None,
+            models: None,
+            context_window: 1_000_000,
+            preset: PresetManifest::load(std::path::Path::new("."), "standard")
+                .expect("standard preset"),
+            hosted_tools: hosted,
+        }
+    }
+
+    fn specs(ports: &[Box<dyn liuma_agent_loop::tools::ToolPortObj>]) -> Vec<serde_json::Value> {
+        ports.iter().flat_map(|p| p.specs()).collect()
+    }
+
+    /// 开:声明面 + 门控内模型 → 注入 {"type":"web_search"} 条目
+    #[test]
+    fn hosted_enabled_injects_entry() {
+        let r = resolved("anthropic-messages", "glm-5.3", vec!["web_search".into()]);
+        let all = specs(&hosted_tool_ports(&r));
+        assert_eq!(
+            all,
+            vec![serde_json::json!({"type": "web_search", "name": "web_search"})]
+        );
+    }
+
+    /// 关:清单空 → 零条目
+    #[test]
+    fn hosted_disabled_no_entry() {
+        let r = resolved("anthropic-messages", "glm-5.3", vec![]);
+        assert!(specs(&hosted_tool_ports(&r)).is_empty());
+    }
+
+    /// 模型不匹配:门控外(deepseek-chat 无声明表;glm 在 anthropic 面
+    /// 门内但 chat 面没有)→ 静默不注入不报错
+    #[test]
+    fn hosted_model_out_of_gate_silent_skip() {
+        let r = resolved("deepseek-chat", "deepseek-flash", vec!["web_search".into()]);
+        assert!(specs(&hosted_tool_ports(&r)).is_empty());
+        let r = resolved(
+            "anthropic-messages",
+            "unknown-vendor-model",
+            vec!["web_search".into()],
+        );
+        assert!(
+            specs(&hosted_tool_ports(&r)).is_empty(),
+            "矩阵外模型按缺省门控判定"
+        );
+    }
+
+    /// 未知方言:静默跳过(装配面宽松;运行时 adapter_by_name 另有 fail-fast)
+    #[test]
+    fn hosted_unknown_dialect_silent_skip() {
+        let r = resolved("nope", "m", vec!["web_search".into()]);
+        assert!(specs(&hosted_tool_ports(&r)).is_empty());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{JsonlEventStore, load_decision_entry, load_log, prompt_parts};
 
@@ -1222,6 +1349,7 @@ mod tests {
             workspace: std::path::PathBuf::from("/tmp/ws"),
             dialect: String::new(),
             reasoning_effort: None,
+            hosted_tools: Vec::new(),
             models: None,
             context_window: liuma_compaction::DEFAULT_CONTEXT_WINDOW,
             preset,
@@ -1418,6 +1546,7 @@ mod tests {
             workspace: std::path::PathBuf::from("/tmp/ws"),
             dialect: String::new(),
             reasoning_effort: None,
+            hosted_tools: Vec::new(),
             models: None,
             context_window: liuma_compaction::DEFAULT_CONTEXT_WINDOW,
             preset,

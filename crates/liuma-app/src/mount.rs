@@ -611,6 +611,7 @@ mod tests {
             workspace: std::path::PathBuf::from("."),
             dialect: "openai-completions".into(),
             reasoning_effort: None,
+            hosted_tools: Vec::new(),
             models: None,
             context_window: liuma_compaction::DEFAULT_CONTEXT_WINDOW,
             preset,

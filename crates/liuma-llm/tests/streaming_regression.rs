@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use liuma_agent_loop::{LlmEvent, LlmTransport, RequestHeader, TransportError};
-use liuma_llm::streaming::StreamMode;
 use liuma_llm::{HttpTransport, InvariantGate, ProviderConfig};
 use liuma_session::EventLog;
 use serde_json::{Value, json};
@@ -58,11 +57,10 @@ async fn http_transport_streams_incrementally() {
     let mut transport = HttpTransport::new(ProviderConfig {
         base_url: base,
         api_key: "k".into(),
-        stream_mode: StreamMode::Sse,
     })
     .unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let messages = json!([]);
+    let messages = json!([{ "role": "user", "content": "hi" }]);
     let hdr = header();
     let t0 = std::time::Instant::now();
     let fut = transport.stream_events(&hdr, &messages, tx);

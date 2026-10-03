@@ -68,6 +68,7 @@ fn resolved_at(ws: &Path, preset_id: &str) -> Resolved {
         workspace: ws.to_path_buf(),
         dialect: "openai-completions".into(),
         reasoning_effort: None,
+        hosted_tools: Vec::new(),
         models: None,
         // 集成测试不链 liuma-compaction:用默认窗口字面量(与
         // liuma_compaction::DEFAULT_CONTEXT_WINDOW 同值)

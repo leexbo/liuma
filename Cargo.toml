@@ -49,10 +49,15 @@ turso = { version = "0.7.2", features = ["fts"] }
 # /export ZIP 打包(stored 条目 + deflate)
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 futures = "0.3"
+# rig provider 层(0.43 传输架构;四评+spike 后转生产,自有 HttpClientExt 传输)
+rig-core = "0.43.0"
+rig-http = "0.43.0"
+bytes = "1"
+async-stream = "0.3"
 libc = "0.2"
 # gpui-pre FileDropEvent 载荷构造(与其共用 1.x)
 smallvec = "1"
-reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "stream"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # preset manifest 解析(serde_yaml 的接棒 fork)
