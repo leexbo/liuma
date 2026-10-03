@@ -100,13 +100,40 @@ pub(crate) fn to_rig_messages(
     let supports_images = adapter.supports_images(&header.model);
     let call_names = crate::adapters::index_call_names(&msgs);
 
+    // 单条内部 tool 消息 → rig ToolResult 内容块(名字反查 + 空输出占位)
+    let tool_result_block = |m: &Value| {
+        // 工具名反查(rig ToolResult 必填;内部 tool 消息不带名字)
+        let call_id = m["id"].as_str().unwrap_or_default();
+        let name = call_names
+            .get(call_id)
+            .cloned()
+            .unwrap_or_else(|| "unknown".into());
+        // 空结果补占位:Anthropic API 拒收空 content 的 tool_result
+        let output_text = {
+            let o = m["output"].as_str().unwrap_or_default();
+            if o.is_empty() { "(no output)" } else { o }
+        };
+        let mut content = vec![ToolResultContent::Text(Text::new(output_text))];
+        for block in m["images"].as_array().into_iter().flatten() {
+            if supports_images && let Some(img) = rig_image(block, images) {
+                content.push(ToolResultContent::Image(img));
+            }
+        }
+        UserContent::ToolResult(ToolResult {
+            call: CallId::from_wire(call_id),
+            name: tool_name(&name),
+            content,
+        })
+    };
+
     let mut out = Vec::new();
     if !header.system.is_empty() {
         out.push(Message::System {
             content: header.system.clone(),
         });
     }
-    for m in msgs.as_array().into_iter().flatten() {
+    let mut iter = msgs.as_array().into_iter().flatten().peekable();
+    while let Some(m) = iter.next() {
         match m["role"].as_str() {
             Some("user") => out.push(Message::User {
                 content: user_parts(&m["content"], images, supports_images),
@@ -156,30 +183,20 @@ pub(crate) fn to_rig_messages(
                 out.push(Message::Assistant { id: None, content });
             }
             Some("tool") => {
-                // 工具名反查(rig ToolResult 必填;内部 tool 消息不带名字)
-                let call_id = m["id"].as_str().unwrap_or_default();
-                let name = call_names
-                    .get(call_id)
-                    .cloned()
-                    .unwrap_or_else(|| "unknown".into());
-                // 空结果补占位:Anthropic API 拒收空 content 的 tool_result
-                let output_text = {
-                    let o = m["output"].as_str().unwrap_or_default();
-                    if o.is_empty() { "(no output)" } else { o }
-                };
-                let mut content = vec![ToolResultContent::Text(Text::new(output_text))];
-                for block in m["images"].as_array().into_iter().flatten() {
-                    if supports_images && let Some(img) = rig_image(block, images) {
-                        content.push(ToolResultContent::Image(img));
-                    }
+                // 连续 tool 消息合并为**一条** User(多 ToolResult 块):
+                // Anthropic 系要求同一条 assistant 的全部 tool_use 在紧随
+                // 其后的同一条消息里应答,rig 的 anthropic 转换按 rig
+                // Message 1:1 出 wire,拆多条必 400(「tool_result blocks
+                // in the next message」)。OpenAI 族由 rig 自行把块拆回
+                // 多条 tool 消息,形状不变。
+                let mut content = vec![tool_result_block(m)];
+                while iter
+                    .peek()
+                    .is_some_and(|n| n["role"].as_str() == Some("tool"))
+                {
+                    content.push(tool_result_block(iter.next().expect("peek 已判存在")));
                 }
-                out.push(Message::User {
-                    content: vec![UserContent::ToolResult(ToolResult {
-                        call: CallId::from_wire(call_id),
-                        name: tool_name(&name),
-                        content,
-                    })],
-                });
+                out.push(Message::User { content });
             }
             _ => {}
         }

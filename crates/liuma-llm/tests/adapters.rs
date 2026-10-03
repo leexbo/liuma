@@ -48,6 +48,22 @@ fn tool_roundtrip_messages() -> Value {
     ])
 }
 
+/// anthropic 面最小合法 SSE 响应(单文本块一轮;wire 锁测试共用)
+const ANTHROPIC_MIN_SSE: &str = concat!(
+    "event: message_start\n",
+    "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"test-model\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n",
+    "event: content_block_start\n",
+    "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+    "event: content_block_delta\n",
+    "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+    "event: content_block_stop\n",
+    "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+    "event: message_delta\n",
+    "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\n",
+    "event: message_stop\n",
+    "data: {\"type\":\"message_stop\"}\n\n",
+);
+
 /// mock SSE 服务器:捕获原始请求,回固定 SSE 体
 async fn spawn_sse_server(response_body: &'static str) -> (String, Arc<Mutex<Vec<u8>>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -235,21 +251,7 @@ fn openai_default_body_error_nested_shape() {
 /// assistant → tool_use 块、tool → tool_result 块、鉴权头与端点
 #[tokio::test]
 async fn anthropic_request_shape_and_auth() {
-    let body = concat!(
-        "event: message_start\n",
-        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"test-model\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n",
-        "event: content_block_start\n",
-        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
-        "event: content_block_delta\n",
-        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
-        "event: content_block_stop\n",
-        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
-        "event: message_delta\n",
-        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\n",
-        "event: message_stop\n",
-        "data: {\"type\":\"message_stop\"}\n\n",
-    );
-    let (base_url, captured) = spawn_sse_server(body).await;
+    let (base_url, captured) = spawn_sse_server(ANTHROPIC_MIN_SSE).await;
     let mut t = transport(base_url, "sk-ant-test", "anthropic-messages");
     let events = t
         .stream(
@@ -310,6 +312,68 @@ async fn anthropic_request_shape_and_auth() {
         "{events:?}"
     );
     assert!(ttft_within_bounds(&events), "ttft 尾帧缺失: {events:?}");
+}
+
+/// 并行工具调用 wire 锁:assistant 同条多 tool_use 时,连续内部 tool
+/// 消息必须合并为**紧随的一条** user 消息(全部 tool_result 块同条)。
+/// Anthropic 系校验「每个 tool_use 的 tool_result 须在下一消息」——
+/// 拆多条 user 必 400(实机 deepseek /anthropic 端点复现)
+#[tokio::test]
+async fn anthropic_parallel_tool_results_share_one_user_message() {
+    let (base_url, captured) = spawn_sse_server(ANTHROPIC_MIN_SSE).await;
+    let mut t = transport(base_url, "sk-ant-test", "anthropic-messages");
+    let messages = json!([
+        { "role": "user", "content": "check the repo" },
+        { "role": "assistant", "content": "", "tool_calls": [
+            { "id": "toolu_1", "name": "bash", "arguments": "{\"command\":\"git status\"}" },
+            { "id": "toolu_2", "name": "bash", "arguments": "{\"command\":\"cat Cargo.toml\"}" },
+        ]},
+        { "role": "tool", "output": "clean", "call": 6, "id": "toolu_1" },
+        { "role": "tool", "output": "workspace", "call": 7, "id": "toolu_2" },
+    ]);
+    t.stream(&header("be brief", vec![bash_tool()]), &messages)
+        .await
+        .expect("stream");
+
+    let body = sent_body(&captured);
+    let msgs = body["messages"].as_array().unwrap();
+    // assistant 条目:两个 tool_use 块
+    let ai = msgs
+        .iter()
+        .position(|m| {
+            m["role"] == "assistant"
+                && m["content"]
+                    .as_array()
+                    .is_some_and(|c| c.iter().filter(|b| b["type"] == "tool_use").count() == 2)
+        })
+        .expect("assistant 应含两个 tool_use 块");
+    // 紧随其后的一条 user 消息同时含两个 tool_result(顺序保持)
+    let next = &msgs[ai + 1];
+    assert_eq!(
+        next["role"], "user",
+        "tool_result 须紧随 assistant: {msgs:?}"
+    );
+    let results: Vec<&Value> = next["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|b| b["type"] == "tool_result")
+        .collect();
+    let ids: Vec<&str> = results
+        .iter()
+        .filter_map(|b| b["tool_use_id"].as_str())
+        .collect();
+    assert_eq!(ids, vec!["toolu_1", "toolu_2"], "{next}");
+    // 全消息流不再有第二条携带 tool_result 的消息(无拆分)
+    let result_messages = msgs
+        .iter()
+        .filter(|m| {
+            m["content"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"))
+        })
+        .count();
+    assert_eq!(result_messages, 1, "tool_result 不得拆多条消息: {msgs:?}");
 }
 
 /// ttft 断言辅助:尾帧 ttftMs 存在且 < 5000(mock 下应为亚秒;负载下
