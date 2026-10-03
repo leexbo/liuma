@@ -342,7 +342,7 @@ pub(crate) fn archived_view(
     if order == ArchivedOrder::Alpha {
         groups.sort_by_key(|a| a.1.to_lowercase());
         for (_, _, members) in &mut groups {
-            members.sort_by(|&a, &b| title_of(a).to_lowercase().cmp(&title_of(b).to_lowercase()));
+            members.sort_by_key(|&a| title_of(a).to_lowercase());
         }
     }
     groups
