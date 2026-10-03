@@ -146,7 +146,7 @@ pub fn approval_policy_of(events: &[EventEnvelope]) -> &'static str {
 /// ——每次 open_session 的权限 fold 都走此,大会话全量展开是数百 MB
 /// 级瞬时分配)。语义与切片版逐字节一致(白名单值才算命中)
 pub fn sandbox_mode_of_log(log: &liuma_session::EventLog) -> &'static str {
-    let hit = |ev: &liuma_session::EventEnvelope| {
+    let hit = |ev: &EventEnvelope| {
         ev.data["mode"]
             .as_str()
             .and_then(|v| SANDBOX_MODES.iter().find(|m| **m == v).copied())
@@ -158,7 +158,7 @@ pub fn sandbox_mode_of_log(log: &liuma_session::EventLog) -> &'static str {
 
 /// [`approval_policy_of`] 的打包日志形态(同 [`sandbox_mode_of_log`])
 pub fn approval_policy_of_log(log: &liuma_session::EventLog) -> &'static str {
-    let hit = |ev: &liuma_session::EventEnvelope| {
+    let hit = |ev: &EventEnvelope| {
         ev.data["policy"]
             .as_str()
             .and_then(|v| APPROVAL_POLICIES.iter().find(|m| **m == v).copied())
@@ -467,12 +467,8 @@ mod tests {
             ("approval/policy", "policy", "never"),
             ("approval/policy", "policy", "auto"), // 白名单外:跳过
         ] {
-            log.append(liuma_session::EventEnvelope::new(
-                ty,
-                0,
-                json!({ key: val }),
-            ))
-            .unwrap();
+            log.append(EventEnvelope::new(ty, 0, json!({ key: val })))
+                .unwrap();
         }
         let slice: Vec<EventEnvelope> = log.iter().collect();
         assert_eq!(

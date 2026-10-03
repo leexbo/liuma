@@ -27,8 +27,7 @@ pub(crate) fn section_title(text: impl Into<gpui_kit::SharedString>) -> impl Int
 /// MCP Servers 区:server 行卡(id/command/enabled 开关/移除)+ 添加卡。
 /// 字段控件构造器(fn 指针 + AnyElement:闭包泛型在此会撞上
 /// HRTB 推断,函数指针直接绕开)
-type FieldControl =
-    fn(&gpui_kit::Entity<gpui_kit::component::input::InputState>) -> gpui_kit::AnyElement;
+type FieldControl = fn(&Entity<InputState>) -> gpui_kit::AnyElement;
 
 /// 通用字段输入行核心(标签 + 由 `control` 构建的控件)。`sel` = 输入
 /// 包装的布局回归锚;标签用 LABEL_2——表头是行内主控的名称,38% 的
@@ -36,7 +35,7 @@ type FieldControl =
 pub(crate) fn field_row(
     label: impl Into<gpui_kit::SharedString>,
     sel: &'static str,
-    input: &Option<gpui_kit::Entity<gpui_kit::component::input::InputState>>,
+    input: &Option<Entity<InputState>>,
     control: FieldControl,
 ) -> impl IntoElement {
     let label = label.into();
@@ -67,16 +66,14 @@ pub(crate) fn field_row(
 pub(crate) fn field_input(
     label: impl Into<gpui_kit::SharedString>,
     sel: &'static str,
-    input: &Option<gpui_kit::Entity<gpui_kit::component::input::InputState>>,
+    input: &Option<Entity<InputState>>,
 ) -> impl IntoElement {
     field_row(label, sel, input, |e| Input::new(e).into_any_element())
 }
 
 /// 数字控件(NumberInput:步进按钮 + 失焦 clamp,区间/步长在
 /// InputState 构造侧配,见 `ensure_decision_form_inputs`)
-pub(crate) fn field_number_control(
-    e: &gpui_kit::Entity<gpui_kit::component::input::InputState>,
-) -> gpui_kit::AnyElement {
+pub(crate) fn field_number_control(e: &Entity<InputState>) -> gpui_kit::AnyElement {
     gpui_kit::component::input::NumberInput::new(e).into_any_element()
 }
 
@@ -87,7 +84,7 @@ pub(crate) fn field_number_control(
 pub(crate) fn field_number_hinted(
     label: impl Into<gpui_kit::SharedString>,
     sel: &'static str,
-    input: &Option<gpui_kit::Entity<gpui_kit::component::input::InputState>>,
+    input: &Option<Entity<InputState>>,
     hint: impl Into<gpui_kit::SharedString>,
 ) -> impl IntoElement {
     let label = label.into();

@@ -206,8 +206,7 @@ impl liuma_agent_loop::Summarizer for HangingTransport {
         &'a mut self,
         _header: &'a RequestHeader,
         _messages: &'a Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
         Box::pin(async { Ok(String::new()) })
     }
 }
@@ -217,7 +216,7 @@ impl liuma_agent_loop::LlmTransport for HangingTransport {
         &mut self,
         _header: &RequestHeader,
         _messages: &Value,
-    ) -> impl std::future::Future<Output = Result<Vec<LlmEvent>, TransportError>> + Send {
+    ) -> impl Future<Output = Result<Vec<LlmEvent>, TransportError>> + Send {
         let cancel = self.cancel.lock().expect("锁中毒").clone();
         async move {
             cancel.cancelled().await; // 挂起直到网关 cancel 方法触发

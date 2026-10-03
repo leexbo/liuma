@@ -68,14 +68,14 @@ pub trait HookPort: Send + Sync {
         &self,
         prompt: &str,
         turn: u64,
-    ) -> impl std::future::Future<Output = PreStepVerdict> + Send;
+    ) -> impl Future<Output = PreStepVerdict> + Send;
 
     /// PreToolUse:tool/call 落档后、工具执行前(取消安全点之后)
     fn pre_tool(
         &self,
         call: &ToolCallRequest,
         turn: u64,
-    ) -> impl std::future::Future<Output = PreToolVerdict> + Send;
+    ) -> impl Future<Output = PreToolVerdict> + Send;
 
     /// PostToolUse:工具执行后、tool/result 落档前
     fn post_tool(
@@ -83,10 +83,10 @@ pub trait HookPort: Send + Sync {
         call: &ToolCallRequest,
         output: &crate::tools::ToolOutput,
         turn: u64,
-    ) -> impl std::future::Future<Output = PostToolVerdict> + Send;
+    ) -> impl Future<Output = PostToolVerdict> + Send;
 
     /// Stop:无 tool_calls break 后、turn/end 落档前
-    fn on_stop(&self, turn: u64) -> impl std::future::Future<Output = StopVerdict> + Send;
+    fn on_stop(&self, turn: u64) -> impl Future<Output = StopVerdict> + Send;
 }
 
 /// HookPort 的对象安全形态(与 ToolPortObj 同理;引擎经 Box<dyn> 持有)
@@ -95,22 +95,22 @@ pub trait HookPortObj: Send + Sync {
         &'a self,
         prompt: &'a str,
         turn: u64,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = PreStepVerdict> + Send + 'a>>;
+    ) -> std::pin::Pin<Box<dyn Future<Output = PreStepVerdict> + Send + 'a>>;
     fn pre_tool<'a>(
         &'a self,
         call: &'a ToolCallRequest,
         turn: u64,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = PreToolVerdict> + Send + 'a>>;
+    ) -> std::pin::Pin<Box<dyn Future<Output = PreToolVerdict> + Send + 'a>>;
     fn post_tool<'a>(
         &'a self,
         call: &'a ToolCallRequest,
         output: &'a crate::tools::ToolOutput,
         turn: u64,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = PostToolVerdict> + Send + 'a>>;
+    ) -> std::pin::Pin<Box<dyn Future<Output = PostToolVerdict> + Send + 'a>>;
     fn on_stop<'a>(
         &'a self,
         turn: u64,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = StopVerdict> + Send + 'a>>;
+    ) -> std::pin::Pin<Box<dyn Future<Output = StopVerdict> + Send + 'a>>;
 }
 
 impl<T: HookPort> HookPortObj for T {
@@ -118,14 +118,14 @@ impl<T: HookPort> HookPortObj for T {
         &'a self,
         prompt: &'a str,
         turn: u64,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = PreStepVerdict> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn Future<Output = PreStepVerdict> + Send + 'a>> {
         Box::pin(HookPort::on_prompt_submit(self, prompt, turn))
     }
     fn pre_tool<'a>(
         &'a self,
         call: &'a ToolCallRequest,
         turn: u64,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = PreToolVerdict> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn Future<Output = PreToolVerdict> + Send + 'a>> {
         Box::pin(HookPort::pre_tool(self, call, turn))
     }
     fn post_tool<'a>(
@@ -133,13 +133,13 @@ impl<T: HookPort> HookPortObj for T {
         call: &'a ToolCallRequest,
         output: &'a crate::tools::ToolOutput,
         turn: u64,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = PostToolVerdict> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn Future<Output = PostToolVerdict> + Send + 'a>> {
         Box::pin(HookPort::post_tool(self, call, output, turn))
     }
     fn on_stop<'a>(
         &'a self,
         turn: u64,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = StopVerdict> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn Future<Output = StopVerdict> + Send + 'a>> {
         Box::pin(HookPort::on_stop(self, turn))
     }
 }

@@ -51,9 +51,9 @@ pub enum ChatNode {
         /// 文本
         text: String,
         /// 图片块(attachment 引用数组;空 = 纯文本)
-        images: Vec<serde_json::Value>,
+        images: Vec<Value>,
         /// 文件块(attachment 引用数组;空 = 无文件)
-        files: Vec<serde_json::Value>,
+        files: Vec<Value>,
         /// 消息时刻(信封毫秒;操作行时间戳,0 = 缺席)
         time: i64,
     },
@@ -66,7 +66,7 @@ pub enum ChatNode {
         /// 模型可见注入文本(content)
         content: String,
         /// 来源染色(source;kind/form + producer 扩展字段)
-        source: serde_json::Value,
+        source: Value,
     },
     /// 助手消息(流式增量 → assistant/message 定稿)
     Assistant {
@@ -204,7 +204,7 @@ impl ChatNode {
 
 /// session/queue 帧 items → 队列投影(preview = text 块拼接;
 /// 全部块均为文本才可编辑)
-pub fn parse_queue_items(items: Vec<serde_json::Value>) -> Vec<QueueEntry> {
+pub fn parse_queue_items(items: Vec<Value>) -> Vec<QueueEntry> {
     items
         .iter()
         .filter_map(|item| {

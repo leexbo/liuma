@@ -262,8 +262,7 @@ impl liuma_agent_loop::Summarizer for HttpTransport {
         &'a mut self,
         header: &'a RequestHeader,
         messages: &'a Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
         Box::pin(async move {
             let mut noop = |_chars: usize| {};
             self.summarize_stream(header, messages, &mut noop).await
@@ -277,8 +276,7 @@ impl liuma_agent_loop::Summarizer for HttpTransport {
         header: &'a RequestHeader,
         messages: &'a Value,
         on_progress: &'a mut (dyn FnMut(usize) + Send),
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
         Box::pin(async move {
             let one_shot = RequestHeader {
                 model: header.model.clone(),
@@ -383,11 +381,11 @@ mod tests {
     /// 极简 mock 服务器:接受一个连接,读请求,回固定 SSE 体(Connection: close 分帧)
     async fn spawn_sse_server(
         response_body: &'static str,
-    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<u8>>>) {
+    ) -> (String, Arc<std::sync::Mutex<Vec<u8>>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let captured_clone = std::sync::Arc::clone(&captured);
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_clone = Arc::clone(&captured);
         tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut buf = vec![0u8; 16384];

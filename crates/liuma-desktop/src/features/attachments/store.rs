@@ -321,7 +321,7 @@ impl AppStore {
     /// 路径序(单一有序列表)。图片子集整批准入——任一超限整批
     /// 不入轨(文件也不入);文件直传源路径,
     /// 不读字节进内存,尺寸取元数据。
-    pub fn intake_dropped_paths(&mut self, paths: &[std::path::PathBuf]) {
+    pub fn intake_dropped_paths(&mut self, paths: &[PathBuf]) {
         enum Plan {
             Image(Vec<u8>),
             File(DraftFile),

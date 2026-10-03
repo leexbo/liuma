@@ -138,7 +138,7 @@ pub struct SteerInput {
     /// 来源染色(None = 真实用户 steer)。subagent 结算通知等宿主
     /// 内部注入携带 `source.kind`(如 "subagent-settled"),随 user/message
     /// 落档,客户端凭此分流渲染(以此字段为唯一分类权威)。
-    pub source: Option<serde_json::Value>,
+    pub source: Option<Value>,
 }
 
 /// turn 引擎。状态 = 日志 + phase + inbox;跨 turn 保留日志,phase 回 Idle。
@@ -158,7 +158,7 @@ pub struct LoopEngine {
     /// 下一 turn 真实用户消息的来源染色(None = 真实用户)。宿主认领
     /// 带 source 的条目(如 subagent 结算通知)时设置,run_turn 消费——
     /// 宿主每次认领必设(有则 Some、无则 None),不存在跨 turn 残留。
-    pending_input_source: Option<serde_json::Value>,
+    pending_input_source: Option<Value>,
     /// 自动折叠压力阈值 token(可调小测试;默认 [`liuma_compaction::threshold_tokens`])
     fold_threshold_tokens: u64,
     /// 自动折叠保留尾 token(可调小测试;默认 [`liuma_compaction::retain_tokens`])
@@ -182,11 +182,11 @@ pub struct LoopEngine {
     skill_gesture_provider: Option<SkillGestureProvider>,
     /// hooks 拦截点(宿主注入;None = 无钩子,零开销直通)。四调用点:
     /// prompt-submit / pre-tool / post-tool / stop(M4.2 拍板 1)。
-    hook_port: Option<std::sync::Arc<dyn crate::hooks::HookPortObj>>,
+    hook_port: Option<Arc<dyn crate::hooks::HookPortObj>>,
     /// 折叠价值裁定端口(宿主注入;None = 不咨询,零开销直通)。
     /// 时机 = 选段之后、摘要之前(此时才有有界候选集;摘要后
     /// checkpoint 已定型)。见 [`crate::value_judge`]。
-    value_judge: Option<std::sync::Arc<dyn crate::value_judge::ValueJudge>>,
+    value_judge: Option<Arc<dyn crate::value_judge::ValueJudge>>,
     /// 每 step 重建 header 的回调(宿主注入;None = 沿用 turn 开始时的
     /// header)。per-request 组装:turn 中途落档的状态事件(如计划
     /// 批准切回 standard)立即反映到下一步的提示词段——批准结果
@@ -221,12 +221,12 @@ pub type ContextProvider = Box<dyn Fn() -> Option<(String, Vec<ContextSection>)>
 /// 每步渲染 skill 目录的回调(宿主注入;`Some` = 完整 user/message 载荷
 /// {content, source}。目录变化才 Some——digest 幂等在宿主 SkillCatalogState,
 /// 引擎只管按序落档;None = 无变化不重发)。
-pub type SkillCatalogProvider = Box<dyn Fn() -> Option<serde_json::Value> + Send + Sync>;
+pub type SkillCatalogProvider = Box<dyn Fn() -> Option<Value> + Send + Sync>;
 
 /// 本步用户面消息文本 → `/name` 手势注入载荷(引擎在全部注入之后
 /// 追加落档——序:「背景在前,模型要执行的材料在后,最贴近它的
 /// 回答」)。仅扫真实用户消息(外部文本不可伪造手势)。
-pub type SkillGestureProvider = Box<dyn Fn(&[String]) -> Vec<serde_json::Value> + Send + Sync>;
+pub type SkillGestureProvider = Box<dyn Fn(&[String]) -> Vec<Value> + Send + Sync>;
 
 /// 默认抖动随机源:uuid v7 的随机位(62 bit)折算 [0,1)。
 /// 同一毫秒内连续调用各自独立,足以做退避抖动(非密码学场景)
@@ -304,7 +304,7 @@ impl LoopEngine {
     /// 设置下一 turn 真实用户消息的来源染色(None = 真实用户)。
     /// 宿主认领带 source 的队列条目时调用;run_turn 落档真实用户消息时
     /// 消费(take)。未设置 = 真实用户,行为与既有路径完全一致。
-    pub fn set_input_source(&mut self, source: Option<serde_json::Value>) {
+    pub fn set_input_source(&mut self, source: Option<Value>) {
         self.pending_input_source = source;
     }
 
@@ -336,7 +336,7 @@ impl LoopEngine {
     }
 
     /// 挂 hooks 拦截点(宿主装配;None = 无钩子直通)
-    pub fn set_hook_port(&mut self, port: std::sync::Arc<dyn crate::hooks::HookPortObj>) {
+    pub fn set_hook_port(&mut self, port: Arc<dyn crate::hooks::HookPortObj>) {
         self.hook_port = Some(port);
     }
 
@@ -346,7 +346,7 @@ impl LoopEngine {
     }
 
     /// 挂折叠价值裁定端口(宿主装配;None = 不咨询)
-    pub fn set_value_judge(&mut self, port: std::sync::Arc<dyn crate::value_judge::ValueJudge>) {
+    pub fn set_value_judge(&mut self, port: Arc<dyn crate::value_judge::ValueJudge>) {
         self.value_judge = Some(port);
     }
 
@@ -748,7 +748,7 @@ impl LoopEngine {
         input_id: Option<&str>,
         images: &[liuma_attachment::ImageAttachmentRef],
         files: &[liuma_attachment::FileAttachmentRef],
-        contexts: &[serde_json::Value],
+        contexts: &[Value],
         transport: &mut T,
         tools: &mut TOOLS,
         clock: &(dyn Fn() -> i64 + Send + Sync),
@@ -805,7 +805,7 @@ impl LoopEngine {
         input_id: Option<&str>,
         images: &[liuma_attachment::ImageAttachmentRef],
         files: &[liuma_attachment::FileAttachmentRef],
-        contexts: &[serde_json::Value],
+        contexts: &[Value],
         transport: &mut T,
         tools: &mut TOOLS,
         clock: &(dyn Fn() -> i64 + Send + Sync),
@@ -1422,7 +1422,7 @@ impl LoopEngine {
                 // tool/result 落档前;block ⇒ 结果改写(feedback,isError);
                 // inject ⇒ 结果照落,其后追加染色上下文行(mislabel
                 // guard:kind=plugin)。
-                let mut hook_inject: Option<serde_json::Value> = None;
+                let mut hook_inject: Option<Value> = None;
                 if let Some(hooks) = &self.hook_port
                     && !hook_pre_denied
                 {
@@ -2036,15 +2036,15 @@ mod tests {
         }
         async fn pre_tool(
             &self,
-            _call: &crate::tools::ToolCallRequest,
+            _call: &ToolCallRequest,
             _turn: u64,
         ) -> crate::hooks::PreToolVerdict {
             crate::hooks::PreToolVerdict::Proceed
         }
         async fn post_tool(
             &self,
-            _call: &crate::tools::ToolCallRequest,
-            _output: &crate::tools::ToolOutput,
+            _call: &ToolCallRequest,
+            _output: &ToolOutput,
             _turn: u64,
         ) -> crate::hooks::PostToolVerdict {
             crate::hooks::PostToolVerdict::Pass
@@ -2435,7 +2435,7 @@ mod streaming_tests {
         let log = Arc::new(Mutex::new(EventLog::new()));
         let mut engine = LoopEngine::new(header(), Arc::clone(&log));
         let mut transport = ScriptedTransport(vec![vec![
-            LlmEvent::Usage(serde_json::Value::Null),
+            LlmEvent::Usage(Value::Null),
             LlmEvent::Chunk("答".into()),
             LlmEvent::AssistantMessage(serde_json::json!({ "content": "答" })),
             LlmEvent::Usage(serde_json::json!({ "input_tokens": 10, "output_tokens": 5 })),
@@ -2480,7 +2480,7 @@ mod streaming_tests {
 
         struct DiffTool;
         impl crate::tools::ToolPort for DiffTool {
-            fn specs(&self) -> Vec<serde_json::Value> {
+            fn specs(&self) -> Vec<Value> {
                 serde_json::json!([{ "type": "function",
                     "function": { "name": "file_edit", "parameters": {} } }])
                 .as_array()
@@ -2514,7 +2514,7 @@ mod streaming_tests {
 
         struct PlainTool;
         impl crate::tools::ToolPort for PlainTool {
-            fn specs(&self) -> Vec<serde_json::Value> {
+            fn specs(&self) -> Vec<Value> {
                 serde_json::json!([{ "type": "function",
                     "function": { "name": "plain", "parameters": {} } }])
                 .as_array()

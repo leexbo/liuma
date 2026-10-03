@@ -115,8 +115,7 @@ impl liuma_agent_loop::Summarizer for PacedInner {
         &'a mut self,
         _header: &'a RequestHeader,
         _messages: &'a Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
         Box::pin(async { Ok(String::new()) })
     }
 }

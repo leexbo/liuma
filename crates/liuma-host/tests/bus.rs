@@ -247,8 +247,7 @@ async fn bus_transport_end_to_end_with_retry_plugin() {
             &'a mut self,
             _header: &'a RequestHeader,
             _messages: &'a serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
-        {
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
             Box::pin(async { Ok(String::new()) })
         }
     }

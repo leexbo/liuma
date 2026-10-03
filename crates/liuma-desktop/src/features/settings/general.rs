@@ -159,7 +159,7 @@ impl AppStore {
             self.settings.full_access_confirm = Some(FullAccessAsk::Default);
             let store = cx.entity().clone();
             self.with_window_deferred(cx, move |window, cx| {
-                crate::features::settings::open_full_access_dialog(&store, window, cx);
+                open_full_access_dialog(&store, window, cx);
             });
             cx.notify();
             return;

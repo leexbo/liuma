@@ -642,7 +642,7 @@ mod tests {
             .file_read(&json!({ "path": "src/main.rs", "offset": 2, "limit": 5 }))
             .await;
         assert!(out.success);
-        let Some(liuma_agent_loop::ToolView::Read {
+        let Some(ToolView::Read {
             path,
             offset,
             lines,
@@ -675,7 +675,7 @@ mod tests {
             .file_read(&json!({ "path": "src/main.rs", "offset": 99 }))
             .await;
         assert!(beyond.success);
-        let Some(liuma_agent_loop::ToolView::Read { offset, lines, .. }) = beyond.view else {
+        let Some(ToolView::Read { offset, lines, .. }) = beyond.view else {
             panic!("read 视图应在场");
         };
         assert_eq!(offset, 4);
@@ -694,7 +694,7 @@ mod tests {
             arguments: json!({ "path": "a.txt", "old_text": "beta", "new_text": "BETA" }),
         };
         let intent = tools.present_call(&call).expect("call 侧意图 diff");
-        assert!(matches!(&intent, liuma_agent_loop::ToolView::Diff { diffs }
+        assert!(matches!(&intent, ToolView::Diff { diffs }
             if diffs.len() == 1 && diffs[0].path == "a.txt"
                 && diffs[0].old_text.as_deref() == Some("beta")
                 && diffs[0].new_text == "BETA"));
@@ -736,7 +736,7 @@ mod tests {
         let tools = FileTools::new(&root);
         let out = tools.file_search(&json!({ "content": "needle" }));
         assert!(out.success);
-        let Some(liuma_agent_loop::ToolView::SearchMatches {
+        let Some(ToolView::SearchMatches {
             files,
             truncated,
             total,
@@ -764,7 +764,7 @@ mod tests {
         // glob-only:paths 形态
         let paths_out = tools.file_search(&json!({ "glob": "**/*.rs" }));
         assert!(paths_out.success);
-        let Some(liuma_agent_loop::ToolView::SearchPaths {
+        let Some(ToolView::SearchPaths {
             paths,
             truncated,
             total,
@@ -789,7 +789,7 @@ mod tests {
         tools.max_results = 3;
         let out = tools.file_search(&json!({ "content": "needle" }));
         assert!(out.success);
-        let Some(liuma_agent_loop::ToolView::SearchMatches {
+        let Some(ToolView::SearchMatches {
             files,
             truncated,
             total,

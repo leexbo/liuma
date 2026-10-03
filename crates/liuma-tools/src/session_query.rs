@@ -27,20 +27,20 @@ pub trait SessionQueryPort: Send + Sync {
         query: &str,
         limit: usize,
         session: Option<&str>,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send>>;
 
     /// 会话血缘(session_trace 形状)
     fn trace_session(
         &self,
         session: &str,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send>>;
 
     /// 单事件溯源(event_trace 形状)
     fn trace_event(
         &self,
         session: &str,
         seq: u64,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send>>;
 
     /// 单事件全文 + 邻居(event_read 形状)
     fn read_event(
@@ -49,7 +49,7 @@ pub trait SessionQueryPort: Send + Sync {
         seq: u64,
         before: usize,
         after: usize,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send>>;
 }
 
 /// session_query 工具族
@@ -184,10 +184,7 @@ impl ToolPort for SessionQueryTool {
         specs()
     }
 
-    fn execute(
-        &mut self,
-        call: &ToolCallRequest,
-    ) -> impl std::future::Future<Output = ToolOutput> + Send {
+    fn execute(&mut self, call: &ToolCallRequest) -> impl Future<Output = ToolOutput> + Send {
         let port = Arc::clone(&self.port);
         let current = self.current.clone();
         let name = call.name.clone();
@@ -315,7 +312,7 @@ impl SessionQueryPort for InMemoryQueryPort {
         _query: &str,
         _limit: usize,
         _session: Option<&str>,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send>> {
         let out = self.search_result.clone();
         Box::pin(async move { Ok(out) })
     }
@@ -323,7 +320,7 @@ impl SessionQueryPort for InMemoryQueryPort {
     fn trace_session(
         &self,
         _session: &str,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send>> {
         Box::pin(async move { Ok(json!({ "session": "s", "ancestors": [], "children": [] })) })
     }
 
@@ -331,7 +328,7 @@ impl SessionQueryPort for InMemoryQueryPort {
         &self,
         _session: &str,
         _seq: u64,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send>> {
         Box::pin(async move { Ok(json!({ "sourceEventSeqs": [] })) })
     }
 
@@ -341,7 +338,7 @@ impl SessionQueryPort for InMemoryQueryPort {
         _seq: u64,
         _before: usize,
         _after: usize,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send>> {
         Box::pin(async move { Ok(json!({ "event": {} })) })
     }
 }

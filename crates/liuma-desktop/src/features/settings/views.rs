@@ -205,10 +205,10 @@ fn nav_group_header(text: impl Into<gpui_kit::SharedString>) -> impl IntoElement
 /// 导航项行:左图标右标签,激活整行 pill(DOCK)高亮
 fn nav_item(
     store: &Entity<AppStore>,
-    nav: crate::features::settings::SettingsNav,
+    nav: SettingsNav,
     label: impl Into<gpui_kit::SharedString>,
     icon: gpui_kit::component::Icon,
-    current: crate::features::settings::SettingsNav,
+    current: SettingsNav,
 ) -> impl IntoElement {
     let label = label.into();
     let s = store.clone();

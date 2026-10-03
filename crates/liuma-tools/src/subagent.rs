@@ -295,7 +295,7 @@ impl SettlementNotificationPort for ChildJobNotify {
         _session: &str,
         text: String,
         source: Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+    ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         let registry = self.registry.clone();
         let self_id = self.self_id.clone();
         Box::pin(async move {
@@ -562,12 +562,12 @@ async fn run_child_turn<G>(
     prompt: &str,
     turn_token: &CancelToken,
     parent_cancel: &CancelToken,
-    interrupt: impl std::future::Future<Output = ()> + Send,
+    interrupt: impl Future<Output = ()> + Send,
     session_id: &str,
     event_sink: Option<&SubagentEventSink>,
 ) -> Result<liuma_agent_loop::TurnOutcome, LoopError>
 where
-    G: liuma_agent_loop::LlmTransport + Summarizer + Send,
+    G: LlmTransport + Summarizer + Send,
 {
     // 双取消源:父令牌级联 / interrupt 句柄,任一触发即取消本 turn 令牌
     let canceller = {
@@ -1566,7 +1566,7 @@ mod tests {
             parent_session: &str,
             text: String,
             source: Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
             self.calls
                 .lock()
                 .unwrap()
@@ -2135,7 +2135,7 @@ mod tests {
         let (factory, _built) = scripted_factory(&[]);
         // 无 port:同步形态(task 参数;无 run_in_background)
         let sync_tool = SubagentTool::<FakeProvider>::new(dir("s1"), factory.clone(), "m".into());
-        let specs = liuma_agent_loop::ToolPort::specs(&sync_tool);
+        let specs = ToolPort::specs(&sync_tool);
         assert_eq!(specs.len(), 1);
         assert!(
             specs[0]["function"]["parameters"]["properties"]
@@ -2152,7 +2152,7 @@ mod tests {
         let notify = RecordingNotify::default();
         let bg_tool = SubagentTool::<FakeProvider>::new(dir("s2"), factory, "m".into())
             .with_notify(Arc::new(notify));
-        let specs = liuma_agent_loop::ToolPort::specs(&bg_tool);
+        let specs = ToolPort::specs(&bg_tool);
         assert_eq!(specs.len(), 1);
         let props = specs[0]["function"]["parameters"]["properties"].clone();
         assert!(props.get("description").is_some());
@@ -2167,7 +2167,7 @@ mod tests {
         );
         // send_message 描述须含中途 steer 与父寻址句
         let control = SubagentControlTool::new(SubagentRegistry::default());
-        let cspec = liuma_agent_loop::ToolPort::specs(&control)
+        let cspec = ToolPort::specs(&control)
             .into_iter()
             .into_iter()
             .find(|s| s["function"]["name"] == "send_message")

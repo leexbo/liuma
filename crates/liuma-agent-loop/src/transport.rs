@@ -158,7 +158,7 @@ pub trait LlmTransport {
         &mut self,
         header: &crate::RequestHeader,
         messages: &Value,
-    ) -> impl std::future::Future<Output = Result<Vec<LlmEvent>, TransportError>> + Send;
+    ) -> impl Future<Output = Result<Vec<LlmEvent>, TransportError>> + Send;
 
     /// 流式路径:事件逐条送入 channel(记录优先,chunk 到达即落档+广播 → UI 逐 token)。
     /// 默认实现 = 收集后整批发送(非流式 transport 保持可用);http transport
@@ -169,7 +169,7 @@ pub trait LlmTransport {
         header: &'a crate::RequestHeader,
         messages: &'a Value,
         tx: tokio::sync::mpsc::UnboundedSender<LlmEvent>,
-    ) -> impl std::future::Future<Output = Result<(), TransportError>> + Send + 'a
+    ) -> impl Future<Output = Result<(), TransportError>> + Send + 'a
     where
         Self: Sized + Send,
     {

@@ -522,10 +522,10 @@ pub(crate) fn settle_active(at: std::time::Instant, now: std::time::Instant) -> 
 /// with_animation 内建尊重系统 reduce-motion。历史载入(merge_history)
 /// 不记 born,整段会话重放不触发。
 fn enter_anim(
-    el: gpui_kit::AnyElement,
+    el: AnyElement,
     key: &str,
     chat: Option<&super::projection::ChatState>,
-) -> gpui_kit::AnyElement {
+) -> AnyElement {
     let Some(born) = chat.and_then(|c| c.node_born.get(key)) else {
         return el;
     };
@@ -538,7 +538,7 @@ fn enter_anim(
         .relative()
         .child(el)
         .with_animation(
-            gpui_kit::SharedString::from(format!("node-enter-{key}")),
+            SharedString::from(format!("node-enter-{key}")),
             Animation::new(NODE_ENTER_MS)
                 .with_easing(gpui_kit::component::animation::ease_out_cubic),
             |wrapper, delta| {
@@ -827,7 +827,7 @@ fn nav_ticks(
                     let y = b.origin.y + px(band_top + ix as f32 * pitch);
                     let x = b.origin.x + px(24.);
                     #[cfg(test)]
-                    crate::features::chat::chat_pane::nav_marker_probe((
+                    nav_marker_probe((
                         top,
                         ix,
                         f32::from(x),
@@ -842,7 +842,7 @@ fn nav_ticks(
                         },
                         theme::LABEL(),
                     );
-                    quad.corner_radii = gpui_kit::px(1.).into();
+                    quad.corner_radii = px(1.).into();
                     window.paint_quad(quad);
                 },
             )
@@ -988,7 +988,7 @@ fn context_block(
 /// 用于:进行中(compact-running)/ 排队(compact-queued)/ 空反馈
 /// (compact-row,kind=empty 的文案走词典;宿主载荷是英文常量)。
 fn compact_row(
-    message: impl Into<gpui_kit::SharedString>,
+    message: impl Into<SharedString>,
     running: bool,
     selector: &'static str,
 ) -> AnyElement {
@@ -1039,8 +1039,8 @@ fn compact_row(
 }
 
 /// 进度填充色面(半透明,盖住整行——含文字;读数透过去仍然清楚)
-fn fill_color(color: gpui_kit::Rgba) -> gpui_kit::Rgba {
-    gpui_kit::Rgba { a: 0.20, ..color }
+fn fill_color(color: Rgba) -> Rgba {
+    Rgba { a: 0.20, ..color }
 }
 
 /// 压缩进度行(compaction/progress 直播)。行骨架与静默行一致(图标 +
@@ -1288,7 +1288,7 @@ fn member_row(
     store: &Entity<AppStore>,
     leading: AnyElement,
     group: String,
-    title: impl Into<gpui_kit::SharedString>,
+    title: impl Into<SharedString>,
     summary: Option<MemberSummary>,
     summary_color: Option<Rgba>,
     suffix: Option<AnyElement>,
@@ -1327,7 +1327,7 @@ fn member_row(
                     .text_color(summary_color)
                     .child(summary)
             };
-            let (slot, fill): (gpui_kit::AnyElement, bool) = match summary {
+            let (slot, fill): (AnyElement, bool) = match summary {
                 MemberSummary::Text(summary) => (
                     if follow_end {
                         // 流式右跟随:摘要槽 overflow_hidden + justify_end,
@@ -2023,33 +2023,32 @@ fn bubble_rich_text(ix: usize, text: &str) -> impl IntoElement {
         return div()
             .child(
                 gpui_kit::base::SelectableText::new(
-                    gpui_kit::SharedString::from(format!("user-sel-{ix}-0")),
+                    SharedString::from(format!("user-sel-{ix}-0")),
                     text.to_string(),
                 )
                 .document_order(order(0)),
             )
             .into_any_element();
     }
-    let mut children: Vec<gpui_kit::AnyElement> = Vec::new();
+    let mut children: Vec<AnyElement> = Vec::new();
     let mut cursor = 0;
     let mut seg = 0usize;
-    let text_seg = |range: std::ops::Range<usize>,
-                    children: &mut Vec<gpui_kit::AnyElement>,
-                    seg: &mut usize| {
-        if range.is_empty() {
-            return;
-        }
-        let id = gpui_kit::SharedString::from(format!("user-sel-{ix}-{}", *seg));
-        *seg += 1;
-        children.push(
-            div()
-                .child(
-                    gpui_kit::base::SelectableText::new(id, text[range].to_string())
-                        .document_order(order(*seg)),
-                )
-                .into_any_element(),
-        );
-    };
+    let text_seg =
+        |range: std::ops::Range<usize>, children: &mut Vec<AnyElement>, seg: &mut usize| {
+            if range.is_empty() {
+                return;
+            }
+            let id = SharedString::from(format!("user-sel-{ix}-{}", *seg));
+            *seg += 1;
+            children.push(
+                div()
+                    .child(
+                        gpui_kit::base::SelectableText::new(id, text[range].to_string())
+                            .document_order(order(*seg)),
+                    )
+                    .into_any_element(),
+            );
+        };
     for tok in &tokens {
         text_seg(cursor..tok.start, &mut children, &mut seg);
         children.push(bubble_ref_chip(tok).into_any_element());
@@ -2382,7 +2381,7 @@ fn tool_expanded_body(
     output: Option<&str>,
     view: Option<&serde_json::Value>,
     images: &[serde_json::Value],
-) -> gpui_kit::AnyElement {
+) -> AnyElement {
     use super::toolcard::{self, CardView};
     let narrowed = view.and_then(toolcard::narrow);
     let term = match &narrowed {
@@ -2394,7 +2393,7 @@ fn tool_expanded_body(
     let signal = term.and_then(|t| t.signal.as_deref());
     let execution_error = state == ToolState::Error && signal.is_none();
     // shell 工具的模型面名字随平台走(`bash` / `pwsh`),终端卡不跟着分两次写
-    let body: gpui_kit::AnyElement = if name == liuma_sandbox::shell::tool_name()
+    let body: AnyElement = if name == liuma_sandbox::shell::tool_name()
         && !execution_error
         && let Some(command) = bash_command(arguments)
     {
@@ -2446,7 +2445,7 @@ fn tool_expanded_body(
             // skill 展开体 = Instructions 卡(加载中/失败/
             // 正文三态;Inspect 药丸由展开体外层恒挂)
             _ if name == "skill" => {
-                super::toolcard::render_skill(store, cx, ix, key, output, state == ToolState::Error)
+                toolcard::render_skill(store, cx, ix, key, output, state == ToolState::Error)
                     .into_any_element()
             }
             _ => io_card(ix, arguments, output, state == ToolState::Error),
@@ -2473,7 +2472,7 @@ fn tool_expanded_body(
 
 /// 展开体底部的 Inspect 药丸:点击切到轨迹 tab 并打开该 tool
 /// 调用的检查器。样式对齐 deliverable_chip。
-fn inspect_button(store: &Entity<AppStore>, ix: usize, key: &str) -> gpui_kit::AnyElement {
+fn inspect_button(store: &Entity<AppStore>, ix: usize, key: &str) -> AnyElement {
     let s = store.clone();
     let k = key.to_string();
     let sel = format!("inspect-{key}");
@@ -2538,7 +2537,7 @@ fn todo_write_expanded(
     arguments: &str,
     output: Option<&str>,
     is_error: bool,
-) -> gpui_kit::AnyElement {
+) -> AnyElement {
     let parsed: Option<Vec<super::projection::TodoItem>> =
         serde_json::from_str::<serde_json::Value>(arguments)
             .ok()
@@ -2594,12 +2593,7 @@ fn todo_write_expanded(
     card.into_any_element()
 }
 
-fn io_card(
-    ix: usize,
-    arguments: &str,
-    output: Option<&str>,
-    is_error: bool,
-) -> gpui_kit::AnyElement {
+fn io_card(ix: usize, arguments: &str, output: Option<&str>, is_error: bool) -> AnyElement {
     let card_sel = format!("io-card-{ix}");
     let mut card = div()
         .id(("io-card", ix))
@@ -2829,7 +2823,7 @@ fn turn_tail(
                 el.child(reply_copy_button(
                     store,
                     cx,
-                    gpui_kit::SharedString::from(format!("tail-copy-{key}")),
+                    SharedString::from(format!("tail-copy-{key}")),
                     "tail-copy",
                     &rkey,
                 ))
@@ -2853,7 +2847,7 @@ fn turn_tail(
             let fork_sel = format!("turn-tail-{key}-fork");
             el.child(
                 div()
-                    .id(gpui_kit::SharedString::from(format!("tail-fork-{key}")))
+                    .id(SharedString::from(format!("tail-fork-{key}")))
                     .debug_selector(move || fork_sel.clone())
                     .size(px(24.))
                     .rounded_full()
@@ -3118,7 +3112,7 @@ fn detail_card_base() -> Div {
 /// 卡头部(图标+标题,可选右对齐总数)+ 发丝分隔线
 fn card_head(
     icon: AnyElement,
-    title: impl Into<gpui_kit::SharedString>,
+    title: impl Into<SharedString>,
     total: Option<String>,
 ) -> AnyElement {
     let title = title.into();
@@ -3147,7 +3141,7 @@ fn card_head(
 }
 
 /// 详情卡行(label 左侧灰 / 值右对齐)
-fn detail_row(label: impl Into<gpui_kit::SharedString>, value: String) -> AnyElement {
+fn detail_row(label: impl Into<SharedString>, value: String) -> AnyElement {
     let label = label.into();
     div()
         .flex()
@@ -3214,7 +3208,7 @@ fn deliverable_chip(store: &Entity<AppStore>, path: &str) -> impl IntoElement {
     let full_sel = full.clone();
     let s = store.clone();
     div()
-        .id(gpui_kit::SharedString::from(format!("deliv-{full}")))
+        .id(SharedString::from(format!("deliv-{full}")))
         .debug_selector(move || format!("deliv-{full_sel}").to_string())
         .flex()
         .h(px(24.))
@@ -3502,7 +3496,7 @@ fn pending_bubble(
                 .when(over, |el| {
                     el.child(
                         div()
-                            .id(gpui_kit::SharedString::from(id_fold))
+                            .id(SharedString::from(id_fold))
                             .flex_shrink_0()
                             .cursor_pointer()
                             .text_size(px(13.))

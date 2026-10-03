@@ -603,7 +603,7 @@ mod tests {
         let text = format!(
             "apiVersion: liuma/v1\nkind: Preset\nmetadata:\n  name: test\n  description: d\nspec:\n  mounts:\n{mounts_yaml}"
         );
-        let preset = liuma_host::PresetManifest::parse(&text, "<test>").unwrap();
+        let preset = PresetManifest::parse(&text, "<test>").unwrap();
         Resolved {
             model: "m".into(),
             base_url: "https://example.invalid".into(),
@@ -636,8 +636,7 @@ mod tests {
     #[test]
     fn standard_assembles_full_toolset() {
         let preset =
-            liuma_host::PresetManifest::load(std::path::Path::new("/nonexistent"), "standard")
-                .unwrap();
+            PresetManifest::load(std::path::Path::new("/nonexistent"), "standard").unwrap();
         let resolved = Resolved {
             preset,
             ..resolved_with("")
@@ -678,9 +677,7 @@ mod tests {
 
     #[test]
     fn minimal_assembles_bash_files_only() {
-        let preset =
-            liuma_host::PresetManifest::load(std::path::Path::new("/nonexistent"), "minimal")
-                .unwrap();
+        let preset = PresetManifest::load(std::path::Path::new("/nonexistent"), "minimal").unwrap();
         let resolved = Resolved {
             preset,
             ..resolved_with("")
@@ -787,8 +784,7 @@ mod tests {
         // (todo_write/plan/ask_user_question 无使用指南节;subagent 后台节
         // 需结算通知 port 才挂)
         let preset =
-            liuma_host::PresetManifest::load(std::path::Path::new("/nonexistent"), "standard")
-                .unwrap();
+            PresetManifest::load(std::path::Path::new("/nonexistent"), "standard").unwrap();
         let secs = tool_prompt_sections(&preset);
         assert_eq!(secs.len(), 7, "standard 应有七节");
         assert!(secs[0].contains("[exit code: N]"), "bash 节按行序在首");
@@ -801,8 +797,7 @@ mod tests {
         );
         // minimal = persona+bash+files → 两节(persona 无节)
         let minimal =
-            liuma_host::PresetManifest::load(std::path::Path::new("/nonexistent"), "minimal")
-                .unwrap();
+            PresetManifest::load(std::path::Path::new("/nonexistent"), "minimal").unwrap();
         assert_eq!(tool_prompt_sections(&minimal).len(), 2);
     }
 

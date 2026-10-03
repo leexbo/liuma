@@ -186,7 +186,7 @@ impl AppStore {
     ) {
         let store = cx.entity().clone();
         self.with_window_deferred(cx, move |window, cx| {
-            crate::features::settings::open_archived_confirm_dialog(
+            open_archived_confirm_dialog(
                 &store,
                 ArchivedConfirmKind::Delete { archive_id },
                 t!("settings.archived_delete_title"),
@@ -208,7 +208,7 @@ impl AppStore {
     ) {
         let store = cx.entity().clone();
         self.with_window_deferred(cx, move |window, cx| {
-            crate::features::settings::open_archived_confirm_dialog(
+            open_archived_confirm_dialog(
                 &store,
                 ArchivedConfirmKind::PurgeProject { pkey },
                 t!("settings.archived_purge_title"),
@@ -224,7 +224,7 @@ impl AppStore {
     pub fn ask_clear_archived(&mut self, n: usize, cx: &mut Context<Self>) {
         let store = cx.entity().clone();
         self.with_window_deferred(cx, move |window, cx| {
-            crate::features::settings::open_archived_confirm_dialog(
+            open_archived_confirm_dialog(
                 &store,
                 ArchivedConfirmKind::ClearAll,
                 t!("settings.archived_clear_title"),

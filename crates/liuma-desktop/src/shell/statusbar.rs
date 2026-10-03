@@ -279,7 +279,7 @@ fn detail_card() -> gpui_kit::Div {
 /// 卡头部(图标+标题,可选右对齐总数)+ 发丝分隔线
 fn card_head(
     icon: AnyElement,
-    title: impl Into<gpui_kit::SharedString>,
+    title: impl Into<SharedString>,
     total: Option<String>,
 ) -> AnyElement {
     let title = title.into();
@@ -314,7 +314,7 @@ fn card_head(
 }
 
 /// 详情卡行(label 左侧灰 / 值右对齐)
-fn detail_row(label: impl Into<gpui_kit::SharedString>, value: String) -> AnyElement {
+fn detail_row(label: impl Into<SharedString>, value: String) -> AnyElement {
     let label = label.into();
     div()
         .flex()

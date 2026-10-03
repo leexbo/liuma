@@ -45,12 +45,8 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         .bg(theme::COMPOSER())
         // 阴影:浮层面标配,与描边共同分层
         .shadow(vec![
-            gpui_kit::BoxShadow::new(
-                gpui_kit::px(0.),
-                gpui_kit::px(2.),
-                gpui_kit::rgba(0x00000014).into(),
-            )
-            .blur_radius(gpui_kit::px(10.)),
+            gpui_kit::BoxShadow::new(px(0.), px(2.), gpui_kit::rgba(0x00000014).into())
+                .blur_radius(px(10.)),
         ])
         .child(attachments::draft_rail(store, cx))
         // 输入卡总高/宽捕获(渲染期 paint;composer 下拉锚卡的定位分子
@@ -676,7 +672,7 @@ fn command_desc(name: &str, host: &str) -> String {
 fn command_row(
     cmd: &'static str,
     desc: String,
-    on_click: impl Fn(&mut gpui_kit::Window, &mut App) + 'static,
+    on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let sel = cmd.to_string();
     div()
@@ -1140,7 +1136,7 @@ fn menu_row(
     icon: Icon,
     label: impl Into<gpui_kit::SharedString>,
     checked: bool,
-    on_click: impl Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut App) + 'static,
+    on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let label = label.into();
     let sel = label.to_string();

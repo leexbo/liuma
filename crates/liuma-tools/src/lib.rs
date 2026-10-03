@@ -67,7 +67,7 @@ pub trait ApprovalPort: Send + Sync {
     fn request(
         &self,
         req: EscalationRequest,
-    ) -> Pin<Box<dyn std::future::Future<Output = ApprovalOutcome> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = ApprovalOutcome> + Send>>;
 }
 
 /// 拒绝提示链(沙箱拒绝输出的下一行;教模型带参重试一次,审批问用户)
@@ -89,7 +89,7 @@ pub trait SettlementNotificationPort: Send + Sync {
         parent_session: &str,
         text: String,
         source: Value,
-    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 }
 
 /// job 结算通知口(通知通道 + 发起会话 id)
@@ -903,7 +903,7 @@ async fn notify_job_settled(
     registry: &JobsRegistry,
     id: u64,
     command: &str,
-    status: Option<liuma_sandbox::ExitStatus>,
+    status: Option<ExitStatus>,
     tail: &[u8],
     notify: Option<&JobNotify>,
 ) {
@@ -1317,7 +1317,7 @@ mod tests {
             let out = ToolPort::execute(
                 &mut tool,
                 &ToolCallRequest {
-                    name: liuma_sandbox::shell::tool_name().into(),
+                    name: shell::tool_name().into(),
                     arguments: args,
                 },
             )
@@ -1331,7 +1331,7 @@ mod tests {
         let ok = ToolPort::execute(
             &mut tool,
             &ToolCallRequest {
-                name: liuma_sandbox::shell::tool_name().into(),
+                name: shell::tool_name().into(),
                 arguments: json!({ "command": "echo hi", "description": "Echo greeting" }),
             },
         )
@@ -1352,7 +1352,7 @@ mod tests {
         let mut tool = BashTool::new(&dir)
             .with_mode_source(std::sync::Arc::new(move || *mode_for_tool.lock().unwrap()));
         let call = |cmd: String| ToolCallRequest {
-            name: liuma_sandbox::shell::tool_name().into(),
+            name: shell::tool_name().into(),
             arguments: json!({ "command": cmd, "description": "Probe write" }),
         };
         let denied =
@@ -1404,7 +1404,7 @@ mod tests {
             fn request(
                 &self,
                 _req: EscalationRequest,
-            ) -> Pin<Box<dyn std::future::Future<Output = ApprovalOutcome> + Send>> {
+            ) -> Pin<Box<dyn Future<Output = ApprovalOutcome> + Send>> {
                 let outcome = *self.outcome.lock().unwrap();
                 let consulted = std::sync::Arc::clone(&self.consulted);
                 Box::pin(async move {
@@ -1427,7 +1427,7 @@ mod tests {
                 consulted: std::sync::Arc::clone(&consulted),
             }));
         let esc_call = |cmd: String| ToolCallRequest {
-            name: liuma_sandbox::shell::tool_name().into(),
+            name: shell::tool_name().into(),
             arguments: json!({
                 "command": cmd,
                 "description": "Escalate probe",
@@ -1481,7 +1481,7 @@ mod tests {
         // ③ 下一次无参执行回到会话模式:home 写被拦(只盖本次的语义)
         consulted.store(false, Ordering::Relaxed);
         let plain_call = ToolCallRequest {
-            name: liuma_sandbox::shell::tool_name().into(),
+            name: shell::tool_name().into(),
             arguments: json!({ "command": probe("plain"), "description": "Plain probe" }),
         };
         let back = ToolPort::execute(&mut tool, &plain_call).await;
@@ -1496,7 +1496,7 @@ mod tests {
         // ④ 非加宽请求(同级):从不问人,逐字拒绝
         *mode.lock().unwrap() = SandboxMode::ReadOnly;
         let narrow = ToolCallRequest {
-            name: liuma_sandbox::shell::tool_name().into(),
+            name: shell::tool_name().into(),
             arguments: json!({
                 "command": probe("narrow"),
                 "description": "Narrow probe",
@@ -1548,7 +1548,7 @@ mod tests {
             let out = ToolPort::execute(
                 &mut tool,
                 &ToolCallRequest {
-                    name: liuma_sandbox::shell::tool_name().into(),
+                    name: shell::tool_name().into(),
                     arguments: args,
                 },
             )
@@ -1560,7 +1560,7 @@ mod tests {
         let out = ToolPort::execute(
             &mut tool,
             &ToolCallRequest {
-                name: liuma_sandbox::shell::tool_name().into(),
+                name: shell::tool_name().into(),
                 arguments: json!({
                     "command": "echo hi",
                     "description": "D",
@@ -1611,7 +1611,7 @@ mod tests {
             let out = ToolPort::execute(
                 &mut tool,
                 &ToolCallRequest {
-                    name: liuma_sandbox::shell::tool_name().into(),
+                    name: shell::tool_name().into(),
                     arguments: args,
                 },
             )
@@ -1633,7 +1633,7 @@ mod tests {
                 _parent_session: &str,
                 _text: String,
                 _source: Value,
-            ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+            ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
                 Box::pin(std::future::ready(()))
             }
         }

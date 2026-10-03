@@ -71,7 +71,7 @@ pub struct HookService {
 impl HookService {
     /// 单桥构造(宿主装配辅助;超时/摘要有内置缺省)
     pub fn bridge(
-        dialect: crate::config::BridgeDialect,
+        dialect: BridgeDialect,
         config: HookConfig,
         project_dir: Option<String>,
         default_timeout_ms: Option<u64>,
@@ -327,8 +327,7 @@ pub type ToolApprovalFn = Arc<
             String,
             String,
             String,
-        )
-            -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolApprovalOutcome> + Send>>
+        ) -> std::pin::Pin<Box<dyn Future<Output = ToolApprovalOutcome> + Send>>
         + Send
         + Sync,
 >;

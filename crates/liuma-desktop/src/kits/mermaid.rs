@@ -98,7 +98,7 @@ impl MermaidCardCallbacks {
 /// 按自身 key 查快照——渲染链无需 `cx`。
 #[derive(Clone)]
 pub(crate) struct MermaidCards {
-    pub states: std::collections::HashMap<String, MermaidCardState>,
+    pub states: HashMap<String, MermaidCardState>,
     pub callbacks: MermaidCardCallbacks,
 }
 
@@ -522,7 +522,7 @@ fn card_toolbar(
 fn segment_button(
     key: &str,
     id: &'static str,
-    label: impl Into<gpui_kit::SharedString>,
+    label: impl Into<SharedString>,
     active: bool,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
@@ -571,11 +571,11 @@ fn card_button(
     key: &str,
     id: &'static str,
     icon: impl Into<gpui_kit::component::Icon>,
-    label: impl Into<gpui_kit::SharedString>,
+    label: impl Into<SharedString>,
     color: Rgba,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Button {
-    let label: gpui_kit::SharedString = label.into();
+    let label: SharedString = label.into();
     let sel = format!("{key}-{id}");
     let label_sel = format!("{key}-{id}-label");
     Button::new(sel.clone())

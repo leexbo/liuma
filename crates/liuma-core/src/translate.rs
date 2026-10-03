@@ -1250,7 +1250,7 @@ mod tests {
     fn canonicalize(v: &mut Value) {
         match v {
             Value::String(s) => {
-                if uuid::Uuid::parse_str(s).is_ok() {
+                if Uuid::parse_str(s).is_ok() {
                     *s = "<uuid>".into();
                 }
             }
@@ -1362,7 +1362,7 @@ mod tests {
         let parse = t.elapsed();
 
         let t = Instant::now();
-        let envs: Vec<liuma_session::EventEnvelope> = values
+        let envs: Vec<EventEnvelope> = values
             .iter()
             .map(|v| liuma_session::decode_envelope(v).unwrap())
             .collect();
@@ -1379,28 +1379,28 @@ mod tests {
         let log2 = liuma_app::load_log(REAL_LOG).unwrap();
         let load_log_total = t.elapsed();
 
-        let slice: Vec<liuma_session::EventEnvelope> = log2.iter().collect();
-        let provider = super::ProviderInfo {
+        let slice: Vec<EventEnvelope> = log2.iter().collect();
+        let provider = ProviderInfo {
             provider: "anthropic".into(),
             model: "test".into(),
         };
         let t = Instant::now();
-        let cut = super::page_cut(&slice, None, usize::MAX);
-        let events = super::translate_window(&provider, &slice, cut, None);
+        let cut = page_cut(&slice, None, usize::MAX);
+        let events = translate_window(&provider, &slice, cut, None);
         let translate = t.elapsed();
 
         let t = Instant::now();
         let payload = serde_json::to_string(&events).unwrap();
         let ser = t.elapsed();
         let t = Instant::now();
-        let back: Vec<super::SessionEvent> = serde_json::from_str(&payload).unwrap();
+        let back: Vec<SessionEvent> = serde_json::from_str(&payload).unwrap();
         let de = t.elapsed();
         assert_eq!(back.len(), events.len());
 
         // 单遍反序列化对照:Envelope 直解(跳过中间 Value 树 + 二次遍历;
         // 生产化需把 decode_envelope 的 fail-closed 守卫并入)
         let t = Instant::now();
-        let direct_envs: Vec<liuma_session::EventEnvelope> = text
+        let direct_envs: Vec<EventEnvelope> = text
             .lines()
             .filter(|l| !l.trim().is_empty())
             .map(|l| serde_json::from_str(l).unwrap())
@@ -1424,7 +1424,7 @@ mod tests {
         eprintln!("(对照)serde 反序列化 {:>10.1?}", de);
 
         // 思考链路探针:翻译产物中 reasoning 帧的量与载荷
-        let reasoning: Vec<&super::SessionEvent> = events
+        let reasoning: Vec<&SessionEvent> = events
             .iter()
             .filter(|e| e.ty == "assistant/reasoning")
             .collect();

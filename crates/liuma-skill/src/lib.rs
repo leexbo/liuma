@@ -482,7 +482,7 @@ mod tests {
                 "liuma-skill-svc-{}-{}-{}",
                 tag,
                 std::process::id(),
-                std::time::SystemTime::now()
+                SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_nanos()

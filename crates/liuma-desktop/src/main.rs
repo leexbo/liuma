@@ -79,7 +79,7 @@ fn main() {
     // Application::with_platform(current_platform(false)),非 wasm 分支逐字等价)
     gpui_kit::application()
         // 自有图标(_liuma)优先,回落 gpui-component 内置(见 icons.rs)
-        .with_assets(crate::kits::icons::MergedAssets)
+        .with_assets(kits::icons::MergedAssets)
         .run(move |cx| {
             // Dock 图标(favicon 同款流马,深色圆角方底同主题
             // BASE;NSImage 的 app-icon 位不支持 SVG,运行时绘制,见
@@ -96,16 +96,16 @@ fn main() {
             gpui_kit::init(cx);
             // 界面语言:开窗前读持久化档位(缺省 zh;切换 = 设置页,
             // 经 i18n::apply 全窗即时生效)——先于任何窗口文案渲染
-            crate::kits::i18n::init(&bridge.host().language());
+            kits::i18n::init(&bridge.host().language());
             // 外观三档:开窗前读持久化档位(HostBridge 在 run
             // 前已装配,启动无闪色);theme::apply 同步双盘 + 组件 token
-            crate::kits::theme::apply(
-                crate::kits::theme::Appearance::parse(&bridge.host().appearance()),
+            kits::theme::apply(
+                kits::theme::Appearance::parse(&bridge.host().appearance()),
                 None,
                 cx,
             );
             // 应用全局键表(⇧⌘P 等;测试装配同源,见 shell::bind_global_keys)
-            crate::shell::bind_global_keys(cx);
+            shell::bind_global_keys(cx);
             // 关窗即退出(单窗口应用;订阅泄漏存续于进程生命周期)
             std::mem::forget(cx.on_window_closed(|cx, _| cx.quit()));
 
@@ -216,7 +216,7 @@ fn main() {
                     let (window_handle, _view) =
                         gpui_kit::open_window(options, cx, move |window, cx| {
                             view_store.update(cx, |s, cx| s.attach_window_state(window, cx));
-                            cx.new(|cx| crate::shell::WorkspaceView::new(view_store.clone(), cx))
+                            cx.new(|cx| shell::WorkspaceView::new(view_store.clone(), cx))
                         })?;
                     // 启动即激活到前台:终端/nohup 拉起时窗口默认留在
                     // 启动方背后,macOS 对被遮挡窗口停发绘制帧,首帧之后

@@ -61,7 +61,7 @@ impl AnySession {
         input_id: Option<&str>,
         images: &[liuma_attachment::ImageAttachmentRef],
         files: &[liuma_attachment::FileAttachmentRef],
-        contexts: &[serde_json::Value],
+        contexts: &[Value],
         on_event: &mut (dyn FnMut(&EventEnvelope) + Send),
     ) -> anyhow::Result<TurnOutcome> {
         match self {
@@ -88,7 +88,7 @@ impl AnySession {
     /// `on_event` 见 [`crate::Session::compact_now`](渲染广播位)。
     async fn compact_now(
         &mut self,
-        on_event: &mut (dyn FnMut(&liuma_session::EventEnvelope) + Send),
+        on_event: &mut (dyn FnMut(&EventEnvelope) + Send),
     ) -> anyhow::Result<Option<(u64, u64, u64)>> {
         match self {
             AnySession::Real(s) => s.compact_now(on_event).await,
@@ -225,7 +225,7 @@ enum Job {
         mode: PromptMode,
         /// 4a 注入上下文(transient,仅本 prompt;不入 durable splice)。
         /// 驱动并入注入数组交引擎,在用户消息**之后**落档为 user/message。
-        contexts: Vec<serde_json::Value>,
+        contexts: Vec<Value>,
     },
     /// 队列条目变更(需应答;错误码:queue-item-not-found /
     /// steer-unavailable / queue-edit-non-text)
@@ -241,7 +241,7 @@ enum Job {
     Notice {
         id: String,
         text: String,
-        source: serde_json::Value,
+        source: Value,
     },
     /// 模式切换(standard / plan;经驱动通道执行,与 turn 串行)
     SetMode(String),
@@ -264,9 +264,9 @@ enum DriverCmd {
     /// 审批策略切换(approval/policy 落档 + 广播)
     SetApproval(String),
     /// hooks 桥热替换(保存配置即生效,turn 边界换装;None = 卸载)
-    SetHooks(Option<std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>>),
+    SetHooks(Option<Arc<dyn liuma_agent_loop::hooks::HookPortObj>>),
     /// 折叠价值裁定器热替换(决策场景开关;None = 卸载)
-    SetValueJudge(Option<std::sync::Arc<dyn liuma_agent_loop::value_judge::ValueJudge>>),
+    SetValueJudge(Option<Arc<dyn liuma_agent_loop::value_judge::ValueJudge>>),
     /// 手动压缩(/compact;摘要调用可达分钟级,驱动侧 await)
     Compact,
 }
@@ -296,7 +296,7 @@ struct PendingItem {
     files: Vec<liuma_attachment::FileAttachmentRef>,
     /// 4a 注入上下文(transient;durable splice 重建时为空)——仅驱动认领后
     /// 在 turn/start 前 commit,不持久化。
-    contexts: Vec<serde_json::Value>,
+    contexts: Vec<Value>,
 }
 
 /// 附着态(OnceLock 一次性装配)
@@ -304,11 +304,11 @@ struct PendingItem {
 /// 冷落档(文件尾读 + append)与驻留汇(日志锁内写盘)是两个写者域:
 /// 冷侧必须持本锁
 #[derive(Default)]
-struct AppendLocks(std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<()>>>>);
+struct AppendLocks(Mutex<HashMap<String, Arc<Mutex<()>>>>);
 
 impl AppendLocks {
     /// 取(或建)某会话的追加锁
-    fn lock_for(&self, id: &str) -> Arc<std::sync::Mutex<()>> {
+    fn lock_for(&self, id: &str) -> Arc<Mutex<()>> {
         let mut map = self.0.lock_recover();
         map.entry(id.to_string()).or_default().clone()
     }
@@ -360,7 +360,7 @@ struct SessionSlot {
     /// OnceLock 认输处静默弃装配:双倍装配开销之外,输家路径上的
     /// 瞬态失败(凭据/传输/工具组装)会把本可复用的旁路调用
     /// (session_anchor_index 等)一起拖死(桌面锚点栏静默落空)
-    assembly: std::sync::Mutex<()>,
+    assembly: Mutex<()>,
     /// 进入装配窗口的计数(单飞回归锁观测面;固定 = 冷附着恰一次)
     assembly_started: std::sync::atomic::AtomicUsize,
 }
@@ -450,21 +450,21 @@ pub struct MessageFeedbackItem {
 /// JSON 文件,与 session 日志分离,不发给模型)。put/delete 带 ifVersion 乐观锁。
 #[derive(Debug, Clone)]
 pub struct MessageFeedbackStore {
-    root: std::path::PathBuf,
+    root: PathBuf,
     /// 备注字节上限(8192)
     max_note_bytes: usize,
 }
 
 impl MessageFeedbackStore {
     /// 以反馈根构建(~/.liuma/feedback)
-    pub fn new(root: impl Into<std::path::PathBuf>) -> Self {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
             max_note_bytes: 8192,
         }
     }
 
-    fn path(&self, session_id: &str) -> std::path::PathBuf {
+    fn path(&self, session_id: &str) -> PathBuf {
         self.root
             .join(format!("{}.json", session_id.replace('/', "-")))
     }
@@ -623,14 +623,14 @@ pub struct AppHost {
     /// 冷路径文件追加锁(见 [`AppendLocks`])
     append_locks: AppendLocks,
     /// 驻留子代理认领集(防双挂:同一子会话同时至多一个驻留任务)
-    live_children: std::sync::Mutex<std::collections::HashSet<String>>,
+    live_children: Mutex<std::collections::HashSet<String>>,
     /// 子代理注册表 jobs 源(父会话 id → 弱引用;registry 随工具释放)
-    jobs_sources: std::sync::Mutex<HashMap<String, liuma_tools::subagent::WeakRegistry>>,
+    jobs_sources: Mutex<HashMap<String, liuma_tools::subagent::WeakRegistry>>,
     /// shell job 注册表源(父会话 id → 弱引用;状态变化 → 重广播
     /// 合并 session/jobs 帧)
-    shell_job_sources: std::sync::Mutex<HashMap<String, liuma_tools::WeakJobsRegistry>>,
+    shell_job_sources: Mutex<HashMap<String, liuma_tools::WeakJobsRegistry>>,
     /// 子会话事件翻译器(按子会话持计数器状态,translate→mux 实时流)
-    subagent_translators: std::sync::Mutex<HashMap<String, crate::translate::Translator>>,
+    subagent_translators: Mutex<HashMap<String, Translator>>,
     /// 用户级设置(~/.liuma/settings.yaml;setter 落盘与冷装配读取)
     settings: SettingsStore,
     /// provider 传输面指纹(api_key/base_url/dialect;上次同步快照):
@@ -651,10 +651,10 @@ pub struct AppHost {
     /// 首条标题提取,桌面 13 个触发面高频重拉——稳态 13 次 × 全清单
     /// 全文件读放大为 N 次 stat。stat 未变直接复用;append 即 len/mtime
     /// 变化自然失效
-    list_cache: std::sync::Mutex<HashMap<PathBuf, ListFacts>>,
+    list_cache: Mutex<HashMap<PathBuf, ListFacts>>,
     /// LLM 标题生成中的会话集(去重:并发 turn 启动的重复生成只一个在跑;
     /// 以 in-flight 集合实现生成结果的覆盖/替换语义)
-    title_gen_inflight: std::sync::Mutex<std::collections::HashSet<String>>,
+    title_gen_inflight: Mutex<std::collections::HashSet<String>>,
     mux: broadcast::Sender<ServerRequest>,
     host: broadcast::Sender<ServerRequest>,
     pending: Mutex<HashMap<String, PendingInteraction>>,
@@ -669,7 +669,7 @@ pub struct AppHost {
     mcp_rt: tokio::runtime::Handle,
     /// skill 服务(宿主级共享;发现/缓存/`skill` 工具数据源,
     /// 会话按 cwd 查询)
-    skills: std::sync::Arc<liuma_skill::SkillService>,
+    skills: Arc<liuma_skill::SkillService>,
     /// 仅保活:mcp_rt 为自建 runtime 时持有到宿主销毁
     #[allow(dead_code)]
     mcp_rt_keepalive: Option<tokio::runtime::Runtime>,
@@ -702,7 +702,7 @@ fn demo_models() -> Vec<String> {
 /// 停机令牌(禁用/移除/替换时 cancel)
 struct McpPortHandle {
     config: liuma_mcp::McpServerConfig,
-    cancel: liuma_agent_loop::CancelToken,
+    cancel: CancelToken,
 }
 
 /// settings 条目 → 端口配置(纯映射;url 在场 = streamable-http)
@@ -717,15 +717,13 @@ fn mcp_config_of(entry: &crate::settings::McpServerEntry) -> liuma_mcp::McpServe
             command: entry.command.clone(),
             args: entry.args.clone(),
             env: entry.env.clone(),
-            cwd: entry.cwd.as_ref().map(std::path::PathBuf::from),
+            cwd: entry.cwd.as_ref().map(PathBuf::from),
         }
     };
     liuma_mcp::McpServerConfig {
         server_name: entry.id.clone(),
         transport,
-        tool_call_timeout: std::time::Duration::from_millis(
-            entry.tool_call_timeout_ms.unwrap_or(60_000),
-        ),
+        tool_call_timeout: Duration::from_millis(entry.tool_call_timeout_ms.unwrap_or(60_000)),
     }
 }
 
@@ -816,7 +814,7 @@ const TITLES_FILE: &str = ".liuma/titles.json";
 /// 标题落盘(`.liuma/` 子目录缺席则先建——首个标题写入时该目录尚不存在)。
 /// 临时文件 + rename 原子顶替:直写会在崩溃/断电时留下半截 JSON,而
 /// 加载侧解析失败即整表丢弃(unwrap_or_default),半截文件 = 全部标题丢失
-fn write_titles_file(workspace: &std::path::Path, text: &str) -> Result<(), std::io::Error> {
+fn write_titles_file(workspace: &Path, text: &str) -> Result<(), std::io::Error> {
     let path = workspace.join(TITLES_FILE);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -915,7 +913,7 @@ fn load_envelopes(path: &Path) -> Option<Vec<EventEnvelope>> {
 /// [`AppHost::list_cache`])
 struct ListFacts {
     len: u64,
-    mtime: std::time::SystemTime,
+    mtime: SystemTime,
     blank: bool,
     log_title: Option<String>,
 }
@@ -927,7 +925,7 @@ fn derive_list_facts(log: &Path) -> (bool, Option<String>) {
     let log_title = text
         .lines()
         .find(|l| l.contains("\"user/message\""))
-        .and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .and_then(|l| serde_json::from_str::<Value>(l).ok())
         .and_then(|v| v["data"]["content"].as_str().map(str::to_owned));
     (blank, log_title)
 }
@@ -961,7 +959,7 @@ fn session_header_path(slot: &Path) -> PathBuf {
 fn read_session_header(slot: &Path) -> (Option<String>, Option<String>) {
     std::fs::read_to_string(session_header_path(slot))
         .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .map(|v| {
             (
                 v["parentSessionId"].as_str().map(String::from),
@@ -1126,7 +1124,7 @@ fn trajectory_delta_frame(
 struct LiveStats {
     agg: stats::StatsAgg,
     bd: crate::context::BreakdownAcc,
-    translator: Option<crate::translate::Translator>,
+    translator: Option<Translator>,
 }
 
 /// 统计帧:事件属统计面即 apply 并推 `session/stats`(事件驱动,替代
@@ -1403,12 +1401,10 @@ impl AppHost {
         let (host, _) = broadcast::channel(128);
         // 存量清洗:历史「流式增量+定稿全文双拼」bug 把 LLM 标题写成了
         // 翻倍文本(title_from_events 修复前生成);加载时平方串折叠还原
-        let titles: std::collections::HashMap<String, String> =
+        let titles: HashMap<String, String> =
             std::fs::read_to_string(workspace_clone.join(TITLES_FILE))
                 .ok()
-                .and_then(|t| {
-                    serde_json::from_str::<std::collections::HashMap<String, String>>(&t).ok()
-                })
+                .and_then(|t| serde_json::from_str::<HashMap<String, String>>(&t).ok())
                 .unwrap_or_default()
                 .into_iter()
                 .map(|(k, v)| (k, crate::title::fold_doubled_title(&v)))
@@ -1483,17 +1479,17 @@ impl AppHost {
             provider_fp: Mutex::new(HashMap::new()),
             sessions: std::sync::RwLock::new(HashMap::new()),
             append_locks: AppendLocks::default(),
-            live_children: std::sync::Mutex::new(std::collections::HashSet::new()),
-            jobs_sources: std::sync::Mutex::new(HashMap::new()),
-            shell_job_sources: std::sync::Mutex::new(HashMap::new()),
-            subagent_translators: std::sync::Mutex::new(HashMap::new()),
+            live_children: Mutex::new(std::collections::HashSet::new()),
+            jobs_sources: Mutex::new(HashMap::new()),
+            shell_job_sources: Mutex::new(HashMap::new()),
+            subagent_translators: Mutex::new(HashMap::new()),
             model_overrides: std::sync::RwLock::new(HashMap::new()),
             preset_overrides: std::sync::RwLock::new(HashMap::new()),
             effort_overrides: std::sync::RwLock::new(HashMap::new()),
             titles: std::sync::RwLock::new(titles),
-            list_cache: std::sync::Mutex::new(HashMap::new()),
-            title_gen_inflight: std::sync::Mutex::new(std::collections::HashSet::new()),
-            fake_title: std::sync::Mutex::new(None),
+            list_cache: Mutex::new(HashMap::new()),
+            title_gen_inflight: Mutex::new(std::collections::HashSet::new()),
+            fake_title: Mutex::new(None),
             mux,
             host,
             pending: Mutex::new(HashMap::new()),
@@ -1501,7 +1497,7 @@ impl AppHost {
             mcp_pool: liuma_mcp::McpPoolPort::new(),
             mcp_handles: Mutex::new(HashMap::new()),
             mcp_rt,
-            skills: std::sync::Arc::new(liuma_skill::SkillService::new()),
+            skills: Arc::new(liuma_skill::SkillService::new()),
             mcp_rt_keepalive,
             fake_script: Mutex::new(Vec::new()),
             fake_extra_tools: Mutex::new(Vec::new()),
@@ -1652,7 +1648,7 @@ impl AppHost {
             };
         }
         match req.send().await {
-            Ok(res) if res.status().is_success() => match res.json::<serde_json::Value>().await {
+            Ok(res) if res.status().is_success() => match res.json::<Value>().await {
                 Ok(body) => body["data"]
                     .as_array()
                     .map(|a| {
@@ -1830,7 +1826,7 @@ impl AppHost {
         // 先按文本读(错误信息可携带响应片段,路径未命中时用户能看到
         // 端点实际返回了什么),再解析 JSON
         let text = res.text().await.map_err(|e| format!("读取失败:{e}"))?;
-        let body: serde_json::Value = serde_json::from_str(&text)
+        let body: Value = serde_json::from_str(&text)
             .map_err(|e| format!("响应解析失败({e}):{}", Self::body_snippet(&text)))?;
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1980,7 +1976,7 @@ impl AppHost {
             .filter_map(|p| {
                 p.file_name()
                     .and_then(|n| n.to_str())
-                    .map(std::borrow::ToOwned::to_owned)
+                    .map(ToOwned::to_owned)
             })
             .collect()
     }
@@ -2869,7 +2865,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
     }
 
     /// MCP server 最近连接状态(设置页/详情页状态行;attach 回调更新)
-    pub fn mcp_server_status(&self) -> serde_json::Value {
+    pub fn mcp_server_status(&self) -> Value {
         let map = self.mcp_status.lock_recover();
         json!({
             "servers": map
@@ -2962,7 +2958,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         self: &Arc<Self>,
         session_id: &str,
         input: liuma_decision::scenarios::approvals::ReviewInput,
-    ) -> Option<serde_json::Value> {
+    ) -> Option<Value> {
         let (port, model) = {
             let slots = self.sessions.read_recover();
             let slot = slots.get(session_id)?;
@@ -3097,7 +3093,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         if let Some(risk) = &risk {
             question_data["risk"] = risk.clone();
         }
-        let question = crate::proto::Question {
+        let question = Question {
             id: audit_id.clone(),
             question: if reason.is_empty() {
                 format!("允许运行 {tool_name}?")
@@ -3107,11 +3103,11 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             header: Some("工具审批".into()),
             detail: Some(json!({ "argsSummary": args_summary }).to_string()),
             options: Some(vec![
-                crate::proto::QuestionOption {
+                QuestionOption {
                     label: "允许一次".into(),
                     description: Some("仅本次调用".into()),
                 },
-                crate::proto::QuestionOption {
+                QuestionOption {
                     label: "拒绝".into(),
                     description: None,
                 },
@@ -3176,7 +3172,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
     /// 构建 hooks 运行时(attach 装配;M4.2):enabled 桥逐个读配置,
     /// 读不到/解析不了 ⇒ warn + 该桥不注册;全部失败/无配置 =
     /// None(引擎直通)。config_path 相对路径按进程启动 cwd 解析。
-    fn build_hook_service(&self) -> Option<std::sync::Arc<liuma_hooks::HookService>> {
+    fn build_hook_service(&self) -> Option<Arc<liuma_hooks::HookService>> {
         let entries: Vec<crate::settings::HookBridgeEntry> = self
             .settings
             .read()
@@ -3203,8 +3199,8 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 )
                 .join(rest)
             });
-            let path = expanded.unwrap_or_else(|| std::path::PathBuf::from(&entry.config_path));
-            let raw: serde_json::Value = match std::fs::read_to_string(&path)
+            let path = expanded.unwrap_or_else(|| PathBuf::from(&entry.config_path));
+            let raw: Value = match std::fs::read_to_string(&path)
                 .map_err(|e| e.to_string())
                 .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))
             {
@@ -3249,9 +3245,9 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         if bridges.is_empty() {
             return None;
         }
-        Some(std::sync::Arc::new(liuma_hooks::HookService::new(
+        Some(Arc::new(liuma_hooks::HookService::new(
             bridges,
-            liuma_agent_loop::CancelToken::new(),
+            CancelToken::new(),
         )))
     }
 
@@ -3270,12 +3266,12 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             let Some(inner) = slot.inner.get() else {
                 continue;
             };
-            let bridge_port: Option<std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>> =
+            let bridge_port: Option<Arc<dyn liuma_agent_loop::hooks::HookPortObj>> =
                 service.as_ref().map(|svc| {
                     let sink: liuma_hooks::HookSink =
                         hook_event_sink(&sid, &inner.log, &inner.traj, &self.mux);
                     let ws_root = self.resolve_session(&sid).0;
-                    std::sync::Arc::new(liuma_hooks::service::HookPortImpl {
+                    Arc::new(liuma_hooks::service::HookPortImpl {
                         service: Arc::clone(svc),
                         session_id: sid.clone(),
                         workspace: ws_root.clone(),
@@ -3285,8 +3281,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                         sandbox: Some(liuma_sandbox::SandboxPolicy::workspace_write(
                             ws_root.clone(),
                         )),
-                    })
-                        as std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>
+                    }) as Arc<dyn liuma_agent_loop::hooks::HookPortObj>
                 });
             // 决策场景钩子并入(HookChain 最严格者胜;无桥时哨兵单独在场)
             let port = compose_hook_chain(
@@ -3416,7 +3411,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             .spawn(move || {
                 let mut seen_decision = None;
                 loop {
-                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    std::thread::sleep(Duration::from_secs(1));
                     let Some(host) = host.upgrade() else { break };
                     if host.settings.reload_if_changed() {
                         host.sync_mcp_ports();
@@ -3496,7 +3491,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 port.shutdown();
             }
             // 启动:后台连接(状态回调直写宿主状态表 + 三态帧广播)
-            let cancel = liuma_agent_loop::CancelToken::new();
+            let cancel = CancelToken::new();
             let cb_host = Arc::clone(self);
             let cb_id = entry.id.clone();
             let on_status: liuma_mcp::StatusCallback = Arc::new(move |event| {
@@ -3888,7 +3883,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
     }
 
     /// 默认工作区目录(清单第 0 位;describe cwd / 凭据 / 计费等工作区锚点)
-    pub fn workspace(&self) -> std::path::PathBuf {
+    pub fn workspace(&self) -> PathBuf {
         self.default_workspace()
     }
 
@@ -3920,7 +3915,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                     path,
                     inner: std::sync::OnceLock::new(),
                     running: std::sync::atomic::AtomicBool::new(false),
-                    assembly: std::sync::Mutex::new(()),
+                    assembly: Mutex::new(()),
                     assembly_started: std::sync::atomic::AtomicUsize::new(0),
                 })
             })
@@ -4106,7 +4101,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         let log = self.slot_path(&new_id);
         let slot = log
             .parent()
-            .map(std::path::Path::to_path_buf)
+            .map(Path::to_path_buf)
             .unwrap_or_else(|| log.clone());
         let _ = std::fs::create_dir_all(&slot);
         if !log.exists() {
@@ -4243,7 +4238,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 let _ = writeln!(out, "{line}");
             }
             // 血缘落档:seq = 截断边界 + 1(子日志连续性由 append 侧保证)
-            let mut forked = liuma_session::EventEnvelope::new(
+            let mut forked = EventEnvelope::new(
                 "session/forked",
                 now_ms() as i64,
                 json!({ "parent": id, "atSeq": cut_seq }),
@@ -4713,7 +4708,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             // 不变式:fake 工具集只含已知内置工具,重名失败不可能发生
             #[allow(clippy::expect_used)]
             let fake_tools = if subagent_session {
-                liuma_agent_loop::ToolSet::new(vec![Box::new(self_arc.mcp_pool.clone())
+                ToolSet::new(vec![Box::new(self_arc.mcp_pool.clone())
                     as Box<dyn liuma_agent_loop::tools::ToolPortObj>])
             } else {
                 let mut tool_list: Vec<Box<dyn liuma_agent_loop::tools::ToolPortObj>> = vec![
@@ -4731,7 +4726,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 ];
                 // 测试缝注入的待测原生工具(取走制:一次 attach 一批)
                 tool_list.extend(self_arc.fake_extra_tools.lock_recover().drain(..));
-                liuma_agent_loop::ToolSet::new(tool_list)
+                ToolSet::new(tool_list)
             }
             .expect("fake 工具集装配失败");
             (
@@ -4824,7 +4819,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                     },
                     events: {
                         let host = self_arc.clone() as Arc<AppHost>;
-                        Arc::new(move |sid: &str, ev: &liuma_session::EventEnvelope| {
+                        Arc::new(move |sid: &str, ev: &EventEnvelope| {
                             host.relay_subagent_event(sid, ev);
                         })
                     },
@@ -5031,11 +5026,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             .iter()
             .map(|g| json!({ "id": g.id, "text": g.text, "done": g.done, "paused": g.paused }))
             .collect();
-        let ev = liuma_session::EventEnvelope::new(
-            "goal/state",
-            now_ms() as i64,
-            json!({ "goals": items }),
-        );
+        let ev = EventEnvelope::new("goal/state", now_ms() as i64, json!({ "goals": items }));
         if let Some(slot) = self.get_slot(id)
             && let Some(inner) = slot.inner.get()
         {
@@ -5178,8 +5169,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             let Some(ev) = log.get(seq) else {
                 return Err(RpcError::bad_request("事件不存在(seq 越界)"));
             };
-            let summarize =
-                |e: &liuma_session::EventEnvelope| json!({ "seq": e.seq, "type": e.r#type });
+            let summarize = |e: &EventEnvelope| json!({ "seq": e.seq, "type": e.r#type });
             let lo = seq.saturating_sub(before as u64).max(1);
             let before_events: Vec<Value> = (lo..seq)
                 .filter_map(|s| log.get(s))
@@ -5499,7 +5489,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
 
     /// 技能服务用户根覆写(测试隔离:布局/注入测试注入临时 home,
     /// 生产恒真实 ~/.agents)。透传给共享 SkillService。
-    pub fn set_skill_user_home(&self, home: Option<std::path::PathBuf>) {
+    pub fn set_skill_user_home(&self, home: Option<PathBuf>) {
         self.skills.set_user_home(home);
     }
 
@@ -5512,9 +5502,9 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         questions: &[liuma_tools::QuestionItem],
     ) -> Result<String, String> {
         let rpc_id = Uuid::now_v7().to_string();
-        let frame_questions: Vec<crate::proto::Question> = questions
+        let frame_questions: Vec<Question> = questions
             .iter()
-            .map(|q| crate::proto::Question {
+            .map(|q| Question {
                 id: q.id.clone(),
                 question: q.question.clone(),
                 header: q.header.clone(),
@@ -5522,7 +5512,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 options: Some(
                     q.options
                         .iter()
-                        .map(|o| crate::proto::QuestionOption {
+                        .map(|o| QuestionOption {
                             label: o.label.clone(),
                             description: o.description.clone(),
                         })
@@ -5533,7 +5523,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 data: None,
             })
             .collect();
-        let request = crate::proto::QuestionRequestedFrame {
+        let request = QuestionRequestedFrame {
             session_id: session_id.into(),
             questions: frame_questions,
         };
@@ -5568,7 +5558,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                         self.pending.lock_recover().remove(&rpc_id);
                         let _ = self.mux.send(frame(
                             "question/resolved",
-                            serde_json::to_value(crate::proto::QuestionResolvedFrame {
+                            serde_json::to_value(QuestionResolvedFrame {
                                 session_id: session_id.into(),
                                 question_rpc_id: rpc_id.clone(),
                                 outcome: "cancelled".into(),
@@ -5826,7 +5816,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         if let Some(risk) = &risk {
             question_data["risk"] = risk.clone();
         }
-        let question = crate::proto::Question {
+        let question = Question {
             id: audit_id.clone(),
             question: req.justification.clone(),
             header: Some("沙箱升级审批".into()),
@@ -5836,7 +5826,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             intent: Some(json!({ "kind": "sandbox-escalation" })),
             data: Some(question_data),
         };
-        let request = crate::proto::QuestionRequestedFrame {
+        let request = QuestionRequestedFrame {
             session_id: session_id.into(),
             questions: vec![question],
         };
@@ -5886,7 +5876,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         splice(decided_envelope(&audit_id, outcome_name(outcome)));
         let _ = self.mux.send(frame(
             "question/resolved",
-            serde_json::to_value(crate::proto::QuestionResolvedFrame {
+            serde_json::to_value(QuestionResolvedFrame {
                 session_id: session_id.into(),
                 question_rpc_id: rpc_id,
                 outcome: outcome_name(outcome).into(),
@@ -5901,7 +5891,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
     pub async fn ask_questions_json(
         self: &Arc<Self>,
         session_id: &str,
-        questions: Vec<serde_json::Value>,
+        questions: Vec<Value>,
     ) -> Result<String, String> {
         let items: Vec<liuma_tools::QuestionItem> = questions
             .into_iter()
@@ -6286,7 +6276,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 reply: tx,
             })
             .map_err(|_| RpcError::internal("session worker 已退出"))?;
-        tokio::time::timeout(std::time::Duration::from_secs(5), rx)
+        tokio::time::timeout(Duration::from_secs(5), rx)
             .await
             .map_err(|_| RpcError::internal("session worker 响应超时"))?
             .map_err(|_| RpcError::internal("session worker 已退出"))?
@@ -6475,12 +6465,12 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
     /// 子会话事件实时流转发:驻留子代理的每个引擎事件经翻译
     /// 后以 session/event 帧广播(与主会话同帧形态,桌面投影无差别)。
     /// 翻译器按子会话缓存(turn/step 计数器跨事件连续)。
-    pub fn relay_subagent_event(&self, session_id: &str, ev: &liuma_session::EventEnvelope) {
+    pub fn relay_subagent_event(&self, session_id: &str, ev: &EventEnvelope) {
         let event = {
             let mut guards = self.subagent_translators.lock_recover();
             let translator = guards
                 .entry(session_id.to_string())
-                .or_insert_with(|| crate::translate::Translator::new(self.provider_info()));
+                .or_insert_with(|| Translator::new(self.provider_info()));
             translator.translate(ev)
         };
         if let Some(event) = event
@@ -7253,7 +7243,7 @@ fn repair_dangling_calls(log: &Arc<Mutex<EventLog>>) {
 
 /// 持久化汇形态(装配进 EventLog,在调用方日志锁内执行;锁内只做
 /// 小缓冲写+flush)
-type DurabilitySinkFn = Box<dyn Fn(&liuma_session::EventEnvelope) -> Result<(), String> + Send>;
+type DurabilitySinkFn = Box<dyn Fn(&EventEnvelope) -> Result<(), String> + Send>;
 
 /// 持久化汇构造:信封 → 该槽 JsonlBackend 追加
 fn durability_sink(backend: liuma_host::JsonlBackend) -> DurabilitySinkFn {
@@ -7554,7 +7544,7 @@ impl liuma_tools::session_query::SessionQueryPort for SessionQueryPortImpl {
         query: &str,
         limit: usize,
         session: Option<&str>,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send>> {
         let host = Arc::clone(&self.0);
         let query = query.to_string();
         let session = session.map(String::from);
@@ -7568,7 +7558,7 @@ impl liuma_tools::session_query::SessionQueryPort for SessionQueryPortImpl {
     fn trace_session(
         &self,
         session: &str,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send>> {
         let host = Arc::clone(&self.0);
         let session = session.to_string();
         Box::pin(async move { host.session_trace(&session).map_err(|e| e.message) })
@@ -7578,7 +7568,7 @@ impl liuma_tools::session_query::SessionQueryPort for SessionQueryPortImpl {
         &self,
         session: &str,
         seq: u64,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send>> {
         let host = Arc::clone(&self.0);
         let session = session.to_string();
         Box::pin(async move { host.event_trace(&session, seq).map_err(|e| e.message) })
@@ -7590,7 +7580,7 @@ impl liuma_tools::session_query::SessionQueryPort for SessionQueryPortImpl {
         seq: u64,
         before: usize,
         after: usize,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send>> {
         let host = Arc::clone(&self.0);
         let session = session.to_string();
         Box::pin(async move {
@@ -7695,7 +7685,7 @@ impl liuma_tools::subagent::SettlementNotificationPort for SettlementNoticeImpl 
         parent_session: &str,
         text: String,
         source: Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         let host = Arc::clone(&self.0);
         let parent = parent_session.to_string();
         Box::pin(async move {
@@ -7710,7 +7700,7 @@ impl liuma_tools::AskQuestionPort for AskQuestionPortImpl {
         &self,
         session_id: &str,
         questions: &[liuma_tools::QuestionItem],
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send>> {
         let host = Arc::clone(&self.0);
         let session_id = session_id.to_string();
         let questions = questions.to_vec();
@@ -7725,11 +7715,7 @@ impl liuma_plan::PlanReviewPort for PlanReviewPortImpl {
         &self,
         session_id: &str,
         plan: &str,
-    ) -> Pin<
-        Box<
-            dyn std::future::Future<Output = Result<liuma_plan::PlanReviewDecision, String>> + Send,
-        >,
-    > {
+    ) -> Pin<Box<dyn Future<Output = Result<liuma_plan::PlanReviewDecision, String>> + Send>> {
         let host = Arc::clone(&self.0);
         let session_id = session_id.to_string();
         let plan = plan.to_string();
@@ -7747,7 +7733,7 @@ impl liuma_tools::ApprovalPort for ApprovalPortImpl {
     fn request(
         &self,
         req: liuma_tools::EscalationRequest,
-    ) -> Pin<Box<dyn std::future::Future<Output = liuma_tools::ApprovalOutcome> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = liuma_tools::ApprovalOutcome> + Send>> {
         let host = Arc::clone(&self.host);
         let session_id = self.session_id.clone();
         Box::pin(async move { host.request_escalation(&session_id, req).await })
@@ -7775,7 +7761,7 @@ impl Drop for ApprovalGuard {
         splice_event(&self.log, decided_envelope(&self.audit_id, "cancelled"));
         let _ = self.host.mux.send(frame(
             "question/resolved",
-            serde_json::to_value(crate::proto::QuestionResolvedFrame {
+            serde_json::to_value(QuestionResolvedFrame {
                 session_id: self.session_id.clone(),
                 question_rpc_id: self.rpc_id.clone(),
                 outcome: "cancelled".into(),
@@ -7823,7 +7809,7 @@ fn hook_event_sink(
         // (receipt 非阻断面)——失败即无 seq,也就无从发布
         let Some(ev) = ({
             let mut l = log.lock_recover();
-            l.append(liuma_session::EventEnvelope::new(ty, now_ms() as i64, data))
+            l.append(EventEnvelope::new(ty, now_ms() as i64, data))
                 .ok()
                 .and_then(|seq| l.get(seq))
         }) else {
@@ -7852,7 +7838,7 @@ fn decision_hooks(
     log: &Arc<Mutex<EventLog>>,
     traj: &Arc<Mutex<crate::trajectory::TrajectoryFolder>>,
     mux: &broadcast::Sender<ServerRequest>,
-) -> Vec<std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>> {
+) -> Vec<Arc<dyn liuma_agent_loop::hooks::HookPortObj>> {
     let Some(runtime) = decision.as_ref() else {
         return Vec::new();
     };
@@ -7909,23 +7895,19 @@ async fn run_context_judge(
 
 /// 桥钩子 + 决策钩子合成单槽下发(HookChain 最严格者胜;全空 = 直通)
 fn compose_hook_chain(
-    bridge: Option<std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>>,
-    decision: Vec<std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>>,
-) -> Option<std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>> {
+    bridge: Option<Arc<dyn liuma_agent_loop::hooks::HookPortObj>>,
+    decision: Vec<Arc<dyn liuma_agent_loop::hooks::HookPortObj>>,
+) -> Option<Arc<dyn liuma_agent_loop::hooks::HookPortObj>> {
     match (bridge, decision.is_empty()) {
         (Some(bridge), false) => {
             let mut ports = vec![bridge];
             ports.extend(decision);
-            Some(
-                std::sync::Arc::new(liuma_agent_loop::hooks::HookChain::new(ports))
-                    as std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>,
-            )
+            Some(Arc::new(liuma_agent_loop::hooks::HookChain::new(ports))
+                as Arc<dyn liuma_agent_loop::hooks::HookPortObj>)
         }
         (Some(bridge), true) => Some(bridge),
-        (None, false) => Some(
-            std::sync::Arc::new(liuma_agent_loop::hooks::HookChain::new(decision))
-                as std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>,
-        ),
+        (None, false) => Some(Arc::new(liuma_agent_loop::hooks::HookChain::new(decision))
+            as Arc<dyn liuma_agent_loop::hooks::HookPortObj>),
         (None, true) => None,
     }
 }
@@ -8321,7 +8303,7 @@ async fn driver_loop(
         let log = Arc::clone(&inner.log);
         let ws_root = host0.resolve_session(&session_id).0;
         let home = liuma_host::default_liuma_root();
-        let state = std::sync::Mutex::new(liuma_host::InstructionRuntimeState::new());
+        let state = Mutex::new(liuma_host::InstructionRuntimeState::new());
         if let Ok(mut st) = state.lock() {
             // 定向收集:compose 面只消费 user/message(visible_map),
             // 整表展开在 46 万事件会话 ≈ 379MB 瞬时分配
@@ -8386,7 +8368,7 @@ async fn driver_loop(
             let log = Arc::clone(&inner.log);
             let ws_root = host0.resolve_session(&session_id).0;
             let service = Arc::clone(&host0.skills);
-            let state = std::sync::Mutex::new(liuma_skill::SkillCatalogState::new());
+            let state = Mutex::new(liuma_skill::SkillCatalogState::new());
             if let Ok(mut st) = state.lock() {
                 // 定向收集(恢复面只消费 skill-catalog 注入的 user/message;
                 // 此前整表深克隆 type+data ≈ 400MB 瞬时分配)
@@ -8423,11 +8405,11 @@ async fn driver_loop(
     {
         let ws_root = host0.resolve_session(&session_id).0;
         let service = host0.build_hook_service();
-        let bridge_port: Option<std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>> =
+        let bridge_port: Option<Arc<dyn liuma_agent_loop::hooks::HookPortObj>> =
             service.as_ref().map(|svc| {
                 let sink: liuma_hooks::HookSink =
                     hook_event_sink(&session_id, &inner.log, &inner.traj, &host0.mux);
-                std::sync::Arc::new(liuma_hooks::service::HookPortImpl {
+                Arc::new(liuma_hooks::service::HookPortImpl {
                     service: Arc::clone(svc),
                     session_id: session_id.clone(),
                     workspace: ws_root.clone(),
@@ -8440,7 +8422,7 @@ async fn driver_loop(
                     sandbox: Some(liuma_sandbox::SandboxPolicy::workspace_write(
                         ws_root.clone(),
                     )),
-                }) as std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>
+                }) as Arc<dyn liuma_agent_loop::hooks::HookPortObj>
             });
         if let Some(hook) = compose_hook_chain(
             bridge_port,
@@ -8480,16 +8462,16 @@ async fn driver_loop(
                     // backend.append 会把同一 seq 落两行,会话重载即被
                     // 连续性守卫拒收
                     let payload = serde_json::json!({
-                        "id": uuid::Uuid::now_v7().to_string(),
+                        "id": Uuid::now_v7().to_string(),
                         "content": text,
                         "source": { "kind": "plugin", "plugin": "hooks", "form": "session-start" },
                     });
                     if let Ok(mut l) = ss_log.lock() {
-                        let ev = liuma_session::EventEnvelope::new(
+                        let ev = EventEnvelope::new(
                             "user/message",
                             {
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
+                                SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
                                     .map(|d| d.as_millis() as i64)
                                     .unwrap_or(0)
                             },
@@ -8825,7 +8807,7 @@ mod tests {
                 serde_json::json!({ "mode": "plan" }),
             ))
             .unwrap();
-        let shared = std::sync::Arc::new(log);
+        let shared = Arc::new(log);
         let poisoner = shared.clone();
         let _ = std::thread::spawn(move || {
             let _g = poisoner.lock().unwrap();
@@ -9034,7 +9016,7 @@ mod tests {
         host.set_mode(&id, "plan").await.unwrap();
         // set_mode 经 Job 队列异步落档(current_thread runtime 须用
         // tokio 睡眠让出线程,worker 才能处理):轮询 baseline 直到终态出现
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let hit = loop {
             let hit = host.mux_baseline().iter().any(|f| {
                 f.method == "session/event"
@@ -9045,7 +9027,7 @@ mod tests {
             if hit || std::time::Instant::now() > deadline {
                 break hit;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         };
         assert!(hit, "baseline 未携带 plan/mode 终态");
         let id2 = host.create_session(None, None, None);
@@ -9066,7 +9048,7 @@ mod tests {
         let backend = liuma_host::JsonlBackend::open(dir.join("s.jsonl")).unwrap();
         // 持久化汇装配(与 attach 同形态):repair 的 append 经汇落盘
         let mk_sink = |b: liuma_host::JsonlBackend| {
-            move |ev: &liuma_session::EventEnvelope| b.append(ev).map_err(|e| e.to_string())
+            move |ev: &EventEnvelope| b.append(ev).map_err(|e| e.to_string())
         };
 
         // 场景 A:turn 开着 + ask_user_question 无 result(重启遗留现场)
@@ -9479,7 +9461,7 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("enabled: false"), "决策区应在文件里:{text}");
         // mtime 精度为毫秒:睡过一拍保证外部改动可被检出
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10));
         std::fs::write(&path, text.replacen("enabled: false", "enabled: true", 1)).unwrap();
 
         let view = host.settings_view()["decision"].clone();
@@ -9513,7 +9495,7 @@ mod tests {
         let path = host.settings.path().to_path_buf();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("guardHigh"), "配置过的阈值应落盘:{text}");
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10));
         let legacy: String = text
             .lines()
             .filter(|l| {
@@ -9631,7 +9613,7 @@ mod tests {
         {
             let mut l = inner.log.lock_recover();
             for i in 0..5 {
-                l.append(liuma_session::EventEnvelope::new(
+                l.append(EventEnvelope::new(
                     "user/message",
                     0,
                     json!({ "content": format!("m{i}") }),
@@ -9673,7 +9655,7 @@ mod tests {
     }
 
     /// 会话根下项目目录(测试 fixture 定位)
-    fn proj_dir(host: &AppHost, ws: &std::path::Path) -> PathBuf {
+    fn proj_dir(host: &AppHost, ws: &Path) -> PathBuf {
         host.sessions_root
             .join(project_key(&ws.display().to_string()))
     }
@@ -9715,7 +9697,7 @@ mod tests {
             if status == "failed" {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
         assert_eq!(status, "failed", "无效命令应快速失败");
         assert_eq!(host.mcp_pool.server_ids(), vec!["srv".to_string()]);
@@ -9753,13 +9735,13 @@ mod tests {
         mux: &mut broadcast::Receiver<ServerRequest>,
         pred: impl Fn(&ServerRequest) -> bool,
     ) -> Option<ServerRequest> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while std::time::Instant::now() < deadline {
             match mux.try_recv() {
                 Ok(f) if pred(&f) => return Some(f),
                 Ok(_) => continue,
                 Err(broadcast::error::TryRecvError::Empty) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await
+                    tokio::time::sleep(Duration::from_millis(10)).await
                 }
                 Err(_) => return None,
             }
@@ -9770,7 +9752,7 @@ mod tests {
     /// 轮询磁盘日志 fold 出 sandbox 模式,直到等于期望或超时。
     /// set_permission 走 worker 异步落盘,测试据此等待事件持久化。
     async fn wait_log_sandbox(host: &AppHost, id: &str, want: &str) -> String {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             let mode = session_sandbox_of(host, id);
             if mode == want {
@@ -9779,7 +9761,7 @@ mod tests {
             if std::time::Instant::now() >= deadline {
                 return mode;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 
@@ -9851,7 +9833,7 @@ mod tests {
         // 驱动认领通知 → 新 turn(模型回复来自脚本第 2 条);沿途收集
         // 队列帧——全程不得闪现通知文本(queue_frame 按 source 过滤)
         let mut queue_payloads: Vec<Value> = Vec::new();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             if std::time::Instant::now() >= deadline {
                 panic!("通知 turn 未在预算内结束");
@@ -9866,7 +9848,7 @@ mod tests {
                     }
                 }
                 Err(broadcast::error::TryRecvError::Empty) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await
+                    tokio::time::sleep(Duration::from_millis(10)).await
                 }
                 Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
                 Err(broadcast::error::TryRecvError::Closed) => panic!("mux 关闭"),
@@ -9932,7 +9914,7 @@ mod tests {
         });
         host.notify_subagent_settled(&id, "message from the child agent".into(), source);
         let mut queue_payloads: Vec<Value> = Vec::new();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             if std::time::Instant::now() >= deadline {
                 panic!("通知 turn 未在预算内结束");
@@ -9947,7 +9929,7 @@ mod tests {
                     }
                 }
                 Err(broadcast::error::TryRecvError::Empty) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await
+                    tokio::time::sleep(Duration::from_millis(10)).await
                 }
                 Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
                 Err(broadcast::error::TryRecvError::Closed) => panic!("mux 关闭"),
@@ -10016,7 +9998,7 @@ mod tests {
         .unwrap();
 
         // 通知必须被模型消费(两种认领路径都会产出其后的 assistant 回复)
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let events = loop {
             loop {
                 match mux.try_recv() {
@@ -10041,7 +10023,7 @@ mod tests {
             if std::time::Instant::now() >= deadline {
                 panic!("通知未被模型消费(日志:{events:?})");
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         };
         assert!(
             !queue_payloads
@@ -10086,9 +10068,9 @@ mod tests {
                 id: 7,
                 command: "sleep 30".into(),
                 status: "running".into(),
-                log_path: std::path::PathBuf::from("/tmp/x.log"),
+                log_path: PathBuf::from("/tmp/x.log"),
                 killer: None,
-                grace: std::time::Duration::from_secs(1),
+                grace: Duration::from_secs(1),
                 started_at: 1,
                 ended_at: None,
             });
@@ -10220,7 +10202,7 @@ mod tests {
         assert!(text.contains("项目规范"), "基线内容为 AGENTS.md 文本");
         let (mut user_pos, mut base_pos) = (None, None);
         for (i, l) in text.lines().enumerate() {
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else {
+            let Ok(v) = serde_json::from_str::<Value>(l) else {
                 continue;
             };
             if v["type"] != "user/message" {
@@ -10813,7 +10795,7 @@ mod tests {
             .await
             .unwrap();
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let mut streamed: Option<Value> = None;
         let mut leaked_to_chat = false;
         loop {
@@ -10846,7 +10828,7 @@ mod tests {
                         && f.payload["event"]["type"] == "turn/end"
                     {
                         // turn/end 帧之后仍有增量帧同流,排空一拍再定论
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        tokio::time::sleep(Duration::from_millis(100)).await;
                         while let Ok(f) = mux.try_recv() {
                             if f.method == "trajectory/delta"
                                 && f.payload["sessionId"].as_str() == Some(id.as_str())
@@ -10863,7 +10845,7 @@ mod tests {
                     }
                 }
                 Err(broadcast::error::TryRecvError::Empty) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await
+                    tokio::time::sleep(Duration::from_millis(10)).await
                 }
                 Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
                 Err(broadcast::error::TryRecvError::Closed) => panic!("mux 关闭"),
@@ -11050,7 +11032,7 @@ mod tests {
                 .await
                 .unwrap();
             // 排空到 turn/end,沿途记下压缩前的构成(messageTokens)
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
             loop {
                 assert!(std::time::Instant::now() < deadline, "turn 未结束");
                 match mux.try_recv() {
@@ -11070,7 +11052,7 @@ mod tests {
                     }
                     Ok(_) => {}
                     Err(broadcast::error::TryRecvError::Empty) => {
-                        tokio::time::sleep(std::time::Duration::from_millis(10)).await
+                        tokio::time::sleep(Duration::from_millis(10)).await
                     }
                     Err(_) => panic!("mux 关闭"),
                 }
@@ -11130,7 +11112,7 @@ mod tests {
         // 逐帧收:trajectory/delta 与 turn/end 同流,turn/end 后稍等
         // 排空(sink 同事件先 session/event 后 delta)
         let mut deltas: Vec<Value> = Vec::new();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             assert!(std::time::Instant::now() < deadline, "turn 未在预算内结束");
             match mux.try_recv() {
@@ -11146,13 +11128,13 @@ mod tests {
                     }
                 }
                 Err(broadcast::error::TryRecvError::Empty) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await
+                    tokio::time::sleep(Duration::from_millis(10)).await
                 }
                 Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
                 Err(broadcast::error::TryRecvError::Closed) => panic!("mux 关闭"),
             }
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
         while let Ok(f) = mux.try_recv() {
             if f.method == "trajectory/delta" {
                 deltas.push(f.payload.clone());
@@ -11224,7 +11206,7 @@ mod tests {
             .await
             .unwrap();
         // 等 turn 落档(含 claim splice)
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
         drop(host1);
 
         // 模拟重启:同一 workspace + 会话根的新宿主
@@ -12094,7 +12076,7 @@ mod tests {
             "{\"type\":\"user/message\",\"seq\":2,\"time\":0,\"data\":{\"content\":\"缓存后标题\"},\"ignorable\":false}\n",
         );
         std::fs::write(proj.join("c").join("session.jsonl"), &line).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::sleep(Duration::from_millis(5));
         let after = host.list_sessions();
         let s3 = after.iter().find(|s| s.session_id == "c").unwrap();
         assert!(!s3.blank, "append 后 blank 翻转");
@@ -12367,17 +12349,14 @@ mod tests {
     #[test]
     fn models_url_is_dialect_aware() {
         assert_eq!(
-            crate::registry::AppHost::models_url(
+            AppHost::models_url(
                 "https://open.bigmodel.cn/api/anthropic",
                 "anthropic-messages",
             ),
             "https://open.bigmodel.cn/api/anthropic/v1/models"
         );
         assert_eq!(
-            crate::registry::AppHost::models_url(
-                "https://api.deepseek.com/v1/",
-                "openai-responses"
-            ),
+            AppHost::models_url("https://api.deepseek.com/v1/", "openai-responses"),
             "https://api.deepseek.com/v1/models",
             "尾斜杠容忍"
         );
@@ -12557,7 +12536,7 @@ mod tests {
             if text.contains(needle) {
                 return true;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+            tokio::time::sleep(Duration::from_millis(40)).await;
         }
         false
     }
@@ -12656,7 +12635,7 @@ mod tests {
             if host.session_approval(&id) == "never" {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+            tokio::time::sleep(Duration::from_millis(40)).await;
         }
         assert_eq!(host.session_approval(&id), "never", "策略应已落档");
         host.get_slot(&id)
@@ -13006,7 +12985,7 @@ mod tests {
 
         // 点「停止」:取消令牌触发 → ask 立即返回(不再悬挂)
         assert!(host.cancel_session(&id), "附着会话取消应成功");
-        let res = tokio::time::timeout(std::time::Duration::from_secs(2), ask_task)
+        let res = tokio::time::timeout(Duration::from_secs(2), ask_task)
             .await
             .expect("取消后 ask 应立即返回,不应悬挂")
             .unwrap();
@@ -13585,7 +13564,7 @@ mod tests {
         // 入队 splice 已落盘且携带 inserted 内容(结构化断言——键序随
         // serde_json feature 合流变化,不依赖序列化顺序)
         let file = std::fs::read_to_string(host.session_log_path(&id)).unwrap();
-        let first: serde_json::Value =
+        let first: Value =
             serde_json::from_str(file.lines().next().unwrap_or("{}")).expect("首行应为合法 JSON");
         assert_eq!(first["type"], "agent/inbox/spliced", "首事件为入队 splice");
         assert_eq!(first["data"]["inserted"][0]["content"], "排队即消费");
@@ -13601,7 +13580,7 @@ mod tests {
         );
         let mut mux2 = host2.mux_subscribe();
         host2.history(&id, None, 50).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
         let mut saw_queue = false;
         while let Ok(f) = mux2.try_recv() {
             if f.method == "session/queue" {
@@ -13930,7 +13909,7 @@ mod tests {
             parent_session: &str,
             text: String,
             source: Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
             self.calls
                 .lock()
                 .unwrap()
@@ -14026,7 +14005,7 @@ mod tests {
         // 全链重挂:SubagentTool + resume_children → 注册表即刻有两个驻留,
         // 两者都不向父投通知(重开自动续跑是「无人确认就重跑工作」)
         let notify = ResumeRecordingNotify::default();
-        let transport: liuma_tools::subagent::TransportFactory<liuma_llm::FakeProvider> = {
+        let transport: liuma_tools::subagent::TransportFactory<FakeProvider> = {
             // 两个驻留各消费一次工厂调用(重挂即建传输);组内容相同,
             // 无论启动顺序如何,续话 turn 的回复一致
             let script = vec![
@@ -14039,7 +14018,7 @@ mod tests {
             Arc::new(move || {
                 // 每次工厂调用发一组脚本(= 一个子代理的传输)
                 let group = slot.lock().unwrap().pop();
-                let mut p = liuma_llm::FakeProvider::new();
+                let mut p = FakeProvider::new();
                 if let Some(response) = group {
                     p.then(response);
                 }
@@ -14061,7 +14040,7 @@ mod tests {
 
         // 零通知:重挂不驱动父会话(回归锁——曾投「已恢复」通知,空闲
         // 驱动认领即自动起 turn,重启后子代理被无声重跑)
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(
             notify.calls.lock().unwrap().is_empty(),
             "重挂不得向父投任何通知"
@@ -14085,7 +14064,7 @@ mod tests {
             if notify.calls.lock().unwrap().len() == 1 {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
         {
             let calls = notify.calls.lock().unwrap();
@@ -14117,7 +14096,7 @@ mod tests {
 
     /// 轮询等注册表有 n 个 idle 驻留(重挂异步)
     async fn wait_registry_idle(
-        tool: &liuma_tools::subagent::SubagentTool<liuma_llm::FakeProvider>,
+        tool: &liuma_tools::subagent::SubagentTool<FakeProvider>,
         n: usize,
     ) {
         for _ in 0..1000 {
@@ -14128,7 +14107,7 @@ mod tests {
             if ready {
                 return;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
         panic!("驻留未在预算内就绪");
     }
@@ -14139,14 +14118,14 @@ mod tests {
     async fn subagent_jobs_frame_broadcasts_on_status_change() {
         let host = temp_host("subjobs");
         let parent = host.create_session(None, None, None);
-        let transport: liuma_tools::subagent::TransportFactory<liuma_llm::FakeProvider> = {
+        let transport: liuma_tools::subagent::TransportFactory<FakeProvider> = {
             let script = vec![vec![LlmEvent::AssistantMessage(serde_json::json!({
                 "content": "bg done",
             }))]];
             let slot = Arc::new(Mutex::new(script));
             Arc::new(move || {
                 let group = slot.lock().unwrap().pop();
-                let mut p = liuma_llm::FakeProvider::new();
+                let mut p = FakeProvider::new();
                 if let Some(response) = group {
                     p.then(response);
                 }
@@ -14190,7 +14169,7 @@ mod tests {
                     }
                 }
                 Ok(_) => continue,
-                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
+                Err(_) => tokio::time::sleep(Duration::from_millis(5)).await,
             }
         }
         assert!(seen_running, "委派后未收到 running jobs 帧");
@@ -14207,7 +14186,7 @@ mod tests {
                     }
                 }
                 Ok(_) => continue,
-                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
+                Err(_) => tokio::time::sleep(Duration::from_millis(5)).await,
             }
         }
         let job = seen_completed.expect("结算后未收到 completed jobs 帧");
@@ -14241,9 +14220,9 @@ mod tests {
                 id: 1,
                 command: "cargo build".into(),
                 status: "running".into(),
-                log_path: std::path::PathBuf::from("/tmp/x.log"),
+                log_path: PathBuf::from("/tmp/x.log"),
                 killer: None,
-                grace: std::time::Duration::from_secs(1),
+                grace: Duration::from_secs(1),
                 started_at: 123,
                 ended_at: None,
             });
@@ -14302,14 +14281,14 @@ mod tests {
     async fn subagent_child_events_stream_to_mux() {
         let host = temp_host("substream");
         let parent = host.create_session(None, None, None);
-        let transport: liuma_tools::subagent::TransportFactory<liuma_llm::FakeProvider> = {
+        let transport: liuma_tools::subagent::TransportFactory<FakeProvider> = {
             let script = vec![vec![LlmEvent::AssistantMessage(serde_json::json!({
                 "content": "streamed child reply",
             }))]];
             let slot = Arc::new(Mutex::new(script));
             Arc::new(move || {
                 let group = slot.lock().unwrap().pop();
-                let mut p = liuma_llm::FakeProvider::new();
+                let mut p = FakeProvider::new();
                 if let Some(response) = group {
                     p.then(response);
                 }
@@ -14325,11 +14304,9 @@ mod tests {
         )
         .with_parent_id(&parent)
         .with_notify(Arc::new(notify))
-        .with_event_sink(Arc::new(
-            move |sid: &str, ev: &liuma_session::EventEnvelope| {
-                host_for_sink.relay_subagent_event(sid, ev);
-            },
-        ));
+        .with_event_sink(Arc::new(move |sid: &str, ev: &EventEnvelope| {
+            host_for_sink.relay_subagent_event(sid, ev);
+        }));
         let mut mux = host.mux_subscribe();
 
         let out = liuma_agent_loop::ToolPort::execute(&mut tool, &{
@@ -14379,7 +14356,7 @@ mod tests {
                 }
                 Ok(_) => continue,
                 Err(broadcast::error::TryRecvError::Empty) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await
+                    tokio::time::sleep(Duration::from_millis(5)).await
                 }
                 Err(_) => continue,
             }
@@ -14396,7 +14373,7 @@ mod tests {
         let parent = host.create_session(None, None, None);
         // 门控 bash:打断即时生效,不等命令结束
         let go = std::env::temp_dir().join(format!("liuma-stop-{}.go", Uuid::new_v4().simple()));
-        let transport: liuma_tools::subagent::TransportFactory<liuma_llm::FakeProvider> = {
+        let transport: liuma_tools::subagent::TransportFactory<FakeProvider> = {
             let group = vec![vec![LlmEvent::AssistantMessage(serde_json::json!({
                 "content": "",
                 "tool_calls": [ {
@@ -14413,7 +14390,7 @@ mod tests {
             let slot = Arc::new(Mutex::new(group));
             Arc::new(move || {
                 let response = slot.lock().unwrap().pop();
-                let mut p = liuma_llm::FakeProvider::new();
+                let mut p = FakeProvider::new();
                 if let Some(events) = response {
                     p.then(events);
                 }
@@ -14451,7 +14428,7 @@ mod tests {
             if running {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
 
         // 宿主打断:即时生效 → aborted 结算通知 + 保持可续话(idle)
@@ -14460,7 +14437,7 @@ mod tests {
             if notify.calls.lock().unwrap().len() == 1 {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
         {
             let calls = notify.calls.lock().unwrap();
@@ -14477,7 +14454,7 @@ mod tests {
             if idle {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
         // 已 idle:重复打断不命中(无事可停,不得残留信号误伤下一轮)
         assert!(!host.interrupt_subagent(&child), "idle 子代理无可打断");
@@ -14499,7 +14476,7 @@ mod tests {
         host
     }
 
-    fn write_skill(ws: &std::path::Path, slot: &str, name: &str, extra: &str) {
+    fn write_skill(ws: &Path, slot: &str, name: &str, extra: &str) {
         let p = ws.join(".agents").join("skills").join(slot);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(
@@ -14511,7 +14488,7 @@ mod tests {
         .unwrap();
     }
 
-    fn catalogs_of(log: &[liuma_session::EventEnvelope]) -> Vec<(String, serde_json::Value)> {
+    fn catalogs_of(log: &[EventEnvelope]) -> Vec<(String, Value)> {
         log.iter()
             .filter(|e| {
                 e.r#type == "user/message"
@@ -14657,18 +14634,18 @@ mod tests {
         .await
         .unwrap();
         // 等首 turn 收尾
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             let log = host.session_log(&id).unwrap();
             if log.iter().any(|e| e.r#type == "turn/end") {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "turn 未收尾");
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
         let log = host.session_log(&id).unwrap();
         // 真实用户消息:args 留在气泡里
-        let user_msgs: Vec<&liuma_session::EventEnvelope> = log
+        let user_msgs: Vec<&EventEnvelope> = log
             .iter()
             .filter(|e| {
                 e.r#type == "user/message"
@@ -14685,7 +14662,7 @@ mod tests {
             "用户原文完整入档"
         );
         // 手势注入:skill-invocation,含正文,不含用户 args 文本
-        let gestures: Vec<&liuma_session::EventEnvelope> = log
+        let gestures: Vec<&EventEnvelope> = log
             .iter()
             .filter(|e| {
                 e.r#type == "user/message"
@@ -14763,13 +14740,13 @@ for line in sys.stdin:
         })
         .unwrap();
         // 等 fixture 连接就绪(设置保存即连接)
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             if mcp_status_of(&host, "img").as_deref() == Some("ready") {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "MCP fixture 未就绪");
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
         // fake 模型两段:调 MCP 图片工具 → 终答
@@ -14791,14 +14768,14 @@ for line in sys.stdin:
         host.prompt(&id, &[json!({ "type": "text", "text": "截个图" })], "queue")
             .await
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
         loop {
             let log = host.session_log(&id).unwrap();
             if log.iter().any(|e| e.r#type == "turn/end") {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "turn 未收尾");
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
 
         // tool/result 携带 images 持久引用;base64 不进模型面
@@ -14892,7 +14869,7 @@ for line in sys.stdin:
             .await
             .unwrap();
             // 等 turn/end
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
             loop {
                 match mux.try_recv() {
                     Ok(f) => {
@@ -14905,7 +14882,7 @@ for line in sys.stdin:
                             std::time::Instant::now() < deadline,
                             "钩子阻塞 turn 未在预算内结束"
                         );
-                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                     Err(_) => panic!("mux 关闭"),
                 }
@@ -15153,7 +15130,7 @@ for line in sys.stdin:
                 if qs_len == 0 {
                     break;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
             // 守卫:整份日志 seq 连续(修复前可复现乱序 → load 拒绝)
             let log = liuma_app::load_log(&host.session_log_path(&id).display().to_string())
@@ -15199,7 +15176,7 @@ for line in sys.stdin:
     #[tokio::test]
     async fn cold_open_e2e_timing() {
         const REAL_LOG: &str = "/Users/leexbo/.liuma/--Volumes-DATA-projects-liuma--/s-367e20369b584ddebffbc0b9d04501da/session.jsonl";
-        if !std::path::Path::new(REAL_LOG).exists() {
+        if !Path::new(REAL_LOG).exists() {
             return;
         }
         let dir =

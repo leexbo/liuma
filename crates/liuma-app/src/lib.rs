@@ -194,7 +194,7 @@ pub use liuma_decision::DecisionPort;
 /// 且 entry.enabled 才有)
 pub struct DecisionMount {
     /// 决策端口(查询/审计共用)
-    pub port: Arc<dyn liuma_decision::DecisionPort>,
+    pub port: Arc<dyn DecisionPort>,
     /// 模型名(请求 model 字段与审计记录)
     pub model: String,
 }
@@ -216,7 +216,7 @@ pub fn default_settings_path() -> std::path::PathBuf {
 
 /// 从用户设置文件读决策条目(文件缺失/解析失败/键缺席 = 全默认关;
 /// 决策是旁路面,任何读取失败都不值得拒启)。
-pub fn load_decision_entry(path: &std::path::Path) -> DecisionEntry {
+pub fn load_decision_entry(path: &Path) -> DecisionEntry {
     #[derive(serde::Deserialize)]
     struct Slice {
         #[serde(default)]
@@ -232,9 +232,7 @@ pub fn load_decision_entry(path: &std::path::Path) -> DecisionEntry {
 /// 决策端口装配:设置文件 decision 区 enabled 时构建 System One 客户端;
 /// 关闭 / 构建失败 = `None`(mount 层「port 缺 = 组件跳过」,与
 /// session_query/ask_user_question 同先例;消费方按 fail-open 消费)
-pub fn build_decision_port(
-    decision: &DecisionSettings,
-) -> Option<Arc<dyn liuma_decision::DecisionPort>> {
+pub fn build_decision_port(decision: &DecisionSettings) -> Option<Arc<dyn DecisionPort>> {
     if !decision.enabled {
         return None;
     }
@@ -244,7 +242,7 @@ pub fn build_decision_port(
         decision.timeout_ms,
     )
     .ok()
-    .map(|client| Arc::new(client) as Arc<dyn liuma_decision::DecisionPort>)
+    .map(|client| Arc::new(client) as Arc<dyn DecisionPort>)
 }
 
 /// 仅落档的 receipt 汇:**没有直播下游**的装配面专用(当前只有
@@ -274,7 +272,7 @@ pub fn log_only_receipt_sink(log: &Arc<Mutex<EventLog>>) -> liuma_decision::scen
 ///
 /// 空 vec = 无场景开启/未装配(调用方不挂 hook,引擎直通)。
 pub fn decision_hook_ports(
-    port: &Arc<dyn liuma_decision::DecisionPort>,
+    port: &Arc<dyn DecisionPort>,
     settings: &DecisionSettings,
     log: &Arc<Mutex<EventLog>>,
     sink: liuma_decision::scenarios::ReceiptSink,
@@ -310,7 +308,7 @@ pub fn decision_hook_ports(
 /// 决策场景钩子合成单槽([`HookChain`]:最严格者胜);无场景 = `None`
 /// (引擎直通,零开销)
 pub fn decision_hook_port(
-    port: &Arc<dyn liuma_decision::DecisionPort>,
+    port: &Arc<dyn DecisionPort>,
     settings: &DecisionSettings,
     log: &Arc<Mutex<EventLog>>,
     sink: liuma_decision::scenarios::ReceiptSink,
@@ -329,7 +327,7 @@ pub fn decision_hook_port(
 /// receipt 落档口由**调用方注入**(宿主事件汇):与 [`decision_hook_port`]
 /// 同款理由——只落档不推轨迹增量的 receipt 对直播轨迹永久不可见。
 pub fn build_fold_judge(
-    port: &Arc<dyn liuma_decision::DecisionPort>,
+    port: &Arc<dyn DecisionPort>,
     settings: &DecisionSettings,
     log: &Arc<Mutex<EventLog>>,
     sink: liuma_decision::scenarios::ReceiptSink,
@@ -633,7 +631,7 @@ pub fn wall_clock() -> i64 {
 pub fn build_raw_transport(
     resolved: &Resolved,
     api_key: &str,
-    attachments: Option<std::sync::Arc<dyn liuma_llm::AttachmentSource>>,
+    attachments: Option<Arc<dyn liuma_llm::AttachmentSource>>,
 ) -> Result<HttpTransport> {
     let adapter = liuma_llm::adapter_by_name(&resolved.dialect)
         .ok_or_else(|| anyhow::anyhow!("未知 provider 方言:{}", resolved.dialect))?;
@@ -666,15 +664,15 @@ pub fn build_tools(
     pty: bool,
     permission: &str,
     mode_source: Option<liuma_tools::ModeSource>,
-    approval_port: Option<std::sync::Arc<dyn liuma_tools::ApprovalPort>>,
-    query_port: Option<std::sync::Arc<dyn liuma_tools::session_query::SessionQueryPort>>,
-    ask_port: Option<std::sync::Arc<dyn liuma_tools::AskQuestionPort>>,
+    approval_port: Option<Arc<dyn liuma_tools::ApprovalPort>>,
+    query_port: Option<Arc<dyn liuma_tools::session_query::SessionQueryPort>>,
+    ask_port: Option<Arc<dyn liuma_tools::AskQuestionPort>>,
     decision: Option<DecisionMount>,
-    plan_review_port: Option<std::sync::Arc<dyn liuma_plan::PlanReviewPort>>,
-    session_factory: Option<std::sync::Arc<dyn liuma_tools::subagent::SessionFactory>>,
-    notify_port: Option<std::sync::Arc<dyn liuma_tools::subagent::SettlementNotificationPort>>,
+    plan_review_port: Option<Arc<dyn liuma_plan::PlanReviewPort>>,
+    session_factory: Option<Arc<dyn liuma_tools::subagent::SessionFactory>>,
+    notify_port: Option<Arc<dyn liuma_tools::subagent::SettlementNotificationPort>>,
     current_session: Option<&str>,
-    subagent_bridge: Option<std::sync::Arc<liuma_tools::subagent::SubagentBridge>>,
+    subagent_bridge: Option<Arc<liuma_tools::subagent::SubagentBridge>>,
     // 宿主侧追加工具(MCP server 桥等;与 preset 装配的工具同池,重名 fail-fast)
     mut extra_tools: Vec<Box<dyn liuma_agent_loop::tools::ToolPortObj>>,
 ) -> Result<ToolSet> {
@@ -730,19 +728,17 @@ fn hosted_tool_ports(resolved: &Resolved) -> Vec<Box<dyn liuma_agent_loop::tools
 /// 对它的调用请求,即使发出也会被引擎工具面拒绝——名字不匹配任何
 /// function 工具)
 struct HostedToolSpecs {
-    entry: serde_json::Value,
+    entry: Value,
 }
 
 impl liuma_agent_loop::tools::ToolPortObj for HostedToolSpecs {
-    fn specs(&self) -> Vec<serde_json::Value> {
+    fn specs(&self) -> Vec<Value> {
         vec![self.entry.clone()]
     }
     fn execute<'a>(
         &'a mut self,
         _call: &'a liuma_agent_loop::ToolCallRequest,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = liuma_agent_loop::ToolOutput> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn Future<Output = liuma_agent_loop::ToolOutput> + Send + 'a>> {
         Box::pin(async {
             liuma_agent_loop::ToolOutput {
                 output: "hosted 工具由 provider 服务端执行,不可本地调用".into(),
@@ -853,10 +849,7 @@ impl<T: Send, TOOLS> Session<T, TOOLS> {
     }
 
     /// 挂 hooks 拦截点(宿主装配;liuma-hooks HookPortImpl;M4.2)。
-    pub fn set_hook_port(
-        &mut self,
-        port: std::sync::Arc<dyn liuma_agent_loop::hooks::HookPortObj>,
-    ) {
+    pub fn set_hook_port(&mut self, port: Arc<dyn liuma_agent_loop::hooks::HookPortObj>) {
         self.engine.set_hook_port(port);
     }
 
@@ -869,7 +862,7 @@ impl<T: Send, TOOLS> Session<T, TOOLS> {
     /// 未挂 = 折叠不咨询决策模型(零开销直通)。
     pub fn set_value_judge_port(
         &mut self,
-        port: Option<std::sync::Arc<dyn liuma_agent_loop::value_judge::ValueJudge>>,
+        port: Option<Arc<dyn liuma_agent_loop::value_judge::ValueJudge>>,
     ) {
         match port {
             Some(p) => self.engine.set_value_judge(p),
@@ -944,7 +937,7 @@ where
         input_id: Option<&str>,
         images: &[liuma_attachment::ImageAttachmentRef],
         files: &[liuma_attachment::FileAttachmentRef],
-        contexts: &[serde_json::Value],
+        contexts: &[Value],
         on_event: &mut (dyn FnMut(&EventEnvelope) + Send),
     ) -> Result<TurnOutcome> {
         self.refresh_header(); // 模式/计划态自日志生效
@@ -1019,7 +1012,7 @@ pub fn header_rebuilder(parts: PromptParts) -> Box<dyn Fn(&EventLog) -> RequestH
 /// 无直播下游的装配面(headless CLI)传 [`log_only_receipt_sink`]。
 pub async fn judge_context(
     log: &Arc<Mutex<EventLog>>,
-    port: &Arc<dyn liuma_decision::DecisionPort>,
+    port: &Arc<dyn DecisionPort>,
     settings: &DecisionSettings,
     context_window: u64,
     sink: &liuma_decision::scenarios::ReceiptSink,
@@ -1110,7 +1103,7 @@ pub async fn judge_context(
             sink(
                 "decision/answered",
                 serde_json::json!({ "id": id, "ok": true,
-                    "answers": serde_json::to_value(&answers.answers).unwrap_or(serde_json::Value::Null),
+                    "answers": serde_json::to_value(&answers.answers).unwrap_or(Value::Null),
                     "durationMs": duration_ms }),
             );
             if lost.is_empty() {
@@ -1121,7 +1114,7 @@ pub async fn judge_context(
             if !settings.context.enforce {
                 return Ok(Some(0));
             }
-            let pruned: Vec<serde_json::Value> = lost
+            let pruned: Vec<Value> = lost
                 .iter()
                 .map(|(seq, score)| serde_json::json!({ "seq": seq, "score": score }))
                 .collect();
@@ -1240,13 +1233,12 @@ mod hosted_tests {
             reasoning_effort: None,
             models: None,
             context_window: 1_000_000,
-            preset: PresetManifest::load(std::path::Path::new("."), "standard")
-                .expect("standard preset"),
+            preset: PresetManifest::load(Path::new("."), "standard").expect("standard preset"),
             hosted_tools: hosted,
         }
     }
 
-    fn specs(ports: &[Box<dyn liuma_agent_loop::tools::ToolPortObj>]) -> Vec<serde_json::Value> {
+    fn specs(ports: &[Box<dyn liuma_agent_loop::tools::ToolPortObj>]) -> Vec<Value> {
         ports.iter().flat_map(|p| p.specs()).collect()
     }
 

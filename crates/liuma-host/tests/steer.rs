@@ -39,8 +39,7 @@ impl Summarizer for Gated {
         &'a mut self,
         _header: &'a RequestHeader,
         _messages: &'a Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
         Box::pin(async { Ok(String::new()) })
     }
 }
@@ -74,7 +73,7 @@ fn types_of(log: &EventLog) -> Vec<(String, u64)> {
 
 /// run_turn 未来(turn 完成后借出 transport/log 的读取句柄)
 type TurnFuture = std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<TurnOutcome, liuma_agent_loop::LoopError>> + Send>,
+    Box<dyn Future<Output = Result<TurnOutcome, liuma_agent_loop::LoopError>> + Send>,
 >;
 
 fn run_engine(

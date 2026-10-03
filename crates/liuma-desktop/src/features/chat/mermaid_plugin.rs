@@ -103,14 +103,14 @@ fn mermaid_cards_for(store: &Entity<AppStore>, cx: &App) -> MermaidCards {
         .map(|(k, v)| {
             (
                 k.clone(),
-                crate::kits::mermaid::MermaidCardState {
+                mermaid::MermaidCardState {
                     show_code: v.show_code,
                     copied: v.copied,
                 },
             )
         })
         .collect();
-    let callbacks = crate::kits::mermaid::MermaidCardCallbacks {
+    let callbacks = mermaid::MermaidCardCallbacks {
         toggle_code: {
             let store = s.clone();
             Arc::new(move |card_key, _w, cx| {
@@ -132,7 +132,7 @@ fn mermaid_cards_for(store: &Entity<AppStore>, cx: &App) -> MermaidCards {
                 // 1.0 档,与内嵌预览共用缓存)——占位的渲染档上下文:
                 // 全图、pan 0。查看器首档走后台渲染,就位前地图式过渡
                 // 显示占位,主线程不同步 usvg 解析
-                let placeholder = crate::kits::mermaid::raster_at_zoom(card_key, &source, cx, 1.0)
+                let placeholder = mermaid::raster_at_zoom(card_key, &source, cx, 1.0)
                     .ok()
                     .map(|img| (img, 1.0));
                 store.update(cx, |st, cx| {
@@ -144,7 +144,7 @@ fn mermaid_cards_for(store: &Entity<AppStore>, cx: &App) -> MermaidCards {
             // 下载完成提示用通知(自动消失),而非插入消息流;导出为
             // 同步纯函数(固定 1.0 自然档);通知需 window,回调收之
             Arc::new(|_card_key, source, window, cx| {
-                let msg = match crate::kits::mermaid::export_diagram_png(&source, 1.0, cx) {
+                let msg = match mermaid::export_diagram_png(&source, 1.0, cx) {
                     Ok(p) => (
                         t!("chat.mermaid_exported", p = p.display()),
                         gpui_kit::component::notification::NotificationType::Success,

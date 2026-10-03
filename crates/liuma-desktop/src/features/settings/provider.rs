@@ -781,7 +781,7 @@ impl AppStore {
         });
         let dialog_store = cx.entity().clone();
         self.with_window_deferred(cx, move |window, cx| {
-            crate::features::settings::open_fetch_models_dialog(&dialog_store, window, cx);
+            open_fetch_models_dialog(&dialog_store, window, cx);
         });
         cx.notify();
         let store = cx.entity().clone();
@@ -1037,7 +1037,7 @@ impl AppStore {
         let pid = id.to_string();
         let store = cx.entity().clone();
         self.with_window_deferred(cx, move |window, cx| {
-            crate::features::settings::open_delete_provider_dialog(&store, &pid, window, cx);
+            open_delete_provider_dialog(&store, &pid, window, cx);
         });
         cx.notify();
     }

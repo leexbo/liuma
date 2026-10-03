@@ -1589,7 +1589,7 @@ fn menu_item(
     sel: &'static str,
     label: impl Into<gpui_kit::SharedString>,
     icon: Icon,
-    on_click: impl Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
+    on_click: impl Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut App) + 'static,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
     let label = label.into();
     div()
@@ -1771,7 +1771,7 @@ fn view_menu_item(
     label: impl Into<gpui_kit::SharedString>,
     selected: bool,
     pop: Entity<PopoverState>,
-    on_click: impl Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
+    on_click: impl Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut App) + 'static,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
     let label = label.into();
     div()

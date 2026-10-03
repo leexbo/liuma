@@ -360,7 +360,7 @@ pub fn splice_item(
     text: String,
     images: &[ImageAttachmentRef],
     files: &[FileAttachmentRef],
-    source: Option<&serde_json::Value>,
+    source: Option<&Value>,
 ) -> Value {
     let mut item = serde_json::json!({ "id": id, "content": text });
     if !images.is_empty() {

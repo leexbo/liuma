@@ -259,7 +259,7 @@ mod tests {
         let mut probabilities = BTreeMap::new();
         probabilities.insert("proceed".to_string(), 1.0 - prob_block);
         probabilities.insert("block".to_string(), prob_block);
-        let mut answers = std::collections::BTreeMap::new();
+        let mut answers = BTreeMap::new();
         answers.insert(
             "verdict".to_string(),
             Answer::Choice {

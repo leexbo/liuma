@@ -282,7 +282,7 @@ pub(crate) struct ChatStore {
     /// 收窄(经 `node_slot` 映到槽位,相邻合并成区间)
     pub tv_remeasure_keys: std::collections::BTreeSet<String>,
     /// 节点 key → 行槽下标(row_slots 重建时同步;重测范围映射用)
-    pub(crate) node_slot: std::collections::HashMap<String, usize>,
+    pub(crate) node_slot: HashMap<String, usize>,
     /// 最近一次重测区间(测试观测钩子:「流式只重测变更行」的端到端锁)
     #[cfg(test)]
     pub(crate) last_remeasure_ranges: Vec<std::ops::Range<usize>>,
@@ -311,7 +311,7 @@ pub(crate) struct ChatStore {
 /// 从「整个会话」降到「真正变了的那几行」
 fn changed_slot_ranges(
     keys: &std::collections::BTreeSet<String>,
-    node_slot: &std::collections::HashMap<String, usize>,
+    node_slot: &HashMap<String, usize>,
 ) -> Vec<std::ops::Range<usize>> {
     let mut slots: Vec<usize> = keys
         .iter()
@@ -410,7 +410,7 @@ impl Default for ChatStore {
             tv_streams: crate::kits::markdown_tv::TvStreamRegistry::default(),
             tv_subs: Vec::new(),
             tv_remeasure_keys: std::collections::BTreeSet::new(),
-            node_slot: std::collections::HashMap::new(),
+            node_slot: HashMap::new(),
             #[cfg(test)]
             last_remeasure_ranges: Vec::new(),
             nav_anchors_cache: None,
@@ -799,10 +799,8 @@ impl AppStore {
         // 本帧文本变更的节点 key(下面的重测范围由此收窄)
         let mut touched: Vec<String> = Vec::new();
         // 新建视图带 key(观察者闭包要记「哪个节点」落了地)
-        let mut tv_created: Vec<(
-            String,
-            gpui_kit::Entity<gpui_kit::component::text::TextViewState>,
-        )> = Vec::new();
+        let mut tv_created: Vec<(String, Entity<gpui_kit::component::text::TextViewState>)> =
+            Vec::new();
         {
             let nodes: &[ChatNode] = match self
                 .state
@@ -868,14 +866,14 @@ impl AppStore {
         let window = self.tv_slot_window();
         {
             // 保留条件 = 节点仍在 **且** 落在可视窗口内(窗口外的不再解析)
-            let live: std::collections::HashSet<&str> = match self
+            let live: HashSet<&str> = match self
                 .state
                 .current_id
                 .as_deref()
                 .and_then(|id| self.state.chats.get(id))
             {
                 Some(c) => c.nodes.iter().map(ChatNode::key).collect(),
-                None => std::collections::HashSet::new(),
+                None => HashSet::new(),
             };
             let keep = |k: &str| {
                 live.contains(k)
@@ -1132,11 +1130,7 @@ impl AppStore {
 
     /// 头窗前插落地(「加载更早」页到达):锚定复位走 reset 路径——
     /// 前插非尾部追加,splice 记账与测高缓存按行号存放都会整体错位
-    pub(crate) fn prepend_chat_history(
-        &mut self,
-        older: crate::features::chat::projection::ChatState,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn prepend_chat_history(&mut self, older: ChatState, cx: &mut Context<Self>) {
         // 锚须在拼接前读(旧槽位/旧滚动位)
         let anchor = self.viewport_anchor();
         if let Some(chat) = self

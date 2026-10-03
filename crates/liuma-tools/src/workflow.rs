@@ -261,7 +261,7 @@ mod tests {
                     .collect()
             })
             .collect();
-        let queue = std::sync::Arc::new(std::sync::Mutex::new(queue));
+        let queue = Arc::new(std::sync::Mutex::new(queue));
         Arc::new(move || {
             let mut q = queue.lock().unwrap();
             let group = if q.is_empty() {

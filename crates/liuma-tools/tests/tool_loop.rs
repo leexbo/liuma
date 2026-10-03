@@ -526,7 +526,7 @@ async fn todo_write_events_flow_through_engine_and_restore() {
 
     // 消息面不含 todo/write(非 surface;闸门比对全程通过即证明)
     let l = log.lock().unwrap();
-    let snap: Vec<liuma_session::EventEnvelope> = l.iter().collect();
+    let snap: Vec<EventEnvelope> = l.iter().collect();
     let msgs = liuma_session::derive_messages(snap.iter());
     let s = serde_json::to_string(&msgs).unwrap();
     assert!(!s.contains("todo/write"));
@@ -568,9 +568,8 @@ async fn plan_mode_in_turn_review_flow() {
             &self,
             _session_id: &str,
             _plan: &str,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<PlanReviewDecision, String>> + Send>,
-        > {
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<PlanReviewDecision, String>> + Send>>
+        {
             let result = self.0.clone().unwrap_or(Err("no script".into()));
             Box::pin(async move { result })
         }
@@ -1387,7 +1386,7 @@ async fn background_job_settles_with_notice() {
     /// 录制型通知 port:记录 (text, source)
     #[derive(Default, Clone)]
     struct RecordingNotify {
-        calls: std::sync::Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+        calls: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
     }
     impl SettlementNotificationPort for RecordingNotify {
         fn notify(
@@ -1407,7 +1406,7 @@ async fn background_job_settles_with_notice() {
     let recorder = RecordingNotify::default();
     let mut bash = BashTool::new(&dir)
         .with_jobs(registry.clone())
-        .with_job_notify(std::sync::Arc::new(recorder.clone()), "session-a");
+        .with_job_notify(Arc::new(recorder.clone()), "session-a");
     let mut jobs = JobTool::new(registry.clone());
 
     // job 1:自然完成(带输出尾部)

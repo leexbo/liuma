@@ -214,7 +214,7 @@ fn queue_row(
 /// 编辑进入需要 window,其余忽略。
 fn action_button(
     store: &Entity<AppStore>,
-    tip: impl Into<gpui_kit::SharedString> + 'static,
+    tip: impl Into<SharedString> + 'static,
     icon: gpui_kit::AnyElement,
     id: &'static str,
     on_click: impl Fn(&mut AppStore, &mut Window, &mut Context<AppStore>) + 'static,

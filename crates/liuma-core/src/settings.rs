@@ -268,17 +268,17 @@ pub enum BillingSnapshot {
 /// 路径须以 `$` 开头,数组过滤用 `?[?(…)]` 表达式
 /// (如 `$.data.limits[?(@.type=="TOKENS_LIMIT")].percentage`)。
 /// 无命中 = None(计费展示缺席该项,不报错)
-pub fn json_path<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+pub fn json_path<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
     use jsonpath_rust::JsonPath;
     root.query(path).ok()?.into_iter().next()
 }
 
 /// 从 JSON 值取「数字百分比」:整数按 0-100 百分比;≤1 且带小数的值按
 /// 占比 ×100(0.06 → 6%,两类代理的常见形态都收),字符串可带 `%`
-pub fn json_percent(v: &serde_json::Value) -> Option<u8> {
+pub fn json_percent(v: &Value) -> Option<u8> {
     let raw: f64 = match v {
-        serde_json::Value::Number(n) => n.as_f64()?,
-        serde_json::Value::String(s) => s.trim().trim_end_matches('%').parse().ok()?,
+        Value::Number(n) => n.as_f64()?,
+        Value::String(s) => s.trim().trim_end_matches('%').parse().ok()?,
         _ => return None,
     };
     let pct = if raw <= 1. && raw.fract() != 0. {
@@ -440,8 +440,7 @@ impl McpServerEntry {
 /// 给 `{"id"|"name", ...}`。任一条目非法 → 整体拒绝(fail-closed,不做
 /// 部分导入)。
 pub fn parse_mcp_servers_json(text: &str) -> Result<Vec<McpServerEntry>, String> {
-    let v: serde_json::Value =
-        serde_json::from_str(text).map_err(|e| format!("JSON 解析失败:{e}"))?;
+    let v: Value = serde_json::from_str(text).map_err(|e| format!("JSON 解析失败:{e}"))?;
     let map: serde_json::Map<String, Value> =
         if let Some(m) = v.get("mcpServers").and_then(|m| m.as_object()) {
             m.clone()
@@ -1016,7 +1015,7 @@ mod tests {
     /// JSONPath 求值:基础寻址 + filter 表达式(GLM 用量端点实测形态)
     #[test]
     fn json_path_evaluates_filters() {
-        let v: serde_json::Value = serde_json::json!({
+        let v: Value = serde_json::json!({
             "balance_infos": [ { "currency": "CNY", "total_balance": "9.52" } ],
             "usage": { "five_hour": { "utilization": 6 }, "resets_in": "4d22h" },
             "data": { "limits": [
@@ -1123,7 +1122,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "liuma-settings-m42-{}-{}",
             std::process::id(),
-            uuid::Uuid::now_v7().simple()
+            Uuid::now_v7().simple()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");

@@ -461,7 +461,7 @@ mod tests {
             &["-c".into(), "stty size".into()],
             Some(&dir),
             None,
-            portable_pty::PtySize {
+            PtySize {
                 rows: 33,
                 cols: 111,
                 pixel_width: 0,
@@ -490,7 +490,7 @@ mod tests {
             &["-c".into(), "echo $LIUMA_PTY_TEST_VAR".into()],
             Some(&dir),
             None,
-            portable_pty::PtySize::default(),
+            PtySize::default(),
             &[("LIUMA_PTY_TEST_VAR", "env-ok")],
         )
         .expect("pty spawn");
@@ -516,7 +516,7 @@ mod tests {
             ],
             Some(&dir),
             None,
-            portable_pty::PtySize {
+            PtySize {
                 rows: 10,
                 cols: 40,
                 pixel_width: 0,
@@ -530,7 +530,7 @@ mod tests {
         // 同步点 1:bash 打印初始行列并阻塞在 read
         wait_for(&buf, "10 40").await;
         session
-            .resize(portable_pty::PtySize {
+            .resize(PtySize {
                 rows: 20,
                 cols: 80,
                 pixel_width: 0,

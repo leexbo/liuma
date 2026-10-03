@@ -128,7 +128,7 @@ pub(crate) fn resolve_executable(
 ) -> Option<PathBuf> {
     let has_separator = command.contains('/') || command.contains('\\');
     if has_separator || std::path::Path::new(command).extension().is_some() {
-        let path = std::path::PathBuf::from(command);
+        let path = PathBuf::from(command);
         return exists(&path).then_some(path);
     }
     for dir in path_dirs {

@@ -255,7 +255,7 @@ mod chunk_row_tests {
         ev
     }
 
-    fn tmp_path(tag: &str) -> std::path::PathBuf {
+    fn tmp_path(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("liuma-jsonl-{}-{}", tag, std::process::id()));
         std::fs::create_dir_all(&dir).expect("建临时目录");
         dir.join("session.jsonl")

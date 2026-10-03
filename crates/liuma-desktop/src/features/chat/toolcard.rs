@@ -318,11 +318,7 @@ pub(crate) fn render_read(
 
 /// 一行读取窗口:行号槽(固定 48px 右对齐)+ 内容行(高亮 spans
 /// 横排不折行;无高亮回退单色文本)
-fn read_line(
-    number: u64,
-    text: &str,
-    spans: Option<&[crate::kits::highlight::Span]>,
-) -> gpui_kit::AnyElement {
+fn read_line(number: u64, text: &str, spans: Option<&[Span]>) -> gpui_kit::AnyElement {
     let content = match spans {
         Some(spans) if !spans.is_empty() => {
             // 横排 span(div 默认列向会竖排;pre 不折行 → 行超宽由外层横滚)

@@ -63,7 +63,7 @@ pub(crate) fn attachment_toast_card(store: &Entity<AppStore>, cx: &App) -> impl 
 /// 徽标显示)+ 添加工作区。行点击 = 收起弹层 + select_workspace
 pub(crate) fn workspace_menu_rows(
     store: &Entity<AppStore>,
-    pop: gpui_kit::Entity<gpui_kit::component::popover::PopoverState>,
+    pop: Entity<gpui_kit::component::popover::PopoverState>,
     cx: &App,
 ) -> Vec<gpui_kit::AnyElement> {
     let st = store.read(cx);

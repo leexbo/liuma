@@ -46,7 +46,7 @@ pub trait AskQuestionPort: Send + Sync {
         &self,
         session_id: &str,
         questions: &[QuestionItem],
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send>>;
 }
 
 /// ask_user_question 工具(第 13 个工具;standard preset 开启)
@@ -108,10 +108,7 @@ impl ToolPort for AskQuestionTool {
         })]
     }
 
-    fn execute(
-        &mut self,
-        call: &ToolCallRequest,
-    ) -> impl std::future::Future<Output = ToolOutput> + Send {
+    fn execute(&mut self, call: &ToolCallRequest) -> impl Future<Output = ToolOutput> + Send {
         let port = self.port.clone();
         let current = self.current.clone();
         async move {
@@ -213,7 +210,7 @@ mod tests {
     /// selected 读成「按推荐项继续」并擅自推进)
     #[test]
     fn description_carries_skip_contract() {
-        let tool = super::AskQuestionTool::new(std::sync::Arc::new(RecordingPort), "ws");
+        let tool = AskQuestionTool::new(Arc::new(RecordingPort), "ws");
         let spec = tool.specs()[0]["function"]["description"]
             .as_str()
             .expect("描述应在场")
@@ -235,13 +232,12 @@ mod tests {
     #[derive(Default)]
     struct RecordingPort;
 
-    impl super::AskQuestionPort for RecordingPort {
+    impl AskQuestionPort for RecordingPort {
         fn ask(
             &self,
             _session_id: &str,
-            _questions: &[super::QuestionItem],
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
-        {
+            _questions: &[QuestionItem],
+        ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send>> {
             Box::pin(std::future::ready(Err("未应答".into())))
         }
     }

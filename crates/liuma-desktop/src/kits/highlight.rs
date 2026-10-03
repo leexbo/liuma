@@ -535,7 +535,7 @@ mod tests {
         let spans = treesitter_spans("rs", code).expect("rust 应可用");
         assert_eq!(spans.len(), 5, "行数对齐(含末空行)");
         // 注释行整行注释色;字符串段非默认前景(色存在即可,不断言具体值)
-        let flat: Vec<&crate::kits::highlight::Span> = spans.iter().flatten().collect();
+        let flat: Vec<&Span> = spans.iter().flatten().collect();
         assert!(!flat.is_empty(), "应有样式段");
         let comment_line = &spans[1];
         assert!(!comment_line.is_empty(), "注释行应上色");

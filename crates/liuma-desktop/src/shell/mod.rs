@@ -72,7 +72,7 @@ pub(crate) fn secondary_modifier_pressed(modifiers: gpui_kit::Modifiers) -> bool
     }
 }
 
-pub fn bind_global_keys(cx: &mut gpui_kit::App) {
+pub fn bind_global_keys(cx: &mut App) {
     // 面板计划快捷键 = ⇧⌘P / ⇧Ctrl+P(修饰键按平台取,见 [`SECONDARY_MOD`])
     let shortcut = format!("shift-{SECONDARY_MOD}-p");
     cx.bind_keys([gpui_kit::KeyBinding::new(
@@ -295,21 +295,18 @@ impl WorkspaceView {
         // 也送达;Context 有同名低阶方法,须全限定)。键表见
         // shell::bind_global_keys
         let hotkey_store = store.clone();
-        gpui_kit::App::on_action(
-            cx,
-            move |_: &panel::OpenPanelPlan, cx: &mut gpui_kit::App| {
-                hotkey_store.update(cx, |st, cx| st.open_panel_tab(panel::PanelTab::Plan, cx));
-            },
-        );
+        App::on_action(cx, move |_: &panel::OpenPanelPlan, cx: &mut App| {
+            hotkey_store.update(cx, |st, cx| st.open_panel_tab(panel::PanelTab::Plan, cx));
+        });
         // 聊天正文右键「复制」:App 级全局 on_action(右键原生菜单派发的动作
         // 在 bubble 末尾送达全局监听,不受焦点/dispatch path 限制)。选中文
         // 本在右键弹菜单时已抓取(stash,见 chat_pane::render),此处只写剪贴板
         // ——App 级 handler 无 Window,而分发期 Window 已被可变借用,再取
         // 窗口读选中会失败。
         let copy_store = store.clone();
-        gpui_kit::App::on_action(
+        App::on_action(
             cx,
-            move |_: &chat::chat_pane::CopyChatSelection, cx: &mut gpui_kit::App| {
+            move |_: &chat::chat_pane::CopyChatSelection, cx: &mut App| {
                 copy_store.update(cx, |st, cx| {
                     if let Some(text) = st.chat.pending_copy_text.take()
                         && !text.trim().is_empty()
@@ -371,7 +368,7 @@ impl Render for WorkspaceView {
             s.sync_retry_tick(cx);
             // 列宽变化通知(宽变失效 → settle 全量重测;见 chat/store 注释)
             s.sync_chat_list_width(
-                crate::shell::metrics::window_chat_col_w(
+                metrics::window_chat_col_w(
                     window,
                     s.sidebar_collapsed,
                     s.sidebar_px,
@@ -403,7 +400,7 @@ impl Render for WorkspaceView {
         let sidebar_collapsed = st.sidebar_collapsed;
         // 对话列宽(消息列/composer/hero 统一;见 metrics 策略;侧栏拖宽后
         // 随 sidebar_px 收窄内容区)
-        let col_w = crate::shell::metrics::window_chat_col_w(
+        let col_w = metrics::window_chat_col_w(
             window,
             sidebar_collapsed,
             st.sidebar_px,
@@ -499,10 +496,8 @@ impl Render for WorkspaceView {
                                         .flex_shrink_0()
                                         // 列对齐容器同款槽 padding(左锚点槽/
                                         // 右滚动条槽,与列表容器同中心线)
-                                        .pl(px(crate::shell::metrics::H_PAD
-                                            + crate::shell::metrics::NAV_GUTTER_W))
-                                        .pr(px(crate::shell::metrics::H_PAD
-                                            + crate::shell::metrics::SCROLLBAR_GUTTER_W))
+                                        .pl(px(metrics::H_PAD + metrics::NAV_GUTTER_W))
+                                        .pr(px(metrics::H_PAD + metrics::SCROLLBAR_GUTTER_W))
                                         .pt(px(4.))
                                         .pb(px(8.))
                                         .child(
@@ -563,10 +558,8 @@ impl Render for WorkspaceView {
                                         - f32::from(
                                             st.chat.chat_list.viewport_bounds().size.height,
                                         );
-                                    let handle = scroll::FullTrackHandle::new(
-                                        &st.chat.chat_list,
-                                        gpui_kit::px(extra),
-                                    );
+                                    let handle =
+                                        scroll::FullTrackHandle::new(&st.chat.chat_list, px(extra));
                                     // viewport_from_layout:轨道钉元素布局
                                     // bounds(全列)——默认走 handle 的列表
                                     // 视口,轨道会缩在列表段;全列轨道 +
@@ -649,7 +642,7 @@ impl Render for WorkspaceView {
                     // 留裕量
                     let top = (f32::from(at.y) - 17.).clamp(8., (vh - 162.).max(8.));
                     // 左贴侧栏右缘;窄窗右溢出时钳回
-                    let sidebar_w = f32::from(crate::shell::metrics::sidebar_width_for(
+                    let sidebar_w = f32::from(metrics::sidebar_width_for(
                         st.sidebar_collapsed,
                         st.sidebar_px,
                     ));

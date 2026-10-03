@@ -302,11 +302,11 @@ mod tests {
                 let items: Vec<_> = (0..200)
                     .map(|ix| {
                         div()
-                            .id(gpui_kit::SharedString::from(format!("tvb-{ix}")))
+                            .id(SharedString::from(format!("tvb-{ix}")))
                             .debug_selector(move || format!("tv-batch-{ix}"))
                             .w(px(400.))
                             .child(tv_static(
-                                gpui_kit::SharedString::from(format!("tv-{ix}")),
+                                SharedString::from(format!("tv-{ix}")),
                                 &format!("第 {ix} 条:正文段落,包含 **加粗** 与 `code`。\n"),
                             ))
                     })
@@ -357,11 +357,11 @@ mod tests {
                 let state = self.list.clone();
                 div().size_full().child(gpui_kit::list(state, |ix, _window, _cx| {
                     div()
-                        .id(gpui_kit::SharedString::from(format!("tvl-{ix}")))
+                        .id(SharedString::from(format!("tvl-{ix}")))
                         .debug_selector(move || format!("tv-list-{ix}"))
                         .w(px(400.))
                         .child(tv_static(
-                            gpui_kit::SharedString::from(format!("l-{ix}")),
+                            SharedString::from(format!("l-{ix}")),
                             &format!(
                                 "## 标题 {ix}\n\n段落一行,包含列表:\n\n- 项 A\n- 项 B\n\n```rust\nfn f{ix}() {{}}\n```\n"
                             ),
@@ -541,9 +541,7 @@ mod tests {
             const TARGET: &'static str =
                 "开篇段落。\n\n- 列表项一\n- 列表项二\n\n```rust\nfn a() {}\n```\n\n收尾段落。\n";
         }
-        let inner = std::rc::Rc::new(std::cell::RefCell::new(
-            None::<gpui_kit::Entity<StreamView>>,
-        ));
+        let inner = std::rc::Rc::new(std::cell::RefCell::new(None::<Entity<StreamView>>));
         let cell = inner.clone();
         let (_root, cx) = cx.add_window_view(|window, cx| {
             let v = cx.new(|_| StreamView {
@@ -628,7 +626,7 @@ mod tests {
                     )
             }
         }
-        let inner = std::rc::Rc::new(std::cell::RefCell::new(None::<gpui_kit::Entity<FenceView>>));
+        let inner = std::rc::Rc::new(std::cell::RefCell::new(None::<Entity<FenceView>>));
         let cell = inner.clone();
         let (_root, cx) = cx.add_window_view(|window, cx| {
             let v = cx.new(|_| FenceView {
@@ -758,7 +756,7 @@ mod registry_tests {
         // 每段 ~4KB markdown(标题+代码块+列表),2000 段互不相同
         let rounds = 2000usize;
         let report_every = 400usize;
-        let mut held: Option<gpui_kit::Entity<TextViewState>> = None;
+        let mut held: Option<Entity<TextViewState>> = None;
         let t0 = std::time::Instant::now();
         eprintln!("[tc] 基线 RSS = {:.0} MB", rss_mb());
         for i in 0..rounds {

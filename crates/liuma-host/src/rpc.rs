@@ -83,11 +83,11 @@ pub struct PlanReviewChannel {
 struct ReviewInner {
     log: Arc<Mutex<EventLog>>,
     /// 在审评审的应答通道(评审打开期间 Some)
-    tx: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<liuma_plan::PlanReviewDecision>>>,
+    tx: Mutex<Option<tokio::sync::oneshot::Sender<liuma_plan::PlanReviewDecision>>>,
     /// 下行通知通道(serve 层注入;None = 不通知)
-    downlink: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<Value>>>,
+    downlink: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Value>>>,
     /// 软取消令牌(serve 层注入;评审等待与取消竞速)
-    cancel: std::sync::Mutex<Option<CancelToken>>,
+    cancel: Mutex<Option<CancelToken>>,
 }
 
 impl PlanReviewChannel {
@@ -97,9 +97,9 @@ impl PlanReviewChannel {
         Self {
             inner: Arc::new(ReviewInner {
                 log,
-                tx: std::sync::Mutex::new(None),
-                downlink: std::sync::Mutex::new(None),
-                cancel: std::sync::Mutex::new(None),
+                tx: Mutex::new(None),
+                downlink: Mutex::new(None),
+                cancel: Mutex::new(None),
             }),
         }
     }
@@ -257,9 +257,7 @@ impl liuma_plan::PlanReviewPort for PlanReviewChannel {
         _session_id: &str,
         plan: &str,
     ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<liuma_plan::PlanReviewDecision, String>> + Send,
-        >,
+        Box<dyn Future<Output = Result<liuma_plan::PlanReviewDecision, String>> + Send>,
     > {
         let channel = self.clone();
         let plan = plan.to_string();
@@ -574,7 +572,7 @@ where
     T: LlmTransport + Summarizer + Send + 'static,
     TOOLS: ToolPort + Send + 'static,
 {
-    let gateway = std::sync::Arc::new(tokio::sync::Mutex::new(gateway));
+    let gateway = Arc::new(tokio::sync::Mutex::new(gateway));
     let cancel = gateway.lock().await.cancel_token();
     let (down_tx, mut down_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     gateway.lock().await.set_downlink(down_tx.clone());
@@ -631,7 +629,7 @@ where
                     "turn" => {
                         // 后台执行:通知/响应都经下行通道写出(通道保序:
                         // 通知先于响应);读端继续服务 cancel 等并发请求
-                        let gateway = std::sync::Arc::clone(&gateway);
+                        let gateway = Arc::clone(&gateway);
                         let down_tx = gateway
                             .lock()
                             .await

@@ -1390,7 +1390,7 @@ fn timeline(
         let w = (x1 - x0).max(0.006);
         let s2 = store.clone();
         let ix = band.record_index;
-        let line = gpui_kit::Rgba {
+        let line = Rgba {
             a: 0.28,
             ..theme::LABEL_3()
         };
@@ -1403,7 +1403,7 @@ fn timeline(
                 .bottom_0()
                 .left(gpui_kit::relative(x0 as f32))
                 .w(gpui_kit::relative(w as f32))
-                .bg(gpui_kit::Rgba {
+                .bg(Rgba {
                     a: 0.10,
                     ..theme::LABEL_3()
                 })
@@ -1412,7 +1412,7 @@ fn timeline(
                 .border_color(line)
                 .cursor_pointer()
                 .hover(|st| {
-                    st.bg(gpui_kit::Rgba {
+                    st.bg(Rgba {
                         a: 0.18,
                         ..theme::LABEL_3()
                     })
@@ -1452,7 +1452,7 @@ fn timeline(
                     .bottom_0()
                     .left(gpui_kit::relative(a as f32))
                     .w(gpui_kit::relative((b - a) as f32))
-                    .bg(gpui_kit::Rgba {
+                    .bg(Rgba {
                         a: 0.12,
                         ..theme::BRAND()
                     })
@@ -1478,7 +1478,7 @@ fn timeline(
                         .bottom_0()
                         .left_0()
                         .w(gpui_kit::relative(a as f32))
-                        .bg(gpui_kit::Rgba {
+                        .bg(Rgba {
                             a: 0.58,
                             ..theme::INK()
                         })
@@ -1493,7 +1493,7 @@ fn timeline(
                         .bottom_0()
                         .left(gpui_kit::relative(b as f32))
                         .right_0()
-                        .bg(gpui_kit::Rgba {
+                        .bg(Rgba {
                             a: 0.58,
                             ..theme::INK()
                         })
@@ -4599,7 +4599,7 @@ fn diff_block(id: &'static str, a: &str, b: &str) -> impl IntoElement {
                 DiffOp::Add => (
                     "+ ",
                     theme::SUCCESS(),
-                    gpui_kit::Rgba {
+                    Rgba {
                         a: 0.10,
                         ..theme::SUCCESS()
                     },
@@ -4607,7 +4607,7 @@ fn diff_block(id: &'static str, a: &str, b: &str) -> impl IntoElement {
                 DiffOp::Del => (
                     "- ",
                     theme::DANGER(),
-                    gpui_kit::Rgba {
+                    Rgba {
                         a: 0.10,
                         ..theme::DANGER()
                     },

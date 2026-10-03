@@ -427,9 +427,7 @@ impl liuma_plan::PlanReviewPort for CliReview {
         &self,
         _session_id: &str,
         plan: &str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<PlanReviewDecision, String>> + Send>,
-    > {
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<PlanReviewDecision, String>> + Send>> {
         let inner = Arc::clone(&self.inner);
         let plan = plan.to_string();
         Box::pin(async move { run_review(inner, &plan).await })
@@ -724,7 +722,7 @@ async fn serve(common: CommonOpts) -> anyhow::Result<()> {
 
     let resolved = common.resolve()?;
     let parts = app::prompt_parts(&resolved, app::mount::PromptConditions::default());
-    let header = app::build_header(&parts, &liuma_session::EventLog::new());
+    let header = app::build_header(&parts, &EventLog::new());
     let backend = app::open_backend(&resolved.session)?;
     let cancel = liuma_agent_loop::CancelToken::new();
 
@@ -791,8 +789,7 @@ async fn serve(common: CommonOpts) -> anyhow::Result<()> {
                 model: decision_entry.model.clone(),
             }
         }),
-        Some(std::sync::Arc::new(plan_review.clone())
-            as std::sync::Arc<dyn liuma_plan::PlanReviewPort>),
+        Some(Arc::new(plan_review.clone()) as Arc<dyn liuma_plan::PlanReviewPort>),
         None,
         None,
         None,

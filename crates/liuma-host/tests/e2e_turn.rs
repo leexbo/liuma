@@ -113,7 +113,7 @@ async fn turn_e2e_record_first_and_replayable() {
         &request_time, received_messages,
         "请求时刻的日志前缀派生必须与出网请求一致"
     );
-    let full_snap: Vec<liuma_session::EventEnvelope> = reloaded.iter().collect();
+    let full_snap: Vec<EventEnvelope> = reloaded.iter().collect();
     let full = derive_messages(full_snap.iter());
     assert_eq!(
         full,

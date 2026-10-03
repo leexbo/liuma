@@ -125,7 +125,7 @@ mod tests {
 
     /// 按 locale 取真实译文(走本 crate 的 rust-i18n backend)
     fn translate(locale: &str, key: &str) -> String {
-        crate::kits::i18n::backend::_rust_i18n_translate(locale, key).into_owned()
+        backend::_rust_i18n_translate(locale, key).into_owned()
     }
 
     /// 语言表:缺省档在场、id 唯一、显示名非空

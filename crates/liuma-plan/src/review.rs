@@ -30,5 +30,5 @@ pub trait PlanReviewPort: Send + Sync {
         &self,
         session_id: &str,
         plan: &str,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<PlanReviewDecision, String>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = Result<PlanReviewDecision, String>> + Send>>;
 }
