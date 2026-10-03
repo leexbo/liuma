@@ -2,6 +2,10 @@
 //! 认领 splice + user/message 同序落档;模型可见 ⟺ 已记录。
 //! 闸门传输(gate)使首次模型调用阻塞——测试在阻塞窗口注入 steer,确定性验证。
 
+// 集成测试基建(wasm 实例化/mock 装配)允许 unwrap/expect;clippy 的
+// allow-in-tests 只认 #[test] 函数与 cfg(test) 模块,盖不到本目录辅助函数
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex as StdMutex};
 

@@ -65,6 +65,8 @@ fn command_of(arguments: &Value) -> Value {
 
 /// stdin 序列化(JSON + 尾换行按方言)
 pub fn serialize_stdin(dialect: HookDialect, payload: &Value) -> Vec<u8> {
+    // 内存 payload 的 JSON 序列化无可失败路径(AGENTS.md §1 ②)
+    #[allow(clippy::expect_used)]
     let mut s = serde_json::to_string(payload).expect("payload 序列化必成功");
     if dialect == HookDialect::ClaudeCode {
         s.push('\n');

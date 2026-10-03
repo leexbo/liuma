@@ -31,7 +31,8 @@ impl AttachmentSource for NoAttachments {
 
 /// JSON 字符串字面量(含引号与转义)
 fn json_string(value: &str) -> String {
-    // 字符串序列化不会失败(&str 恒为合法输入)
+    // &str 序列化无可失败路径(AGENTS.md §1 ②)
+    #[allow(clippy::expect_used)]
     serde_json::to_string(value).expect("serde_json 字符串序列化不会失败")
 }
 

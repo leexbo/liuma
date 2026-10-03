@@ -30,3 +30,6 @@ wasmtime-wasi.workspace = true
 liuma-agent-loop.workspace = true
 liuma-decision.workspace = true
 liuma-llm.workspace = true
+
+[lints]
+workspace = true

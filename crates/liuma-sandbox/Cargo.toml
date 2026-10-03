@@ -23,3 +23,6 @@ landlock = "0.4.7"
 [target.'cfg(windows)'.dependencies.windows-sys]
 workspace = true
 features = ["Win32_Globalization"]
+
+[lints]
+workspace = true

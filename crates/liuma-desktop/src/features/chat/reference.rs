@@ -105,6 +105,8 @@ pub fn active_at_token(text: &str, caret: usize) -> Option<ActiveAtToken> {
     let between = &before[at_pos + 1..];
     // @ 之前必须行首或空白/标点(边界)——`user@host`、`done @src/x"` 不触发
     if at_pos > 0 {
+        // 守卫不变式:rfind 命中 ⇒ at_pos 处必有字符(AGENTS.md §1 ①)
+        #[allow(clippy::unwrap_used)]
         let prev = before[..at_pos].chars().next_back().unwrap();
         if !(prev.is_whitespace() || prev.is_ascii_punctuation()) {
             return None;

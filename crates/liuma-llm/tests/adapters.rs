@@ -10,6 +10,10 @@
 //! 夹具为官方完整形态(rig 解码严格按官方 schema,必填字段缺即拒收
 //! ——spike 期间三度验证,属 rig 防偏差资产)。
 
+// 集成测试基建(mock server/传输装配)允许 unwrap;clippy 的 allow-in-tests
+// 只认 #[test] 函数与 cfg(test) 模块,盖不到本目录的辅助函数
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::sync::{Arc, Mutex};
 
 use liuma_agent_loop::{LlmEvent, LlmTransport, RequestHeader};

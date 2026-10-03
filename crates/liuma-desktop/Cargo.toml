@@ -55,3 +55,6 @@ objc2-foundation.workspace = true
 [dev-dependencies]
 # test-support 经 gpui-kit 透传到 gpui(features 树内 union)
 gpui-kit = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

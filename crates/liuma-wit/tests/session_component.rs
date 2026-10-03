@@ -7,6 +7,10 @@
 //! 调用约定:宿主 call_* 返回 `Result<WIT 返回值, wasmtime::Error>`(外层 trap,
 //! 内层为 WIT result 类型),断言需双层展开。
 
+// 集成测试基建(wasm 实例化/mock 装配)允许 unwrap/expect;clippy 的
+// allow-in-tests 只认 #[test] 函数与 cfg(test) 模块,盖不到本目录辅助函数
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::path::PathBuf;
 use std::process::Command;
 

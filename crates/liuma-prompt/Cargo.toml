@@ -10,3 +10,6 @@ serde_json.workspace = true
 
 [lib]
 crate-type = ["rlib"]
+
+[lints]
+workspace = true

@@ -3,6 +3,10 @@
 //! 所有真实流量在闸门处被攒批,UI 永远一次性出全文。本组测试
 //! 锁住两层:HTTP transport 逐帧到达、闸门转发不回退成攒批。
 
+// 集成测试基建(mock server/传输装配)允许 unwrap;clippy 的 allow-in-tests
+// 只认 #[test] 函数与 cfg(test) 模块,盖不到本目录的辅助函数
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

@@ -18,3 +18,6 @@ liuma-attachment.workspace = true
 liuma-session.workspace = true
 
 [package.metadata.notes]
+
+[lints]
+workspace = true

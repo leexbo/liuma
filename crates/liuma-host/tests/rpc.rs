@@ -7,6 +7,10 @@
 //! - 未知方法 -32601、缺参数 -32602;
 //! - serve_stdio:双工流上请求→通知→响应的时序,shutdown 退出循环。
 
+// 集成测试基建(wasm 实例化/mock 装配)允许 unwrap/expect;clippy 的
+// allow-in-tests 只认 #[test] 函数与 cfg(test) 模块,盖不到本目录辅助函数
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use liuma_agent_loop::{LlmEvent, RequestHeader, TransportError};
 use liuma_host::JsonlBackend;
 use liuma_host::rpc::{Gateway, serve_stdio};

@@ -1344,6 +1344,8 @@ impl AppStore {
             // 发送语义不完整
             None => {
                 self.create_session(cx);
+                // 后置不变式:create_session 必打开新会话(AGENTS.md §1 ①)
+                #[allow(clippy::expect_used)]
                 self.state
                     .current_id
                     .clone()

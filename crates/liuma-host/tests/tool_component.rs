@@ -3,6 +3,10 @@
 //! 产物定位照 session_component 模式:环境变量覆盖或缺失现场构建,
 //! 保证 `cargo test --workspace` 自洽。
 
+// 集成测试基建(wasm 实例化/mock 装配)允许 unwrap/expect;clippy 的
+// allow-in-tests 只认 #[test] 函数与 cfg(test) 模块,盖不到本目录辅助函数
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};

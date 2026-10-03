@@ -2,6 +2,10 @@
 //! McpServerPort 完整链路——连接 → 工具发现 → 调用回填 → isError 降级 →
 //! 结果图片经准入链落存为持久引用(base64 不进模型面)。
 
+// 集成测试基建(mock server/传输装配)允许 unwrap;clippy 的 allow-in-tests
+// 只认 #[test] 函数与 cfg(test) 模块,盖不到本目录的辅助函数
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::sync::{Arc, Mutex};
 
 use liuma_agent_loop::CancelToken;

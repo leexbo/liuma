@@ -102,6 +102,8 @@ impl<'a> MountContext<'a> {
         if slot.is_none() {
             *slot = Some(liuma_tools::JobsRegistry::new());
         }
+        // 守卫不变式:上方若 slot 为空则刚构造并写入(AGENTS.md §1 ①)
+        #[allow(clippy::expect_used)]
         slot.as_ref().expect("已构造").clone()
     }
 }

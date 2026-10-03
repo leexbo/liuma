@@ -85,6 +85,8 @@ impl MarkdownPlugin for MermaidTextViewPlugin {
     }
 
     fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // 守卫不变式:本插件只接自己注册的 mermaid 节点(AGENTS.md §1 ①)
+        #[allow(clippy::expect_used)]
         let data = node.data::<MermaidData>().expect("mermaid 节点数据应在");
         let cards = mermaid_cards_for(&self.store, cx);
         mermaid::diagram(&data.card_key, 0, data.source.clone(), Some(cards), cx)

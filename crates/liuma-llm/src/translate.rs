@@ -35,6 +35,8 @@ fn media_type_of(m: &str) -> Option<ImageMediaType> {
 
 /// 工具名构造(空名回落 "unknown";内部方言 tool 名非空为既有不变式)
 fn tool_name(name: &str) -> ToolName {
+    // 字面量 "unknown" 非空,构造必 Ok(AGENTS.md §1 ①)
+    #[allow(clippy::expect_used)]
     ToolName::new(name)
         .unwrap_or_else(|_| ToolName::new("unknown").expect("守卫:unknown 非空,构造必为 Ok"))
 }
@@ -194,6 +196,8 @@ pub(crate) fn to_rig_messages(
                     .peek()
                     .is_some_and(|n| n["role"].as_str() == Some("tool"))
                 {
+                    // 迭代器守卫不变式:peek 已判存在,next 必 Some(AGENTS.md §1 ①)
+                    #[allow(clippy::expect_used)]
                     content.push(tool_result_block(iter.next().expect("peek 已判存在")));
                 }
                 out.push(Message::User { content });

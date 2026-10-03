@@ -35,6 +35,10 @@ rust-version = "1.97"
 unwrap_used = "deny"
 expect_used = "deny"
 
+# 已导入类型不得再写全限定路径(IDE 同款诊断;冗余前缀不再积累)
+[workspace.lints.rust]
+unused_qualifications = "warn"
+
 [workspace.dependencies]
 anyhow = "1.0.104"
 jsonpath-rust = "1.0"

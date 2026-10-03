@@ -221,6 +221,8 @@ impl Element for SelectionDomainSink {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let handle = window.with_element_state(
+            // 构造不变式:SelectionDomainSink 必持稳定 element id(AGENTS.md §1 ①)
+            #[allow(clippy::expect_used)]
             global_id.expect("SelectionDomainSink must have a stable element id"),
             |retained: Option<gpui_kit::base::TextSelectionHandle>, _| {
                 let handle =

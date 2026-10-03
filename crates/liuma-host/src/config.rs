@@ -126,8 +126,12 @@ fn type_matches(schema: &serde_json::Value, value: &serde_json::Value) -> Result
         return Err(format!("类型不匹配:期望 {expected},得到 {value}"));
     }
     if expected == "object" {
+        // 守卫不变式:上一分支已判定 expected == "object"(AGENTS.md §1 ①)
+        #[allow(clippy::expect_used)]
         let obj = value.as_object().expect("checked");
         for key in schema["required"].as_array().unwrap_or(&Vec::new()) {
+            // schema 契约:required 数组元素恒为字段名(AGENTS.md §1 ①)
+            #[allow(clippy::expect_used)]
             let key = key.as_str().expect("required 数组元素必须是字符串");
             if !obj.contains_key(key) {
                 return Err(format!("缺少必填字段:{key}"));

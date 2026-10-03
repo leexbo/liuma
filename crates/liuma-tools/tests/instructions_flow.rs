@@ -9,6 +9,10 @@
 //! - file_read 触碰路径在下一 step 拾取后代目录新建文件(同 turn 内可见;
 //!   工作区之下的嵌套指令文件不在基线链内,唯一入口是触碰)。
 
+// 集成测试基建(wasm 实例化/mock 装配)允许 unwrap/expect;clippy 的
+// allow-in-tests 只认 #[test] 函数与 cfg(test) 模块,盖不到本目录辅助函数
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 

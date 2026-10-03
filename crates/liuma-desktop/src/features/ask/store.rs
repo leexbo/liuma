@@ -278,6 +278,8 @@ impl AppStore {
         // 且不声明任何 default_selected —— `validate_schema` 的三条判据
         //(重名 item / 重值 choice / 单选多项默认)全无从成立。
         let state = cx.new(|cx| {
+            // 构造守卫:上方注释三判据全无从成立,new 不会 Err(AGENTS.md §1 ①)
+            #[allow(clippy::expect_used)]
             QuestionnaireState::new(items, cx).expect("下标命名的 questionnaire schema 不会冲突")
         });
         cx.subscribe(&state, |this, _state, event: &QuestionnaireEvent, cx| {

@@ -7,6 +7,10 @@
 //!   摘要消息仍可见(确定性重放);
 //! - tool/result 裁剪:超阈值输出在请求中被截断而日志保留全文。
 
+// 集成测试基建(wasm 实例化/mock 装配)允许 unwrap/expect;clippy 的
+// allow-in-tests 只认 #[test] 函数与 cfg(test) 模块,盖不到本目录辅助函数
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::sync::{Arc, Mutex};
 
 use liuma_agent_loop::{LlmEvent, LoopEngine, NoTools, RequestHeader};

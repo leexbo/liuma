@@ -393,6 +393,8 @@ pub fn prepare_content(
                     .iter()
                     .map(|c| BridgeImageInput {
                         data: c.bytes.clone(),
+                        // 守卫不变式:解码段已过滤无类型项(AGENTS.md §1 ①)
+                        #[allow(clippy::expect_used)]
                         media_type: c.media_type.expect("解码段通过必有类型"),
                         name: None,
                     })

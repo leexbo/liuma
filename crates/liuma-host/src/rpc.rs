@@ -630,6 +630,8 @@ where
                         // 后台执行:通知/响应都经下行通道写出(通道保序:
                         // 通知先于响应);读端继续服务 cancel 等并发请求
                         let gateway = Arc::clone(&gateway);
+                        // 构造不变式:serve 装配时已注入下行通道(AGENTS.md §1 ①)
+                        #[allow(clippy::expect_used)]
                         let down_tx = gateway
                             .lock()
                             .await

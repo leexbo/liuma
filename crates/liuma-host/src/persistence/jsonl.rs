@@ -78,6 +78,8 @@ impl ChunkPacker {
 
     /// 满行冲刷:超长 run 也定期落一行(避免无限攒)
     fn flush_row(&mut self) -> Vec<StorageRecord> {
+        // 调用方不变式:仅在有 run(含 kind)时调用(AGENTS.md §1 ①)
+        #[allow(clippy::expect_used)]
         let kind = self.kind.expect("flush_row 仅在有 run 时调用");
         let run = std::mem::take(&mut self.run);
         vec![build_row(kind, run)]

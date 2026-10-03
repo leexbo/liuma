@@ -40,6 +40,8 @@ fn envelope_to_wit_event(ev: &EventEnvelope) -> event_log::Event {
         type_: ev.r#type.clone(),
         seq: ev.seq,
         time: ev.time,
+        // 内存 Value 的 JSON 序列化无可失败路径(AGENTS.md §1 ②)
+        #[allow(clippy::expect_used)]
         data: serde_json::to_vec(&ev.data).expect("data 序列化不可失败"),
         surface_op: ev.surface_op.clone(),
         source_event_seqs: ev.source_event_seqs.clone(),
@@ -72,6 +74,8 @@ impl event_log::Guest for SessionComponent {
     }
 
     fn snapshot() -> Result<Vec<u8>, String> {
+        // 内存快照的 JSON 序列化无可失败路径(AGENTS.md §1 ②)
+        #[allow(clippy::expect_used)]
         with_log(|log| Ok(serde_json::to_vec(&log.snapshot()).expect("快照序列化不可失败")))
     }
 }
@@ -104,6 +108,8 @@ impl projection::Guest for SessionComponent {
     fn view(state: Vec<u8>) -> Result<Vec<u8>, String> {
         let state: serde_json::Value =
             serde_json::from_slice(&state).map_err(|e| format!("state: {e}"))?;
+        // 内存 Value 的 JSON 序列化无可失败路径(AGENTS.md §1 ②)
+        #[allow(clippy::expect_used)]
         Ok(serde_json::to_vec(&state["messages"].clone()).expect("序列化不可失败"))
     }
 }

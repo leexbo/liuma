@@ -1,5 +1,9 @@
 //! 持久化后端测试:JSONL 主格式 + turso 派生索引的往返、守卫与重建。
 
+// 集成测试基建(wasm 实例化/mock 装配)允许 unwrap/expect;clippy 的
+// allow-in-tests 只认 #[test] 函数与 cfg(test) 模块,盖不到本目录辅助函数
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use liuma_host::{JsonlBackend, TursoBackend};
 use liuma_session::envelope::decode_envelope;
 use liuma_session::{EventEnvelope, EventLog};

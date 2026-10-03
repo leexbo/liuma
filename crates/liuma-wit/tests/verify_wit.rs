@@ -6,6 +6,10 @@
 //! 注:wit-parser 的 `push_dir` 只读取目录顶层的 `*.wit`(子目录被忽略),
 //! 因此按依赖序逐包推入;顺序变化导致的解析失败本身就是契约层依赖断裂的信号。
 
+// 集成测试基建(wasm 实例化/mock 装配)允许 unwrap/expect;clippy 的
+// allow-in-tests 只认 #[test] 函数与 cfg(test) 模块,盖不到本目录辅助函数
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::collections::BTreeSet;
 use wit_parser::{Resolve, WorldKey};
 

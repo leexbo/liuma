@@ -1125,6 +1125,8 @@ impl ToolPort for BashTool {
             tokio::select! {
                 read = async {
                     use tokio::io::AsyncReadExt;
+                    // select 前置条件 if stdout.is_some() 保证的不变式(AGENTS.md §1 ①)
+                    #[allow(clippy::expect_used)]
                     let stdout = stdout.as_mut().expect("select 前置条件保证在场");
                     let mut buf = vec![0u8; 8192];
                     let n = stdout.read(&mut buf).await;

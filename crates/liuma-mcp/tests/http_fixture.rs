@@ -2,6 +2,10 @@
 //! 验证:url 连接 + 工具发现 + 调用;配置 headers 原样到达 server
 //! (Authorization 经 `echo_auth` 工具回显断言);URL 无效即时失败。
 
+// 集成测试基建(mock server/传输装配)允许 unwrap;clippy 的 allow-in-tests
+// 只认 #[test] 函数与 cfg(test) 模块,盖不到本目录的辅助函数
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use liuma_agent_loop::CancelToken;
 use liuma_agent_loop::tools::{ToolCallRequest, ToolPort};
 use liuma_mcp::{McpServerConfig, McpServerPort, McpTransport};

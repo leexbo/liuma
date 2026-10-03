@@ -7,6 +7,10 @@
 //! epoch 硬停用例自 tests/process.rs 迁入(E4 属引擎能力;沙箱簇已拆出
 //! liuma-sandbox crate,process/pty 测试随迁)。
 
+// 集成测试基建(wasm 实例化/mock 装配)允许 unwrap/expect;clippy 的
+// allow-in-tests 只认 #[test] 函数与 cfg(test) 模块,盖不到本目录辅助函数
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use liuma_host::hello::{HELLO_WAT, Hello};
 use liuma_host::{Arena, HostEngine};
 

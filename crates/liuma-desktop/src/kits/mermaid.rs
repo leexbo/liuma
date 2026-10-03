@@ -392,6 +392,8 @@ pub(crate) fn diagram(
         // 卡片上/左/右缘就是 21/25/23px —— 比正文字距还远一倍
         .p(px(6.))
         .child(if have_ctx {
+            // 守卫不变式:have_ctx ⇒ callbacks 在场(AGENTS.md §1 ①)
+            #[allow(clippy::expect_used)]
             let cb = callbacks.as_ref().expect("have_ctx → callbacks");
             card_toolbar(&key, cx, show_code, copied, cb, source.clone()).into_any_element()
         } else {

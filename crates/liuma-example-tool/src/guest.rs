@@ -47,6 +47,8 @@ impl lifecycle::Guest for ExampleToolComponent {
     }
 
     fn config_schema() -> Result<Vec<u8>, String> {
+        // 字面量 json! 的序列化无可失败路径(AGENTS.md §1 ②)
+        #[allow(clippy::expect_used)]
         Ok(serde_json::to_vec(&serde_json::json!({
             "type": "object",
             "required": ["label"],
@@ -65,6 +67,8 @@ impl tools::Guest for ExampleToolComponent {
                 name: "echo_config".to_string(),
                 description: "Echo the component config (from lifecycle.init) and the call input."
                     .to_string(),
+                // 字面量 json! 的序列化无可失败路径(AGENTS.md §1 ②)
+                #[allow(clippy::expect_used)]
                 input_schema: serde_json::to_vec(&serde_json::json!({
                     "type": "object",
                     "properties": { "message": { "type": "string" } },
@@ -74,6 +78,8 @@ impl tools::Guest for ExampleToolComponent {
             tools::ToolSpec {
                 name: "spin".to_string(),
                 description: "Spin forever (epoch hard-stop test material).".to_string(),
+                // 字面量 json! 的序列化无可失败路径(AGENTS.md §1 ②)
+                #[allow(clippy::expect_used)]
                 input_schema: serde_json::to_vec(&serde_json::json!({
                     "type": "object",
                     "properties": { "note": { "type": "string" } },

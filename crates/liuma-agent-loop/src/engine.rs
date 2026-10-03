@@ -546,6 +546,8 @@ impl LoopEngine {
             .lock()
             .map_err(|_| LoopError::Log("log 锁中毒".into()))?;
         let seq = log.append(ev).map_err(|e| LoopError::Log(e.to_string()))?;
+        // 构造不变式:刚 append 的 seq 必在日志内(AGENTS.md §1 ①)
+        #[allow(clippy::expect_used)]
         let committed = log
             .get(seq)
             .expect("刚 append 的事件必在日志内(宿主不变式)")

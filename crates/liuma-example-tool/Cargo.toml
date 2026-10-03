@@ -11,3 +11,6 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 serde_json.workspace = true
 wit-bindgen.workspace = true
+
+[lints]
+workspace = true

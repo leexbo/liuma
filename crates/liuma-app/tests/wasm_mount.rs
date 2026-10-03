@@ -4,6 +4,10 @@
 //! 引擎的调用管线由既有 13 工具的 e2e 锁定,此处锁「manifest 路径型
 //! source → WasmTool 装载 → 声明进 ToolSet → 执行出结果」整条装载链。
 
+// 集成测试基建(wasm 实例化/mock 装配)允许 unwrap/expect;clippy 的
+// allow-in-tests 只认 #[test] 函数与 cfg(test) 模块,盖不到本目录辅助函数
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
