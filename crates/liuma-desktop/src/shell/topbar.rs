@@ -25,6 +25,13 @@ use crate::shell::store::AppStore;
 /// 对称取 400 → 居中不被遮挡;右侧控件远窄于内缩,内缩仅服务真居中)
 const TITLE_INSET: f32 = 400.;
 
+/// 收起态左缘交通灯避让宽度:仅 macOS 需要三灯带避让(约到 x=72);
+/// Windows/Linux 左上无交通灯(库 WindowControls 画在右侧),无避让
+#[cfg(target_os = "macos")]
+const COLLAPSED_RAIL_PL: f32 = 76.;
+#[cfg(not(target_os = "macos"))]
+const COLLAPSED_RAIL_PL: f32 = 0.;
+
 pub fn title_bar_row(store: &Entity<AppStore>, window: &mut Window, cx: &App) -> impl IntoElement {
     let st = store.read(cx);
     let title = st
@@ -44,11 +51,12 @@ pub fn title_bar_row(store: &Entity<AppStore>, window: &mut Window, cx: &App) ->
         .and_then(|id| st.run_elapsed(&id))
         .filter(|d| *d >= std::time::Duration::from_secs(RUN_CLOCK_AFTER_SECS))
         .map(crate::shell::reducer::format_run_duration);
-    // 收起态(侧栏完全隐藏)交通灯悬于 BASE 画布:三灯带约到 x=72
-    // (macOS 标准 close/min/zoom,左缘 20 起三个 12px 圆);标题栏自窗
-    // 缘起、仅 8px 内边距会让折叠钮直接叠在交通灯上(弃 rail 后
-    // 无 56px 底垫,pl 须独自承担全部避让)。
-    let rail_pl = st.sidebar_collapsed.then_some(px(76.));
+    // 收起态(侧栏完全隐藏)左缘避让:macOS 交通灯悬于 BASE 画布,
+    // 三灯带约到 x=72(标准 close/min/zoom,左缘 20 起三个 12px 圆),
+    // 仅 8px 内边距会让折叠钮直接叠在交通灯上(弃 rail 后无 56px 底
+    // 垫,pl 须独自承担全部避让);Windows/Linux 无交通灯,回落 0
+    // (见 COLLAPSED_RAIL_PL 的 cfg 门控)。
+    let rail_pl = st.sidebar_collapsed.then_some(px(COLLAPSED_RAIL_PL));
     div()
         .relative()
         .flex()
