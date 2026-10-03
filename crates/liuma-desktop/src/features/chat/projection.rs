@@ -461,9 +461,15 @@ impl ChatState {
                 self.running = false;
                 // 乐观回收:hook 拒绝的 turn(user/message 未到)不残留
                 // 永久 pending 气泡;正常路径 user/message 已先到清空,
-                // 此处仅复位认领标记
+                // 此处仅复位认领标记。驱动认领 steer(宿主通知)优先于
+                // pending,空闲期通知 turn 会夹在发送与认领之间——条目
+                // 仍在队列快照 = 未被本 turn 认领,气泡保留待其自己的
+                // user/message 原位替换;已出队且未落档 = 认领后被拒,
+                // 照旧回收
                 if self.pending_user_claimed {
-                    self.pending_user.clear();
+                    let queued: std::collections::HashSet<&str> =
+                        self.queue.iter().map(|e| e.id.as_str()).collect();
+                    self.pending_user.retain(|p| queued.contains(p.id.as_str()));
                     self.pending_user_claimed = false;
                 }
                 // 排队中的压缩任务在回合结束后被驱动取走 → 晋升进行态
@@ -1616,6 +1622,47 @@ mod tests {
             "拒绝收尾的 turn 不得残留 pending"
         );
         assert!(!st.pending_user_claimed, "认领标记应复位");
+    }
+
+    /// 回归锁(通知 turn 夹层):驱动认领 steer(宿主通知)优先于
+    /// pending,空闲期通知 turn 会插在用户发送与认领之间——条目仍在
+    /// 队列快照(未被认领)时 turn/end 不得回收其乐观气泡;出队后仍
+    /// 无 user/message(hook 拒绝)才回收
+    #[test]
+    fn optimistic_pending_user_survives_intervening_notice_turn() {
+        let mut st = ChatState::default();
+        st.pending_user.push(PendingUser {
+            id: "m-1".into(),
+            text: "hi".into(),
+        });
+        // 队列快照仍含 m-1(queued 待认领)→ 通知 turn 的 start/end
+        // 全程不得回收
+        st.queue = vec![QueueEntry {
+            id: "m-1".into(),
+            placement: QueuePlacement::Queued,
+            preview: "hi".into(),
+            text: Some("hi".into()),
+        }];
+        st.apply(&ev("turn/start", 1, json!({ "turn": 2 })));
+        st.apply(&ev(
+            "turn/end",
+            3,
+            json!({ "reason": { "kind": "end_turn" } }),
+        ));
+        assert_eq!(st.pending_user.len(), 1, "未认领条目跨通知 turn 保留");
+
+        // 驱动认领(出队帧先于其 turn)后被 hook 拒绝 → 回收
+        st.queue.clear();
+        st.apply(&ev("turn/start", 4, json!({ "turn": 3 })));
+        st.apply(&ev(
+            "turn/end",
+            6,
+            json!({ "reason": { "kind": "blocked" } }),
+        ));
+        assert!(
+            st.pending_user.is_empty(),
+            "出队后拒绝收尾的 turn 回收 pending"
+        );
     }
 
     /// 全回合样本(对齐 translate.rs 测试序列)

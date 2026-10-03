@@ -7056,9 +7056,20 @@ fn queue_items(inner: &SlotInner) -> Vec<Value> {
         }));
     }
     for s in qs.steer.lock_recover().iter() {
-        // 通知条目不下发队列帧:结算通知在认领前短暂驻留 steer,
-        // 队列条/steer 伪行不闪现通知,呈现只剩消息落档后的通知卡一路
-        if s.source.as_ref().and_then(|v| v["kind"].as_str()) == Some("subagent-settled") {
+        // 通知条目不下发队列帧:子代理结算/回发与 shell job 结算通知在
+        // 认领前短暂驻留 steer,队列条/steer 伪行不闪现通知,呈现只剩
+        // 消息落档后的通知卡一路(与桌面投影 user/message 分流的
+        // notice kind 清单保持一致)
+        if s.source
+            .as_ref()
+            .and_then(|v| v["kind"].as_str())
+            .is_some_and(|k| {
+                matches!(
+                    k,
+                    "subagent-settled" | "subagent-message" | "shell-job-settled"
+                )
+            })
+        {
             continue;
         }
         items.push(json!({
@@ -9895,6 +9906,70 @@ mod tests {
         }));
     }
 
+    /// 子代理回发通知(subagent-message)同走 Notice 队列:认领前驻留
+    /// steer 期间队列帧不得闪现通知文本,落档为染色 user/message
+    /// (queue_frame 的 notice 过滤覆盖全部三种 kind)
+    #[tokio::test]
+    async fn subagent_message_notice_stays_out_of_queue_frames() {
+        let host = temp_host("d47b-notice");
+        host.set_fake_script(script(&["hello", "got it"]));
+        let mut mux = host.mux_subscribe();
+        let id = host.create_session(None, None, None);
+        // 先跑一个普通 turn 完成附着
+        host.prompt(&id, &[json!({ "type": "text", "text": "hi" })], "queue")
+            .await
+            .unwrap();
+        recv_until(&mut mux, |f| {
+            f.method == "session/event" && f.payload["event"]["type"] == "turn/end"
+        })
+        .await
+        .expect("首 turn 结束");
+
+        let source = json!({
+            "kind": "subagent-message",
+            "form": "notice",
+            "senderSessionId": "s-child",
+        });
+        host.notify_subagent_settled(&id, "message from the child agent".into(), source);
+        let mut queue_payloads: Vec<Value> = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if std::time::Instant::now() >= deadline {
+                panic!("通知 turn 未在预算内结束");
+            }
+            match mux.try_recv() {
+                Ok(f) => {
+                    if f.method == "session/queue" {
+                        queue_payloads.push(f.payload.clone());
+                    }
+                    if f.method == "session/event" && f.payload["event"]["type"] == "turn/end" {
+                        break;
+                    }
+                }
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await
+                }
+                Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(broadcast::error::TryRecvError::Closed) => panic!("mux 关闭"),
+            }
+        }
+        assert!(
+            !queue_payloads
+                .iter()
+                .any(|p| p.to_string().contains("message from the child")),
+            "队列帧不得闪现通知文本:{queue_payloads:?}"
+        );
+
+        let events = liuma_host::persistence::jsonl::load_jsonl(&host.session_log_path(&id))
+            .unwrap_or_default();
+        let notice = events
+            .iter()
+            .find(|e| e.r#type == "user/message" && e.data["source"]["kind"] == "subagent-message")
+            .expect("通知必须以染色 user/message 落档");
+        assert_eq!(notice.data["source"]["form"], "notice");
+        assert_eq!(notice.data["source"]["senderSessionId"], "s-child");
+    }
+
     /// shell job 结算通知全弧:bash run_in_background → watcher 结算 →
     /// SettlementNoticeImpl 投 Notice → 驱动认领(turn 进行中结算 =
     /// steer 同 turn 续跑;turn 后结算 = 唤醒新 turn,两路均合法),
@@ -9919,6 +9994,10 @@ mod tests {
             )],
         ]);
         let id = host.create_session(None, None, None);
+        // 队列帧收集:认领前通知短暂驻留 steer,全程不得闪现通知文本
+        // (queue_frame 按 source 过滤,与 subagent-settled 同一过滤面)
+        let mut mux = host.mux_subscribe();
+        let mut queue_payloads: Vec<Value> = Vec::new();
         // 测试缝:fake 工具面注入 bash+jobs;通知口 = 宿主真身
         // (SettlementNoticeImpl → Job::Notice → 驱动认领),接线与真实
         // 装配同构
@@ -9939,6 +10018,18 @@ mod tests {
         // 通知必须被模型消费(两种认领路径都会产出其后的 assistant 回复)
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let events = loop {
+            loop {
+                match mux.try_recv() {
+                    Ok(f) => {
+                        if f.method == "session/queue" {
+                            queue_payloads.push(f.payload.clone());
+                        }
+                    }
+                    // Lagged = 有帧被丢,须继续排空余量(漏帧会弱化断言)
+                    Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                }
+            }
             let events = liuma_host::persistence::jsonl::load_jsonl(&host.session_log_path(&id))
                 .unwrap_or_default();
             let consumed = events.iter().any(|e| {
@@ -9952,6 +10043,12 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         };
+        assert!(
+            !queue_payloads
+                .iter()
+                .any(|p| p.to_string().contains("Background job 1")),
+            "队列帧不得闪现通知文本:{queue_payloads:?}"
+        );
 
         let notice = events
             .iter()
