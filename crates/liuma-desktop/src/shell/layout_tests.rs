@@ -10118,8 +10118,8 @@ fn provider_editor_postures(cx: &mut TestAppContext) {
                 .and_then(|ps| ps.iter().find(|p| p["id"].as_str() == Some("glm")).cloned())
         })
         .expect("GLM 条目应保存成功");
-    assert_eq!(glm["base_url"], "https://open.bigmodel.cn/api/v1");
-    assert_eq!(glm["dialect"], "glm-responses");
+    assert_eq!(glm["base_url"], "https://open.bigmodel.cn/api/anthropic");
+    assert_eq!(glm["dialect"], "anthropic-messages");
     assert!(glm["billing"].is_object(), "计费预设应随内置保存生效");
     assert!(!glm["models"].as_array().unwrap_or(&vec![]).is_empty());
     wcx.run_until_parked();
@@ -10135,8 +10135,10 @@ fn provider_editor_postures(cx: &mut TestAppContext) {
     );
     click_sel(&mut wcx, "provider-editor-cancel");
     wcx.run_until_parked();
-    // 「添加自定义提供方」→ 自定义卡(名称 / Base URL / API 格式三选)
-    click_sel(&mut wcx, "provider-add-custom");
+    // 「添加」单入口(默认第三方 Tab)→ 卡顶 Tab 切自定义
+    click_sel(&mut wcx, "provider-add");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "provider-mode-custom");
     wcx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     wcx.run_until_parked();
@@ -13918,7 +13920,7 @@ fn archived_clear_all(cx: &mut TestAppContext) {
 /// archived_view 纯函数语义保证)
 #[gpui_kit::test]
 fn archived_search_and_project_filter(cx: &mut TestAppContext) {
-    use crate::features::settings::store::ArchivedOrder;
+    use crate::features::settings::state::ArchivedOrder;
 
     let (store, mut wcx, root) = menu_harness(cx, "archfilter");
     let (aid_a, pkey_b, aid_b) = cx.update(|app| {
@@ -13993,7 +13995,7 @@ fn archived_search_and_project_filter(cx: &mut TestAppContext) {
 /// 字母序(a-old 在前)——行序随档翻转
 #[gpui_kit::test]
 fn archived_order_alpha_flip(cx: &mut TestAppContext) {
-    use crate::features::settings::store::ArchivedOrder;
+    use crate::features::settings::state::ArchivedOrder;
 
     let (store, mut wcx, root) = menu_harness(cx, "archorder");
     let (aid_old, aid_new) = cx.update(|app| {

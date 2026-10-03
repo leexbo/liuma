@@ -21,6 +21,7 @@ alacritty_terminal.workspace = true
 # 终端 PTY 的 PtySize 尺寸面(spawn/resize 与 liuma-sandbox 对齐)
 portable-pty.workspace = true
 liuma-core.workspace = true
+liuma-llm.workspace = true
 # 平台 shell 名(`bash` / `pwsh`):工具摘要的键序表按模型面工具名索引
 liuma-sandbox.workspace = true
 anyhow.workspace = true

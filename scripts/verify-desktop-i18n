@@ -50,6 +50,11 @@ SAME_VALUE_KEYS = {
     "chat.tok_share",       # `数 · 百分数`:两语言同形,无实词
     "trajectory.seq_range",  # `seq %{a}–%{b}`:数据标签,两语言同形
     "settings.url_placeholder",  # 占位示例 URL,两语言同形
+    "settings.id_placeholder",   # 占位示例 id(acme-gateway),两语言同形
+    "settings.provider_id_label",  # Provider ID:产品名词,两语言同形
+    "settings.dialect_display_chat",  # wire 协议专名,两语言同形
+    "settings.dialect_display_responses",
+    "settings.dialect_display_anthropic",
 }
 
 # ── 规则 1/2 的判定面 ──

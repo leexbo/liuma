@@ -509,8 +509,7 @@ fn apply_tokens(m: ThemeMode, cx: &mut App) {
     c.secondary_hover = p.dock.into();
     c.secondary_active = p.dock.into();
     c.muted = p.layer.into();
-    c.muted_foreground = p.label_3.into();
-    c.accent = p.layer.into();
+    c.accent = p.dock.into();
     c.accent_foreground = p.label.into();
     c.danger = p.danger.into();
     c.danger_foreground = on_fill;
@@ -529,6 +528,9 @@ fn apply_tokens(m: ThemeMode, cx: &mut App) {
     c.sidebar_foreground = p.label_2.into();
     c.sidebar_accent = p.layer.into();
     c.sidebar_accent_foreground = p.label.into();
+    // select 勾选图标等组件弱化文本:label_3(0.55)在深盘上几乎不可见
+    // (用户实测),映射到二级文字(0.72)保证可读
+    c.muted_foreground = p.label_2.into();
     c.scrollbar = p.base.into();
     c.scrollbar_thumb = p.dock.into();
     // 模态遮罩 = 画布色 60%(原手写模态遮罩同款;库 Dialog/AlertDialog

@@ -135,6 +135,16 @@ pub enum LiumaIcon {
     FolderClose,
     /// 轨迹
     Trajectory,
+    /// 设置侧栏 MCP 项
+    Mcp,
+    /// 设置侧栏决策模型项
+    Decision,
+    /// 设置侧栏钩子项
+    Hook,
+    /// 设置侧栏模型设置项
+    Models,
+    /// 设置侧栏常规项
+    General,
 }
 
 impl IconNamed for LiumaIcon {
@@ -196,6 +206,11 @@ impl IconNamed for LiumaIcon {
             Self::FolderOpen => "folder-open",
             Self::FolderClose => "folder-close",
             Self::Trajectory => "trace",
+            Self::Mcp => "mcp",
+            Self::Decision => "decision",
+            Self::Hook => "hook",
+            Self::Models => "box",
+            Self::General => "sliders-horizontal",
         };
         format!("icons/_liuma/{name}.svg").into()
     }
@@ -431,6 +446,26 @@ const LIUMA_ICONS: &[(&str, &[u8])] = &[
         "icons/_liuma/trace.svg",
         include_bytes!("../../assets/icons/trace.svg"),
     ),
+    (
+        "icons/_liuma/mcp.svg",
+        include_bytes!("../../assets/icons/mcp.svg"),
+    ),
+    (
+        "icons/_liuma/decision.svg",
+        include_bytes!("../../assets/icons/decision.svg"),
+    ),
+    (
+        "icons/_liuma/hook.svg",
+        include_bytes!("../../assets/icons/hook.svg"),
+    ),
+    (
+        "icons/_liuma/box.svg",
+        include_bytes!("../../assets/icons/box.svg"),
+    ),
+    (
+        "icons/_liuma/sliders-horizontal.svg",
+        include_bytes!("../../assets/icons/sliders-horizontal.svg"),
+    ),
 ];
 
 impl AssetSource for MergedAssets {
@@ -532,7 +567,7 @@ mod tests {
     /// 枚举全变体的 path 必须命中 LIUMA_ICONS 静态表(防加枚举忘加 SVG)
     #[test]
     fn liuma_icon_paths_all_embedded() {
-        const ALL: [LiumaIcon; 56] = [
+        const ALL: [LiumaIcon; 61] = [
             LiumaIcon::Sparkles,
             LiumaIcon::Zap,
             LiumaIcon::Brain,
@@ -589,6 +624,11 @@ mod tests {
             LiumaIcon::FolderOpen,
             LiumaIcon::FolderClose,
             LiumaIcon::Trajectory,
+            LiumaIcon::Mcp,
+            LiumaIcon::Decision,
+            LiumaIcon::Hook,
+            LiumaIcon::Models,
+            LiumaIcon::General,
         ];
         for icon in ALL {
             let p = icon.path();

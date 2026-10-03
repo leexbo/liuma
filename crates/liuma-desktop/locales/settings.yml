@@ -112,29 +112,41 @@ settings:
     zh-CN: "已保存 %{name}"
     en: "Saved %{name}"
 
-  default_badge:
-    zh-CN: "默认"
-    en: "Default"
 
   provider_label:
     zh-CN: "提供方"
     en: "Provider"
 
+  provider_id_helper:
+    zh-CN: "以小写字母开头的标识，在请求中唯一标识该提供商，并用于派生凭据名。"
+    en: "A lowercase identifier that uniquely names this provider and derives its credential."
   provider_id_label:
-    zh-CN: "Provider ID(小写/连字符)"
-    en: "Provider ID (lowercase/hyphens)"
+    zh-CN: "Provider ID"
+    en: "Provider ID"
 
   add_provider:
-    zh-CN: "添加提供方"
-    en: "Add provider"
+    zh-CN: "添加模型提供商"
+    en: "Add model provider"
 
-  add_custom_provider:
-    zh-CN: "添加自定义提供方"
-    en: "Add custom provider"
+  provider_tab_builtin:
+    zh-CN: "第三方模型提供商"
+    en: "Vendor presets"
+  provider_tab_custom:
+    zh-CN: "自定义模型 API"
+    en: "Custom model API"
+  provider_explain_builtin:
+    zh-CN: "从内置目录中选择 DeepSeek、GLM、Kimi 等提供商，填入其 API 密钥即可使用。"
+    en: "Pick a vendor from the built-in catalog (DeepSeek, GLM, Kimi, ...) and fill in its API key."
+  provider_explain_custom:
+    zh-CN: "连接中转站、自部署服务或其他兼容 OpenAI / Anthropic 协议的接口，需填写 API 地址、协议和模型。"
+    en: "Connect relays, self-hosted services, or other OpenAI / Anthropic compatible endpoints; fill in the API URL, protocol, and models."
+  create_provider:
+    zh-CN: "创建提供商"
+    en: "Create provider"
 
   name:
-    zh-CN: "名称"
-    en: "Name"
+    zh-CN: "显示名称"
+    en: "Display name"
 
   api_key:
     zh-CN: "API 密钥"
@@ -152,9 +164,6 @@ settings:
     zh-CN: "自定义设置"
     en: "Advanced"
 
-  adapter:
-    zh-CN: "适配器"
-    en: "Adapter"
 
   billing_preset:
     zh-CN: "计费预设"
@@ -173,24 +182,39 @@ settings:
     en: "Catalog entry missing"
 
   api_format:
-    zh-CN: "API 格式"
-    en: "API format"
+    zh-CN: "API 协议"
+    en: "API protocol"
+  dialect_display_chat:
+    zh-CN: "OpenAI Chat Completions"
+    en: "OpenAI Chat Completions"
+  dialect_display_responses:
+    zh-CN: "OpenAI Responses"
+    en: "OpenAI Responses"
+  dialect_display_anthropic:
+    zh-CN: "Anthropic Messages"
+    en: "Anthropic Messages"
 
+  hosted_tools:
+    zh-CN: "内置工具"
+    en: "Built-in tools"
+  hosted_web_search:
+    zh-CN: "联网搜索"
+    en: "Web search"
   model_list:
-    zh-CN: "模型列表"
-    en: "Model list"
+    zh-CN: "模型目录"
+    en: "Model catalog"
 
   models_empty:
-    zh-CN: "当前没有配置模型,添加模型后可在聊天中使用。"
-    en: "No models configured yet. Add one to use it in chat."
+    zh-CN: "模型选择器中将不显示任何模型；目录外 ID 仍可直接发送。"
+    en: "No models will show in the picker; out-of-catalog IDs can still be sent directly."
 
   add_model:
     zh-CN: "添加模型"
     en: "Add model"
 
   fetch_from_endpoint:
-    zh-CN: "从端点获取"
-    en: "Fetch from endpoint"
+    zh-CN: "获取可用模型"
+    en: "Fetch available models"
 
   ctx_hint:
     zh-CN: "点「窗口」设置该模型的上下文 token 数(可写 256K / 1M,1M = 1,000,000);留空使用默认,仅影响自动压缩阈值与上下文计量。"
@@ -236,25 +260,22 @@ settings:
     zh-CN: "sk-…(留空 = 保持既有凭据)"
     en: "sk-… (empty = keep existing credential)"
 
-  key_enter_placeholder:
-    zh-CN: "输入 API Key"
-    en: "Enter API key"
 
   key_env_placeholder:
     zh-CN: "输入 API 密钥,或留空使用环境认证"
     en: "Enter API key, or leave empty to use environment auth"
 
   id_placeholder:
-    zh-CN: "小写英文/连字符"
-    en: "lowercase/hyphens"
+    zh-CN: "acme-gateway"
+    en: "acme-gateway"
 
   optional_placeholder:
     zh-CN: "可选"
     en: "Optional"
 
   name_placeholder:
-    zh-CN: "给这个 Provider 起个名字"
-    en: "Name this provider"
+    zh-CN: "显示名称"
+    en: "Display name"
 
   model_id_placeholder:
     zh-CN: "模型 id"
@@ -308,9 +329,6 @@ settings:
     zh-CN: "立即刷新"
     en: "Refresh now"
 
-  billing_updated:
-    zh-CN: "计费已更新"
-    en: "Billing updated"
 
   billing_query_failed:
     zh-CN: "计费查询失败:%{msg}"
@@ -332,9 +350,6 @@ settings:
     zh-CN: "7 天"
     en: "7d"
 
-  resets_in:
-    zh-CN: "%{cd}后重置"
-    en: "Resets in %{cd}"
 
   quota_expiry:
     zh-CN: "%{days}天%{hours}时"
@@ -349,20 +364,20 @@ settings:
     en: "%{mins}m"
 
   balance_path_placeholder:
-    zh-CN: "余额金额路径,如 balance_infos.0.total_balance"
-    en: "Balance amount path, e.g. balance_infos.0.total_balance"
+    zh-CN: "JSONPath，如 $.balance_infos[0].total_balance"
+    en: "JSONPath, e.g. $.balance_infos[0].total_balance"
 
   currency_path_placeholder:
-    zh-CN: "货币路径,如 balance_infos.0.currency"
-    en: "Currency path, e.g. balance_infos.0.currency"
+    zh-CN: "JSONPath，如 $.balance_infos[0].currency"
+    en: "JSONPath, e.g. $.balance_infos[0].currency"
 
   usage5h_path_placeholder:
-    zh-CN: "5小时用量路径,如 five_hour.utilization"
-    en: "5h usage path, e.g. five_hour.utilization"
+    zh-CN: "JSONPath，如 $.data.limits[?(@.unit==3)].percentage"
+    en: "JSONPath, e.g. $.data.limits[?(@.unit==3)].percentage"
 
   usage7d_path_placeholder:
-    zh-CN: "7天用量路径,如 seven_day.utilization"
-    en: "7d usage path, e.g. seven_day.utilization"
+    zh-CN: "JSONPath，如 $.data.limits[?(@.unit==6)].percentage"
+    en: "JSONPath, e.g. $.data.limits[?(@.unit==6)].percentage"
 
   reset_path_placeholder:
     zh-CN: "重置时间路径,如 resets_in"
@@ -892,6 +907,18 @@ settings:
     zh-CN: "名称"
     en: "Header"
 
+  url_protocol_hint_compat:
+    zh-CN: "请填写兼容 OpenAI 协议的 API 地址。"
+    en: "Use an API URL that speaks an OpenAI-compatible protocol."
+  url_protocol_hint_anthropic:
+    zh-CN: "请填写兼容 Anthropic Messages 协议的 API 地址。"
+    en: "Use an API URL that speaks the Anthropic Messages protocol."
+  url_protocol_hint_responses:
+    zh-CN: "请填写兼容 OpenAI Responses 协议的 API 地址。"
+    en: "Use an API URL that speaks the OpenAI Responses protocol."
+  url_protocol_hint_chat:
+    zh-CN: "请填写兼容 OpenAI Chat Completions 协议的 API 地址。"
+    en: "Use an API URL that speaks the OpenAI Chat Completions protocol."
   provider_field_base_url:
-    zh-CN: "基础地址"
-    en: "Base URL"
+    zh-CN: "API 地址"
+    en: "API URL"

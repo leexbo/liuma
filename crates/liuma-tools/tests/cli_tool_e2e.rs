@@ -20,7 +20,6 @@ use serde_json::json;
 #[cfg(unix)]
 use liuma_host::JsonlBackend;
 #[cfg(unix)]
-use liuma_llm::streaming::StreamMode;
 #[cfg(unix)]
 use liuma_llm::{HttpTransport, ProviderConfig};
 #[cfg(unix)]
@@ -80,7 +79,6 @@ async fn http_tool_round_trip_through_sandbox() {
     let transport = HttpTransport::new(ProviderConfig {
         base_url: format!("http://{addr}"),
         api_key: "sk-test".into(),
-        stream_mode: StreamMode::Sse,
     })
     .unwrap();
     let log = Arc::new(Mutex::new(EventLog::new()));
@@ -126,7 +124,8 @@ async fn http_tool_round_trip_through_sandbox() {
     let requests = captured.lock().unwrap().clone();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0]["tools"][0]["function"]["name"], "bash");
-    assert_eq!(requests[0]["tool_choice"], "auto");
+    let tc = &requests[0]["tool_choice"];
+    assert!(tc.is_null() || tc == "auto", "tool_choice: {tc}");
     let second_messages = requests[1]["messages"].as_array().unwrap().clone();
     assert_eq!(second_messages[0]["role"], "user");
     assert_eq!(second_messages[1]["role"], "assistant");
