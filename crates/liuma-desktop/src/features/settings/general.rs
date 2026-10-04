@@ -97,8 +97,7 @@ impl AppStore {
             gpui_kit::component::ThemeMode::Dark,
         ]
         .map(|m| {
-            let options: Vec<(String, String)> = gpui_kit::component::ThemeRegistry::global(&*cx)
-                .sorted_themes()
+            let options: Vec<(String, String)> = theme::selectable_themes(cx)
                 .iter()
                 .filter(|t| t.mode == m)
                 .map(|t| (t.name.to_string(), t.name.to_string()))
@@ -127,15 +126,10 @@ impl AppStore {
         self.settings.theme_selects_sig = Self::theme_registry_sig(cx);
     }
 
-    /// registry 主题名集签名(排序稳定:sorted_themes 顺序确定;
-    /// 增删主题都会改变签名,主题内容编辑不经过 registry,无需覆盖)
+    /// registry 主题名集签名(排序稳定;增删用户主题都会变,含删除
+    /// 过滤后的全集——见 theme::themes_sig)
     fn theme_registry_sig(cx: &App) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        for t in gpui_kit::component::ThemeRegistry::global(cx).sorted_themes() {
-            t.name.hash(&mut h);
-        }
-        h.finish()
+        theme::themes_sig(cx)
     }
 
     /// 主题下拉选项同步(渲染期;registry 签名变化即重建两个下拉

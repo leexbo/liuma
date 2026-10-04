@@ -14268,6 +14268,10 @@ fn panel_terminal_focus_input_scroll(cx: &mut TestAppContext) {
 /// registry 后下拉永不出现新选项(真机验证发现)
 #[gpui_kit::test]
 fn user_theme_hot_load_rebuilds_settings_selects(cx: &mut TestAppContext) {
+    // 账本是进程级静态:与 theme.rs 的目录扫描用例互斥
+    let _ledger = theme::USER_LEDGER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     cx.update(|app| {
         gpui_kit::component::init(app);
         theme::init(app);
@@ -14342,5 +14346,19 @@ fn user_theme_hot_load_rebuilds_settings_selects(cx: &mut TestAppContext) {
             .map(|e| e.entity_id())
     });
     assert_eq!(after.0, again, "签名未变不重建");
+    // 删除生效:文件移走 → 重扫 → 签名变化(选项过滤掉已删名)→ 重建
+    std::fs::remove_file(themes_dir.join("hot.json")).expect("移除热装载主题");
+    let sig_loaded = after.1;
+    cx.update(|_, app| {
+        theme::load_user_themes_from(&themes_dir, app);
+    });
+    let after_removal = cx.update(|window, cx| {
+        store.update(cx, |s, cx| s.sync_theme_selects(window, cx));
+        store.read(cx).settings.theme_selects_sig
+    });
+    assert_ne!(
+        after_removal, sig_loaded,
+        "删除用户主题应改变签名(下拉重建,选项面消失)"
+    );
     let _ = std::fs::remove_dir_all(root);
 }

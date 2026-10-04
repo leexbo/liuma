@@ -239,11 +239,29 @@ pub fn user_themes_dir() -> std::path::PathBuf {
     liuma_host::default_liuma_root().join("themes")
 }
 
+/// 用户主题名账本。registry 只增不减(无移除 API):删除文件后条目
+/// 残留在 registry,「删除生效」由选项层承担——[`selectable_themes`]
+/// 过滤「装入过但已不在目录」的名字。EVER 只增(装过即记),LIVE
+/// 每轮重扫重写(目录现存名)
+static USER_EVER: std::sync::LazyLock<RwLock<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| RwLock::new(std::collections::HashSet::new()));
+static USER_LIVE: std::sync::LazyLock<RwLock<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| RwLock::new(std::collections::HashSet::new()));
+
+fn lock<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(|e| e.into_inner())
+}
+
+/// 用户主题账本测试锁(USER_EVER/LIVE 是进程级静态,并行用例各自
+/// 扫描不同目录会互相重写 LIVE 错杀选项;涉账本用例经此串行)
+#[cfg(test)]
+pub(crate) static USER_LEDGER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 扫描目录装入 `*.json`(ThemeSet 形状,与内嵌同 schema),返回本次
 /// 新增主题数。first-wins:与已装条目(含内嵌)重名的一律静默忽略
-/// ——自定义起个新名即可;已装入文件的**修改**同样不生效(registry
-/// 只增不减,无移除 API),换名或重启。非法 JSON / IO 失败逐文件记
-/// 日志,不中断整轮扫描
+/// ——自定义起个新名即可;已装入文件的**修改**同样不生效,换名或
+/// 重装。非法 JSON / IO 失败逐文件记日志,不中断整轮扫描。每轮结束
+/// 重写 LIVE 账本,驱动 [`selectable_themes`] 的删除过滤
 pub(crate) fn load_user_themes_from(dir: &std::path::Path, cx: &mut App) -> usize {
     let reg = ThemeRegistry::global_mut(cx);
     let before = reg.themes().len();
@@ -254,6 +272,7 @@ pub(crate) fn load_user_themes_from(dir: &std::path::Path, cx: &mut App) -> usiz
             return 0;
         }
     };
+    let mut live = std::collections::HashSet::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -261,6 +280,21 @@ pub(crate) fn load_user_themes_from(dir: &std::path::Path, cx: &mut App) -> usiz
         }
         match std::fs::read_to_string(&path) {
             Ok(text) => {
+                // 先解一遍拿名字:ThemeSet 与 ThemeConfig 均 serde default,
+                // 解析失败仅当整体形状坏;名字进账本(即便重名被 registry
+                // 跳过——账本口径是「目录里出现过」,与装入与否无关)
+                match serde_json::from_str::<gpui_kit::component::ThemeSet>(&text) {
+                    Ok(set) => {
+                        for t in &set.themes {
+                            live.insert(t.name.to_string());
+                            lock(&USER_EVER).insert(t.name.to_string());
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("[theme] 忽略非法用户主题 {}: {err}", path.display());
+                        continue;
+                    }
+                }
                 if let Err(err) = reg.load_themes_from_str(&text) {
                     eprintln!("[theme] 忽略非法用户主题 {}: {err}", path.display());
                 }
@@ -268,7 +302,33 @@ pub(crate) fn load_user_themes_from(dir: &std::path::Path, cx: &mut App) -> usiz
             Err(err) => eprintln!("[theme] 用户主题读取失败 {}: {err}", path.display()),
         }
     }
+    *lock(&USER_LIVE) = live;
     reg.themes().len() - before
+}
+
+/// 设置页下拉的生效主题集(保持 registry 排序):registry 全集 −
+/// 「用户目录装入过但已不在目录」的名字。删除条目 registry 残留,
+/// 在此从选项面消失;装回同名文件自动恢复(重新落入 LIVE)
+pub fn selectable_themes(cx: &App) -> Vec<Rc<ThemeConfig>> {
+    let live = lock(&USER_LIVE);
+    let ever = lock(&USER_EVER);
+    ThemeRegistry::global(cx)
+        .sorted_themes()
+        .iter()
+        .filter(|t| live.contains(t.name.as_ref()) || !ever.contains(t.name.as_ref()))
+        .map(|t| Rc::clone(t))
+        .collect()
+}
+
+/// 主题名集签名(排序稳定):增删用户主题都会改变(删除经选项过滤
+/// 生效,故对过滤后全集取哈希),主题内容编辑不经过 registry
+pub fn themes_sig(cx: &App) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for t in selectable_themes(cx) {
+        t.name.hash(&mut h);
+    }
+    h.finish()
 }
 
 /// 用户主题装配(启动时于 [`load_builtin_themes`] 之后、持久化主题名
@@ -849,6 +909,9 @@ mod tests {
     /// 测试里驱动(watch_user_themes 各失败分支均为放弃监听,无状态)
     #[gpui_kit::test]
     fn user_themes_scan_loads_valid_skips_dup_and_bad(cx: &mut TestAppContext) {
+        let _ledger = USER_LEDGER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let dir = std::env::temp_dir().join(format!("liuma-user-themes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("测试目录创建");
@@ -882,6 +945,39 @@ mod tests {
             assert!(
                 d.colors.background.is_some(),
                 "内嵌同名主题未被用户文件顶替"
+            );
+        });
+        // 删除生效(选项层):文件移走 → 重扫 → selectable 不再含它
+        // (registry 条目残留,无移除 API——选中过它的会话观感延续,
+        // 重启后回落默认);装回同名文件自动恢复
+        std::fs::remove_file(dir.join("custom.json")).expect("移除自定义主题");
+        let _ = cx.update(|cx| load_user_themes_from(&dir, cx));
+        cx.update(|cx| {
+            assert!(
+                !selectable_themes(cx)
+                    .iter()
+                    .any(|t| t.name.as_ref() == "Liuma Test Custom"),
+                "删除后选项面应消失"
+            );
+            assert!(
+                ThemeRegistry::global(cx)
+                    .themes()
+                    .contains_key("Liuma Test Custom"),
+                "registry 条目残留(约束:无移除 API)"
+            );
+        });
+        std::fs::write(
+            dir.join("custom.json"),
+            r#"{"name":"custom","themes":[{"name":"Liuma Test Custom","mode":"dark","colors":{}}]}"#,
+        )
+        .expect("装回");
+        let _ = cx.update(|cx| load_user_themes_from(&dir, cx));
+        cx.update(|cx| {
+            assert!(
+                selectable_themes(cx)
+                    .iter()
+                    .any(|t| t.name.as_ref() == "Liuma Test Custom"),
+                "装回后选项面恢复"
             );
         });
         let _ = std::fs::remove_dir_all(&dir);
