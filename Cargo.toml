@@ -52,6 +52,11 @@ wasmtime-wasi = "49"
 turso = { version = "0.7.2", features = ["fts"] }
 # /export ZIP 打包(stored 条目 + deflate)
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+# 用户主题目录监听(kits/theme:init_user_themes;notify 7 与
+# gpui-component 同款)
+notify = "7.0"
+# notify 回调线程 → 主循环 async 通道(与 gpui 运行时同源)
+smol = "2"
 futures = "0.3"
 # rig provider 层(0.43 传输架构;四评+spike 后转生产,自有 HttpClientExt 传输)
 rig-core = "0.43.0"

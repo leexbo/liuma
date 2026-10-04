@@ -113,8 +113,8 @@ settings:
     en: "Dark-mode theme"
 
   theme_desc:
-    zh-CN: "随外观档生效的配色主题"
-    en: "Color theme applied with the appearance mode"
+    zh-CN: "随外观档生效的配色主题;自定义主题放 ~/.liuma/themes"
+    en: "Color theme applied with the appearance mode; drop custom themes into ~/.liuma/themes"
 
   theme_unknown:
     zh-CN: "未知主题:%{name}"

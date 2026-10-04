@@ -21,6 +21,8 @@ alacritty_terminal.workspace = true
 # 终端 PTY 的 PtySize 尺寸面(spawn/resize 与 liuma-sandbox 对齐)
 portable-pty.workspace = true
 liuma-core.workspace = true
+# 用户主题目录根(LIUMA_HOME|~/.liuma;kits/theme 用户主题装配)
+liuma-host.workspace = true
 liuma-llm.workspace = true
 # 平台 shell 名(`bash` / `pwsh`):工具摘要的键序表按模型面工具名索引
 liuma-sandbox.workspace = true
@@ -42,6 +44,11 @@ resvg.workspace = true
 usvg.workspace = true
 # 语法高亮(read 卡/markdown 代码块;default-fancy = fancy-regex 后端,零 C 依赖)
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+# 用户主题目录文件监听(kits/theme:init_user_themes;与 gpui-component
+# 锁同大版)
+notify.workspace = true
+# notify 事件 → 主循环 async 通道(去抖静默合并)
+smol.workspace = true
 # 轨迹 Started 时刻/时间线 tooltip 的本地时区格式化
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 

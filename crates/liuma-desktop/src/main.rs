@@ -100,6 +100,9 @@ fn main() {
             // 内置主题集进 registry(liuma 双盘 + 官方 21 套;
             // 先于任何 apply)
             kits::theme::load_builtin_themes(cx);
+            // 用户主题(<LIUMA_HOME|~/.liuma>/themes):首扫 + 文件监听;
+            // 在持久化主题名 apply 之前,自定义主题可被选中/持久化
+            kits::theme::init_user_themes(cx);
             // 持久化的两盘主题名(空串 = Liuma 默认;未知名由
             // config_for_mode 回落)
             for (m, name) in [

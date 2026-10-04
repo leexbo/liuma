@@ -232,6 +232,101 @@ pub fn load_builtin_themes(cx: &mut App) {
     }
 }
 
+// ── 用户主题(`<LIUMA_HOME|~/.liuma>/themes`)────────────────────
+
+/// 用户主题目录(启动时不存在则创建;约定见 [`init_user_themes`])
+pub fn user_themes_dir() -> std::path::PathBuf {
+    liuma_host::default_liuma_root().join("themes")
+}
+
+/// 扫描目录装入 `*.json`(ThemeSet 形状,与内嵌同 schema),返回本次
+/// 新增主题数。first-wins:与已装条目(含内嵌)重名的一律静默忽略
+/// ——自定义起个新名即可;已装入文件的**修改**同样不生效(registry
+/// 只增不减,无移除 API),换名或重启。非法 JSON / IO 失败逐文件记
+/// 日志,不中断整轮扫描
+fn load_user_themes_from(dir: &std::path::Path, cx: &mut App) -> usize {
+    let reg = ThemeRegistry::global_mut(cx);
+    let before = reg.themes().len();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            eprintln!("[theme] 用户主题目录读取失败 {}: {err}", dir.display());
+            return 0;
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                if let Err(err) = reg.load_themes_from_str(&text) {
+                    eprintln!("[theme] 忽略非法用户主题 {}: {err}", path.display());
+                }
+            }
+            Err(err) => eprintln!("[theme] 用户主题读取失败 {}: {err}", path.display()),
+        }
+    }
+    reg.themes().len() - before
+}
+
+/// 用户主题装配(启动时于 [`load_builtin_themes`] 之后、持久化主题名
+/// apply 之前调用,自定义主题可被选中/持久化):建目录 + 首扫 + 文件
+/// 监听。监听按「200ms 静默」去抖(编辑器保存常连发多条事件),触发
+/// 即整轮重扫。装载不影响当前渲染(未选中的主题不参与取值);设置页
+/// 的主题下拉在(重新)打开时重建选项——丢进新文件后重开设置页即可
+/// 见,无需重启
+pub fn init_user_themes(cx: &mut App) {
+    let dir = user_themes_dir();
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        eprintln!("[theme] 用户主题目录创建失败 {}: {err}", dir.display());
+        return;
+    }
+    let added = load_user_themes_from(&dir, cx);
+    if added > 0 {
+        eprintln!("[theme] 自 {:#} 装入 {added} 套用户主题", dir.display());
+    }
+    watch_user_themes(dir, cx);
+}
+
+/// 目录文件监听(notify 回调线程 → smol 通道 → 主循环重扫)。任一环
+/// 节失败仅放弃监听(用户主题改为重启生效),不阻断启动
+fn watch_user_themes(dir: std::path::PathBuf, cx: &mut App) {
+    let (tx, rx) = smol::channel::bounded::<()>(64);
+    let Ok(mut watcher) = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if res.is_ok() {
+            let _ = tx.send_blocking(());
+        }
+    }) else {
+        eprintln!("[theme] 文件监听器创建失败,用户主题改动需重启生效");
+        return;
+    };
+    // watcher 移入任务常驻(函数返回不 drop,监听才持续)
+    cx.spawn(async move |cx| {
+        use notify::Watcher as _;
+        if let Err(err) = watcher.watch(&dir, notify::RecursiveMode::Recursive) {
+            eprintln!("[theme] 用户主题目录监听失败({err}),改动需重启生效");
+            return;
+        }
+        loop {
+            if rx.recv().await.is_err() {
+                return; // 发送端随 watcher 一同消亡
+            }
+            // 去抖:排空在途事件,静默片刻再排一次,合并成一轮重扫
+            while rx.try_recv().is_ok() {}
+            smol::Timer::after(std::time::Duration::from_millis(200)).await;
+            while rx.try_recv().is_ok() {}
+            // AsyncApp::update 直接透传闭包返回值;App 消亡时此处
+            // panic 被任务框架接住,watcher 随任务一同终结
+            cx.update(|cx| {
+                load_user_themes_from(&dir, cx);
+            });
+        }
+    })
+    .detach();
+}
+
 /// THEME_NAMES 下标基(0 = light / 1 = dark)
 const M_LIGHT: u8 = 0;
 const M_DARK: u8 = 1;
@@ -746,6 +841,50 @@ mod tests {
         assert_eq!(Appearance::parse("dark"), Appearance::Dark);
         assert_eq!(Appearance::parse("system"), Appearance::System);
         assert_eq!(Appearance::parse("whatever"), Appearance::Dark);
+    }
+
+    /// 用户主题目录装载:合法 ThemeSet 进 registry(可被选中/持久化);
+    /// 与内嵌重名 first-wins 忽略;非法 JSON 不崩不中断,其余文件照装。
+    /// 只锁「装载」这一步——文件事件去抖依赖真实文件系统时序,不在
+    /// 测试里驱动(watch_user_themes 各失败分支均为放弃监听,无状态)
+    #[gpui_kit::test]
+    fn user_themes_scan_loads_valid_skips_dup_and_bad(cx: &mut TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("liuma-user-themes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("测试目录创建");
+        std::fs::write(
+            dir.join("custom.json"),
+            r#"{"name":"custom","themes":[{"name":"Liuma Test Custom","mode":"dark","colors":{}}]}"#,
+        )
+        .expect("写入自定义主题");
+        std::fs::write(dir.join("bad.json"), "not json").expect("写入非法文件");
+        // 与内嵌 liuma.json 重名:装载时被 first-wins 忽略(不覆盖默认观感)
+        std::fs::write(
+            dir.join("dup.json"),
+            r#"{"name":"dup","themes":[{"name":"Liuma Dark","mode":"dark","colors":{}}]}"#,
+        )
+        .expect("写入重名主题");
+        let added = cx.update(|cx| {
+            setup(cx);
+            load_user_themes_from(&dir, cx)
+        });
+        assert_eq!(added, 1, "仅自定义主题计入新增;重名/非法文件忽略");
+        cx.update(|cx| {
+            assert!(
+                ThemeRegistry::global(cx)
+                    .themes()
+                    .contains_key("Liuma Test Custom"),
+                "自定义主题应可被选中"
+            );
+            // 重名条目未被顶替:内嵌 liuma.json 带 background,用户
+            // 那份该字段为空——若被覆盖,这里就是 None
+            let d = ThemeRegistry::global(cx).themes()["Liuma Dark"].clone();
+            assert!(
+                d.colors.background.is_some(),
+                "内嵌同名主题未被用户文件顶替"
+            );
+        });
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 主题切换:registry 未装的名 → false 不生效且不污染选中名;
