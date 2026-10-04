@@ -14262,3 +14262,85 @@ fn panel_terminal_focus_input_scroll(cx: &mut TestAppContext) {
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// 用户主题热装载 → 设置页主题下拉即时重建(sync_theme_selects 的
+/// 签名判据)。回归锁:此前两个下拉实体挂窗时只建一次,用户主题装进
+/// registry 后下拉永不出现新选项(真机验证发现)
+#[gpui_kit::test]
+fn user_theme_hot_load_rebuilds_settings_selects(cx: &mut TestAppContext) {
+    cx.update(|app| {
+        gpui_kit::component::init(app);
+        theme::init(app);
+    });
+    allow_host_parking(cx);
+    let root = std::env::temp_dir().join(format!("liuma-theme-hot-{}", std::process::id()));
+    let (bridge, _rx) = HostBridge::new_at(root.join("ws"), true, "", Some(root.join("sessions")))
+        .expect("桥构建失败");
+    let store = cx.update(|app| app.new(|cx| AppStore::new(bridge, cx)));
+    struct Blank;
+    impl Render for Blank {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+    let (_window, cx) = cx.add_window_view(|_, _| Blank);
+    // 挂窗期构建:下拉实体 + registry 签名落位
+    cx.update(|window, cx| {
+        store.update(cx, |s, cx| s.ensure_pref_selects(window, cx));
+    });
+    let before = cx.update(|_, cx| {
+        let st = store.read(cx);
+        (
+            st.settings
+                .theme_dark_select
+                .as_ref()
+                .map(|e| e.entity_id()),
+            st.settings.theme_selects_sig,
+        )
+    });
+    // 用户主题装入(与 watch 事件路径同款)
+    let themes_dir = root.join("themes");
+    std::fs::create_dir_all(&themes_dir).expect("测试主题目录");
+    std::fs::write(
+        themes_dir.join("hot.json"),
+        r##"{"name":"hot","themes":[{"name":"Liuma Hot Reload","mode":"dark","colors":{"background":"#201018"}}]}"##,
+    )
+    .expect("写入热装载主题");
+    cx.update(|_, app| {
+        let added = theme::load_user_themes_from(&themes_dir, app);
+        assert_eq!(added, 1, "测试主题应装入");
+    });
+    // 渲染期同步:签名变化 → 下拉重建(实体换新)
+    cx.update(|window, cx| {
+        store.update(cx, |s, cx| s.sync_theme_selects(window, cx));
+    });
+    let after = cx.update(|_, cx| {
+        let st = store.read(cx);
+        (
+            st.settings
+                .theme_dark_select
+                .as_ref()
+                .map(|e| e.entity_id()),
+            st.settings.theme_selects_sig,
+        )
+    });
+    assert_ne!(after.1, before.1, "registry 签名应随装载变化");
+    assert_ne!(
+        before.0, after.0,
+        "下拉实体应重建(旧实体永不显示新选项的回归锚)"
+    );
+    // 稳态:签名未变,再次同步零重建
+    cx.update(|window, cx| {
+        store.update(cx, |s, cx| s.sync_theme_selects(window, cx));
+    });
+    let again = cx.update(|_, cx| {
+        store
+            .read(cx)
+            .settings
+            .theme_dark_select
+            .as_ref()
+            .map(|e| e.entity_id())
+    });
+    assert_eq!(after.0, again, "签名未变不重建");
+    let _ = std::fs::remove_dir_all(root);
+}

@@ -252,6 +252,10 @@ pub(crate) struct SettingsStore {
     /// 偏好下拉构建时刻的 locale id(sync_locale_ui 换档重建判据;
     /// ensure_pref_selects 写入)
     pub selects_lang: &'static str,
+    /// 主题下拉构建时刻的 registry 主题名签名(sync_theme_selects
+    /// 重建判据——用户主题热装载后下拉即时跟进;ensure_pref_selects
+    /// 写入)
+    pub theme_selects_sig: u64,
     /// 权限选 full-access 的风险确认。
     /// Some 记录确认来源:设置页默认预设 / composer 会话权限——确认后
     /// 各自落不同的目标(默认预设落盘 / 会话 set_permission)
@@ -349,6 +353,7 @@ impl Default for SettingsStore {
             theme_light_select: None,
             theme_dark_select: None,
             selects_lang: i18n::DEFAULT,
+            theme_selects_sig: 0,
             full_access_confirm: None,
             archived: None,
             archived_loading: false,

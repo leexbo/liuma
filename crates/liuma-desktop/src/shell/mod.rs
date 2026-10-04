@@ -363,6 +363,9 @@ impl Render for WorkspaceView {
             s.sync_composer_placeholder(window, cx);
             // 语言档切换回写(偏好下拉标签重建;档位未变零开销早退)
             s.sync_locale_ui(window, cx);
+            // 主题下拉跟随 registry(用户主题热装载即重建;签名未变
+            // 零开销早退)
+            s.sync_theme_selects(window, cx);
             s.install_trajectory_scroll_handler(cx);
             s.flush_trajectory_scroll(cx);
             s.sync_chat_list(cx);

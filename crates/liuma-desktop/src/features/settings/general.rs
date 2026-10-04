@@ -82,11 +82,16 @@ impl AppStore {
             window,
             cx,
         ));
-        // 主题两行:选项 = registry 内置主题名(id 与显示名同值,
-        // 非词典文案,语言换档不参与重建);当前值取 theme 侧选中名
-        // (启动时已从持久化装配,空串归一为 Liuma 默认——下拉必须
-        // 能选中一项)。先收集选项(registry 借用与后面的 cx 可变
-        // 借用不重叠)
+        self.rebuild_theme_selects(window, cx);
+    }
+
+    /// 重建主题两行下拉(选项 = registry 主题名,id 与显示名同值,
+    /// 非词典文案,语言换档不参与重建);当前值取 theme 侧选中名
+    /// (启动时已从持久化装配,空串归一为 Liuma 默认——下拉必须
+    /// 能选中一项)。同时记录 registry 签名,供 [`sync_theme_selects`]
+    /// 判定过期。ensure_pref_selects 与 sync_theme_selects 两条路共用
+    pub(crate) fn rebuild_theme_selects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 先收集选项(registry 借用与后面的 cx 可变借用不重叠)
         let theme_options: [(gpui_kit::component::ThemeMode, Vec<(String, String)>); 2] = [
             gpui_kit::component::ThemeMode::Light,
             gpui_kit::component::ThemeMode::Dark,
@@ -119,6 +124,28 @@ impl AppStore {
                 self.settings.theme_light_select = Some(built);
             }
         }
+        self.settings.theme_selects_sig = Self::theme_registry_sig(cx);
+    }
+
+    /// registry 主题名集签名(排序稳定:sorted_themes 顺序确定;
+    /// 增删主题都会改变签名,主题内容编辑不经过 registry,无需覆盖)
+    fn theme_registry_sig(cx: &App) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for t in gpui_kit::component::ThemeRegistry::global(cx).sorted_themes() {
+            t.name.hash(&mut h);
+        }
+        h.finish()
+    }
+
+    /// 主题下拉选项同步(渲染期;registry 签名变化即重建两个下拉
+    /// 实体)。用户主题目录热装载后设置页开着也会即时出现,无需
+    /// 重开;稳态每帧 = 一次签名计算 + 比对
+    pub(crate) fn sync_theme_selects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.theme_selects_sig == Self::theme_registry_sig(cx) {
+            return;
+        }
+        self.rebuild_theme_selects(window, cx);
     }
 
     /// 单个偏好 Select 构建(labels + 当前项 + Confirm 落盘订阅)

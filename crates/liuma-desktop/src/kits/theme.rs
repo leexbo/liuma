@@ -244,7 +244,7 @@ pub fn user_themes_dir() -> std::path::PathBuf {
 /// ——自定义起个新名即可;已装入文件的**修改**同样不生效(registry
 /// 只增不减,无移除 API),换名或重启。非法 JSON / IO 失败逐文件记
 /// 日志,不中断整轮扫描
-fn load_user_themes_from(dir: &std::path::Path, cx: &mut App) -> usize {
+pub(crate) fn load_user_themes_from(dir: &std::path::Path, cx: &mut App) -> usize {
     let reg = ThemeRegistry::global_mut(cx);
     let before = reg.themes().len();
     let entries = match std::fs::read_dir(dir) {
