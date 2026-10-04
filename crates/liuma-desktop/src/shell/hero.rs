@@ -63,14 +63,14 @@ pub fn render(
                         .gap(px(10.))
                         .child(
                             div().flex().justify_center().child(
-                                fixed(icons::LiumaIcon::Logo, 64.).text_color(theme::LABEL()),
+                                fixed(icons::LiumaIcon::Logo, 64.).text_color(theme::label(cx)),
                             ),
                         )
                         .child(
                             div()
                                 .text_size(px(15.))
                                 .font_weight(gpui_kit::FontWeight::MEDIUM)
-                                .text_color(theme::LABEL())
+                                .text_color(theme::label(cx))
                                 .child(crate::kits::i18n::t!("shell.hero_tagline")),
                         ),
                 )
@@ -87,11 +87,11 @@ pub fn render(
                             .px(px(10.))
                             .rounded(px(8.))
                             .border_1()
-                            .border_color(theme::BORDER())
+                            .border_color(theme::border(cx))
                             .cursor_pointer()
                             .text_size(px(12.))
-                            .text_color(theme::WARN())
-                            .hover(|s| s.bg(theme::LAYER()))
+                            .text_color(theme::warning(cx))
+                            .hover(|s| s.bg(theme::layer(cx)))
                             .child(crate::kits::i18n::t!("shell.hero_no_key"))
                             .on_click(move |_, window, cx| {
                                 s.update(cx, |st, cx| st.toggle_settings(window, cx));
@@ -107,12 +107,14 @@ pub fn render(
                             store,
                             &ws,
                             fixed(IconName::FolderOpen, 14.),
+                            cx,
                         ))
                         .child(hero_preset_popover(
                             store,
                             "hero-preset",
                             &preset_label,
                             fixed(icons::LiumaIcon::AgentPreset, 14.),
+                            cx,
                         )),
                 )
                 .child(composer::render(store, window, cx)), // 工作区/模式两 chip 各自弹组件库 Popover(内容闭包捕
@@ -155,7 +157,7 @@ fn preset_card(
                 .px(px(10.))
                 .py(px(8.))
                 .cursor_pointer()
-                .hover(|s| s.bg(theme::DOCK()))
+                .hover(|s| s.bg(theme::dock(cx)))
                 .child(
                     div()
                         .flex_1()
@@ -166,19 +168,19 @@ fn preset_card(
                             div()
                                 .text_size(px(13.))
                                 .line_height(gpui_kit::relative(1.4))
-                                .text_color(theme::LABEL())
+                                .text_color(theme::label(cx))
                                 .child(name.to_string()),
                         )
                         .child(
                             div()
                                 .text_size(px(12.))
                                 .line_height(gpui_kit::relative(1.3))
-                                .text_color(theme::CAPTION())
+                                .text_color(theme::caption(cx))
                                 .child(desc.to_string()),
                         ),
                 )
                 .when(checked, |el| {
-                    el.child(fixed(IconName::Check, 14.).text_color(theme::LABEL()))
+                    el.child(fixed(IconName::Check, 14.).text_color(theme::label(cx)))
                 })
                 .debug_selector(move || sel.clone())
                 .on_click(move |_, window, cx| {
@@ -189,14 +191,19 @@ fn preset_card(
                 .into_any_element(),
         );
     }
-    overlay_card("hero-preset-card", 320., rows)
+    overlay_card("hero-preset-card", 320., rows, cx)
         // 布局回归锁锚点(layout_tests hero_preset_select 按 bounds
         // 断言卡片不叠 chip 行;debug_bounds 只认 selector 不认 id)
         .debug_selector(|| "hero-preset-card".to_string())
 }
 
 /// Hero 态 chip(工作区/模式触发钮;图标 + 文字,点击弹下拉)
-fn hero_chip(id: &'static str, label: &str, icon: Icon) -> gpui_kit::Stateful<gpui_kit::Div> {
+fn hero_chip(
+    id: &'static str,
+    label: &str,
+    icon: Icon,
+    cx: &App,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
     let sel = id;
     let label = label.to_string();
     div()
@@ -209,27 +216,32 @@ fn hero_chip(id: &'static str, label: &str, icon: Icon) -> gpui_kit::Stateful<gp
         .px(px(8.))
         .text_size(px(13.))
         .font_weight(gpui_kit::FontWeight::MEDIUM)
-        .text_color(theme::LABEL())
+        .text_color(theme::label(cx))
         .cursor_pointer()
         // 素底 hover 才显灰(触发钮语言,同 composer chip)
-        .hover(|s| s.bg(theme::DOCK()))
+        .hover(|s| s.bg(theme::dock(cx)))
         .child(icon)
         .child(label)
-        .child(fixed(IconName::ChevronDown, 12.).text_color(theme::CAPTION()))
+        .child(fixed(IconName::ChevronDown, 12.).text_color(theme::caption(cx)))
         .debug_selector(move || sel.to_string())
 }
 
 /// 工作区 chip 弹层(组件库 Popover;行组与标题栏下拉共用)
-fn hero_ws_popover(store: &Entity<AppStore>, ws: &str, icon: Icon) -> impl IntoElement {
+fn hero_ws_popover(store: &Entity<AppStore>, ws: &str, icon: Icon, cx: &App) -> impl IntoElement {
     let s_card = store.clone();
     Popover::new("hero-ws-pop")
         .appearance(false)
         .anchor(Anchor::TopLeft)
-        .trigger(PopTrigger(hero_chip("hero-ws", ws, icon)))
+        .trigger(PopTrigger(hero_chip("hero-ws", ws, icon, cx)))
         .content(move |_, _, cx| {
             let pop = cx.entity();
-            overlay_card("hero-ws-card", 320., workspace_menu_rows(&s_card, pop, cx))
-                .into_any_element()
+            overlay_card(
+                "hero-ws-card",
+                320.,
+                workspace_menu_rows(&s_card, pop, cx),
+                cx,
+            )
+            .into_any_element()
         })
 }
 
@@ -239,12 +251,13 @@ fn hero_preset_popover(
     id: &'static str,
     label: &str,
     icon: Icon,
+    cx: &App,
 ) -> impl IntoElement {
     let s_card = store.clone();
     Popover::new("hero-preset-pop")
         .appearance(false)
         .anchor(Anchor::TopLeft)
-        .trigger(PopTrigger(hero_chip(id, label, icon)))
+        .trigger(PopTrigger(hero_chip(id, label, icon, cx)))
         .content(move |_, _, cx| {
             let pop = cx.entity();
             preset_card(&s_card, pop, cx).into_any_element()

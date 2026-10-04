@@ -64,15 +64,15 @@ pub fn render(
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(preview_loading()),
+                    .child(preview_loading(cx)),
             )
             .into_any_element();
     };
     let mut col = div().v_flex().size_full().min_h(px(0.));
     col = col
-        .child(preview_header(store, &rel, &abs_display, &snap))
+        .child(preview_header(store, &rel, &abs_display, &snap, cx))
         .when(snap.changed || snap.meta_failed, |this| {
-            this.child(preview_changed_bar(store, &rel, snap.meta_failed))
+            this.child(preview_changed_bar(store, &rel, snap.meta_failed, cx))
         })
         .child(preview_body(store, &rel, &name, &snap, cx));
     col.into_any_element()
@@ -119,13 +119,13 @@ struct PreviewSnap {
 }
 
 /// 装载中行(spinner + 文案)
-fn preview_loading() -> impl IntoElement {
+fn preview_loading(cx: &App) -> impl IntoElement {
     div()
         .flex()
         .items_center()
         .gap(px(8.))
         .text_size(px(12.))
-        .text_color(theme::CAPTION())
+        .text_color(theme::caption(cx))
         .child(Spinner::new().small())
         .child(t!("files.loading"))
 }
@@ -137,6 +137,7 @@ fn preview_header(
     rel: &std::path::Path,
     abs_display: &str,
     snap: &PreviewSnap,
+    cx: &App,
 ) -> impl IntoElement {
     let rel = rel.to_path_buf();
     let (prefix, last) = match abs_display.rsplit_once('/') {
@@ -155,7 +156,7 @@ fn preview_header(
         .pl(px(12.))
         .pr(px(8.))
         .border_b_1()
-        .border_color(theme::BORDER())
+        .border_color(theme::border(cx))
         .child(
             div()
                 .flex_1()
@@ -163,8 +164,13 @@ fn preview_header(
                 .flex()
                 .items_baseline()
                 .text_size(px(12.))
-                .child(div().truncate().text_color(theme::CAPTION()).child(prefix))
-                .child(div().truncate().text_color(theme::LABEL_2()).child(last)),
+                .child(
+                    div()
+                        .truncate()
+                        .text_color(theme::caption(cx))
+                        .child(prefix),
+                )
+                .child(div().truncate().text_color(theme::label_2(cx)).child(last)),
         );
     // 渲染器菜单(候选 > 1 才显示;钮文案 = 当前渲染器名;组件库
     // Popover 托管开态/外点关闭/定位,store 不再有旗标与坐标捕获)
@@ -191,8 +197,8 @@ fn preview_header(
                         .rounded(px(6.))
                         .cursor_pointer()
                         .text_size(px(12.))
-                        .text_color(theme::LABEL_2())
-                        .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL()))
+                        .text_color(theme::label_2(cx))
+                        .hover(|s| s.bg(theme::dock(cx)).text_color(theme::label(cx)))
                         .child(title)
                         .child(fixed(IconName::ChevronDown, 11.)),
                 ))
@@ -218,11 +224,11 @@ fn preview_header(
                 .rounded(px(6.))
                 .cursor_pointer()
                 .text_color(if wrap_on {
-                    theme::LABEL()
+                    theme::label(cx)
                 } else {
-                    theme::CAPTION()
+                    theme::caption(cx)
                 })
-                .hover(|s| s.bg(theme::DOCK()))
+                .hover(|s| s.bg(theme::dock(cx)))
                 .child(fixed(LiumaIcon::TextWrap, 13.))
                 .on_click(move |_, _, cx| {
                     s_wrap.update(cx, |st, cx| st.preview_toggle_wrap(&wrap_rel, cx));
@@ -241,8 +247,8 @@ fn preview_header(
             .justify_center()
             .rounded(px(6.))
             .cursor_pointer()
-            .text_color(theme::CAPTION())
-            .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL()))
+            .text_color(theme::caption(cx))
+            .hover(|s| s.bg(theme::dock(cx)).text_color(theme::label(cx)))
             .child(fixed(LiumaIcon::RefreshCw, 13.))
             .on_click(move |_, _, cx| {
                 s_reload.update(cx, |st, cx| st.preview_reload(&rel, cx));
@@ -255,6 +261,7 @@ fn preview_changed_bar(
     store: &Entity<AppStore>,
     rel: &std::path::Path,
     meta_failed: bool,
+    cx: &App,
 ) -> impl IntoElement {
     let rel = rel.to_path_buf();
     let s_reload = store.clone();
@@ -272,11 +279,11 @@ fn preview_changed_bar(
         .justify_between()
         .h(px(30.))
         .px(px(12.))
-        .bg(theme::LAYER())
+        .bg(theme::layer(cx))
         .border_b_1()
-        .border_color(theme::BORDER())
+        .border_color(theme::border(cx))
         .text_size(px(12.))
-        .text_color(theme::LABEL_2())
+        .text_color(theme::label_2(cx))
         .child(text)
         .child(
             div()
@@ -288,8 +295,8 @@ fn preview_changed_bar(
                 .px(px(8.))
                 .rounded(px(6.))
                 .cursor_pointer()
-                .text_color(theme::BRAND())
-                .hover(|s| s.bg(theme::DOCK()))
+                .text_color(theme::brand(cx))
+                .hover(|s| s.bg(theme::dock(cx)))
                 .child(t!("files.reload"))
                 .on_click(move |_, _, cx| {
                     s_reload.update(cx, |st, cx| st.preview_reload(&rel, cx));
@@ -307,7 +314,12 @@ fn preview_body(
 ) -> gpui_kit::AnyElement {
     // 不可预览空态(不读取、无菜单)
     if snap.unsupported {
-        return preview_empty_state("preview-unsupported", t!("files.unsupported_format"), None);
+        return preview_empty_state(
+            "preview-unsupported",
+            t!("files.unsupported_format"),
+            None,
+            cx,
+        );
     }
     // 无内容时的整面状态(loading / 失败)
     if !snap.has_content {
@@ -318,7 +330,7 @@ fn preview_body(
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(preview_loading())
+                .child(preview_loading(cx))
                 .into_any_element();
         }
         if let Some(failure) = snap.failure.clone() {
@@ -333,6 +345,7 @@ fn preview_body(
                         s_retry.update(cx, |st, cx| st.preview_reload(&retry_rel, cx));
                     }),
                 )),
+                cx,
             );
         }
     }
@@ -356,9 +369,16 @@ fn preview_body(
                 .min_h(px(0.))
                 .overflow_y_scroll()
                 .p(px(14.))
-                .child(div().text_size(px(13.)).text_color(theme::LABEL_2()).child(
-                    crate::kits::markdown_tv::tv_static("preview-markdown", &text),
-                ))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(theme::label_2(cx))
+                        .child(crate::kits::markdown_tv::tv_static(
+                            "preview-markdown",
+                            &text,
+                            cx,
+                        )),
+                )
                 .into_any_element()
         }
         Some(DocRenderer::Image) => {
@@ -388,7 +408,7 @@ fn preview_body(
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(preview_loading())
+                    .child(preview_loading(cx))
                     .into_any_element()
             } else {
                 preview_empty_state(
@@ -398,6 +418,7 @@ fn preview_body(
                         .map(str::to_string)
                         .unwrap_or_else(|| t!("files.image_failed").into_owned()),
                     None,
+                    cx,
                 )
             }
         }
@@ -418,7 +439,7 @@ fn preview_body(
                 }
             };
             if let Some(failed) = pdf_failed {
-                preview_empty_state("preview-failure", &failed, None)
+                preview_empty_state("preview-failure", &failed, None, cx)
             } else if let Some(dims) = dims
                 && let Some(pages) = pages
             {
@@ -442,7 +463,7 @@ fn preview_body(
                                 .items_center()
                                 .justify_center()
                                 .text_size(px(12.))
-                                .text_color(theme::CAPTION())
+                                .text_color(theme::caption(cx))
                                 .child(label)
                                 .into_any_element(),
                         };
@@ -457,7 +478,7 @@ fn preview_body(
                             .overflow_hidden()
                             .rounded(px(4.))
                             .border_1()
-                            .border_color(theme::BORDER())
+                            .border_color(theme::border(cx))
                             .child(body)
                             .into_any_element()
                     })
@@ -480,7 +501,7 @@ fn preview_body(
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(preview_loading())
+                    .child(preview_loading(cx))
                     .into_any_element()
             } else {
                 preview_empty_state(
@@ -490,6 +511,7 @@ fn preview_body(
                         .map(str::to_string)
                         .unwrap_or_else(|| t!("files.pdf_display_failed").into_owned()),
                     None,
+                    cx,
                 )
             }
         }
@@ -521,8 +543,8 @@ fn preview_body(
                     .flex_shrink_0()
                     .cursor_pointer()
                     .text_size(px(12.))
-                    .text_color(theme::LABEL_2())
-                    .hover(|s| s.bg(theme::DOCK()))
+                    .text_color(theme::label_2(cx))
+                    .hover(|s| s.bg(theme::dock(cx)))
                     .when(loading, |this| this.child(Spinner::new().small()))
                     .child(t!("files.load_more"))
                     .on_click(move |_, _, cx| {
@@ -550,14 +572,14 @@ fn preview_body(
                     .h(px(36.))
                     .flex_shrink_0()
                     .text_size(px(12.))
-                    .text_color(theme::CAPTION())
+                    .text_color(theme::caption(cx))
                     .child(failure)
                     .child(
                         div()
                             .id("preview-tail-retry")
                             .cursor_pointer()
-                            .text_color(theme::BRAND())
-                            .hover(|s| s.bg(theme::DOCK()))
+                            .text_color(theme::brand(cx))
+                            .hover(|s| s.bg(theme::dock(cx)))
                             .rounded(px(6.))
                             .px(px(8.))
                             .child(t!("common.retry"))
@@ -578,6 +600,7 @@ fn preview_empty_state(
     selector: &str,
     text: impl Into<gpui_kit::SharedString>,
     retry: Option<RetryAction>,
+    cx: &App,
 ) -> gpui_kit::AnyElement {
     let text = text.into();
     let mut el = div()
@@ -588,11 +611,11 @@ fn preview_empty_state(
         .items_center()
         .justify_center()
         .gap(px(10.))
-        .child(fixed(IconName::File, 36.).text_color(theme::CAPTION()))
+        .child(fixed(IconName::File, 36.).text_color(theme::caption(cx)))
         .child(
             div()
                 .text_size(px(12.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(text.to_string()),
         );
     if let Some((label, on_retry)) = retry {
@@ -608,10 +631,10 @@ fn preview_empty_state(
                 .rounded(px(6.))
                 .cursor_pointer()
                 .border_1()
-                .border_color(theme::BORDER())
+                .border_color(theme::border(cx))
                 .text_size(px(12.))
-                .text_color(theme::LABEL_2())
-                .hover(|s| s.bg(theme::DOCK()))
+                .text_color(theme::label_2(cx))
+                .hover(|s| s.bg(theme::dock(cx)))
                 .child(label)
                 .on_click(move |_, _, cx| on_retry(cx)),
         );
@@ -687,8 +710,8 @@ fn preview_lines_body(
                 .font_family("Menlo")
                 .text_size(px(12.5))
                 .line_height(gpui_kit::relative(1.6))
-                .text_color(theme::LABEL_2())
-                .when(highlighted, |this| this.bg(theme::LAYER()))
+                .text_color(theme::label_2(cx))
+                .when(highlighted, |this| this.bg(theme::layer(cx)))
                 .child(
                     div()
                         .w(px(40.))
@@ -696,7 +719,7 @@ fn preview_lines_body(
                         .text_right()
                         .pr(px(8.))
                         .text_size(px(11.))
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .child(format!("{}", ix + 1)),
                 );
             if wrap {
@@ -737,8 +760,8 @@ fn preview_lines_body(
                 .py(px(1.))
                 .text_size(px(13.))
                 .line_height(gpui_kit::relative(1.6))
-                .text_color(theme::LABEL_2())
-                .when(highlighted, |this| this.bg(theme::LAYER()))
+                .text_color(theme::label_2(cx))
+                .when(highlighted, |this| this.bg(theme::layer(cx)))
                 .child(if wrap {
                     div().min_w(px(0.)).flex_1().child(sel).into_any_element()
                 } else {
@@ -806,8 +829,8 @@ fn renderer_menu_card(
                 .px(px(8.))
                 .rounded(px(6.))
                 .cursor_pointer()
-                .text_color(theme::LABEL_2())
-                .hover(|st| st.bg(theme::DOCK()))
+                .text_color(theme::label_2(cx))
+                .hover(|st| st.bg(theme::dock(cx)))
                 .child(div().w(px(14.)).child(if selected {
                     fixed(IconName::Check, 12.)
                 } else {
@@ -832,8 +855,8 @@ fn renderer_menu_card(
         .gap(px(2.))
         .rounded(px(10.))
         .border_1()
-        .border_color(theme::BORDER())
-        .bg(theme::LAYER())
+        .border_color(theme::border(cx))
+        .bg(theme::layer(cx))
         .p(px(4.))
         .shadow_md()
         .children(items)

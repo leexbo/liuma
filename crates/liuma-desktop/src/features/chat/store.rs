@@ -562,7 +562,10 @@ impl AppStore {
             let a = anchor
                 .map(|(x, y)| (x.clamp(0.0, v.viewport.0), y.clamp(0.0, v.viewport.1)))
                 .unwrap_or((v.viewport.0 / 2.0, v.viewport.1 / 2.0));
-            let nat = crate::kits::mermaid::natural_size(&v.source);
+            let nat = crate::kits::mermaid::natural_size(
+                &v.source,
+                crate::kits::mermaid::RenderTheme::of(cx),
+            );
             let fig = nat.map(|(w, h)| (w * z_new, h * z_new));
             v.pan = match fig {
                 Some((fw, fh)) if v.viewport.0 > 0.0 && v.viewport.1 > 0.0 => (
@@ -584,7 +587,10 @@ impl AppStore {
     /// 平移偏移补偿跟手,松手由 [`set_mermaid_drag`]`(None)` 排最终档)。
     pub fn pan_mermaid_viewer(&mut self, dx: f32, dy: f32, cx: &mut Context<Self>) {
         if let Some(v) = self.chat.mermaid_viewer.as_mut() {
-            let nat = crate::kits::mermaid::natural_size(&v.source);
+            let nat = crate::kits::mermaid::natural_size(
+                &v.source,
+                crate::kits::mermaid::RenderTheme::of(cx),
+            );
             let fig = nat.map(|(w, h)| (w * v.zoom, h * v.zoom));
             let next = match fig {
                 Some((fw, fh)) if v.viewport.0 > 0.0 && v.viewport.1 > 0.0 => (
@@ -632,6 +638,7 @@ impl AppStore {
             return;
         };
         let (intent, source) = (viewer.zoom_gen, viewer.source);
+        let rt = crate::kits::mermaid::RenderTheme::of(cx);
         let task = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(delay).await;
             // 字段收尾的硬约束:**清字段 = drop 本任务句柄 = 在下一个
@@ -662,7 +669,7 @@ impl AppStore {
             //(开图 kick 已入槽)→ 无事可做,终态清位
             if v.viewport.0 <= 0.0
                 || v.viewport.1 <= 0.0
-                || crate::kits::mermaid::viewer_upto_date(&v.source, v.zoom, v.pan, v.viewport)
+                || crate::kits::mermaid::viewer_upto_date(&v.source, v.zoom, v.pan, v.viewport, rt)
             {
                 this.update(cx, |st, _| clear_if_mine(st, intent)).ok();
                 return;
@@ -671,7 +678,7 @@ impl AppStore {
             let (zoom, pan, viewport) = (v.zoom, v.pan, v.viewport);
             let rendered = cx
                 .background_spawn(async move {
-                    crate::kits::mermaid::raster_viewport(&src, zoom, pan, viewport)
+                    crate::kits::mermaid::raster_viewport(&src, zoom, pan, viewport, rt)
                 })
                 .await;
             let Ok(raster) = rendered else {

@@ -46,6 +46,7 @@ pub fn actions(store: &Entity<AppStore>, message_id: &str, cx: &App) -> Vec<gpui
                     st.rate_message(&m, "positive", None, cx);
                 });
             },
+            cx,
         )
         .into_any_element(),
     );
@@ -66,6 +67,7 @@ pub fn actions(store: &Entity<AppStore>, message_id: &str, cx: &App) -> Vec<gpui
                     st.rate_message(&m, "negative", None, cx);
                 });
             },
+            cx,
         )
         .into_any_element(),
     );
@@ -93,12 +95,12 @@ pub fn actions(store: &Entity<AppStore>, message_id: &str, cx: &App) -> Vec<gpui
                 .rounded(px(12.))
                 .px(px(8.))
                 .cursor_pointer()
-                .hover(|s| s.bg(theme::DOCK()))
+                .hover(|s| s.bg(theme::dock(cx)))
                 .text_size(px(11.))
                 .text_color(if note.is_some() {
-                    theme::BRAND()
+                    theme::brand(cx)
                 } else {
-                    theme::CAPTION()
+                    theme::caption(cx)
                 })
                 .child(if note.is_some() {
                     note.clone().unwrap_or_default()
@@ -129,6 +131,7 @@ fn feedback_btn(
     icon: IconName,
     active: bool,
     on_click: impl Fn(&mut App) + 'static,
+    cx: &App,
 ) -> impl IntoElement {
     div()
         .id(id)
@@ -139,11 +142,11 @@ fn feedback_btn(
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .hover(|s| s.bg(theme::DOCK()))
+        .hover(|s| s.bg(theme::dock(cx)))
         .text_color(if active {
-            theme::BRAND()
+            theme::brand(cx)
         } else {
-            theme::CAPTION()
+            theme::caption(cx)
         })
         .on_click(move |_, _, cx| on_click(cx))
         .child(fixed(icon, 12.))
@@ -173,8 +176,8 @@ fn note_editor_card(
         .max_w(px(360.))
         .rounded(px(12.))
         .border_1()
-        .border_color(theme::BORDER())
-        .bg(theme::LAYER())
+        .border_color(theme::border(cx))
+        .bg(theme::layer(cx))
         .p(px(12.))
         .shadow_md()
         .child(
@@ -185,9 +188,9 @@ fn note_editor_card(
                 .items_center()
                 .rounded(px(8.))
                 .border_1()
-                .border_color(theme::BORDER())
+                .border_color(theme::border(cx))
                 // 卡上内嵌输入面:CODE(比 CARD 深一阶的内嵌语义)
-                .bg(theme::CODE())
+                .bg(theme::code(cx))
                 .px(px(10.))
                 .py(px(8.))
                 .child(
@@ -221,12 +224,12 @@ fn note_editor_card(
                         .justify_center()
                         .rounded(px(14.))
                         // 白色主按钮(白底深字)
-                        .bg(theme::LABEL())
+                        .bg(theme::label(cx))
                         .px(px(16.))
                         .text_size(px(13.))
                         .text_color(gpui_kit::black())
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme::LABEL_2()))
+                        .hover(|s| s.bg(theme::label_2(cx)))
                         .on_click(move |_, window, cx| {
                             pop_save.update(cx, |state, cx| state.dismiss(window, cx));
                             save.update(cx, |st, cx| st.commit_feedback_note(cx));
@@ -242,9 +245,9 @@ fn note_editor_card(
                         .rounded(px(14.))
                         .px(px(12.))
                         .text_size(px(13.))
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme::DOCK()))
+                        .hover(|s| s.bg(theme::dock(cx)))
                         .on_click(move |_, window, cx| {
                             pop.update(cx, |state, cx| state.dismiss(window, cx));
                             close.update(cx, |st, cx| st.close_feedback_note(cx));

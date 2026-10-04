@@ -9,7 +9,7 @@
 //! - 行级有状态:`HighlightLines` 逐行喂入,跨行语法上下文正确(多行字符串/
 //!   块注释不丢色)——等效整窗 tokenize;
 //! - 主题:程序化构造 ~20 scope 的 Dark+/Light+ 近似(色值与轨迹
-//!   json_tokens 同族,字面取 VSCode 调色板;按 theme::is_dark() 取盘);
+//!   json_tokens 同族,字面取 VSCode 调色板;按调用方传入的盘标志取盘);
 //! - 块级缓存:key + 内容哈希,512B 入驻门槛 + 上限 128(与 markdown/terminal
 //!   parse 缓存同模式)——重绘零重算,流式代码块跟随内容变化只重算当前块。
 
@@ -39,7 +39,7 @@ pub(crate) struct Span {
 
 struct Engine {
     set: SyntaxSet,
-    /// 双盘语法主题(下标 = theme::is_dark() as usize;浅盘 = Light+)
+    /// 双盘语法主题(下标 = dark 参数 as usize;浅盘 = Light+)
     themes: [Theme; 2],
 }
 
@@ -227,11 +227,11 @@ fn alias(lang: &str) -> String {
 
 /// 高亮窗口:逐行 spans(与输入行一一对应,空行为空 vec)。
 /// lang 未知名/缺省 → None(调用方回退纯文本)。
-fn highlight(lang: &str, lines: &[&str]) -> Option<Vec<Vec<Span>>> {
+fn highlight(lang: &str, lines: &[&str], dark: bool) -> Option<Vec<Vec<Span>>> {
     let eng = engine();
     let lang = alias(lang);
     let syntax = eng.set.find_syntax_by_token(&lang)?;
-    let theme = &eng.themes[crate::kits::theme::is_dark() as usize];
+    let theme = &eng.themes[dark as usize];
     let mut hl = HighlightLines::new(syntax, theme);
     let mut out = Vec::with_capacity(lines.len());
     for line in lines {
@@ -287,7 +287,7 @@ static CACHE: MemoCache<Vec<Vec<Span>>> = MemoCache::new(CACHE_CAP, CACHE_MIN_BY
 /// 未注册/无 grammar → None(预览经 [`code_spans`] 回退本仓 syntect
 /// 引擎)。输出 = 行级**稀疏** spans(只含有样式段;行渲染的
 /// StyledText ranges 对未覆盖段用行前景)
-pub(crate) fn treesitter_spans(lang: &str, text: &str) -> Option<Vec<Vec<Span>>> {
+pub(crate) fn treesitter_spans(lang: &str, text: &str, dark: bool) -> Option<Vec<Vec<Span>>> {
     use gpui_kit::component::highlighter::{HighlightTheme, LanguageRegistry, SyntaxHighlighter};
     let lang = alias(lang);
     let config = LanguageRegistry::singleton().language(&lang)?;
@@ -297,7 +297,7 @@ pub(crate) fn treesitter_spans(lang: &str, text: &str) -> Option<Vec<Vec<Span>>>
     let rope = gpui_kit::base::input::Rope::from_str(text);
     let mut hl = SyntaxHighlighter::new(&lang);
     hl.update(None, &rope, None);
-    let theme = if crate::kits::theme::is_dark() {
+    let theme = if dark {
         HighlightTheme::default_dark()
     } else {
         HighlightTheme::default_light()
@@ -365,12 +365,12 @@ pub(crate) fn treesitter_spans(lang: &str, text: &str) -> Option<Vec<Vec<Span>>>
 /// 两路输出形状相同(逐行一段,行数 = `split('\n')` 行数,预览按行号
 /// 取用);差别只在覆盖度:tree-sitter 给**稀疏**段(未覆盖处走行前景),
 /// syntect 给整行**稠密**段 —— 行渲染对两者同构(有段即染色)。
-pub(crate) fn code_spans(lang: &str, text: &str) -> Option<Vec<Vec<Span>>> {
-    if let Some(spans) = treesitter_spans(lang, text) {
+pub(crate) fn code_spans(lang: &str, text: &str, dark: bool) -> Option<Vec<Vec<Span>>> {
+    if let Some(spans) = treesitter_spans(lang, text, dark) {
         return Some(spans);
     }
     let lines: Vec<&str> = text.split('\n').collect();
-    highlight(lang, &lines)
+    highlight(lang, &lines, dark)
 }
 
 fn rgba_of(c: syntect::highlighting::Color) -> Rgba {
@@ -387,6 +387,7 @@ pub(crate) fn cached_spans(
     key: &str,
     lang: Option<&str>,
     lines: &[&str],
+    dark: bool,
 ) -> Option<Arc<Vec<Vec<Span>>>> {
     let lang = lang?;
     let mut h = DefaultHasher::new();
@@ -394,11 +395,7 @@ pub(crate) fn cached_spans(
     for l in lines {
         l.hash(&mut h);
     }
-    let mode_tag = if crate::kits::theme::is_dark() {
-        "dark"
-    } else {
-        "light"
-    };
+    let mode_tag = if dark { "dark" } else { "light" };
     CACHE.get(&format!("{mode_tag}·{key}·{lang}"), h.finish())
 }
 
@@ -408,6 +405,7 @@ pub(crate) fn cache_spans(
     lang: Option<&str>,
     lines: &[&str],
     spans: Arc<Vec<Vec<Span>>>,
+    dark: bool,
 ) {
     let Some(lang) = lang else { return };
     let bytes: usize = lines.iter().map(|l| l.len()).sum();
@@ -416,11 +414,7 @@ pub(crate) fn cache_spans(
     for l in lines {
         l.hash(&mut h);
     }
-    let mode_tag = if crate::kits::theme::is_dark() {
-        "dark"
-    } else {
-        "light"
-    };
+    let mode_tag = if dark { "dark" } else { "light" };
     CACHE.put(
         &format!("{mode_tag}·{key}·{lang}"),
         h.finish(),
@@ -435,6 +429,7 @@ pub(crate) fn highlight_window(
     key: &str,
     lang: Option<&str>,
     lines: &[&str],
+    dark: bool,
 ) -> Option<Arc<Vec<Vec<Span>>>> {
     let lang = lang?;
     let bytes: usize = lines.iter().map(|l| l.len()).sum();
@@ -447,16 +442,12 @@ pub(crate) fn highlight_window(
         h.finish()
     };
     // 盘随主题切:缓存 key 必须带盘,否则换盘后吃到旧色
-    let mode_tag = if crate::kits::theme::is_dark() {
-        "dark"
-    } else {
-        "light"
-    };
+    let mode_tag = if dark { "dark" } else { "light" };
     let cache_key = format!("{mode_tag}·{key}·{lang}");
     if let Some(spans) = CACHE.get(&cache_key, hash) {
         return Some(spans);
     }
-    let spans = Arc::new(highlight(lang, lines)?);
+    let spans = Arc::new(highlight(lang, lines, dark)?);
     CACHE.put(&cache_key, hash, spans.clone(), bytes);
     Some(spans)
 }
@@ -467,12 +458,13 @@ pub(crate) fn highlight_window(
 ///
 /// 缓存键取内容哈希:`highlight_window` 的键必须对同一块稳定(否则每帧
 /// 未命中、白算一遍),而回调拿不到块身份,内容哈希即最稳的等价物。
-pub(crate) fn code_block_highlighter()
--> impl Fn(&gpui_kit::base::text::CodeBlock) -> Vec<(std::ops::Range<usize>, gpui_kit::HighlightStyle)>
+pub(crate) fn code_block_highlighter(
+    dark: bool,
+) -> impl Fn(&gpui_kit::base::text::CodeBlock) -> Vec<(std::ops::Range<usize>, gpui_kit::HighlightStyle)>
 + Send
 + Sync
 + 'static {
-    |block| {
+    move |block| {
         let Some(lang) = block.lang() else {
             return Vec::new();
         };
@@ -481,7 +473,7 @@ pub(crate) fn code_block_highlighter()
         let mut hasher = DefaultHasher::new();
         code.hash(&mut hasher);
         let key = format!("md-code-{:x}", hasher.finish());
-        let Some(spans) = highlight_window(&key, Some(lang.as_ref()), &lines) else {
+        let Some(spans) = highlight_window(&key, Some(lang.as_ref()), &lines, dark) else {
             return Vec::new();
         };
         let mut out = Vec::new();
@@ -516,14 +508,14 @@ mod tests {
     #[test]
     fn lang_mapping() {
         let lines = ["fn main() {}"];
-        assert!(highlight_window("t", Some("rust"), &lines).is_some());
-        assert!(highlight_window("t", Some("rs"), &lines).is_some());
-        assert!(highlight_window("t", Some("py"), &lines).is_some());
-        assert!(highlight_window("t", Some("typescript"), &lines).is_some());
+        assert!(highlight_window("t", Some("rust"), &lines, true).is_some());
+        assert!(highlight_window("t", Some("rs"), &lines, true).is_some());
+        assert!(highlight_window("t", Some("py"), &lines, true).is_some());
+        assert!(highlight_window("t", Some("typescript"), &lines, true).is_some());
         // TOML 经内嵌官方语法补齐(默认集没有;资产坏/合并失败即红)
-        assert!(highlight_window("t", Some("toml"), &["[package]"]).is_some());
-        assert!(highlight_window("t", Some("no-such-lang"), &lines).is_none());
-        assert!(highlight_window("t", None, &lines).is_none());
+        assert!(highlight_window("t", Some("toml"), &["[package]"], true).is_some());
+        assert!(highlight_window("t", Some("no-such-lang"), &lines, true).is_none());
+        assert!(highlight_window("t", None, &lines, true).is_none());
     }
 
     /// tree-sitter 高亮正确性/覆盖锁:行级稀疏 spans 行数对齐、关键
@@ -532,7 +524,7 @@ mod tests {
     #[test]
     fn treesitter_spans_shapes_and_colors() {
         let code = "fn main() {\n    // note\n    let s = \"str\";\n}\n";
-        let spans = treesitter_spans("rs", code).expect("rust 应可用");
+        let spans = treesitter_spans("rs", code, true).expect("rust 应可用");
         assert_eq!(spans.len(), 5, "行数对齐(含末空行)");
         // 注释行整行注释色;字符串段非默认前景(色存在即可,不断言具体值)
         let flat: Vec<&Span> = spans.iter().flatten().collect();
@@ -551,12 +543,12 @@ mod tests {
         }
         for lang in ["toml", "python", "bash", "yaml", "go", "json"] {
             assert!(
-                treesitter_spans(lang, "x = 1\n").is_some(),
+                treesitter_spans(lang, "x = 1\n", true).is_some(),
                 "{lang} 应经聚合 feature 可用"
             );
         }
         // 未注册语言 → None(纯色语义)
-        assert!(treesitter_spans("no-such-lang", "x").is_none());
+        assert!(treesitter_spans("no-such-lang", "x", true).is_none());
     }
 
     /// 多字节字符边界锁:中文行 + tree-sitter 高亮,行切分/段切分的
@@ -570,7 +562,7 @@ mod tests {
     fn treesitter_spans_never_split_multibyte_chars() {
         // 多行中文注释 + 中文串 + ASCII 混排(行界落在多字节字符邻域)
         let text = "// 时区处理说明\nfn f() {\n    let s = \"北京时间\";\n    // 上核对时区\n}\n";
-        let spans = treesitter_spans("rs", text).expect("rust 应可用");
+        let spans = treesitter_spans("rs", text, true).expect("rust 应可用");
         assert_eq!(spans.len(), text.lines().count() + 1, "行数对齐");
         for (ix, line) in text.split_inclusive('\n').enumerate() {
             let expect = line.strip_suffix('\n').unwrap_or(line);
@@ -598,7 +590,7 @@ mod tests {
     #[test]
     fn toml_highlight_colors() {
         let lines = ["name = \"app\"", "# note"];
-        let spans = highlight("toml", &lines).expect("toml 高亮应可用");
+        let spans = highlight("toml", &lines, true).expect("toml 高亮应可用");
         let stringed = &spans[0];
         assert!(
             stringed
@@ -632,7 +624,7 @@ mod tests {
             "  B -->|失败| C[兜底]",
             "  %% 注释",
         ];
-        let spans = highlight("mermaid", &lines).expect("mermaid 高亮应可用");
+        let spans = highlight("mermaid", &lines, true).expect("mermaid 高亮应可用");
         let colors = |ix: usize| {
             let mut c: Vec<Rgba> = spans[ix].iter().map(|s| s.color).collect();
             c.dedup();
@@ -675,7 +667,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         // 无状态规则:未闭合的字符串/形状不会把后文整段染色
-        let unterminated = highlight("mermaid", &["A[\"没闭合", "B --> C"]).expect("可用");
+        let unterminated = highlight("mermaid", &["A[\"没闭合", "B --> C"], true).expect("可用");
         assert!(
             unterminated[1].iter().all(|s| s.color != palette::STRING),
             "未闭合字面量不得越行染色:{:?}",
@@ -693,7 +685,7 @@ mod tests {
     #[test]
     fn code_spans_fall_back_to_the_syntect_engine() {
         let svg = "<svg viewBox=\"0 0 24 24\">\n  <!-- 图标 -->\n  <path d=\"M4 4\" fill=\"#fff\"/>\n</svg>";
-        let spans = code_spans("svg", svg).expect("svg 应经 syntect 兜底有色");
+        let spans = code_spans("svg", svg, true).expect("svg 应经 syntect 兜底有色");
         assert_eq!(
             spans.len(),
             svg.split('\n').count(),
@@ -712,7 +704,7 @@ mod tests {
         );
         // xml 同源(XML 语法的后缀含 xml/xsd/xslt/svg),多字节内容不破行
         let xml = "<?xml version=\"1.0\"?>\n<note id=\"1\">\n  <to>张三</to>\n</note>";
-        let spans = code_spans("xml", xml).expect("xml 应经 syntect 兜底有色");
+        let spans = code_spans("xml", xml, true).expect("xml 应经 syntect 兜底有色");
         assert_eq!(spans.len(), xml.split('\n').count());
         assert!(
             spans[2].iter().any(|s| s.text.contains("张三")),
@@ -721,11 +713,11 @@ mod tests {
         );
         // 已有语法的语言不改道:入口输出 == tree-sitter 输出(逐段同色)
         let rs = "fn main() {\n    // 注\n    let s = \"x\";\n}";
-        let entry = code_spans("rs", rs).expect("rs 应可用");
-        let direct = treesitter_spans("rs", rs).expect("rs 应可用");
+        let entry = code_spans("rs", rs, true).expect("rs 应可用");
+        let direct = treesitter_spans("rs", rs, true).expect("rs 应可用");
         assert_eq!(entry, direct, "tree-sitter 认得的语言不得改走 syntect");
         // 两路都不认 → None(纯色语义)
-        assert!(code_spans("no-such-lang", "x").is_none());
+        assert!(code_spans("no-such-lang", "x", true).is_none());
     }
 
     /// 代码块回调的偏移换算:行内偏移 → **块内**全局偏移(逐行累加,
@@ -735,7 +727,7 @@ mod tests {
     fn code_block_highlighter_maps_ranges_to_block_offsets() {
         let code = "flowchart TD\n  A --> B\n  %% 注\n";
         let block = gpui_kit::base::text::CodeBlock::from_code(code, Some("mermaid"));
-        let out = code_block_highlighter()(&block);
+        let out = code_block_highlighter(true)(&block);
         assert!(!out.is_empty(), "mermaid 块应给出高亮范围");
         for (range, style) in &out {
             assert!(
@@ -778,7 +770,7 @@ mod tests {
     #[test]
     fn dark_plus_basic_classes() {
         let lines = ["// 注释", "let s = \"str\";", "let n = 42;"];
-        let spans = highlight("rust", &lines).expect("rust 高亮");
+        let spans = highlight("rust", &lines, true).expect("rust 高亮");
         assert_eq!(spans.len(), 3);
         // 注释行可被 syntect 拆多段(标点+内容),但整行皆绿
         assert!(
@@ -800,7 +792,7 @@ mod tests {
     #[test]
     fn multiline_context_carries() {
         let lines = ["/* 起", "跨行注释仍绿", "收 */", "let x = 1;"];
-        let spans = highlight("rust", &lines).expect("rust");
+        let spans = highlight("rust", &lines, true).expect("rust");
         assert_eq!(
             colors_of(&spans[1]),
             vec![palette::COMMENT],
@@ -815,7 +807,7 @@ mod tests {
     #[test]
     fn empty_lines_and_newline_stripped() {
         let lines = ["let a = 1;", "", "let b = 2;"];
-        let spans = highlight("rust", &lines).expect("rust");
+        let spans = highlight("rust", &lines, true).expect("rust");
         assert_eq!(spans.len(), 3);
         assert!(spans[1].is_empty());
         for line in &spans {
@@ -832,18 +824,18 @@ mod tests {
             .map(|i| format!("let v{i} = {i}; // 注释行"))
             .collect();
         let refs: Vec<&str> = long.iter().map(|s| s.as_str()).collect();
-        let a = highlight_window("k1", Some("rust"), &refs).expect("hl");
-        let b = highlight_window("k1", Some("rust"), &refs).expect("hl");
+        let a = highlight_window("k1", Some("rust"), &refs, true).expect("hl");
+        let b = highlight_window("k1", Some("rust"), &refs, true).expect("hl");
         assert!(Arc::ptr_eq(&a, &b));
         // 内容变化 → 重算
         let mut changed = long.clone();
         changed[0] = "let changed = 0;".into();
         let refs2: Vec<&str> = changed.iter().map(|s| s.as_str()).collect();
-        let c = highlight_window("k1", Some("rust"), &refs2).expect("hl");
+        let c = highlight_window("k1", Some("rust"), &refs2, true).expect("hl");
         assert!(!Arc::ptr_eq(&a, &c));
         // 短块不入缓存(两次调用不同 Arc)
-        let s1 = highlight_window("k2", Some("rust"), &["let x = 1;"]).expect("hl");
-        let s2 = highlight_window("k2", Some("rust"), &["let x = 1;"]).expect("hl");
+        let s1 = highlight_window("k2", Some("rust"), &["let x = 1;"], true).expect("hl");
+        let s2 = highlight_window("k2", Some("rust"), &["let x = 1;"], true).expect("hl");
         assert!(!Arc::ptr_eq(&s1, &s2));
     }
 }

@@ -1381,7 +1381,9 @@ fn mermaid_viewer_zoom_debounce_lifecycle(cx: &mut TestAppContext) {
     });
     let z8 = 1.25f32.powi(8);
     assert!((settled_zoom - z8).abs() < 1e-4, "八次 1.25 步进 = {z8}");
-    let nat = crate::kits::mermaid::natural_size(&source);
+    let nat = cx.update(|app| {
+        crate::kits::mermaid::natural_size(&source, crate::kits::mermaid::RenderTheme::of(app))
+    });
     if let Some((nat_w, _)) = nat
         && nat_w * z8 > vp.0 + 1.0
     {
@@ -12992,12 +12994,16 @@ fn tv_typography_probe_block_height(cx: &mut TestAppContext) {
     });
     struct V;
     impl Render for V {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             div()
                 .id("tv-typo")
                 .debug_selector(|| "tv-typo".to_string())
                 .w(px(400.))
-                .child(crate::kits::markdown_tv::tv_static("tv-typo-md", "单行"))
+                .child(crate::kits::markdown_tv::tv_static(
+                    "tv-typo-md",
+                    "单行",
+                    cx,
+                ))
         }
     }
     let (_root, cx) = cx.add_window_view(|window, cx| {

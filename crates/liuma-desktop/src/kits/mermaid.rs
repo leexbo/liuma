@@ -42,6 +42,25 @@ use gpui_kit::{
 use super::icons::{LiumaIcon, fixed};
 use super::theme;
 use super::theme::{Palette, palette_of};
+
+/// headless 渲染主题快照(调用方持 cx 处一次取值;SVG 光栅纯管线与
+/// 后台任务无 cx,主题随参数穿线)
+#[derive(Clone, Copy)]
+pub(crate) struct RenderTheme {
+    pub dark: bool,
+    pub pal: Palette,
+}
+
+impl RenderTheme {
+    /// 当前生效盘的渲染主题(仅可在持 cx 处调用)
+    pub fn of(cx: &App) -> Self {
+        let t = gpui_kit::component::Theme::global(cx);
+        Self {
+            dark: t.is_dark(),
+            pal: palette_of(t),
+        }
+    }
+}
 use crate::kits::i18n::t;
 
 /// 卡片控件态快照(消息流 per-card map;kits 无状态,不直接引用
@@ -168,26 +187,30 @@ pub(crate) fn is_supported_diagram_type(source: &str) -> bool {
 /// 并写入失败记忆(渲染失败也短路——否则查看器每帧首解重跑 merman)。
 /// 成功缓存必需:查看器自然尺寸解析每帧调用,不缓存 = 每帧重跑 merman
 /// 布局(拖拽/缩放期直接卡死);渲染路径(光栅 miss)同样受益。
-pub(crate) fn svg_for(source: &str) -> Option<Arc<String>> {
+pub(crate) fn svg_for(source: &str, rt: RenderTheme) -> Option<Arc<String>> {
     if source.len() > MAX_SOURCE_BYTES {
         return None;
     }
-    let hash = hash_of(source);
+    // 主题指纹参与缓存键:SVG 把主题色烤进产物,换主题后不得吃旧色
+    let key = (
+        hash_of(source),
+        hash_of(&theme_variables_in(&rt.pal).to_string()),
+    );
     if FAILED_SOURCES
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
-        .contains(&hash)
+        .contains(&key.0)
     {
         return None;
     }
     if let Some(svg) = SVG_CACHE
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
-        .get(&hash)
+        .get(&key)
     {
         return Some(svg.clone());
     }
-    let Some(svg) = catch_unwind(AssertUnwindSafe(|| render_svg(source)))
+    let Some(svg) = catch_unwind(AssertUnwindSafe(|| render_svg(source, rt)))
         .ok()
         .flatten()
     else {
@@ -197,7 +220,7 @@ pub(crate) fn svg_for(source: &str) -> Option<Arc<String>> {
         if failed.len() >= 64 {
             failed.clear();
         }
-        failed.insert(hash);
+        failed.insert(key.0);
         return None;
     };
     let svg = Arc::new(svg);
@@ -207,19 +230,21 @@ pub(crate) fn svg_for(source: &str) -> Option<Arc<String>> {
     if cache.len() >= SVG_CACHE_CAP {
         cache.clear();
     }
-    cache.insert(hash, svg.clone());
+    cache.insert(key, svg.clone());
     Some(svg)
 }
 
-/// SVG 成功缓存(源哈希 → SVG 串;超限整体清空,同失败记忆模式)
-static SVG_CACHE: LazyLock<Mutex<HashMap<u64, Arc<String>>>> =
+/// SVG 缓存键:源哈希 × 主题指纹
+type SvgCacheKey = (u64, u64);
+/// SVG 成功缓存(超限整体清空,同失败记忆模式)
+static SVG_CACHE: LazyLock<Mutex<HashMap<SvgCacheKey, Arc<String>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 const SVG_CACHE_CAP: usize = 32;
 
 /// 图的自然逻辑尺寸:**免光栅**——直接解析 SVG 根元素 width/height
 /// (merman 输出 px 数值;viewBox 兜底)。此前为拿这两个数字渲染一张
 /// zoom=1 整图光栅,大图 = 8192² ≈ 268MB 纯浪费。
-pub(crate) fn natural_size(source: &str) -> Option<(f32, f32)> {
+pub(crate) fn natural_size(source: &str, rt: RenderTheme) -> Option<(f32, f32)> {
     let hash = hash_of(source);
     if let Some(size) = NAT_SIZES
         .lock()
@@ -228,7 +253,7 @@ pub(crate) fn natural_size(source: &str) -> Option<(f32, f32)> {
     {
         return Some(*size);
     }
-    let svg = svg_for(source)?;
+    let svg = svg_for(source, rt)?;
     let size = parse_svg_natural_size(&svg)?;
     let mut sizes = NAT_SIZES
         .lock()
@@ -274,11 +299,11 @@ fn parse_svg_natural_size(svg: &str) -> Option<(f32, f32)> {
     None
 }
 
-fn render_svg(source: &str) -> Option<String> {
+fn render_svg(source: &str, rt: RenderTheme) -> Option<String> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let renderer = merman::svg::HeadlessRenderer::new()
-        .with_site_config(liuma_mermaid_config())
+        .with_site_config(liuma_mermaid_config(rt))
         .with_vendored_text_measurer()
         .with_diagram_id(&format!("merman-{id}"));
     // resvg_safe:foreignObject 折叠/非法 CSS/无效属性清理(usvg 直读);
@@ -288,8 +313,9 @@ fn render_svg(source: &str) -> Option<String> {
     // 白底。改写为 BASE 合成色(不透明)。
     let pipeline = merman::svg::SvgPipeline::resvg_safe()
         .with_postprocessor(merman::svg::CssOverridePostprocessor::strip_existing_important())
-        .with_postprocessor(merman::svg::RootBackgroundPostprocessor::new(hex(
-            theme::CODE(),
+        .with_postprocessor(merman::svg::RootBackgroundPostprocessor::new(hex_in(
+            rt.pal.code,
+            rt.pal.base,
         )));
     renderer
         .render_svg_with_pipeline_sync(source, &pipeline)
@@ -321,6 +347,8 @@ pub(crate) fn diagram(
     let callbacks = ctx.map(|c| c.callbacks);
     let src = source.clone();
     let fallback_src = source.clone();
+    // fallback 闭包是 'static:色值需在闭包外取定
+    let fallback_color = theme::label_2(cx);
 
     // 图表体:闭合 + 白名单已过;显示态(图表/代码)经卡片工具条切换。
     // 图态 `on_click` = 放大(图没有可选中文本,手型说得通);代码态**不挂
@@ -334,6 +362,7 @@ pub(crate) fn diagram(
                 format!("{key}-code-view"),
                 "mermaid",
                 &source,
+                cx,
             ))
             .into_any_element()
     } else {
@@ -368,7 +397,7 @@ pub(crate) fn diagram(
                     div()
                         .font_family("Menlo")
                         .text_size(px(13.))
-                        .text_color(theme::LABEL_2())
+                        .text_color(fallback_color)
                         .child(fallback_src.to_string())
                         .into_any_element()
                 })
@@ -386,7 +415,7 @@ pub(crate) fn diagram(
         // 抢纵向滚轮,否则与 ListState 滚动手势冲突、滚轮被吞成卡顿
         .overflow_x_scroll()
         .rounded(px(12.))
-        .bg(theme::CODE())
+        .bg(theme::code(cx))
         // 工具条行贴边(6),正文另补内距回到 10。工具条自身的控件还带
         // 一圈内距(药丸 2+12、动作钮 8),再叠一整份卡片内距,字形离
         // 卡片上/左/右缘就是 21/25/23px —— 比正文字距还远一倍
@@ -432,10 +461,15 @@ fn card_toolbar(
             "copy-done",
             IconName::Check,
             t!("common.copied"),
-            theme::SUCCESS(),
+            theme::success(cx),
         )
     } else {
-        ("copy", IconName::Copy, t!("common.copy"), theme::LABEL_2())
+        (
+            "copy",
+            IconName::Copy,
+            t!("common.copy"),
+            theme::label_2(cx),
+        )
     };
     let bar_id = format!("{key}-actions");
     div()
@@ -451,9 +485,10 @@ fn card_toolbar(
                 .items_center()
                 .gap(px(2.))
                 .rounded_full()
-                .bg(theme::LAYER())
+                .bg(theme::layer(cx))
                 .p(px(2.))
                 .child(segment_button(
+                    cx,
                     &key,
                     "chart",
                     t!("chat.mermaid_chart"),
@@ -465,6 +500,7 @@ fn card_toolbar(
                     },
                 ))
                 .child(segment_button(
+                    cx,
                     &key,
                     "code",
                     t!("chat.mermaid_code"),
@@ -486,14 +522,20 @@ fn card_toolbar(
                     let f = copy_cb.clone();
                     move |w, cx| f(&key, source.clone(), w, cx)
                 }))
-                .content(div().w(px(1.)).h(px(14.)).mx(px(6.)).bg(theme::BORDER_2()))
+                .content(
+                    div()
+                        .w(px(1.))
+                        .h(px(14.))
+                        .mx(px(6.))
+                        .bg(theme::border_2(cx)),
+                )
                 .content(card_button(
                     cx,
                     &key,
                     "download",
                     LiumaIcon::Download,
                     t!("chat.mermaid_download"),
-                    theme::LABEL_2(),
+                    theme::label_2(cx),
                     {
                         let key = key.clone();
                         let source = source.clone();
@@ -507,7 +549,7 @@ fn card_toolbar(
                     "enlarge",
                     IconName::Maximize,
                     t!("chat.mermaid_zoom"),
-                    theme::LABEL_2(),
+                    theme::label_2(cx),
                     {
                         let key = key.clone();
                         let source = source.clone();
@@ -522,6 +564,7 @@ fn card_toolbar(
 /// 分段按钮(active = GLASS_BG 高亮,同 topbar segment)。`id` = ASCII
 /// 选择器后缀(图表/代码),`label` = 显示文本(中文)。
 fn segment_button(
+    cx: &App,
     key: &str,
     id: &'static str,
     label: impl Into<SharedString>,
@@ -545,14 +588,14 @@ fn segment_button(
         .cursor_pointer()
         .text_size(px(12.));
     let base = if active {
-        base.bg(theme::GLASS_BG())
+        base.bg(theme::glass_bg(cx))
             .border_1()
-            .border_color(theme::GLASS_BORDER())
-            .text_color(theme::LABEL())
+            .border_color(theme::glass_border(cx))
+            .text_color(theme::label(cx))
             .font_weight(FontWeight::MEDIUM)
     } else {
-        base.text_color(theme::LABEL_3())
-            .hover(|st| st.bg(theme::BORDER()))
+        base.text_color(theme::label_3(cx))
+            .hover(|st| st.bg(theme::border(cx)))
     };
     base.on_click(move |_ev, window, cx| on_click(window, cx))
         .child(label.to_string())
@@ -593,9 +636,9 @@ fn card_button(
         .cursor_pointer()
         .custom(
             ButtonCustomVariant::new(cx)
-                .color(theme::TRANSPARENT().into())
+                .color(theme::TRANSPARENT.into())
                 .foreground(color.into())
-                .hover(theme::LAYER().into()),
+                .hover(theme::layer(cx).into()),
         )
         .on_click(move |_ev, window, cx| on_click(window, cx))
         // 图标 + 文字自成一排:库把可见内容放在**子元素**里并对它本身设
@@ -615,21 +658,16 @@ fn card_button(
 
 /// mermaid 站点配置(主题映射;键名是 mermaid 主题契约,
 /// 色值取 kits::theme 唯一色板源,不另造常量)
-fn liuma_mermaid_config() -> merman::MermaidConfig {
+fn liuma_mermaid_config(rt: RenderTheme) -> merman::MermaidConfig {
     merman::MermaidConfig::from_value(serde_json::json!({
         "theme": "base",
-        "darkMode": !theme::is_dark(),
+        "darkMode": !rt.dark,
         "fontFamily": "system-ui, sans-serif",
         // htmlLabels 必须为 true:resvg_safe 管线把它折叠为原生 SVG 文本
         "htmlLabels": true,
         "flowchart": { "htmlLabels": true, "padding": 16 },
-        "themeVariables": theme_variables(),
+        "themeVariables": theme_variables_in(&rt.pal),
     }))
-}
-
-/// themeVariables 表(当前盘;纯数据,测试直查)
-fn theme_variables() -> serde_json::Value {
-    theme_variables_in(palette_of(theme::mode()))
 }
 
 /// themeVariables 表(纯函数化:给定盘生成,测试注入浅盘断言)
@@ -705,12 +743,7 @@ fn theme_variables_in(p: &Palette) -> serde_json::Value {
 }
 
 /// 色值 → mermaid 期望的 `#RRGGBB`;带透明度的色(theme 的 BORDER 系)
-/// 按 BASE 底色合成(散图无合成对象,取实体色避免偏白)
-fn hex(c: Rgba) -> String {
-    hex_in(c, theme::BASE())
-}
-
-/// 同上,按指定底色合成(theme_variables_in 纯函数化配套)
+/// 按给定底色合成(散图无合成对象,取实体色避免偏白)
 fn hex_in(c: Rgba, bg: Rgba) -> String {
     let a = c.a;
     let ch = |channel: f32, base: f32| {
@@ -942,9 +975,10 @@ pub(crate) fn raster_viewport(
     zoom: f32,
     pan: (f32, f32),
     viewport: (f32, f32),
+    rt: RenderTheme,
 ) -> anyhow::Result<ViewRaster> {
     let (nat_w, nat_h) =
-        natural_size(source).ok_or_else(|| anyhow::anyhow!("svg_for 返回 None"))?;
+        natural_size(source, rt).ok_or_else(|| anyhow::anyhow!("svg_for 返回 None"))?;
     let zoom_q = quantize_zoom(zoom.max(0.25));
     let fig = (nat_w * zoom_q, nat_h * zoom_q);
     let region = region_of(fig, viewport);
@@ -957,7 +991,7 @@ pub(crate) fn raster_viewport(
     let scale = zoom_q * gpui_kit::SMOOTH_SVG_SCALE_FACTOR;
     let pw = ((region.0 * gpui_kit::SMOOTH_SVG_SCALE_FACTOR).ceil() as u32).max(1);
     let ph = ((region.1 * gpui_kit::SMOOTH_SVG_SCALE_FACTOR).ceil() as u32).max(1);
-    let tree = tree_for(source)?;
+    let tree = tree_for(source, rt)?;
     let mut pixmap =
         resvg::tiny_skia::Pixmap::new(pw, ph).ok_or_else(|| anyhow::anyhow!("pixmap 分配失败"))?;
     // 设备px = (svg单位 − pan/zoom) × zoom×SMOOTH = (显示px − pan) × SMOOTH:
@@ -984,7 +1018,7 @@ pub(crate) fn raster_viewport(
 /// 且与 zoom/pan 无关 —— 解析一次后每次视口重光栅只剩 ≤ 视口区域的光栅
 /// 化(数十 ms)。滚轮/拖拽延迟的主修复。Tree 全 Arc 字段,Send+Sync
 /// 可跨线程共享。
-fn tree_for(source: &str) -> anyhow::Result<Arc<usvg::Tree>> {
+fn tree_for(source: &str, rt: RenderTheme) -> anyhow::Result<Arc<usvg::Tree>> {
     let hash = hash_of(source);
     if let Some(tree) = TREE_CACHE
         .lock()
@@ -993,7 +1027,7 @@ fn tree_for(source: &str) -> anyhow::Result<Arc<usvg::Tree>> {
     {
         return Ok(tree.clone());
     }
-    let svg = svg_for(source).ok_or_else(|| anyhow::anyhow!("svg_for 返回 None"))?;
+    let svg = svg_for(source, rt).ok_or_else(|| anyhow::anyhow!("svg_for 返回 None"))?;
     let tree = Arc::new(usvg::Tree::from_data(
         svg.as_bytes(),
         viewport_usvg_options(),
@@ -1083,8 +1117,9 @@ pub(crate) fn viewer_upto_date(
     zoom: f32,
     pan: (f32, f32),
     viewport: (f32, f32),
+    rt: RenderTheme,
 ) -> bool {
-    let Some((nat_w, nat_h)) = natural_size(source) else {
+    let Some((nat_w, nat_h)) = natural_size(source, rt) else {
         return true; // 无尺寸 = 渲染必失败,视作最新避免重排循环
     };
     let hash = hash_of(source);
@@ -1139,7 +1174,8 @@ fn raster_uncached_at(
     zoom: f32,
 ) -> anyhow::Result<Arc<gpui_kit::RenderImage>> {
     // svg_for 失败(短路)与 parse/render 失败统一为 anyhow→ImageCacheError
-    let svg = svg_for(source).ok_or_else(|| anyhow::anyhow!("svg_for 返回 None"))?;
+    let svg =
+        svg_for(source, RenderTheme::of(cx)).ok_or_else(|| anyhow::anyhow!("svg_for 返回 None"))?;
     let renderer = cx.svg_renderer();
     let parsed = renderer.parse_svg(svg.as_bytes())?;
     // ScaleFactor(z):设备光栅 = 自然×2×z(内部 SMOOTH 系数),img 按
@@ -1206,22 +1242,50 @@ mod tests {
 
     const FLOWCHART: &str = "flowchart LR\n    A-->B\n";
 
-    #[test]
-    fn flowchart_renders() {
-        let svg = svg_for(FLOWCHART).expect("flowchart 渲染");
+    /// 容差 hex 断言:派生面(code/border_2)经 HSL 往返有 ≤2/255 的
+    /// 舍入,精确等值断言会把合法往返判死(同 kits::theme 的锚定测试)
+    fn assert_hex(value: &str, hex: u32, what: &str) {
+        let v = u32::from_str_radix(&value[1..], 16).expect("合法 #RRGGBB");
+        for shift in [16, 8, 0] {
+            let (a, b) = ((v >> shift) & 0xFF, (hex >> shift) & 0xFF);
+            assert!(
+                (a as i32 - b as i32).abs() <= 2,
+                "{what}: {value} != #{hex:06X}"
+            );
+        }
+    }
+
+    /// 测试渲染主题(组件库 + Liuma 深盘装配,RenderTheme 取自全局)
+    fn rt_dark(cx: &mut gpui_kit::TestAppContext) -> RenderTheme {
+        cx.update(|app| {
+            gpui_kit::component::init(app);
+            theme::init(app);
+            RenderTheme::of(app)
+        })
+    }
+
+    #[gpui_kit::test]
+    fn flowchart_renders(cx: &mut gpui_kit::TestAppContext) {
+        let rt = rt_dark(cx);
+        let svg = svg_for(FLOWCHART, rt).expect("flowchart 渲染");
         assert!(svg.contains("<svg"), "应输出 SVG 头");
         assert!(!svg.contains("<foreignObject"), "resvg_safe 未生效");
         // 根背景:merman 默认写死 white,RootBackgroundPostprocessor 须
-        // 改写为 CODE(卡片底;与节点底融合消除色差)
+        // 改写为 CODE(卡片底;与节点底融合消除色差)。期望值按生产
+        // 公式构造(hex_in),锚管线行为而非字面量(CODE 派生有往返舍入)
         assert!(
-            svg.contains("background-color:#101010"),
+            svg.contains(&format!(
+                "background-color:{}",
+                hex_in(rt.pal.code, rt.pal.base)
+            )),
             "根背景应改写为 CODE:{svg}"
         );
         assert!(!svg.contains("background-color:white"), "不应残存白底");
     }
 
-    #[test]
-    fn whitelist_types_render() {
+    #[gpui_kit::test]
+    fn whitelist_types_render(cx: &mut gpui_kit::TestAppContext) {
+        let rt = rt_dark(cx);
         let samples: &[(&str, &str)] = &[
             ("flowchart", "flowchart LR\n    A-->B\n"),
             ("graph", "graph TD\n    A-->B\n"),
@@ -1268,30 +1332,35 @@ mod tests {
         ];
         for (name, src) in samples {
             assert!(is_supported_diagram_type(src), "{name} 应过白名单");
-            assert!(svg_for(src).is_some(), "{name} 渲染失败:\n{src}");
+            assert!(svg_for(src, rt).is_some(), "{name} 渲染失败:\n{src}");
         }
     }
 
-    #[test]
-    fn cjk_labels_roundtrip() {
+    #[gpui_kit::test]
+    fn cjk_labels_roundtrip(cx: &mut gpui_kit::TestAppContext) {
+        let rt = rt_dark(cx);
         let src = "flowchart LR\n    A[\"中文标签\"] --> B[\"节点\"]\n";
-        let svg = svg_for(src).expect("CJK 渲染");
+        let svg = svg_for(src, rt).expect("CJK 渲染");
         assert!(svg.contains("中文标签"), "输出应含中文原文");
     }
 
-    #[test]
-    fn malformed_and_guards() {
-        assert!(svg_for("flowchart LR\n    A--").is_none(), "畸形应失败");
-        assert!(svg_for("classDiagram\n    class").is_none(), "截断应失败");
+    #[gpui_kit::test]
+    fn malformed_and_guards(cx: &mut gpui_kit::TestAppContext) {
+        let rt = rt_dark(cx);
+        assert!(svg_for("flowchart LR\n    A--", rt).is_none(), "畸形应失败");
+        assert!(
+            svg_for("classDiagram\n    class", rt).is_none(),
+            "截断应失败"
+        );
         let big = format!("flowchart LR\n    A-->{}\n", "B".repeat(65 * 1024));
-        assert!(svg_for(&big).is_none(), "超长守卫应拦截");
+        assert!(svg_for(&big, rt).is_none(), "超长守卫应拦截");
         // 失败记忆:同一失败源二次仍 None(不重算)
         let bad = "flowchart LR\n    A--![1]";
-        assert!(svg_for(bad).is_none());
-        assert!(svg_for(bad).is_none());
+        assert!(svg_for(bad, rt).is_none());
+        assert!(svg_for(bad, rt).is_none());
         // 内容变化(哈希变化)→ 解除失败记忆,允许重试
         let bad2 = "flowchart LR\n    A--";
-        assert!(svg_for(bad2).is_none());
+        assert!(svg_for(bad2, rt).is_none());
     }
 
     #[test]
@@ -1304,15 +1373,23 @@ mod tests {
         assert!(!is_supported_diagram_type(""), "空源不过白名单");
     }
 
-    #[test]
-    fn theme_mapping_fields() {
-        let vars = theme_variables();
+    #[gpui_kit::test]
+    fn theme_mapping_fields(cx: &mut gpui_kit::TestAppContext) {
+        let vars = cx.update(|app| {
+            gpui_kit::component::init(app);
+            theme::init(app);
+            theme_variables_in(&theme::palette_for_mode(
+                gpui_kit::component::ThemeMode::Dark,
+                app,
+            ))
+        });
         let get = |k: &str| vars[k].as_str().expect("应有字符串值").to_string();
-        // 不透明色直传;BORDER_2(白 14%)按 BASE 合成 → 精确值由 hex 计算
-        assert_eq!(get("background"), "#101010", "背景 = CODE(卡片底,消除色差)");
+        // 不透明色直传;BORDER_2(白 14%)按 BASE 合成。CODE/BORDER_2 是
+        // 派生面(HSL 往返 ≤2/255 舍入),走容差;直取 token 走精确等值
+        assert_hex(&get("background"), 0x101010, "背景 = CODE(卡片底,消除色差)");
         assert_eq!(get("textColor"), "#F9FAFB", "主文本 = LABEL");
         assert_eq!(get("primaryColor"), "#202020", "节点面 = CARD");
-        assert_eq!(get("lineColor"), "#353535", "边线 = BORDER_2 合成色");
+        assert_hex(&get("lineColor"), 0x353535, "边线 = BORDER_2 合成色");
         assert_eq!(get("nodeTextColor"), "#F9FAFB");
         assert!(vars.is_object());
         // 系列键齐(8 组 cScale*/pieN)
@@ -1323,15 +1400,22 @@ mod tests {
     }
 
     /// 浅盘映射(theme_variables_in 纯函数注入,不翻全局盘)
-    #[test]
-    fn theme_mapping_fields_light() {
-        let vars = theme_variables_in(palette_of(gpui_kit::component::ThemeMode::Light));
+    #[gpui_kit::test]
+    fn theme_mapping_fields_light(cx: &mut gpui_kit::TestAppContext) {
+        let vars = cx.update(|app| {
+            gpui_kit::component::init(app);
+            theme::load_builtin_themes(app);
+            theme_variables_in(&theme::palette_for_mode(
+                gpui_kit::component::ThemeMode::Light,
+                app,
+            ))
+        });
         let get = |k: &str| vars[k].as_str().expect("应有字符串值").to_string();
-        assert_eq!(get("background"), "#F7F7F9", "背景 = 浅盘 CODE");
+        assert_hex(&get("background"), 0xF7F7F9, "背景 = 浅盘 CODE");
         assert_eq!(get("textColor"), "#1D1D1F", "主文本 = 浅盘 LABEL");
         assert_eq!(get("primaryColor"), "#FFFFFF", "节点面 = 浅盘 CARD(白)");
         // BORDER_2(黑 16%)按白底合成
-        assert_eq!(get("lineColor"), "#D6D6D6", "边线 = BORDER_2 合成色");
+        assert_hex(&get("lineColor"), 0xD6D6D6, "边线 = BORDER_2 合成色");
     }
 
     /// 光栅闭环:svg_for 之后的 parse_svg → render_parsed(usvg 字体解析
@@ -1340,6 +1424,7 @@ mod tests {
     /// fallback 代码块)
     #[gpui_kit::test]
     fn raster_produces_valid_image(cx: &mut gpui_kit::TestAppContext) {
+        rt_dark(cx); // 渲染链经 RenderTheme::of 读全局 Theme,先装配
         let img = cx.update(|app| raster_at_zoom("raster-test", FLOWCHART, app, 1.0));
         let img = img.expect("光栅应成功(失败=usvg 解析/渲染错误)");
         assert_eq!(img.frame_count(), 1, "单帧光栅");
@@ -1351,6 +1436,7 @@ mod tests {
     /// 缓存键 `key@zoom` 与 zoom=1 条目互不干扰(变更源后两档独立刷新)
     #[gpui_kit::test]
     fn raster_at_zoom_scales_and_isolates(cx: &mut gpui_kit::TestAppContext) {
+        rt_dark(cx); // 渲染链经 RenderTheme::of 读全局 Theme,先装配
         let base = cx
             .update(|app| raster_at_zoom("zoom-test", FLOWCHART, app, 1.0))
             .expect("zoom=1 光栅");
@@ -1393,17 +1479,18 @@ mod tests {
     /// 放大下位图仍 ≤ 视口×SMOOTH(内存 O(视口) 的回归锚点)。
     /// 与 layout_tests 的防抖生命周期测试共享槽静态 → 互斥锁串行。
     #[gpui_kit::test]
-    fn viewer_slot_replaces_and_viewport_crops() {
+    fn viewer_slot_replaces_and_viewport_crops(cx: &mut gpui_kit::TestAppContext) {
         let _guard = VIEWER_SLOT_TEST_LOCK
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let src = FLOWCHART;
         let other = "flowchart TD\n    X-->Y\n";
         let vp = (1000., 800.);
+        let rt = rt_dark(cx);
 
         // 荒谬放大(整图 ≫ 视口):位图必须 ≤ 视口×SMOOTH —— 与放大倍数
         // 无关(此前整图光栅 = 自然×zoom×2,放大 8 倍即数百 MB → 5G 泄漏)
-        let huge = raster_viewport(src, 50.0, (50000., 50000.), vp).expect("荒谬放大视口光栅");
+        let huge = raster_viewport(src, 50.0, (50000., 50000.), vp, rt).expect("荒谬放大视口光栅");
         let s = huge.image.size(0);
         assert!(
             s.width.0 <= vp.0 as i32 * 2 + 2 && s.height.0 <= vp.1 as i32 * 2 + 2,
@@ -1412,7 +1499,7 @@ mod tests {
             s.height.0
         );
         // pan 越界钳回上界(整图−视口)/下界 0,量化吸附
-        let (nat_w, nat_h) = natural_size(src).expect("自然尺寸");
+        let (nat_w, nat_h) = natural_size(src, rt).expect("自然尺寸");
         let q = quantize_zoom(50.0);
         let close = |a: f32, b: f32| (a - b).abs() < 8.0 + 1e-3;
         assert!(close(huge.pan_q.0, nat_w * q - vp.0), "pan_x 应钳制上界");
@@ -1426,7 +1513,7 @@ mod tests {
         assert_eq!(hit.1.region, huge.region, "档上下文带渲染区域");
 
         // 换档替换:返回旧图(回收纹理);旧档显示退新档 stale
-        let next = raster_viewport(src, 1.0, (0., 0.), vp).expect("fit 档");
+        let next = raster_viewport(src, 1.0, (0., 0.), vp, rt).expect("fit 档");
         let evicted = viewer_put(src, &next);
         assert_eq!(
             evicted.map(|img| img.id),
@@ -1441,10 +1528,10 @@ mod tests {
             "stale 载荷 = 旧档完整上下文(地图式过渡基准)"
         );
         assert!(
-            !viewer_upto_date(src, 50.0, (50000., 50000.), vp),
+            !viewer_upto_date(src, 50.0, (50000., 50000.), vp, rt),
             "旧档过期"
         );
-        assert!(viewer_upto_date(src, 1.0, (0., 0.), vp), "新档最新");
+        assert!(viewer_upto_date(src, 1.0, (0., 0.), vp, rt), "新档最新");
 
         // 同档幂等:后到结果不覆盖不驱逐
         assert!(viewer_put(src, &next).is_none(), "同档已在不重复写");
@@ -1468,6 +1555,7 @@ mod tests {
     /// 自然高),未生效则=自然高。
     #[gpui_kit::test]
     fn wide_image_scales_to_container(cx: &mut gpui_kit::TestAppContext) {
+        rt_dark(cx); // 渲染链经 RenderTheme::of 读全局 Theme,先装配
         let wide = "\
 flowchart LR\n    N0[0] --> N1[1] --> N2[2] --> N3[3] --> N4[4] --> N5[5] --> N6[6] --> N7[7] --> N8[8] --> N9[9] --> N10[10] --> N11[11] --> N12[12] --> N13[13]
 ";

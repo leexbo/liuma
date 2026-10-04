@@ -127,18 +127,26 @@ pub(crate) fn menu(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         ),
     ];
     let mut list = div().v_flex().gap(px(4.));
-    list = list.child(nav_group_header(t!("settings.nav_basics")));
+    list = list.child(nav_group_header(t!("settings.nav_basics"), cx));
     for (nav, label, icon) in basic {
-        list = list.child(nav_item(store, nav, label, icon, st.settings.settings_nav));
+        list = list.child(nav_item(
+            store,
+            nav,
+            label,
+            icon,
+            st.settings.settings_nav,
+            cx,
+        ));
     }
     // 「数据与统计」组:归档会话管理
-    list = list.child(nav_group_header(t!("settings.nav_data")));
+    list = list.child(nav_group_header(t!("settings.nav_data"), cx));
     list = list.child(nav_item(
         store,
         SettingsNav::ArchivedChats,
         t!("settings.nav_archived"),
         fixed(LiumaIcon::Archive, 15.),
         st.settings.settings_nav,
+        cx,
     ));
     div()
         .id("settings-menu")
@@ -150,9 +158,9 @@ pub(crate) fn menu(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             st.sidebar_px,
         ))
         .flex_shrink_0()
-        .bg(theme::SIDEBAR())
+        .bg(theme::sidebar(cx))
         .border_r_1()
-        .border_color(theme::BORDER())
+        .border_color(theme::border(cx))
         .px(px(12.))
         .pt(px(36.))
         .pb(px(10.))
@@ -171,8 +179,8 @@ pub(crate) fn menu(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 .px(px(8.))
                 .cursor_pointer()
                 .text_size(px(13.))
-                .text_color(theme::LABEL_2())
-                .hover(|s| s.bg(theme::LAYER()))
+                .text_color(theme::label_2(cx))
+                .hover(|s| s.bg(theme::layer(cx)))
                 .child(fixed(IconName::ArrowLeft, 15.))
                 .child(t!("settings.back_workspace"))
                 .on_click(move |_, window, cx| {
@@ -187,18 +195,19 @@ pub(crate) fn menu(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             t!("settings.about"),
             fixed(IconName::Info, 15.),
             st.settings.settings_nav,
+            cx,
         )))
 }
 
 /// 分组导航组头(小号说明字)
-fn nav_group_header(text: impl Into<gpui_kit::SharedString>) -> impl IntoElement {
+fn nav_group_header(text: impl Into<gpui_kit::SharedString>, cx: &App) -> impl IntoElement {
     let text = text.into();
     div()
         .px(px(8.))
         .pt(px(8.))
         .pb(px(4.))
         .text_size(px(12.))
-        .text_color(theme::CAPTION())
+        .text_color(theme::caption(cx))
         .child(text.to_string())
 }
 
@@ -209,6 +218,7 @@ fn nav_item(
     label: impl Into<gpui_kit::SharedString>,
     icon: gpui_kit::component::Icon,
     current: SettingsNav,
+    cx: &App,
 ) -> impl IntoElement {
     let label = label.into();
     let s = store.clone();
@@ -224,17 +234,13 @@ fn nav_item(
         .rounded(px(8.))
         .px(px(8.))
         .cursor_pointer()
-        .when(active, |el| el.bg(theme::DOCK()))
+        .when(active, |el| el.bg(theme::dock(cx)))
         .when(!active, |el| {
-            el.hover(|s| s.bg(theme::LAYER()))
-                .text_color(theme::LABEL_3())
+            el.hover(|s| s.bg(theme::layer(cx)))
+                .text_color(theme::label(cx))
         })
         .text_size(px(13.))
-        .text_color(if active {
-            theme::LABEL()
-        } else {
-            theme::LABEL_3()
-        })
+        .text_color(theme::label(cx))
         .when(active, |el| el.font_weight(gpui_kit::FontWeight::MEDIUM))
         .child(icon)
         .child(label)
@@ -244,7 +250,7 @@ fn nav_item(
 }
 
 /// 底部设置行(打开设置页;折叠 rail 的展开态对应物)
-pub(crate) fn settings_row(store: &Entity<AppStore>) -> impl IntoElement {
+pub(crate) fn settings_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let s = store.clone();
     div()
         .id("settings")
@@ -257,9 +263,9 @@ pub(crate) fn settings_row(store: &Entity<AppStore>) -> impl IntoElement {
         .px(px(8.))
         .gap(px(8.))
         .cursor_pointer()
-        .hover(|s| s.bg(theme::LAYER()))
+        .hover(|s| s.bg(theme::layer(cx)))
         .text_size(px(13.))
-        .text_color(theme::LABEL_3())
+        .text_color(theme::label_3(cx))
         .child(fixed(IconName::Settings, 16.))
         .child(t!("settings.settings_title"))
         .on_click(move |_, window, cx| {

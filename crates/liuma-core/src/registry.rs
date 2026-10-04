@@ -2764,6 +2764,8 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             "busyEnter": file.busy_enter,
             "language": file.language,
             "appearance": file.appearance,
+            "themeLight": file.theme_light,
+            "themeDark": file.theme_dark,
             "pinnedSessions": file.pinned_sessions,
             "pinnedWorkspaces": file.pinned_workspaces,
             "sessionsRoot": self.sessions_root.display().to_string(),
@@ -2808,6 +2810,31 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         }
         self.settings
             .update(|s| s.appearance = id.to_string())
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))
+    }
+
+    /// 主题偏好(浅盘主题名;空串 = Liuma 默认)
+    pub fn theme_light(&self) -> String {
+        self.settings.read().theme_light.clone()
+    }
+
+    /// 主题偏好(深盘主题名;空串 = Liuma 默认)
+    pub fn theme_dark(&self) -> String {
+        self.settings.read().theme_dark.clone()
+    }
+
+    /// 设置主题偏好(落盘;不做名单校验——registry 只存字符串,
+    /// 名单在桌面侧加载后存在,切换入口在桌面侧校验)
+    pub fn set_theme_light(&self, name: &str) -> Result<(), RpcError> {
+        self.settings
+            .update(|s| s.theme_light = name.to_string())
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))
+    }
+
+    /// 设置主题偏好(深盘;同 [`Self::set_theme_light`])
+    pub fn set_theme_dark(&self, name: &str) -> Result<(), RpcError> {
+        self.settings
+            .update(|s| s.theme_dark = name.to_string())
             .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))
     }
 

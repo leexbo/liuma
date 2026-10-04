@@ -72,7 +72,7 @@ pub fn title_bar_row(store: &Entity<AppStore>, window: &mut Window, cx: &App) ->
         })
         .child(sidebar_fold_button(store, cx))
         .child(workspace_trigger(store, cx))
-        .children(branch.map(branch_badge))
+        .children(branch.map(|b| branch_badge(b, cx)))
         // 弹性占位:面板开关推到标题栏右缘(仅关态渲染;面板开着时
         // 同款钮挪入面板头右缘)
         .child(div().flex_1())
@@ -113,7 +113,7 @@ pub fn title_bar_row(store: &Entity<AppStore>, window: &mut Window, cx: &App) ->
                             // 粗体标题;前景取一级
                             // 色——粗体配二级灰立不住
                             .font_weight(gpui_kit::FontWeight::BOLD)
-                            .text_color(theme::LABEL())
+                            .text_color(theme::label(cx))
                             .child(shown)
                             .into_any_element(),
                     )
@@ -121,7 +121,7 @@ pub fn title_bar_row(store: &Entity<AppStore>, window: &mut Window, cx: &App) ->
                         div()
                             .flex_shrink_0()
                             .text_size(px(13.))
-                            .text_color(theme::CAPTION())
+                            .text_color(theme::caption(cx))
                             .child(crate::kits::i18n::t!(
                                 "shell.run_label_suffix",
                                 label = label
@@ -133,7 +133,7 @@ pub fn title_bar_row(store: &Entity<AppStore>, window: &mut Window, cx: &App) ->
 }
 
 /// git 分支徽标(非 repo 省略;纯展示非交互)
-fn branch_badge(branch: String) -> impl IntoElement {
+fn branch_badge(branch: String, cx: &App) -> impl IntoElement {
     div()
         .flex()
         .flex_shrink_0()
@@ -141,7 +141,7 @@ fn branch_badge(branch: String) -> impl IntoElement {
         .gap(px(4.))
         .max_w(px(150.))
         .text_size(px(14.))
-        .text_color(theme::LABEL_3())
+        .text_color(theme::label_3(cx))
         .child(fixed(LiumaIcon::GitBranch, 14.))
         .child(div().min_w(px(0.)).truncate().child(branch))
         .debug_selector(|| "topbar-branch".to_string())
@@ -168,8 +168,8 @@ fn sidebar_fold_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .justify_center()
         .rounded(px(8.))
         .cursor_pointer()
-        .hover(|st| st.bg(theme::LAYER()))
-        .text_color(theme::LABEL_3())
+        .hover(|st| st.bg(theme::layer(cx)))
+        .text_color(theme::label_3(cx))
         .debug_selector(|| "fold-sidebar".to_string())
         // TitleBar 在 Windows 上把整条栏标成系统拖拽区(WM_NCHITTEST →
         // HTCAPTION):光标处的命中盒集合只要含拖拽盒,点击就被系统当作
@@ -217,14 +217,14 @@ fn workspace_trigger(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 .rounded(px(8.))
                 .px(px(8.))
                 .cursor_pointer()
-                .hover(|st| st.bg(theme::LAYER()))
+                .hover(|st| st.bg(theme::layer(cx)))
                 .text_size(px(14.))
-                .text_color(theme::LABEL_2())
+                .text_color(theme::label_2(cx))
                 // 拖拽区豁免,见 sidebar_fold_button 的说明
                 .occlude()
                 .child(fixed(IconName::FolderClosed, 16.))
                 .child(div().max_w(px(140.)).truncate().child(label))
-                .child(fixed(IconName::ChevronDown, 14.).text_color(theme::CAPTION()))
+                .child(fixed(IconName::ChevronDown, 14.).text_color(theme::caption(cx)))
                 .debug_selector(|| "ws-trigger".to_string())
                 .on_click(move |_, _, cx| {
                     s.update(cx, |st, cx| st.toggle_workspace_menu(cx));
@@ -236,6 +236,7 @@ fn workspace_trigger(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 "ws-menu-card",
                 320.,
                 crate::kits::modals::workspace_menu_rows(&s_card, pop, cx),
+                cx,
             )
             .into_any_element()
         })
@@ -257,11 +258,11 @@ fn panel_toggle_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .rounded(px(8.))
         .cursor_pointer()
         .text_color(if open {
-            theme::LABEL()
+            theme::label(cx)
         } else {
-            theme::LABEL_3()
+            theme::label_3(cx)
         })
-        .hover(|s| s.bg(theme::LAYER()).text_color(theme::LABEL()))
+        .hover(|s| s.bg(theme::layer(cx)).text_color(theme::label(cx)))
         // 拖拽区豁免,见 sidebar_fold_button 的说明
         .occlude()
         .tooltip(crate::shell::tip(crate::kits::i18n::t!(
@@ -303,8 +304,8 @@ fn session_menu_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 .justify_center()
                 .rounded(px(8.))
                 .cursor_pointer()
-                .text_color(theme::LABEL_3())
-                .hover(|st| st.bg(theme::LAYER()).text_color(theme::LABEL()))
+                .text_color(theme::label_3(cx))
+                .hover(|st| st.bg(theme::layer(cx)).text_color(theme::label(cx)))
                 // 拖拽区豁免,见 sidebar_fold_button 的说明
                 .occlude()
                 .child(fixed(IconName::Ellipsis, 14.))

@@ -1190,7 +1190,7 @@ pub(crate) fn models_section(store: &Entity<AppStore>, cx: &App) -> impl IntoEle
             st.settings
                 .saved_provider_notice
                 .as_ref()
-                .map(|name| saved_notice(name)),
+                .map(|name| saved_notice(name, cx)),
         )
         // 设置动作页内通告(单槽覆盖;不走聊天区)
         .children(st.settings.settings_notice.as_ref().map(|(ok, msg)| {
@@ -1202,9 +1202,9 @@ pub(crate) fn models_section(store: &Entity<AppStore>, cx: &App) -> impl IntoEle
                 .gap(px(6.))
                 .text_size(px(12.))
                 .text_color(if *ok {
-                    theme::SUCCESS()
+                    theme::success(cx)
                 } else {
-                    theme::DANGER()
+                    theme::danger(cx)
                 })
                 .child(format!("{} {msg}", if *ok { "✓" } else { "⚠" }))
         }));
@@ -1215,7 +1215,7 @@ pub(crate) fn models_section(store: &Entity<AppStore>, cx: &App) -> impl IntoEle
     // 行卡列表(与标题块之间 extra 12 空气,gap 8)
     let mut rows = div().v_flex().gap(px(8.)).mt(px(12.));
     if providers.is_empty() {
-        rows = rows.child(caption_line(t!("settings.registry_empty")));
+        rows = rows.child(caption_line(t!("settings.registry_empty"), cx));
     }
     for p in &providers {
         let id = p["id"].as_str().unwrap_or_default();
@@ -1231,11 +1231,11 @@ pub(crate) fn models_section(store: &Entity<AppStore>, cx: &App) -> impl IntoEle
 }
 
 /// 保存通告行(12/success)
-pub(crate) fn saved_notice(name: &str) -> impl IntoElement {
+pub(crate) fn saved_notice(name: &str, cx: &App) -> impl IntoElement {
     div()
         .id("provider-saved-notice")
         .text_size(px(12.))
-        .text_color(theme::SUCCESS())
+        .text_color(theme::success(cx))
         .child(t!("settings.saved", name = name))
 }
 
@@ -1270,9 +1270,9 @@ pub(crate) fn provider_row_card(
         .border_1()
         // 编辑中的卡 = 选中态(图1 蓝框);其余中性
         .border_color(if open {
-            theme::BRAND()
+            theme::brand(cx)
         } else {
-            theme::BORDER()
+            theme::border(cx)
         })
         .p(px(12.))
         .pr(px(14.))
@@ -1283,7 +1283,7 @@ pub(crate) fn provider_row_card(
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .child(avatar(&name))
+                .child(avatar(&name, cx))
                 .child(
                     div()
                         .v_flex()
@@ -1300,13 +1300,15 @@ pub(crate) fn provider_row_card(
                                     div()
                                         .text_size(px(15.))
                                         .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                                        .text_color(theme::LABEL())
+                                        .text_color(theme::label(cx))
                                         .child(name.clone()),
                                 )
-                                .child(credential_dot(cred_ready))
+                                .child(credential_dot(cred_ready, cx))
                                 .child(div().flex_1())
                                 .when(has_billing, |el| {
-                                    el.child(billing_refresh_line(store, &id, &cache, refreshing))
+                                    el.child(billing_refresh_line(
+                                        store, &id, &cache, refreshing, cx,
+                                    ))
                                 }),
                         )
                         // 行2:URL | 计费值(配置了计费端点才有)
@@ -1320,11 +1322,13 @@ pub(crate) fn provider_row_card(
                                         .flex_1()
                                         .min_w(px(0.))
                                         .text_size(px(12.))
-                                        .text_color(theme::ONGOING())
+                                        .text_color(theme::ongoing(cx))
                                         .truncate()
                                         .child(base_url.clone()),
                                 )
-                                .when(has_billing, |el| el.children(billing_value_line(&cache))),
+                                .when(has_billing, |el| {
+                                    el.children(billing_value_line(&cache, cx))
+                                }),
                         ),
                 )
                 // 动作列:编辑/移除(纵排居中,不占内容行)
@@ -1333,8 +1337,8 @@ pub(crate) fn provider_row_card(
                         .v_flex()
                         .flex_shrink_0()
                         .gap(px(2.))
-                        .child(row_edit_button(store, &id))
-                        .child(row_remove_button(store, &id)),
+                        .child(row_edit_button(store, &id, cx))
+                        .child(row_remove_button(store, &id, cx)),
                 ),
         );
     if open {
@@ -1344,7 +1348,7 @@ pub(crate) fn provider_row_card(
 }
 
 /// 圆标 avatar(显示名前两词首字母;圆形 32px,LAYER 底)
-pub(crate) fn avatar(name: &str) -> impl IntoElement {
+pub(crate) fn avatar(name: &str, cx: &App) -> impl IntoElement {
     let words: Vec<String> = name
         .split_whitespace()
         .map(|w| w.chars().next().unwrap_or('?').to_string())
@@ -1362,10 +1366,10 @@ pub(crate) fn avatar(name: &str) -> impl IntoElement {
         .items_center()
         .justify_center()
         .rounded_full()
-        .bg(theme::LAYER())
+        .bg(theme::layer(cx))
         .text_size(px(13.))
         .font_weight(gpui_kit::FontWeight::MEDIUM)
-        .text_color(theme::LABEL_2())
+        .text_color(theme::label_2(cx))
         .child(ch)
 }
 
@@ -1375,6 +1379,7 @@ pub(crate) fn billing_refresh_line(
     id: &str,
     cache: &serde_json::Value,
     refreshing: bool,
+    cx: &App,
 ) -> impl IntoElement {
     let s = store.clone();
     let pid = id.to_string();
@@ -1384,7 +1389,7 @@ pub(crate) fn billing_refresh_line(
         .items_center()
         .gap(px(4.))
         .text_size(px(11.))
-        .text_color(theme::CAPTION())
+        .text_color(theme::caption(cx))
         .children(fetched_at.map(|ms| {
             div()
                 .flex()
@@ -1398,10 +1403,10 @@ pub(crate) fn billing_refresh_line(
                 .id(sid("billing-refresh", id))
                 .flex_shrink_0()
                 .cursor_pointer()
-                .text_color(theme::LABEL_3())
-                .hover(|s| s.text_color(theme::LABEL()))
+                .text_color(theme::label_3(cx))
+                .hover(|s| s.text_color(theme::label(cx)))
                 .child(fixed(IconName::LoaderCircle, 12.))
-                .when(refreshing, |el| el.text_color(theme::ONGOING()))
+                .when(refreshing, |el| el.text_color(theme::ongoing(cx)))
                 .on_click(move |_, _, cx| {
                     let pid = pid.clone();
                     s.update(cx, |st, cx| {
@@ -1414,7 +1419,7 @@ pub(crate) fn billing_refresh_line(
 }
 
 /// 计费数值行:余额「剩余: 9.52 CNY」/ 用量「5小时: 6% 7天: 6% 4d22h」
-pub(crate) fn billing_value_line(cache: &serde_json::Value) -> Option<impl IntoElement> {
+pub(crate) fn billing_value_line(cache: &serde_json::Value, cx: &App) -> Option<impl IntoElement> {
     let row = div().flex().items_center().gap(px(6.)).text_size(px(12.));
     match cache["kind"].as_str() {
         Some("balance") => {
@@ -1424,13 +1429,13 @@ pub(crate) fn billing_value_line(cache: &serde_json::Value) -> Option<impl IntoE
                 row.child(t!("settings.remaining"))
                     .child(
                         div()
-                            .text_color(theme::SUCCESS())
+                            .text_color(theme::success(cx))
                             .font_weight(gpui_kit::FontWeight::MEDIUM)
                             .child(amount.to_string()),
                     )
                     .child(
                         div()
-                            .text_color(theme::LABEL_3())
+                            .text_color(theme::label_3(cx))
                             .child(currency.to_string()),
                     )
                     .into_any_element(),
@@ -1453,14 +1458,14 @@ pub(crate) fn billing_value_line(cache: &serde_json::Value) -> Option<impl IntoE
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(theme::CAPTION())
+                            .text_color(theme::caption(cx))
                             .child(label),
                     )
                     .child(
                         div()
                             .text_size(px(12.))
                             .font_weight(gpui_kit::FontWeight::MEDIUM)
-                            .text_color(theme::LABEL())
+                            .text_color(theme::label(cx))
                             .child(format!("{v}%")),
                     );
             }
@@ -1472,7 +1477,7 @@ pub(crate) fn billing_value_line(cache: &serde_json::Value) -> Option<impl IntoE
                         .items_center()
                         .gap(px(2.))
                         .text_size(px(11.))
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .child(fixed(LiumaIcon::Clock, 11.))
                         .child(cd),
                 );
@@ -1484,13 +1489,13 @@ pub(crate) fn billing_value_line(cache: &serde_json::Value) -> Option<impl IntoE
 }
 
 /// 用量迷你进度条(width px、4px 高;填充 <70% 正常绿,≥70% 接近限额红)
-pub(crate) fn usage_bar(pct: u64, width: f32) -> gpui_kit::AnyElement {
+pub(crate) fn usage_bar(pct: u64, width: f32, cx: &App) -> gpui_kit::AnyElement {
     let pct = pct.min(100);
     div()
         .w(px(width))
         .h(px(4.))
         .rounded(px(2.))
-        .bg(theme::BORDER_2())
+        .bg(theme::border_2(cx))
         .overflow_hidden()
         .child(
             div()
@@ -1498,9 +1503,9 @@ pub(crate) fn usage_bar(pct: u64, width: f32) -> gpui_kit::AnyElement {
                 .h_full()
                 .rounded(px(2.))
                 .bg(if pct >= 70 {
-                    theme::DANGER()
+                    theme::danger(cx)
                 } else {
-                    theme::SUCCESS()
+                    theme::success(cx)
                 }),
         )
         .into_any_element()
@@ -1560,21 +1565,21 @@ pub(crate) fn relative_time(ms: u64) -> String {
 }
 
 /// 凭据状态圆点(8px 实心,success/error)
-pub(crate) fn credential_dot(configured: bool) -> impl IntoElement {
+pub(crate) fn credential_dot(configured: bool, cx: &App) -> impl IntoElement {
     div()
         .flex()
         .size(px(8.))
         .flex_shrink_0()
         .rounded_full()
         .bg(if configured {
-            theme::SUCCESS()
+            theme::success(cx)
         } else {
-            theme::DANGER()
+            theme::danger(cx)
         })
 }
 
 /// 行头「编辑」钮(28h r14 边框胶囊;再点收起)
-pub(crate) fn row_edit_button(store: &Entity<AppStore>, id: &str) -> impl IntoElement {
+pub(crate) fn row_edit_button(store: &Entity<AppStore>, id: &str, cx: &App) -> impl IntoElement {
     let s = store.clone();
     let pid = id.to_string();
     let sel = sid("provider-edit", id);
@@ -1588,11 +1593,11 @@ pub(crate) fn row_edit_button(store: &Entity<AppStore>, id: &str) -> impl IntoEl
         .px(px(10.))
         .rounded(px(14.))
         .border_1()
-        .border_color(theme::BORDER())
+        .border_color(theme::border(cx))
         .cursor_pointer()
         .text_size(px(12.))
-        .text_color(theme::LABEL_2())
-        .hover(|s| s.bg(theme::DOCK()))
+        .text_color(theme::label_2(cx))
+        .hover(|s| s.bg(theme::dock(cx)))
         .child(t!("common.edit"))
         .on_click(move |_, window, cx| {
             let pid = pid.clone();
@@ -1607,7 +1612,7 @@ pub(crate) fn row_edit_button(store: &Entity<AppStore>, id: &str) -> impl IntoEl
 }
 
 /// 行头「移除」钮(28h 胶囊,危险色文字)
-pub(crate) fn row_remove_button(store: &Entity<AppStore>, id: &str) -> impl IntoElement {
+pub(crate) fn row_remove_button(store: &Entity<AppStore>, id: &str, cx: &App) -> impl IntoElement {
     let s = store.clone();
     let pid = id.to_string();
     let sel = sid("provider-remove", id);
@@ -1622,8 +1627,8 @@ pub(crate) fn row_remove_button(store: &Entity<AppStore>, id: &str) -> impl Into
         .rounded(px(14.))
         .cursor_pointer()
         .text_size(px(12.))
-        .text_color(theme::DANGER())
-        .hover(|s| s.bg(theme::DOCK()))
+        .text_color(theme::danger(cx))
+        .hover(|s| s.bg(theme::dock(cx)))
         .child(t!("common.remove"))
         .on_click(move |_, _, cx| {
             let pid = pid.clone();
@@ -1640,7 +1645,7 @@ pub(crate) fn setup_card(store: &Entity<AppStore>, cx: &App, id: &str) -> impl I
         .debug_selector(move || sel.to_string())
         .v_flex()
         .rounded(px(12.))
-        .bg(theme::SIDEBAR())
+        .bg(theme::sidebar(cx))
         .p(px(14.))
         .pr(px(16.))
         .child(provider_editor(store, cx, id, true))
@@ -1658,7 +1663,7 @@ pub(crate) fn add_block(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElem
             .v_flex()
             .gap(px(14.))
             .rounded(px(12.))
-            .bg(theme::SIDEBAR())
+            .bg(theme::sidebar(cx))
             .p(px(14.))
             .pr(px(16.))
             .child(provider_editor(store, cx, "", false))
@@ -1676,12 +1681,12 @@ pub(crate) fn add_block(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElem
         .gap(px(6.))
         .rounded(px(12.))
         .border_1()
-        .border_color(theme::BORDER_2())
+        .border_color(theme::border_2(cx))
         .border_dashed()
         .cursor_pointer()
         .text_size(px(14.))
-        .text_color(theme::LABEL_3())
-        .hover(|s| s.bg(theme::LAYER()).text_color(theme::LABEL_2()))
+        .text_color(theme::label_3(cx))
+        .hover(|s| s.bg(theme::layer(cx)).text_color(theme::label_2(cx)))
         .child(fixed(IconName::Plus, 14.))
         .child(t!("settings.add_provider"))
         .on_click(move |_, window, cx| {
@@ -1721,7 +1726,7 @@ pub(crate) fn provider_editor(
             div()
                 .v_flex()
                 .gap(px(6.))
-                .child(field_label(label))
+                .child(field_label(label, cx))
                 .children(slot.as_ref().map(|e| {
                     div()
                         .debug_selector(move || id_fmt.clone())
@@ -1739,9 +1744,9 @@ pub(crate) fn provider_editor(
     // 「自定义设置」折叠
     let advanced = || -> Vec<gpui_kit::AnyElement> {
         vec![
-            section_divider(),
+            section_divider(cx),
             editor_models_block(store, cx, fetch_pid.clone()).into_any_element(),
-            section_divider(),
+            section_divider(cx),
             editor_billing_block(store, cx, id.to_string(), setup, billing_pid.clone())
                 .into_any_element(),
         ]
@@ -1753,7 +1758,7 @@ pub(crate) fn provider_editor(
         .gap(px(14.))
         .rounded(px(12.))
         .when(!setup && !id.is_empty(), |el| {
-            el.bg(theme::SIDEBAR()).p(px(14.)).pr(px(16.))
+            el.bg(theme::sidebar(cx)).p(px(14.)).pr(px(16.))
         })
         // 标题与列表卡一致:显示名(非 id)
         .when(!setup && !id.is_empty(), |el| {
@@ -1771,7 +1776,7 @@ pub(crate) fn provider_editor(
                 div()
                     .text_size(px(15.))
                     .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                    .text_color(theme::LABEL())
+                    .text_color(theme::label(cx))
                     .child(title),
             )
         })
@@ -1785,7 +1790,7 @@ pub(crate) fn provider_editor(
                     .gap(px(4.))
                     .p(px(2.))
                     .rounded(px(10.))
-                    .bg(theme::LAYER())
+                    .bg(theme::layer(cx))
                     .child(
                         div()
                             .id("provider-mode-builtin")
@@ -1797,12 +1802,12 @@ pub(crate) fn provider_editor(
                             .rounded(px(8.))
                             .cursor_pointer()
                             .text_size(px(13.))
-                            .when(builtin, |el| el.bg(theme::DOCK()))
-                            .hover(|s| s.text_color(theme::LABEL_2()))
+                            .when(builtin, |el| el.bg(theme::dock(cx)))
+                            .hover(|s| s.text_color(theme::label_2(cx)))
                             .text_color(if builtin {
-                                theme::LABEL()
+                                theme::label(cx)
                             } else {
-                                theme::CAPTION()
+                                theme::caption(cx)
                             })
                             .child(t!("settings.provider_tab_builtin"))
                             .on_click(move |_, window, cx| {
@@ -1822,12 +1827,12 @@ pub(crate) fn provider_editor(
                             .rounded(px(8.))
                             .cursor_pointer()
                             .text_size(px(13.))
-                            .when(!builtin, |el| el.bg(theme::DOCK()))
-                            .hover(|s| s.text_color(theme::LABEL_2()))
+                            .when(!builtin, |el| el.bg(theme::dock(cx)))
+                            .hover(|s| s.text_color(theme::label_2(cx)))
                             .text_color(if builtin {
-                                theme::CAPTION()
+                                theme::caption(cx)
                             } else {
-                                theme::LABEL()
+                                theme::label(cx)
                             })
                             .child(t!("settings.provider_tab_custom"))
                             .on_click(move |_, window, cx| {
@@ -1840,7 +1845,7 @@ pub(crate) fn provider_editor(
             .child(
                 div()
                     .text_size(px(12.))
-                    .text_color(theme::CAPTION())
+                    .text_color(theme::caption(cx))
                     .child(if builtin {
                         t!("settings.provider_explain_builtin").into_owned()
                     } else {
@@ -1855,7 +1860,7 @@ pub(crate) fn provider_editor(
                 div()
                     .v_flex()
                     .gap(px(6.))
-                    .child(field_label(t!("settings.provider_label")))
+                    .child(field_label(t!("settings.provider_label"), cx))
                     .children(st.settings.builtin_select.as_ref().map(|s| {
                         div()
                             .w(px(280.))
@@ -1871,7 +1876,7 @@ pub(crate) fn provider_editor(
                     div()
                         .v_flex()
                         .gap(px(6.))
-                        .child(field_label(t!("settings.provider_id_label")))
+                        .child(field_label(t!("settings.provider_id_label"), cx))
                         .children(
                             st.settings
                                 .set_form_id
@@ -1881,7 +1886,7 @@ pub(crate) fn provider_editor(
                         .child(
                             div()
                                 .text_size(px(12.))
-                                .text_color(theme::CAPTION())
+                                .text_color(theme::caption(cx))
                                 .child(t!("settings.provider_id_helper")),
                         ),
                 )
@@ -1901,13 +1906,16 @@ pub(crate) fn provider_editor(
             div()
                 .v_flex()
                 .gap(px(6.))
-                .child(field_label(if builtin {
-                    t!("settings.api_key")
-                } else if setup {
-                    t!("settings.api_key_required")
-                } else {
-                    t!("settings.api_key_plain")
-                }))
+                .child(field_label(
+                    if builtin {
+                        t!("settings.api_key")
+                    } else if setup {
+                        t!("settings.api_key_required")
+                    } else {
+                        t!("settings.api_key_plain")
+                    },
+                    cx,
+                ))
                 .children(st.settings.key_input.as_ref().map(|e| {
                     div()
                         .debug_selector(|| "field-key".to_string())
@@ -1926,8 +1934,8 @@ pub(crate) fn provider_editor(
                     .gap(px(6.))
                     .cursor_pointer()
                     .text_size(px(13.))
-                    .text_color(theme::LABEL_2())
-                    .hover(|s| s.text_color(theme::LABEL()))
+                    .text_color(theme::label_2(cx))
+                    .hover(|s| s.text_color(theme::label(cx)))
                     .child(if st.settings.builtin_advanced_open {
                         fixed(IconName::ChevronDown, 13.)
                     } else {
@@ -1952,13 +1960,13 @@ pub(crate) fn provider_editor(
                             div()
                                 .v_flex()
                                 .gap(px(6.))
-                                .child(field_label(t!("settings.provider_field_base_url")))
+                                .child(field_label(t!("settings.provider_field_base_url"), cx))
                                 .children(st.settings.set_form_url.as_ref().map(|e| {
                                     div()
                                         .debug_selector(|| "field-builtin-url".to_string())
                                         .child(Input::new(e))
                                 }))
-                                .child(url_protocol_hint(entry.dialect.as_str())),
+                                .child(url_protocol_hint(entry.dialect.as_str(), cx)),
                         )
                         // 模型清单可编辑草稿(目录预填打底,端点拉取更新,
                         // 随「应用」落盘——模型列表会更新,不锁目录契约)
@@ -1970,16 +1978,17 @@ pub(crate) fn provider_editor(
                             } else {
                                 t!("settings.billing_none").to_string()
                             },
+                            cx,
                         ))
                         .when(
                             matches!(
                                 entry.dialect.as_str(),
                                 "anthropic-messages" | "openai-responses"
                             ),
-                            |el| el.child(hosted_tools_row(store, st)),
+                            |el| el.child(hosted_tools_row(store, st, cx)),
                         )
                 } else {
-                    el.child(caption_line(t!("settings.catalog_missing")))
+                    el.child(caption_line(t!("settings.catalog_missing"), cx))
                 }
             })
         })
@@ -1988,7 +1997,7 @@ pub(crate) fn provider_editor(
                 div()
                     .v_flex()
                     .gap(px(6.))
-                    .child(field_label(t!("settings.api_format")))
+                    .child(field_label(t!("settings.api_format"), cx))
                     .children(st.settings.dialect_select.as_ref().map(|s| {
                         div()
                             .w(px(280.))
@@ -2002,7 +2011,7 @@ pub(crate) fn provider_editor(
                     st.settings.set_form_dialect.as_str(),
                     "anthropic-messages" | "openai-responses"
                 ),
-                |el| el.child(hosted_tools_row(store, st)),
+                |el| el.child(hosted_tools_row(store, st, cx)),
             )
         });
     let _ = (&s_add_model, &s_fetch, &s_billing, &s_kind);
@@ -2065,7 +2074,7 @@ pub(crate) fn editor_models_block(
                     div()
                         .text_size(px(13.))
                         .font_weight(gpui_kit::FontWeight::MEDIUM)
-                        .text_color(theme::LABEL())
+                        .text_color(theme::label(cx))
                         .child(t!("settings.model_list")),
                 )
                 .child(div().flex_1())
@@ -2078,10 +2087,10 @@ pub(crate) fn editor_models_block(
                         .gap(px(4.))
                         .cursor_pointer()
                         .text_size(px(13.))
-                        .text_color(theme::LABEL_2())
-                        .hover(|s| s.text_color(theme::LABEL()))
+                        .text_color(theme::label_2(cx))
+                        .hover(|s| s.text_color(theme::label(cx)))
                         .when(st.settings.model_fetch_loading, |el| {
-                            el.text_color(theme::ONGOING())
+                            el.text_color(theme::ongoing(cx))
                         })
                         .child(fixed(IconName::Globe, 13.))
                         .child(t!("settings.fetch_from_endpoint"))
@@ -2098,12 +2107,12 @@ pub(crate) fn editor_models_block(
                 .gap(px(8.))
                 .rounded(px(10.))
                 .border_1()
-                .border_color(theme::BORDER_2())
+                .border_color(theme::border_2(cx))
                 .border_dashed()
                 .px(px(12.))
                 .py(px(14.))
                 .text_size(px(13.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(fixed(IconName::Info, 14.))
                 .child(t!("settings.models_empty"))
                 .into_any_element()
@@ -2143,11 +2152,11 @@ pub(crate) fn editor_models_block(
                         .px(px(10.))
                         .rounded(px(8.))
                         .border_1()
-                        .border_color(theme::BORDER())
+                        .border_color(theme::border(cx))
                         .cursor_pointer()
                         .text_size(px(13.))
-                        .text_color(theme::LABEL_2())
-                        .hover(|s| s.bg(theme::DOCK()))
+                        .text_color(theme::label_2(cx))
+                        .hover(|s| s.bg(theme::dock(cx)))
                         .child(fixed(IconName::Plus, 13.))
                         .child(t!("settings.add_model"))
                         .on_click(move |_, window, cx| {
@@ -2157,7 +2166,7 @@ pub(crate) fn editor_models_block(
                         }),
                 ),
         )
-        .child(caption_line(t!("settings.ctx_hint")))
+        .child(caption_line(t!("settings.ctx_hint"), cx))
 }
 
 /// 计费端点块(开关 + 形态 + URL + JSON 路径)
@@ -2175,7 +2184,7 @@ pub(crate) fn editor_billing_block(
             div()
                 .v_flex()
                 .gap(px(6.))
-                .child(field_label(label))
+                .child(field_label(label, cx))
                 .children(slot.as_ref().map(|e| {
                     div()
                         .debug_selector(move || id_fmt.clone())
@@ -2193,7 +2202,7 @@ pub(crate) fn editor_billing_block(
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(field_label(t!("settings.billing_endpoint")))
+                .child(field_label(t!("settings.billing_endpoint"), cx))
                 .child(
                     div()
                         .flex()
@@ -2201,9 +2210,9 @@ pub(crate) fn editor_billing_block(
                         .gap(px(6.))
                         .text_size(px(12.))
                         .text_color(if st.settings.set_form_billing_enabled {
-                            theme::LABEL_2()
+                            theme::label_2(cx)
                         } else {
-                            theme::CAPTION()
+                            theme::caption(cx)
                         })
                         .child(if st.settings.set_form_billing_enabled {
                             t!("settings.enabled")
@@ -2214,7 +2223,7 @@ pub(crate) fn editor_billing_block(
                             Switch::new("billing-enabled")
                                 .small()
                                 .checked(st.settings.set_form_billing_enabled)
-                                .color(theme::LABEL())
+                                .color(theme::label(cx))
                                 .on_click({
                                     let s = s_billing.clone();
                                     move |_, _, cx| {
@@ -2235,12 +2244,14 @@ pub(crate) fn editor_billing_block(
                         t!("settings.billing_balance"),
                         "balance",
                         &st.settings.set_form_billing_kind,
+                        cx,
                     ))
                     .child(billing_kind_chip(
                         store,
                         t!("settings.billing_usage"),
                         "usage",
                         &st.settings.set_form_billing_kind,
+                        cx,
                     )),
             )
             .child(input_row(
@@ -2291,17 +2302,17 @@ pub(crate) fn editor_billing_block(
                         .justify_center()
                         .rounded(px(8.))
                         .border_1()
-                        .border_color(theme::BORDER())
+                        .border_color(theme::border(cx))
                         .cursor_pointer()
                         .text_size(px(12.))
                         .text_color(
                             if st.settings.billing_refreshing.as_deref() == Some(id.as_str()) {
-                                theme::ONGOING()
+                                theme::ongoing(cx)
                             } else {
-                                theme::LABEL_2()
+                                theme::label_2(cx)
                             },
                         )
-                        .hover(|s| s.bg(theme::DOCK()))
+                        .hover(|s| s.bg(theme::dock(cx)))
                         .child(
                             if st.settings.billing_refreshing.as_deref() == Some(id.as_str()) {
                                 t!("settings.billing_refreshing")
@@ -2352,9 +2363,9 @@ pub(crate) fn model_draft_row(
                 .h(px(30.))
                 .px(px(10.))
                 .rounded(px(8.))
-                .bg(theme::SIDEBAR())
+                .bg(theme::sidebar(cx))
                 .text_size(px(13.))
-                .text_color(theme::LABEL_2())
+                .text_color(theme::label_2(cx))
                 .child(
                     div()
                         .flex_1()
@@ -2374,18 +2385,18 @@ pub(crate) fn model_draft_row(
                         .rounded(px(11.))
                         .border_1()
                         .border_color(if editing {
-                            theme::BRAND()
+                            theme::brand(cx)
                         } else {
-                            theme::BORDER()
+                            theme::border(cx)
                         })
                         .cursor_pointer()
                         .text_size(px(11.))
                         .text_color(if editing {
-                            theme::LABEL()
+                            theme::label(cx)
                         } else {
-                            theme::CAPTION()
+                            theme::caption(cx)
                         })
-                        .hover(|s| s.text_color(theme::LABEL()))
+                        .hover(|s| s.text_color(theme::label(cx)))
                         .child(chip_text)
                         .on_click(move |_, window, cx| {
                             let m = chip_model.clone();
@@ -2403,8 +2414,8 @@ pub(crate) fn model_draft_row(
                         .justify_center()
                         .rounded(px(6.))
                         .cursor_pointer()
-                        .text_color(theme::CAPTION())
-                        .hover(|s| s.bg(theme::DOCK()).text_color(theme::DANGER()))
+                        .text_color(theme::caption(cx))
+                        .hover(|s| s.bg(theme::dock(cx)).text_color(theme::danger(cx)))
                         .child(fixed(IconName::Close, 12.))
                         .on_click(move |_, _, cx| {
                             s_remove.update(cx, |st, cx| st.remove_form_model(ix, cx));
@@ -2445,11 +2456,11 @@ pub(crate) fn context_window_edit_row(store: &Entity<AppStore>, cx: &App) -> gpu
                         .items_center()
                         .px(px(10.))
                         .rounded(px(8.))
-                        .bg(theme::DOCK())
+                        .bg(theme::dock(cx))
                         .cursor_pointer()
                         .text_size(px(12.))
-                        .text_color(theme::LABEL())
-                        .hover(|s| s.bg(theme::BUBBLE()))
+                        .text_color(theme::label(cx))
+                        .hover(|s| s.bg(theme::bubble(cx)))
                         .child(t!("common.apply"))
                         .on_click(move |_, _, cx| {
                             s_apply.update(cx, |st, cx| {
@@ -2468,11 +2479,11 @@ pub(crate) fn context_window_edit_row(store: &Entity<AppStore>, cx: &App) -> gpu
                         .px(px(10.))
                         .rounded(px(8.))
                         .border_1()
-                        .border_color(theme::BORDER())
+                        .border_color(theme::border(cx))
                         .cursor_pointer()
                         .text_size(px(12.))
-                        .text_color(theme::LABEL_2())
-                        .hover(|s| s.bg(theme::DOCK()))
+                        .text_color(theme::label_2(cx))
+                        .hover(|s| s.bg(theme::dock(cx)))
                         .child(t!("common.cancel"))
                         .on_click(move |_, _, cx| {
                             s_cancel.update(cx, |st, cx| st.cancel_context_window_edit(cx));
@@ -2483,7 +2494,7 @@ pub(crate) fn context_window_edit_row(store: &Entity<AppStore>, cx: &App) -> gpu
             el.child(
                 div()
                     .text_size(px(11.))
-                    .text_color(theme::DANGER())
+                    .text_color(theme::danger(cx))
                     .child(t!("settings.ctx_invalid_hint")),
             )
         })
@@ -2496,6 +2507,7 @@ pub(crate) fn billing_kind_chip(
     label: impl Into<gpui_kit::SharedString>,
     kind: &'static str,
     selected: &str,
+    cx: &App,
 ) -> impl IntoElement {
     let label = label.into();
     let s = store.clone();
@@ -2509,18 +2521,18 @@ pub(crate) fn billing_kind_chip(
         .rounded(px(14.))
         .border_1()
         .border_color(if active {
-            theme::BRAND()
+            theme::brand(cx)
         } else {
-            theme::BORDER()
+            theme::border(cx)
         })
         .cursor_pointer()
         .text_size(px(12.))
         .text_color(if active {
-            theme::LABEL()
+            theme::label(cx)
         } else {
-            theme::LABEL_3()
+            theme::label_3(cx)
         })
-        .hover(|s| s.bg(theme::DOCK()))
+        .hover(|s| s.bg(theme::dock(cx)))
         .child(label.to_string())
         .on_click(move |_, _, cx| {
             let k = kind.to_string();
@@ -2531,11 +2543,15 @@ pub(crate) fn billing_kind_chip(
 /// 字段标签(12/500 secondary)
 /// 厂商托管工具勾选行(provider 编辑卡;仅声明表所在的两个面显示)。
 /// 服务端执行面,非客户端工具——开关只决定请求是否声明该工具
-pub(crate) fn hosted_tools_row(store: &Entity<AppStore>, st: &AppStore) -> gpui_kit::AnyElement {
+pub(crate) fn hosted_tools_row(
+    store: &Entity<AppStore>,
+    st: &AppStore,
+    cx: &App,
+) -> gpui_kit::AnyElement {
     div()
         .v_flex()
         .gap(px(6.))
-        .child(field_label(t!("settings.hosted_tools")))
+        .child(field_label(t!("settings.hosted_tools"), cx))
         .child(
             div()
                 .flex()
@@ -2560,7 +2576,7 @@ pub(crate) fn hosted_tools_row(store: &Entity<AppStore>, st: &AppStore) -> gpui_
                 .child(
                     div()
                         .text_size(px(13.))
-                        .text_color(theme::LABEL_2())
+                        .text_color(theme::label_2(cx))
                         .child(t!("settings.hosted_web_search")),
                 ),
         )
@@ -2569,8 +2585,8 @@ pub(crate) fn hosted_tools_row(store: &Entity<AppStore>, st: &AppStore) -> gpui_
 
 /// 内置卡 API 地址的协议提示(按目录条目方言整句;未知方言走通用句。
 /// i18n 守卫要求 t! 键为字面量,故在 match 臂内逐键调用)
-pub(crate) fn url_protocol_hint(dialect: &str) -> gpui_kit::AnyElement {
-    let line = || div().text_size(px(12.)).text_color(theme::CAPTION());
+pub(crate) fn url_protocol_hint(dialect: &str, cx: &App) -> gpui_kit::AnyElement {
+    let line = || div().text_size(px(12.)).text_color(theme::caption(cx));
     match dialect {
         "anthropic-messages" => line().child(t!("settings.url_protocol_hint_anthropic")),
         "openai-responses" | "glm-responses" => {
@@ -2596,11 +2612,11 @@ pub(crate) fn open_fetch_models_dialog(
     use gpui_kit::component::WindowExt as _;
     let store = store.clone();
     let s_close = store.clone();
-    window.open_dialog(cx, move |dialog, _, _| {
+    window.open_dialog(cx, move |dialog, _, cx| {
         dialog
             .title(t!("settings.fetch_models_title"))
             .w(px(440.))
-            .bg(theme::LAYER())
+            .bg(theme::layer(cx))
             .content({
                 let s_rows = store.clone();
                 // 取消钮 handler 的克隆源(名字区分两层:Fn 闭包体
@@ -2622,7 +2638,7 @@ pub(crate) fn open_fetch_models_dialog(
                         .child(
                             div()
                                 .text_size(px(12.))
-                                .text_color(theme::CAPTION())
+                                .text_color(theme::caption(cx))
                                 .child(t!("settings.picked_count", count = picked_count)),
                         );
                     if loading {
@@ -2634,7 +2650,7 @@ pub(crate) fn open_fetch_models_dialog(
                                 .py(px(20.))
                                 .justify_center()
                                 .text_size(px(13.))
-                                .text_color(theme::CAPTION())
+                                .text_color(theme::caption(cx))
                                 .child(t!("settings.fetching")),
                         );
                     } else {
@@ -2658,7 +2674,7 @@ pub(crate) fn open_fetch_models_dialog(
                                         .px(px(8.))
                                         .rounded(px(8.))
                                         .cursor_pointer()
-                                        .hover(|s| s.bg(theme::DOCK()))
+                                        .hover(|s| s.bg(theme::dock(cx)))
                                         .child(
                                             div()
                                                 .flex()
@@ -2668,22 +2684,22 @@ pub(crate) fn open_fetch_models_dialog(
                                                 .rounded(px(4.))
                                                 .border_1()
                                                 .border_color(if picked {
-                                                    theme::BRAND()
+                                                    theme::brand(cx)
                                                 } else {
-                                                    theme::BORDER()
+                                                    theme::border(cx)
                                                 })
                                                 .bg(if picked {
-                                                    theme::BRAND()
+                                                    theme::brand(cx)
                                                 } else {
-                                                    theme::TRANSPARENT()
+                                                    theme::TRANSPARENT
                                                 })
-                                                .text_color(theme::LABEL())
+                                                .text_color(theme::label(cx))
                                                 .children(
                                                     picked.then(|| fixed(IconName::Check, 11.)),
                                                 ),
                                         )
                                         .text_size(px(13.))
-                                        .text_color(theme::LABEL_2())
+                                        .text_color(theme::label_2(cx))
                                         .child(m.clone())
                                         .on_click(move |_, _, cx| {
                                             s_toggle
@@ -2716,11 +2732,11 @@ pub(crate) fn open_fetch_models_dialog(
                                     .px(px(14.))
                                     .rounded(px(16.))
                                     .border_1()
-                                    .border_color(theme::BORDER())
+                                    .border_color(theme::border(cx))
                                     .cursor_pointer()
                                     .text_size(px(12.))
-                                    .text_color(theme::LABEL_2())
-                                    .hover(|s| s.bg(theme::DOCK()))
+                                    .text_color(theme::label_2(cx))
+                                    .hover(|s| s.bg(theme::dock(cx)))
                                     .child(t!("common.cancel"))
                                     .on_click(move |_, window, cx| {
                                         s_close.update(cx, |st, cx| st.close_fetch_modal(cx));
@@ -2738,11 +2754,11 @@ pub(crate) fn open_fetch_models_dialog(
                                         .items_center()
                                         .px(px(14.))
                                         .rounded(px(16.))
-                                        .bg(theme::DOCK())
+                                        .bg(theme::dock(cx))
                                         .cursor_pointer()
                                         .text_size(px(12.))
-                                        .text_color(theme::LABEL())
-                                        .hover(|s| s.bg(theme::BUBBLE()))
+                                        .text_color(theme::label(cx))
+                                        .hover(|s| s.bg(theme::bubble(cx)))
                                         .child(t!("settings.adopt", count = picked_count))
                                         .on_click(move |_, window, cx| {
                                             s_adopt.update(cx, |st, cx| {
@@ -2776,18 +2792,18 @@ pub(crate) fn open_delete_provider_dialog(
     use gpui_kit::component::WindowExt as _;
     let s_confirm = store.clone();
     let pid = id.to_string();
-    window.open_dialog(cx, move |dialog, _, _| {
+    window.open_dialog(cx, move |dialog, _, cx| {
         let s_confirm = s_confirm.clone();
         let pid = pid.clone();
         dialog
             .title(t!("settings.remove_provider", id = pid.clone()))
             .w(px(420.))
-            .bg(theme::LAYER())
-            .content(|content, _, _| {
+            .bg(theme::layer(cx))
+            .content(|content, _, cx| {
                 content.child(
                     div()
                         .debug_selector(|| "provider-delete-card".to_string())
-                        .child(caption_line(t!("settings.remove_provider_desc"))),
+                        .child(caption_line(t!("settings.remove_provider_desc"), cx)),
                 )
             })
             .footer(
@@ -2805,11 +2821,11 @@ pub(crate) fn open_delete_provider_dialog(
                             .px(px(14.))
                             .rounded(px(16.))
                             .border_1()
-                            .border_color(theme::BORDER())
+                            .border_color(theme::border(cx))
                             .cursor_pointer()
                             .text_size(px(12.))
-                            .text_color(theme::LABEL_2())
-                            .hover(|s| s.bg(theme::DOCK()))
+                            .text_color(theme::label_2(cx))
+                            .hover(|s| s.bg(theme::dock(cx)))
                             .child(t!("common.cancel"))
                             .on_click(|_, window, cx| {
                                 window.close_dialog(cx);
@@ -2825,11 +2841,11 @@ pub(crate) fn open_delete_provider_dialog(
                             .px(px(14.))
                             .rounded(px(16.))
                             .border_1()
-                            .border_color(theme::DANGER())
+                            .border_color(theme::danger(cx))
                             .cursor_pointer()
                             .text_size(px(12.))
-                            .text_color(theme::DANGER())
-                            .hover(|s| s.bg(theme::DOCK()))
+                            .text_color(theme::danger(cx))
+                            .hover(|s| s.bg(theme::dock(cx)))
                             .child(t!("common.remove"))
                             .on_click(move |_, window, cx| {
                                 s_confirm.update(cx, |st, cx| st.confirm_delete_provider(&pid, cx));

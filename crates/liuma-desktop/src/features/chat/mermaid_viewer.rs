@@ -69,7 +69,8 @@ pub fn mermaid_viewer(
 
     // 自然逻辑尺寸:SVG 头解析(缓存命中,零渲染;失败 = 渲染必失败,
     // svg_for 失败记忆短路,下帧同样 None 不重试)
-    let nat = crate::kits::mermaid::natural_size(&viewer.source);
+    let rt = crate::kits::mermaid::RenderTheme::of(cx);
+    let nat = crate::kits::mermaid::natural_size(&viewer.source, rt);
     let nat_known = nat.is_some();
     let (nat_w, nat_h) = nat.unwrap_or((1.0, 1.0));
 
@@ -139,12 +140,12 @@ pub fn mermaid_viewer(
             viewport,
             display,
         ))
-        .child(close_button(&store))
+        .child(close_button(&store, cx))
         .into_any_element()
 }
 
 /// 角落关闭钮(同 modal_close 风格;与遮罩环点击/Esc 三路入口)
-fn close_button(store: &Entity<AppStore>) -> impl IntoElement {
+fn close_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let store = store.clone();
     div()
         .id("mv-close")
@@ -158,11 +159,11 @@ fn close_button(store: &Entity<AppStore>) -> impl IntoElement {
         .justify_center()
         .rounded_full()
         .cursor_pointer()
-        .bg(theme::DOCK())
+        .bg(theme::dock(cx))
         .border_1()
-        .border_color(theme::BORDER_2())
-        .text_color(theme::LABEL_2())
-        .hover(|st| st.bg(theme::LAYER()))
+        .border_color(theme::border_2(cx))
+        .text_color(theme::label_2(cx))
+        .hover(|st| st.bg(theme::layer(cx)))
         .on_mouse_down(
             MouseButton::Left,
             |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {

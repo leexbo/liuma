@@ -47,7 +47,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .flex_shrink_0()
         .items_center()
         .border_t_1()
-        .border_color(theme::BORDER())
+        .border_color(theme::border(cx))
         // 与内容画布同底(透 Root 毛玻璃涂层),仅顶缘发丝线分层
         .px(px(16.))
         .text_size(px(11.))
@@ -71,9 +71,9 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                     .items_center()
                     .gap(px(6.))
                     .pl(px(12.))
-                    .text_color(theme::LABEL_2())
+                    .text_color(theme::label_2(cx))
                     .child(fixed(LiumaIcon::AgentPreset, 14.))
-                    .child(div().text_color(theme::LABEL_2()).child(label)),
+                    .child(div().text_color(theme::label_2(cx)).child(label)),
             )
         })
 }
@@ -113,6 +113,7 @@ fn stats_pills(store: &Entity<AppStore>, cx: &App) -> Option<AnyElement> {
             fixed(LiumaIcon::Gauge, 12.).into_any_element(),
             label,
             session_stats_card,
+            cx,
         ));
     }
     let total = input + output;
@@ -130,6 +131,7 @@ fn stats_pills(store: &Entity<AppStore>, cx: &App) -> Option<AnyElement> {
             fixed(LiumaIcon::Database, 12.).into_any_element(),
             label,
             token_usage_card,
+            cx,
         ));
     }
     Some(row.into_any_element())
@@ -144,6 +146,7 @@ fn stats_chip(
     icon: AnyElement,
     label: String,
     card: fn(&Entity<AppStore>, &App) -> AnyElement,
+    cx: &App,
 ) -> impl IntoElement {
     let s_card = store.clone();
     Popover::new(SharedString::from(format!("stats-pop-{sel}")))
@@ -160,8 +163,8 @@ fn stats_chip(
                 .h(px(22.))
                 .rounded(px(6.))
                 .cursor_pointer()
-                .hover(|s| s.bg(theme::DOCK()))
-                .text_color(theme::LABEL_2())
+                .hover(|s| s.bg(theme::dock(cx)))
+                .text_color(theme::label_2(cx))
                 .child(icon)
                 .child(label),
         ))
@@ -172,11 +175,11 @@ fn stats_chip(
                 .debug_selector(|| "stats-card".to_string())
                 .rounded(px(12.))
                 .border_1()
-                .border_color(theme::BORDER())
-                .bg(if theme::is_dark() {
-                    theme::LAYER()
+                .border_color(theme::border(cx))
+                .bg(if theme::is_dark(cx) {
+                    theme::layer(cx)
                 } else {
-                    theme::CARD()
+                    theme::card(cx)
                 })
                 .shadow_md()
                 .child(card(&s_card, cx))
@@ -192,20 +195,24 @@ pub(crate) fn session_stats_card(store: &Entity<AppStore>, cx: &App) -> AnyEleme
         fixed(LiumaIcon::Gauge, 14.).into_any_element(),
         crate::kits::i18n::t!("shell.stats_title"),
         None,
+        cx,
     ));
     if let Some(s) = stats {
         card = card
             .child(detail_row(
                 crate::kits::i18n::t!("shell.stats_model_time"),
                 fmt_duration_compact(s["llmMs"].as_i64().unwrap_or(0)),
+                cx,
             ))
             .child(detail_row(
                 crate::kits::i18n::t!("shell.stats_tool_time"),
                 fmt_duration_compact(s["toolMs"].as_i64().unwrap_or(0)),
+                cx,
             ))
             .child(detail_row(
                 crate::kits::i18n::t!("shell.stats_ttft"),
                 fmt_duration_compact(s["firstTokenMs"].as_i64().unwrap_or(0)),
+                cx,
             ))
             .child(detail_row(
                 crate::kits::i18n::t!("shell.stats_tps"),
@@ -213,6 +220,7 @@ pub(crate) fn session_stats_card(store: &Entity<AppStore>, cx: &App) -> AnyEleme
                     "{} tok/s",
                     fmt_tps(s["tokensPerSecond"].as_f64().unwrap_or(0.0))
                 ),
+                cx,
             ));
     }
     card.into_any_element()
@@ -264,9 +272,10 @@ pub(crate) fn token_usage_card(store: &Entity<AppStore>, cx: &App) -> AnyElement
         fixed(LiumaIcon::Database, 14.).into_any_element(),
         crate::kits::i18n::t!("shell.stats_token_usage"),
         total.map(|t| format!("{} tok", fmt_exact_count(t))),
+        cx,
     ));
     for (label, value) in rows {
-        card = card.child(detail_row(&label, value));
+        card = card.child(detail_row(&label, value, cx));
     }
     card.into_any_element()
 }
@@ -281,6 +290,7 @@ fn card_head(
     icon: AnyElement,
     title: impl Into<SharedString>,
     total: Option<String>,
+    cx: &App,
 ) -> AnyElement {
     let title = title.into();
     div()
@@ -296,7 +306,7 @@ fn card_head(
                     div()
                         .text_size(px(13.))
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme::LABEL())
+                        .text_color(theme::label(cx))
                         .child(title.to_string()),
                 )
                 .when_some(total, |el, t| {
@@ -304,17 +314,17 @@ fn card_head(
                         div()
                             .text_size(px(13.))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme::LABEL())
+                            .text_color(theme::label(cx))
                             .child(t),
                     )
                 }),
         )
-        .child(div().h(px(1.)).w_full().bg(theme::BORDER()))
+        .child(div().h(px(1.)).w_full().bg(theme::border(cx)))
         .into_any_element()
 }
 
 /// 详情卡行(label 左侧灰 / 值右对齐)
-fn detail_row(label: impl Into<SharedString>, value: String) -> AnyElement {
+fn detail_row(label: impl Into<SharedString>, value: String, cx: &App) -> AnyElement {
     let label = label.into();
     div()
         .flex()
@@ -324,13 +334,13 @@ fn detail_row(label: impl Into<SharedString>, value: String) -> AnyElement {
         .child(
             div()
                 .text_size(px(12.))
-                .text_color(theme::LABEL_2())
+                .text_color(theme::label_2(cx))
                 .child(label.to_string()),
         )
         .child(
             div()
                 .text_size(px(12.))
-                .text_color(theme::LABEL())
+                .text_color(theme::label(cx))
                 .child(value),
         )
         .into_any_element()
@@ -382,18 +392,18 @@ fn billing_badge(store: &Entity<AppStore>, cx: &App) -> Option<AnyElement> {
                             .h(px(22.))
                             .rounded(px(6.))
                             .cursor_pointer()
-                            .hover(|s| s.bg(theme::DOCK()))
-                            .child(fixed(LiumaIcon::Gauge, 12.).text_color(theme::LABEL_2()))
+                            .hover(|s| s.bg(theme::dock(cx)))
+                            .child(fixed(LiumaIcon::Gauge, 12.).text_color(theme::label_2(cx)))
                             .when_some(p5, |el, v| {
-                                el.child(window_label(&t!("time.window_5h")))
-                                    .child(usage_bar(v, 20.))
-                                    .child(pct_label(v))
+                                el.child(window_label(&t!("time.window_5h"), cx))
+                                    .child(usage_bar(v, 20., cx))
+                                    .child(pct_label(v, cx))
                             })
                             .when_some(p7, |el, v| {
-                                el.child(div().w(px(1.)).h(px(10.)).bg(theme::BORDER()))
-                                    .child(window_label(&t!("time.window_1w")))
-                                    .child(usage_bar(v, 20.))
-                                    .child(pct_label(v))
+                                el.child(div().w(px(1.)).h(px(10.)).bg(theme::border(cx)))
+                                    .child(window_label(&t!("time.window_1w"), cx))
+                                    .child(usage_bar(v, 20., cx))
+                                    .child(pct_label(v, cx))
                             }),
                     ))
                     // 卡面 chrome(原根级挂载包裹层同款)
@@ -403,11 +413,11 @@ fn billing_badge(store: &Entity<AppStore>, cx: &App) -> Option<AnyElement> {
                             .debug_selector(|| "billing-card".to_string())
                             .rounded(px(12.))
                             .border_1()
-                            .border_color(theme::BORDER())
-                            .bg(if theme::is_dark() {
-                                theme::LAYER()
+                            .border_color(theme::border(cx))
+                            .bg(if theme::is_dark(cx) {
+                                theme::layer(cx)
                             } else {
-                                theme::CARD()
+                                theme::card(cx)
                             })
                             .shadow_md()
                             .child(billing_card(&s_click, cx))
@@ -427,7 +437,7 @@ fn billing_badge(store: &Entity<AppStore>, cx: &App) -> Option<AnyElement> {
             .items_center()
             .gap(px(4.))
             .pr(px(12.))
-            .text_color(theme::LABEL_2())
+            .text_color(theme::label_2(cx))
             .child(fixed(LiumaIcon::Gauge, 12.))
             .child(text)
             .into_any_element(),
@@ -435,10 +445,10 @@ fn billing_badge(store: &Entity<AppStore>, cx: &App) -> Option<AnyElement> {
 }
 
 /// 徽标窗标签(11px 三级色)
-fn window_label(text: &str) -> AnyElement {
+fn window_label(text: &str, cx: &App) -> AnyElement {
     div()
         .text_size(px(11.))
-        .text_color(theme::CAPTION())
+        .text_color(theme::caption(cx))
         .child(text.to_string())
         .into_any_element()
 }
@@ -466,7 +476,7 @@ pub(crate) fn billing_card(store: &Entity<AppStore>, cx: &App) -> AnyElement {
             t!("time.window_5h_long"),
             cache["pct_5h"].as_u64(),
             cache["resets"].as_str().and_then(|r| reset_time(r, false)),
-            theme::BRAND(),
+            theme::brand(cx),
         ),
         (
             t!("time.window_1w_long"),
@@ -474,7 +484,7 @@ pub(crate) fn billing_card(store: &Entity<AppStore>, cx: &App) -> AnyElement {
             cache["resets_7d"]
                 .as_str()
                 .and_then(|r| reset_time(r, true)),
-            theme::SUCCESS(),
+            theme::success(cx),
         ),
     ];
     let mut col = div().v_flex().gap(px(12.)).p(px(14.)).min_w(px(200.));
@@ -493,7 +503,7 @@ pub(crate) fn billing_card(store: &Entity<AppStore>, cx: &App) -> AnyElement {
                             div()
                                 .text_size(px(13.))
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme::LABEL())
+                                .text_color(theme::label(cx))
                                 .child(label),
                         )
                         .child(div().flex_1())
@@ -501,13 +511,13 @@ pub(crate) fn billing_card(store: &Entity<AppStore>, cx: &App) -> AnyElement {
                             div()
                                 .text_size(px(13.))
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme::LABEL())
+                                .text_color(theme::label(cx))
                                 .child(format!("{v}%")),
                         )
                         .children(resets.map(|t| {
                             div()
                                 .text_size(px(12.))
-                                .text_color(theme::CAPTION())
+                                .text_color(theme::caption(cx))
                                 .child(format!("· {t}"))
                         })),
                 )
@@ -517,7 +527,7 @@ pub(crate) fn billing_card(store: &Entity<AppStore>, cx: &App) -> AnyElement {
                         .w(px(172.))
                         .h(px(6.))
                         .rounded(px(3.))
-                        .bg(theme::BORDER_2())
+                        .bg(theme::border_2(cx))
                         .overflow_hidden()
                         .when(v > 0, |el| {
                             el.child(
@@ -548,10 +558,10 @@ fn reset_time(resets: &str, weekly: bool) -> Option<String> {
 }
 
 /// 用量百分比标签(11px 三级色;与进度条同组)
-fn pct_label(v: u64) -> AnyElement {
+fn pct_label(v: u64, cx: &App) -> AnyElement {
     div()
         .text_size(px(11.))
-        .text_color(theme::CAPTION())
+        .text_color(theme::caption(cx))
         .child(format!("{v}%"))
         .into_any_element()
 }

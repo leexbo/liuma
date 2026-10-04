@@ -393,15 +393,15 @@ pub(crate) fn archived_section(store: &Entity<AppStore>, cx: &App) -> impl IntoE
                         .v_flex()
                         .gap(px(4.))
                         .child(section_title(t!("settings.archived_title")))
-                        .child(intro_line(t!("settings.archived_desc")))
+                        .child(intro_line(t!("settings.archived_desc"), cx))
                         .children(st.settings.settings_notice.as_ref().map(|(ok, msg)| {
                             div()
                                 .debug_selector(|| "archived-settings-notice".to_string())
                                 .text_size(px(12.))
                                 .text_color(if *ok {
-                                    theme::SUCCESS()
+                                    theme::success(cx)
                                 } else {
-                                    theme::DANGER()
+                                    theme::danger(cx)
                                 })
                                 .child(format!("{} {msg}", if *ok { "✓" } else { "⚠" }))
                         })),
@@ -420,8 +420,8 @@ pub(crate) fn archived_section(store: &Entity<AppStore>, cx: &App) -> impl IntoE
                         .rounded(px(14.))
                         .cursor_pointer()
                         .text_size(px(12.))
-                        .text_color(theme::DANGER())
-                        .hover(|s| s.bg(theme::DOCK()))
+                        .text_color(theme::danger(cx))
+                        .hover(|s| s.bg(theme::dock(cx)))
                         .child(t!("settings.archived_clear_all"))
                         .on_click(move |_, _, cx| {
                             s.update(cx, |st, cx| st.ask_clear_archived(n, cx));
@@ -475,11 +475,11 @@ pub(crate) fn archived_section(store: &Entity<AppStore>, cx: &App) -> impl IntoE
     // 态分流:加载 / 空清单 / 零命中 = 余高内居中(不进滚动区);
     // 分组列表 = 内部滚动区
     let body: gpui_kit::AnyElement = if st.settings.archived_loading {
-        centered_state("archived-loading", t!("settings.archived_loading")).into_any_element()
+        centered_state("archived-loading", t!("settings.archived_loading"), cx).into_any_element()
     } else if items.is_empty() {
-        centered_state("archived-empty", t!("settings.archived_empty")).into_any_element()
+        centered_state("archived-empty", t!("settings.archived_empty"), cx).into_any_element()
     } else if groups.is_empty() {
-        centered_state("archived-no-match", t!("settings.archived_no_match")).into_any_element()
+        centered_state("archived-no-match", t!("settings.archived_no_match"), cx).into_any_element()
     } else {
         let mut list = div()
             .id("archived-list")
@@ -495,11 +495,17 @@ pub(crate) fn archived_section(store: &Entity<AppStore>, cx: &App) -> impl IntoE
                 div()
                     .v_flex()
                     .gap(px(4.))
-                    .child(archived_group_header(store, &pkey, &name, members.len()))
+                    .child(archived_group_header(
+                        store,
+                        &pkey,
+                        &name,
+                        members.len(),
+                        cx,
+                    ))
                     .children(
                         members
                             .into_iter()
-                            .map(|ix| archived_row(store, &items[ix])),
+                            .map(|ix| archived_row(store, &items[ix], cx)),
                     ),
             );
         }
@@ -515,6 +521,7 @@ pub(crate) fn archived_group_header(
     pkey: &str,
     name: &str,
     count: usize,
+    cx: &App,
 ) -> impl IntoElement {
     let grp_sel = sid("archived-grp", pkey);
     let more_sel = sid("archived-more", pkey);
@@ -531,13 +538,13 @@ pub(crate) fn archived_group_header(
         .child(
             div()
                 .text_size(px(13.))
-                .text_color(theme::LABEL())
+                .text_color(theme::label(cx))
                 .child(name.to_string()),
         )
         .child(
             div()
                 .text_size(px(12.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(t!("settings.archived_count", n = count).into_owned()),
         )
         .child(div().flex_1())
@@ -555,8 +562,8 @@ pub(crate) fn archived_group_header(
                         .justify_center()
                         .rounded(px(4.))
                         .cursor_pointer()
-                        .text_color(theme::CAPTION())
-                        .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL()))
+                        .text_color(theme::caption(cx))
+                        .hover(|s| s.bg(theme::dock(cx)).text_color(theme::label(cx)))
                         .child(fixed(IconName::Ellipsis, 14.)),
                 ))
                 .content({
@@ -565,7 +572,7 @@ pub(crate) fn archived_group_header(
                     let name = name.to_string();
                     move |_, _, cx| {
                         let pop = cx.entity();
-                        archived_group_menu(&s, &pkey, &name, count, pop).into_any_element()
+                        archived_group_menu(&s, &pkey, &name, count, pop, cx).into_any_element()
                     }
                 }),
         )
@@ -578,6 +585,7 @@ pub(crate) fn archived_group_menu(
     name: &str,
     count: usize,
     pop: Entity<PopoverState>,
+    cx: &App,
 ) -> impl IntoElement {
     let s = store.clone();
     let purge_sel = sid("archived-purge", pkey);
@@ -591,8 +599,8 @@ pub(crate) fn archived_group_menu(
         .gap(px(2.))
         .rounded(px(10.))
         .border_1()
-        .border_color(theme::BORDER())
-        .bg(theme::LAYER())
+        .border_color(theme::border(cx))
+        .bg(theme::layer(cx))
         .p(px(4.))
         .shadow_md()
         .child(
@@ -607,8 +615,8 @@ pub(crate) fn archived_group_menu(
                 .rounded(px(6.))
                 .cursor_pointer()
                 .text_size(px(12.))
-                .text_color(theme::DANGER())
-                .hover(|st| st.bg(theme::DOCK()))
+                .text_color(theme::danger(cx))
+                .hover(|st| st.bg(theme::dock(cx)))
                 .child(fixed(LiumaIcon::Trash, 13.))
                 .child(t!("settings.archived_purge_item"))
                 .on_click(move |_, window, cx| {
@@ -627,6 +635,7 @@ pub(crate) fn archived_group_menu(
 pub(crate) fn archived_row(
     store: &Entity<AppStore>,
     item: &ArchivedSessionSummary,
+    cx: &App,
 ) -> impl IntoElement {
     let title = item
         .projections
@@ -650,13 +659,13 @@ pub(crate) fn archived_row(
         .h(px(40.))
         .px(px(10.))
         .rounded(px(8.))
-        .hover(|s| s.bg(theme::LAYER()))
+        .hover(|s| s.bg(theme::layer(cx)))
         .child(
             div()
                 .flex_1()
                 .min_w(px(0.))
                 .text_size(px(13.))
-                .text_color(theme::LABEL())
+                .text_color(theme::label(cx))
                 .truncate()
                 .child(title_shared),
         )
@@ -664,7 +673,7 @@ pub(crate) fn archived_row(
             div()
                 .flex_shrink_0()
                 .text_size(px(12.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(fmt_clock_md(item.updated_at as i64)),
         )
         .child(
@@ -678,8 +687,8 @@ pub(crate) fn archived_row(
                 .justify_center()
                 .rounded(px(6.))
                 .cursor_pointer()
-                .text_color(theme::CAPTION())
-                .hover(|s| s.bg(theme::DOCK()).text_color(theme::DANGER()))
+                .text_color(theme::caption(cx))
+                .hover(|s| s.bg(theme::dock(cx)).text_color(theme::danger(cx)))
                 .tooltip(crate::shell::tip(t!("settings.archived_confirm_delete")))
                 .child(fixed(LiumaIcon::Trash, 14.))
                 .on_click(move |_, _, cx| {
@@ -701,11 +710,11 @@ pub(crate) fn archived_row(
                 .px(px(10.))
                 .rounded(px(12.))
                 .border_1()
-                .border_color(theme::BORDER())
+                .border_color(theme::border(cx))
                 .cursor_pointer()
                 .text_size(px(12.))
-                .text_color(theme::LABEL_2())
-                .hover(|s| s.bg(theme::DOCK()))
+                .text_color(theme::label_2(cx))
+                .hover(|s| s.bg(theme::dock(cx)))
                 .child(fixed(LiumaIcon::ArchiveRestore, 13.))
                 .child(t!("settings.archived_unarchive"))
                 .on_click(move |_, _, cx| {
@@ -732,22 +741,22 @@ pub(crate) fn open_archived_confirm_dialog(
         ArchivedConfirmKind::PurgeProject { .. } => "archived-purge-confirm",
         ArchivedConfirmKind::ClearAll => "archived-clear-confirm",
     };
-    window.open_dialog(cx, move |dialog, _, _| {
+    window.open_dialog(cx, move |dialog, _, cx| {
         let s_confirm = s_confirm.clone();
         let kind = kind.clone();
         dialog
             .title(title.clone())
             .w(px(420.))
-            .bg(theme::LAYER())
+            .bg(theme::layer(cx))
             .content({
                 // 嵌套闭包 move 持有自己的克隆:借用外层捕获变量不满足
                 // content_builder 的 'static(Rc 装箱)
                 let desc = desc.clone();
-                move |content, _, _| {
+                move |content, _, cx| {
                     content.child(
                         div()
                             .debug_selector(|| "archived-confirm-card".to_string())
-                            .child(caption_line(desc.clone())),
+                            .child(caption_line(desc.clone(), cx)),
                     )
                 }
             })
@@ -766,11 +775,11 @@ pub(crate) fn open_archived_confirm_dialog(
                             .px(px(14.))
                             .rounded(px(16.))
                             .border_1()
-                            .border_color(theme::BORDER())
+                            .border_color(theme::border(cx))
                             .cursor_pointer()
                             .text_size(px(12.))
-                            .text_color(theme::LABEL_2())
-                            .hover(|s| s.bg(theme::DOCK()))
+                            .text_color(theme::label_2(cx))
+                            .hover(|s| s.bg(theme::dock(cx)))
                             .child(t!("common.cancel"))
                             .on_click(|_, window, cx| {
                                 window.close_dialog(cx);
@@ -786,11 +795,11 @@ pub(crate) fn open_archived_confirm_dialog(
                             .px(px(14.))
                             .rounded(px(16.))
                             .border_1()
-                            .border_color(theme::DANGER())
+                            .border_color(theme::danger(cx))
                             .cursor_pointer()
                             .text_size(px(12.))
-                            .text_color(theme::DANGER())
-                            .hover(|s| s.bg(theme::DOCK()))
+                            .text_color(theme::danger(cx))
+                            .hover(|s| s.bg(theme::dock(cx)))
                             .child(t!("settings.archived_confirm_delete"))
                             .on_click(move |_, window, cx| {
                                 s_confirm.update(cx, |st, cx| {

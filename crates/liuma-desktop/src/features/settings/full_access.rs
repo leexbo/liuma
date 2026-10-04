@@ -50,7 +50,7 @@ impl AppStore {
 pub(crate) fn open_full_access_dialog(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) {
     use gpui_kit::component::WindowExt as _;
     let (s_cancel, s_confirm, s_close) = (store.clone(), store.clone(), store.clone());
-    window.open_dialog(cx, move |dialog, _, _| {
+    window.open_dialog(cx, move |dialog, _, cx| {
         let (s_cancel, s_confirm, s_close) = (s_cancel.clone(), s_confirm.clone(), s_close.clone());
         dialog
             .title(
@@ -58,18 +58,18 @@ pub(crate) fn open_full_access_dialog(store: &Entity<AppStore>, window: &mut Win
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .child(fixed(IconName::TriangleAlert, 18.).text_color(theme::LABEL()))
+                    .child(fixed(IconName::TriangleAlert, 18.).text_color(theme::label(cx)))
                     .child(
                         div()
                             .text_size(px(16.))
                             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                            .text_color(theme::LABEL())
+                            .text_color(theme::label(cx))
                             .child(t!("settings.fa_title")),
                     ),
             )
             .w(px(440.))
-            .bg(theme::LAYER())
-            .content(|content, _, _| {
+            .bg(theme::layer(cx))
+            .content(|content, _, cx| {
                 content.child(
                     div()
                         .id("full-access-card")
@@ -79,7 +79,7 @@ pub(crate) fn open_full_access_dialog(store: &Entity<AppStore>, window: &mut Win
                         .child(
                             div()
                                 .text_size(px(13.))
-                                .text_color(theme::LABEL_2())
+                                .text_color(theme::label_2(cx))
                                 .child(t!("settings.fa_body")),
                         )
                         .child(
@@ -88,29 +88,32 @@ pub(crate) fn open_full_access_dialog(store: &Entity<AppStore>, window: &mut Win
                                 .debug_selector(|| "full-access-list".to_string())
                                 .v_flex()
                                 .rounded(px(10.))
-                                .bg(theme::DOCK())
+                                .bg(theme::dock(cx))
                                 .child(risk_row(
                                     fixed(IconName::Folder, 16.),
                                     t!("settings.fa_files"),
                                     t!("settings.fa_files_desc"),
+                                    cx,
                                 ))
-                                .child(div().w_full().h(px(1.)).bg(theme::BORDER()))
+                                .child(div().w_full().h(px(1.)).bg(theme::border(cx)))
                                 .child(risk_row(
                                     fixed(IconName::SquareTerminal, 16.),
                                     t!("settings.fa_terminal"),
                                     t!("settings.fa_terminal_desc"),
+                                    cx,
                                 ))
-                                .child(div().w_full().h(px(1.)).bg(theme::BORDER()))
+                                .child(div().w_full().h(px(1.)).bg(theme::border(cx)))
                                 .child(risk_row(
                                     fixed(IconName::Globe, 16.),
                                     t!("settings.fa_internet"),
                                     t!("settings.fa_internet_desc"),
+                                    cx,
                                 )),
                         )
                         .child(
                             div()
                                 .text_size(px(12.))
-                                .text_color(theme::CAPTION())
+                                .text_color(theme::caption(cx))
                                 .child(t!("settings.fa_risk")),
                         ),
                 )
@@ -131,11 +134,11 @@ pub(crate) fn open_full_access_dialog(store: &Entity<AppStore>, window: &mut Win
                             .px(px(14.))
                             .rounded(px(16.))
                             .border_1()
-                            .border_color(theme::BORDER())
+                            .border_color(theme::border(cx))
                             .cursor_pointer()
                             .text_size(px(13.))
-                            .text_color(theme::LABEL_2())
-                            .hover(|s| s.bg(theme::DOCK()))
+                            .text_color(theme::label_2(cx))
+                            .hover(|s| s.bg(theme::dock(cx)))
                             .child(t!("common.cancel"))
                             .on_click(move |_, window, cx| {
                                 s_cancel.update(cx, |st, cx| st.cancel_full_access(window, cx));
@@ -154,15 +157,15 @@ pub(crate) fn open_full_access_dialog(store: &Entity<AppStore>, window: &mut Win
                             .rounded(px(16.))
                             .bg(gpui_kit::Rgba {
                                 a: 0.14,
-                                ..theme::DANGER()
+                                ..theme::danger(cx)
                             })
                             .cursor_pointer()
                             .text_size(px(13.))
-                            .text_color(theme::DANGER())
+                            .text_color(theme::danger(cx))
                             .hover(|s| {
                                 s.bg(gpui_kit::Rgba {
                                     a: 0.22,
-                                    ..theme::DANGER()
+                                    ..theme::danger(cx)
                                 })
                             })
                             .child(fixed(IconName::TriangleAlert, 13.))
@@ -185,6 +188,7 @@ pub(crate) fn risk_row(
     icon: gpui_kit::component::Icon,
     title: impl Into<gpui_kit::SharedString>,
     desc: impl Into<gpui_kit::SharedString>,
+    cx: &App,
 ) -> impl IntoElement {
     let title = title.into();
     let desc = desc.into();
@@ -194,7 +198,7 @@ pub(crate) fn risk_row(
         .gap(px(10.))
         .px(px(12.))
         .py(px(10.))
-        .child(icon.text_color(theme::LABEL_2()))
+        .child(icon.text_color(theme::label_2(cx)))
         .child(
             div()
                 .flex_1()
@@ -204,13 +208,13 @@ pub(crate) fn risk_row(
                 .child(
                     div()
                         .text_size(px(13.))
-                        .text_color(theme::LABEL())
+                        .text_color(theme::label(cx))
                         .child(title.to_string()),
                 )
                 .child(
                     div()
                         .text_size(px(12.))
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .child(desc.to_string()),
                 ),
         )

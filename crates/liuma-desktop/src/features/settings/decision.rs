@@ -326,11 +326,13 @@ pub(crate) fn decision_config_block(store: &Entity<AppStore>, cx: &App) -> impl 
             t!("settings.provider_field_base_url"),
             "decision-url-input",
             &st.settings.decision_form_url,
+            cx,
         ))
         .child(field_input(
             t!("settings.decision_model_label"),
             "decision-model-input",
             &st.settings.decision_form_model,
+            cx,
         ))
         .child(
             div()
@@ -342,6 +344,7 @@ pub(crate) fn decision_config_block(store: &Entity<AppStore>, cx: &App) -> impl 
                     t!("settings.api_key_plain"),
                     "decision-key-input",
                     &st.settings.decision_form_key,
+                    cx,
                 )))
                 .child(
                     div()
@@ -351,14 +354,17 @@ pub(crate) fn decision_config_block(store: &Entity<AppStore>, cx: &App) -> impl 
                         .flex_shrink_0()
                         .items_center()
                         .gap(px(5.))
-                        .child(credential_dot(key_configured))
-                        .child(div().text_size(px(11.)).text_color(theme::CAPTION()).child(
-                            if key_configured {
-                                t!("settings.decision_key_set")
-                            } else {
-                                t!("settings.decision_key_missing")
-                            },
-                        )),
+                        .child(credential_dot(key_configured, cx))
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(theme::caption(cx))
+                                .child(if key_configured {
+                                    t!("settings.decision_key_set")
+                                } else {
+                                    t!("settings.decision_key_missing")
+                                }),
+                        ),
                 ),
         )
         // 端点/模型/密钥附着时才烘进端口,如实交代生效时机
@@ -367,7 +373,7 @@ pub(crate) fn decision_config_block(store: &Entity<AppStore>, cx: &App) -> impl 
                 .id("decision-attach-hint")
                 .debug_selector(|| "decision-attach-hint".to_string())
                 .text_size(px(11.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(t!("settings.decision_attach_hint")),
         )
         .child(field_number_hinted(
@@ -375,6 +381,7 @@ pub(crate) fn decision_config_block(store: &Entity<AppStore>, cx: &App) -> impl 
             "decision-timeout-input",
             &st.settings.decision_form_timeout,
             t!("settings.decision_timeout_hint"),
+            cx,
         ))
         // 阈值组说明:极性写明(守卫/裁判「≥ 才动作」,折叠反向「≤ 才裁」)
         .child(
@@ -382,7 +389,7 @@ pub(crate) fn decision_config_block(store: &Entity<AppStore>, cx: &App) -> impl 
                 .id("decision-threshold-intro")
                 .debug_selector(|| "decision-threshold-intro".to_string())
                 .text_size(px(11.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(t!("settings.decision_threshold_intro")),
         )
         .child(field_number_hinted(
@@ -390,27 +397,30 @@ pub(crate) fn decision_config_block(store: &Entity<AppStore>, cx: &App) -> impl 
             "decision-guard-high-input",
             &st.settings.decision_form_guard_high,
             t!("settings.decision_guard_high_hint"),
+            cx,
         ))
         .child(field_number_hinted(
             t!("settings.decision_context_high_label"),
             "decision-context-high-input",
             &st.settings.decision_form_context_high,
             t!("settings.decision_context_high_hint"),
+            cx,
         ))
         .child(field_number_hinted(
             t!("settings.decision_fold_high_label"),
             "decision-fold-high-input",
             &st.settings.decision_form_fold_high,
             t!("settings.decision_fold_high_hint"),
+            cx,
         ))
         .children(st.settings.settings_notice.as_ref().map(|(ok, msg)| {
             div()
                 .debug_selector(|| "decision-settings-notice".to_string())
                 .text_size(px(12.))
                 .text_color(if *ok {
-                    theme::SUCCESS()
+                    theme::success(cx)
                 } else {
-                    theme::DANGER()
+                    theme::danger(cx)
                 })
                 .child(format!("{} {msg}", if *ok { "✓" } else { "⚠" }))
         }))
@@ -425,11 +435,11 @@ pub(crate) fn decision_config_block(store: &Entity<AppStore>, cx: &App) -> impl 
                     .px(px(14.))
                     .rounded(px(16.))
                     .border_1()
-                    .border_color(theme::BORDER())
+                    .border_color(theme::border(cx))
                     .cursor_pointer()
                     .text_size(px(13.))
-                    .text_color(theme::LABEL_2())
-                    .hover(|s| s.bg(theme::DOCK()))
+                    .text_color(theme::label_2(cx))
+                    .hover(|s| s.bg(theme::dock(cx)))
                     .child(t!("common.save"))
                     .on_click(move |_, window, cx| {
                         s_save.update(cx, |st, cx| st.apply_decision_form(window, cx));
@@ -450,7 +460,7 @@ pub(crate) fn decision_section(store: &Entity<AppStore>, cx: &App) -> impl IntoE
         .v_flex()
         .gap(px(12.))
         .child(section_title(t!("settings.nav_decision")))
-        .child(intro_line(t!("settings.decision_intro")))
+        .child(intro_line(t!("settings.decision_intro"), cx))
         .child(decision_config_block(store, cx));
 
     // 场景行通用形态(标题 + 说明 + 单选组;主开关独立置顶)。
@@ -501,13 +511,13 @@ pub(crate) fn decision_section(store: &Entity<AppStore>, cx: &App) -> impl IntoE
                     .child(
                         div()
                             .text_size(px(13.))
-                            .text_color(theme::LABEL())
+                            .text_color(theme::label(cx))
                             .child(label),
                     )
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(theme::CAPTION())
+                            .text_color(theme::caption(cx))
                             .child(desc.to_string()),
                     ),
             )
@@ -554,7 +564,7 @@ pub(crate) fn decision_section(store: &Entity<AppStore>, cx: &App) -> impl IntoE
                     .flex_1()
                     .text_size(px(13.))
                     .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                    .text_color(theme::LABEL())
+                    .text_color(theme::label(cx))
                     .child(t!("settings.decision_master")),
             )
             .child(
@@ -569,7 +579,7 @@ pub(crate) fn decision_section(store: &Entity<AppStore>, cx: &App) -> impl IntoE
                             .small()
                             .checked(entry.enabled)
                             .small()
-                            .color(theme::LABEL())
+                            .color(theme::label(cx))
                             .on_click(move |_, _, cx| {
                                 st_master.update(cx, |st, cx| st.toggle_decision_enabled(cx));
                             }),

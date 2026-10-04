@@ -74,10 +74,10 @@ enum Color {
 
 impl Sgr {
     /// 解析为渲染样式(全默认态 → None:裸文本不加包装)
-    fn style(&self) -> Option<SpanStyle> {
+    fn style(&self, cx: &App) -> Option<SpanStyle> {
         let style = SpanStyle {
-            color: self.fg.map(|c| resolve(c, true)),
-            bg: self.bg.map(|c| resolve(c, false)),
+            color: self.fg.map(|c| resolve(c, true, cx)),
+            bg: self.bg.map(|c| resolve(c, false, cx)),
             bold: self.bold,
             dim: self.dim,
             italic: self.italic,
@@ -111,19 +111,19 @@ const VGA: [[u8; 3]; 16] = [
 /// 基本色的主题 token 映射:黑/白
 /// 收敛主标签(黑字在暗底不可读),亮黑取弱化标签;红/绿/黄/蓝落到
 /// 状态色;品红/青无 token 对应,走字面色
-fn resolve(c: Color, is_fg: bool) -> Rgba {
+fn resolve(c: Color, is_fg: bool, cx: &App) -> Rgba {
     let [r, g, b] = match c {
         Color::Rgb(r, g, b) => [r, g, b],
         Color::Indexed(n) => color_256(n),
         Color::Basic(i) => {
             if is_fg {
                 match i {
-                    0 | 7 => return theme::LABEL(),
-                    8 => return theme::LABEL_3(),
-                    1 | 9 => return theme::DANGER(),
-                    2 | 10 => return theme::SUCCESS(),
-                    3 | 11 => return theme::WARN(),
-                    4 | 12 => return theme::BRAND(),
+                    0 | 7 => return theme::label(cx),
+                    8 => return theme::label_3(cx),
+                    1 | 9 => return theme::danger(cx),
+                    2 | 10 => return theme::success(cx),
+                    3 | 11 => return theme::warning(cx),
+                    4 | 12 => return theme::brand(cx),
                     _ => VGA[i as usize],
                 }
             } else {
@@ -348,7 +348,7 @@ struct Cell {
 
 /// 重放一行的光标移动:`\r`/退格/擦行按终端语义画进列缓冲,再按格
 /// 态发射 span(入口 SGR 态作行首默认)。返回行 spans + 行尾态。
-fn replay_line(line: &str, entry: &Sgr) -> (AnsiLine, Sgr) {
+fn replay_line(line: &str, entry: &Sgr, cx: &App) -> (AnsiLine, Sgr) {
     let chars: Vec<char> = line.chars().collect();
     let mut columns: Vec<Cell> = Vec::new();
     let mut cursor = 0usize;
@@ -510,7 +510,7 @@ fn replay_line(line: &str, entry: &Sgr) -> (AnsiLine, Sgr) {
                 {
                     spans.push(AnsiSpan {
                         text: buf,
-                        style: s.style(),
+                        style: s.style(cx),
                     });
                 }
                 active = Some((cell.sgr.clone(), ch.to_string()));
@@ -522,23 +522,23 @@ fn replay_line(line: &str, entry: &Sgr) -> (AnsiLine, Sgr) {
     {
         spans.push(AnsiSpan {
             text: buf,
-            style: s.style(),
+            style: s.style(cx),
         });
     }
     (spans, sgr)
 }
 
 /// 无重放行:线性扫 SGR 序列产 span(tab 展开),SGR 态跨行续携带
-fn scan_line(line: &str, entry: &Sgr) -> (AnsiLine, Sgr) {
+fn scan_line(line: &str, entry: &Sgr, cx: &App) -> (AnsiLine, Sgr) {
     let chars: Vec<char> = line.chars().collect();
     let mut sgr = entry.clone();
     let mut spans: AnsiLine = Vec::new();
     let mut buf = String::new();
-    let mut buf_style = sgr.style();
+    let mut buf_style = sgr.style(cx);
     let mut column = 0usize;
     let mut i = 0;
 
-    fn flush(spans: &mut AnsiLine, buf: &mut String, style: Option<SpanStyle>) {
+    fn flush(spans: &mut AnsiLine, buf: &mut String, style: Option<SpanStyle>, _cx: &App) {
         if !buf.is_empty() {
             spans.push(AnsiSpan {
                 text: std::mem::take(buf),
@@ -572,9 +572,9 @@ fn scan_line(line: &str, entry: &Sgr) -> (AnsiLine, Sgr) {
                         .map(|p| p.parse::<i64>().unwrap_or(0))
                         .collect()
                 };
-                flush(&mut spans, &mut buf, buf_style);
+                flush(&mut spans, &mut buf, buf_style, cx);
                 fold_sgr(&mut sgr, &parsed);
-                buf_style = sgr.style();
+                buf_style = sgr.style(cx);
             }
             if final_byte.is_some() {
                 j += 1;
@@ -595,12 +595,12 @@ fn scan_line(line: &str, entry: &Sgr) -> (AnsiLine, Sgr) {
         column += if is_wide(c) { 2 } else { 1 };
         i += 1;
     }
-    flush(&mut spans, &mut buf, buf_style);
+    flush(&mut spans, &mut buf, buf_style, cx);
     (spans, sgr)
 }
 
 /// 解析输出为逐行 span(至少一行)。行尾换行终结符不算空行。
-pub(crate) fn parse_ansi_lines(text: &str) -> Vec<AnsiLine> {
+pub(crate) fn parse_ansi_lines(text: &str, cx: &App) -> Vec<AnsiLine> {
     let cleaned = sanitize(text);
     let mut lines: Vec<AnsiLine> = Vec::new();
     let mut state = Sgr::default();
@@ -608,9 +608,9 @@ pub(crate) fn parse_ansi_lines(text: &str) -> Vec<AnsiLine> {
         // CRLF 的 \r 只是换行终结,不触发重放
         let line = raw.strip_suffix('\r').unwrap_or(raw);
         let (spans, next) = if needs_replay(line) {
-            replay_line(line, &state)
+            replay_line(line, &state, cx)
         } else {
-            scan_line(line, &state)
+            scan_line(line, &state, cx)
         };
         lines.push(spans);
         state = next;
@@ -635,14 +635,14 @@ const CACHE_MIN_BYTES: usize = 512;
 /// 域内自持解析缓存(见 kits::cache;key 撞车互不可见)
 static CACHE: MemoCache<Vec<AnsiLine>> = MemoCache::new(CACHE_CAP, CACHE_MIN_BYTES);
 
-fn parse_cached(key: &str, text: &str) -> Arc<Vec<AnsiLine>> {
+fn parse_cached(key: &str, text: &str, cx: &App) -> Arc<Vec<AnsiLine>> {
     let mut h = DefaultHasher::new();
     text.hash(&mut h);
     let hash = h.finish();
     if let Some(lines) = CACHE.get(key, hash) {
         return lines;
     }
-    let lines = Arc::new(parse_ansi_lines(text));
+    let lines = Arc::new(parse_ansi_lines(text, cx));
     CACHE.put(key, hash, lines.clone(), text.len());
     lines
 }
@@ -690,11 +690,11 @@ pub(crate) fn render(
     let is_failed = failed(signal, exit_code);
     // 状态点色(StateDot 语义):running=进行蓝,失败=红,干净=绿
     let dot_color = if running {
-        theme::ONGOING()
+        theme::ongoing(cx)
     } else if is_failed {
-        theme::DANGER()
+        theme::danger(cx)
     } else {
-        theme::SUCCESS()
+        theme::success(cx)
     };
     // 退出 pill:信号优先,其次非零码;干净落定无 pill
     let pill = if running {
@@ -722,8 +722,8 @@ pub(crate) fn render(
         .rounded(px(12.))
         // l1 描边(聊天位覆写)+ 代码块表面 #1b1b1c
         .border_1()
-        .border_color(theme::BORDER())
-        .bg(theme::CODE())
+        .border_color(theme::border(cx))
+        .bg(theme::code(cx))
         .overflow_hidden()
         // 小号代码字体:12px/18px
         .font_family("Menlo")
@@ -746,18 +746,18 @@ pub(crate) fn render(
                 .pr(px(14.))
                 .py(px(9.))
                 .when(!running, |el| {
-                    el.border_b_1().border_color(theme::BORDER_2())
+                    el.border_b_1().border_color(theme::border_2(cx))
                 })
                 .child(
                     div().v_flex().min_w(px(0.)).flex_1().children(
                         command_lines
                             .iter()
                             .enumerate()
-                            .map(|(li, line)| prompt_row(li, line, cwd))
+                            .map(|(li, line)| prompt_row(li, line, cwd, cx))
                             .collect::<Vec<_>>(),
                     ),
                 )
-                .children(pill.map(status_pill))
+                .children(pill.map(|p| status_pill(p, cx)))
                 .children(
                     // 空输出(含仅转义/控制字节)不显示复制钮(以 trim 近似判空)
                     (!running && output.is_some_and(|o| !o.trim().is_empty()))
@@ -766,7 +766,7 @@ pub(crate) fn render(
         );
 
     if !running {
-        card = card.child(output_area(ix, key, output));
+        card = card.child(output_area(ix, key, output, cx));
     }
     card.into_any_element()
 }
@@ -798,7 +798,7 @@ fn state_dot(id: impl Into<gpui_kit::ElementId>, color: Rgba) -> impl IntoElemen
 
 /// 一条提示行:[cwd 标签|$] [command](命令 pre + 省略号截断;
 /// 基线对齐;点在卡 gutter,行内无点槽)
-fn prompt_row(li: usize, line: &str, cwd: Option<&str>) -> impl IntoElement {
+fn prompt_row(li: usize, line: &str, cwd: Option<&str>, cx: &App) -> impl IntoElement {
     let label = if li == 0 {
         cwd.map(prompt_label).unwrap_or_else(|| "$".into())
     } else {
@@ -812,7 +812,7 @@ fn prompt_row(li: usize, line: &str, cwd: Option<&str>) -> impl IntoElement {
         .child(
             div()
                 .flex_shrink_0()
-                .text_color(theme::LABEL_3())
+                .text_color(theme::label_3(cx))
                 .child(label),
         )
         .child(
@@ -820,14 +820,14 @@ fn prompt_row(li: usize, line: &str, cwd: Option<&str>) -> impl IntoElement {
                 .min_w(px(0.))
                 .flex_1()
                 .truncate()
-                .text_color(theme::LABEL())
+                .text_color(theme::label(cx))
                 .child(line.to_string()),
         )
 }
 
 /// 退出状态 pill(Pill 同构:行高等高、12px 圆角胶囊、layer-2 底、
 /// 错误色文字)
-fn status_pill(text: String) -> impl IntoElement {
+fn status_pill(text: String, cx: &App) -> impl IntoElement {
     div()
         .flex_shrink_0()
         .flex()
@@ -835,9 +835,9 @@ fn status_pill(text: String) -> impl IntoElement {
         .h(px(18.))
         .px(px(8.))
         .rounded(px(9.))
-        .bg(theme::CARD())
+        .bg(theme::card(cx))
         .text_size(px(12.))
-        .text_color(theme::DANGER())
+        .text_color(theme::danger(cx))
         .child(text)
 }
 
@@ -862,8 +862,8 @@ fn copy_control(
         .cursor_pointer()
         // 13px 字号;行高随终端 18
         .text_size(px(13.))
-        .text_color(theme::LABEL_2())
-        .hover(|st| st.text_color(theme::LABEL()))
+        .text_color(theme::label_2(cx))
+        .hover(|st| st.text_color(theme::label(cx)))
         .child(if copied {
             t!("common.copied")
         } else {
@@ -878,16 +878,16 @@ fn copy_control(
 /// 输出区:等宽不软换行(内层列无定宽 → MaxContent 单行测宽,外层
 /// 横向滚动保列对齐)+ 垂直 224px 封顶内部滚(聊天位覆写
 /// --dsl-terminal-output-max-height);空输出占位「无输出」
-fn output_area(ix: usize, key: &str, output: Option<&str>) -> impl IntoElement {
+fn output_area(ix: usize, key: &str, output: Option<&str>, cx: &App) -> impl IntoElement {
     let Some(out) = output else {
-        return empty_output().into_any_element();
+        return empty_output(cx).into_any_element();
     };
-    let lines = parse_cached(key, out);
+    let lines = parse_cached(key, out, cx);
     if lines
         .iter()
         .all(|l| l.iter().all(|s| s.text.trim().is_empty()))
     {
-        return empty_output().into_any_element();
+        return empty_output(cx).into_any_element();
     }
     div()
         .id(("term-out", ix))
@@ -901,23 +901,23 @@ fn output_area(ix: usize, key: &str, output: Option<&str>) -> impl IntoElement {
         .child(
             div()
                 .v_flex()
-                .children(lines.iter().map(line_el).collect::<Vec<_>>()),
+                .children(lines.iter().map(|l| line_el(l, cx)).collect::<Vec<_>>()),
         )
         .into_any_element()
 }
 
-fn empty_output() -> impl IntoElement {
+fn empty_output(cx: &App) -> impl IntoElement {
     div()
         .pl(px(30.))
         .pr(px(14.))
         .py(px(12.))
-        .text_color(theme::LABEL_3())
+        .text_color(theme::label_3(cx))
         .child(t!("chat.no_output"))
 }
 
 /// 单输出行(spans 横排;空行保最小行高维持行计数;非交互,无 id)。
 /// 无 SGR 态的行用主标签色(输出基色 = label-primary)
-fn line_el(line: &AnsiLine) -> impl IntoElement {
+fn line_el(line: &AnsiLine, cx: &App) -> impl IntoElement {
     let mut el = div()
         .flex()
         .min_h(px(18.))
@@ -927,7 +927,7 @@ fn line_el(line: &AnsiLine) -> impl IntoElement {
             span.style
                 .as_ref()
                 .and_then(|st| st.color)
-                .unwrap_or(theme::LABEL()),
+                .unwrap_or(theme::label(cx)),
         );
         if let Some(st) = &span.style {
             if let Some(bg) = st.bg {
@@ -957,6 +957,7 @@ fn line_el(line: &AnsiLine) -> impl IntoElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_kit::TestAppContext;
 
     fn plain(lines: &[AnsiLine]) -> Vec<String> {
         lines
@@ -970,105 +971,135 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn plain_text_untouched() {
-        assert_eq!(
-            plain(&parse_ansi_lines("a\nb")),
-            vec!["a".to_string(), "b".to_string()]
-        );
+    #[gpui_kit::test]
+    fn plain_text_untouched(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            assert_eq!(
+                plain(&parse_ansi_lines("a\nb", cx)),
+                vec!["a".to_string(), "b".to_string()]
+            );
+        });
     }
 
-    #[test]
-    fn sgr_carries_across_lines_until_reset() {
-        let lines = parse_ansi_lines("\x1b[31mred\nstill\x1b[0m plain");
-        // 行 1:整行红
-        assert_eq!(
-            lines[0][0].style.as_ref().unwrap().color,
-            Some(theme::DANGER())
-        );
-        // 行 2:红段 + 重置段(裸文本)
-        assert_eq!(lines[1][0].text, "still");
-        assert_eq!(
-            lines[1][0].style.as_ref().unwrap().color,
-            Some(theme::DANGER())
-        );
-        assert_eq!(lines[1][1].text, " plain");
-        assert_eq!(lines[1][1].style, None);
+    #[gpui_kit::test]
+    fn sgr_carries_across_lines_until_reset(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            let lines = parse_ansi_lines("\x1b[31mred\nstill\x1b[0m plain", cx);
+            // 行 1:整行红
+            assert_eq!(
+                lines[0][0].style.as_ref().unwrap().color,
+                Some(theme::danger(cx))
+            );
+            // 行 2:红段 + 重置段(裸文本)
+            assert_eq!(lines[1][0].text, "still");
+            assert_eq!(
+                lines[1][0].style.as_ref().unwrap().color,
+                Some(theme::danger(cx))
+            );
+            assert_eq!(lines[1][1].text, " plain");
+            assert_eq!(lines[1][1].style, None);
+        });
     }
 
-    #[test]
-    fn osc_and_inert_controls_removed() {
-        assert_eq!(
-            plain(&parse_ansi_lines("\x1b]0;title\x07tex\x07t\x00")),
-            vec!["text".to_string()]
-        );
+    #[gpui_kit::test]
+    fn osc_and_inert_controls_removed(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            assert_eq!(
+                plain(&parse_ansi_lines("\x1b]0;title\x07tex\x07t\x00", cx)),
+                vec!["text".to_string()]
+            );
+        });
     }
 
-    #[test]
-    fn truecolor_and_256_resolve_literal() {
-        let lines = parse_ansi_lines("\x1b[38;2;10;20;30ma\x1b[0m\x1b[38;5;196mb");
-        assert_eq!(
-            lines[0][0].style.as_ref().unwrap().color,
-            Some(Rgba {
-                r: 10. / 255.,
-                g: 20. / 255.,
-                b: 30. / 255.,
-                a: 1.0
-            })
-        );
-        // 196 = 立方 (5,0,0) → 255,0,0
-        assert_eq!(
-            lines[0][1]
-                .style
-                .as_ref()
-                .unwrap()
-                .color
-                .map(|c| (c.r, c.g)),
-            Some((1.0, 0.0))
-        );
+    #[gpui_kit::test]
+    fn truecolor_and_256_resolve_literal(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            let lines = parse_ansi_lines("\x1b[38;2;10;20;30ma\x1b[0m\x1b[38;5;196mb", cx);
+            assert_eq!(
+                lines[0][0].style.as_ref().unwrap().color,
+                Some(Rgba {
+                    r: 10. / 255.,
+                    g: 20. / 255.,
+                    b: 30. / 255.,
+                    a: 1.0
+                })
+            );
+            // 196 = 立方 (5,0,0) → 255,0,0
+            assert_eq!(
+                lines[0][1]
+                    .style
+                    .as_ref()
+                    .unwrap()
+                    .color
+                    .map(|c| (c.r, c.g)),
+                Some((1.0, 0.0))
+            );
+        });
     }
 
-    #[test]
-    fn carriage_return_replays_columns() {
-        // 重绘短于底帧:残帧尾巴保留(例:100%\rOK → OK0%)
-        assert_eq!(
-            plain(&parse_ansi_lines("100%\rOK")),
-            vec!["OK0%".to_string()]
-        );
-        // 尾随退格只移光标不删格:abc\b → abc
-        assert_eq!(
-            plain(&parse_ansi_lines("abc\u{8}")),
-            vec!["abc".to_string()]
-        );
-        // 擦行:ESB[K 截掉光标后残帧
-        assert_eq!(
-            plain(&parse_ansi_lines("spinner…\r\x1b[Kdone")),
-            vec!["done".to_string()]
-        );
+    #[gpui_kit::test]
+    fn carriage_return_replays_columns(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            // 重绘短于底帧:残帧尾巴保留(例:100%\rOK → OK0%)
+            assert_eq!(
+                plain(&parse_ansi_lines("100%\rOK", cx)),
+                vec!["OK0%".to_string()]
+            );
+            // 尾随退格只移光标不删格:abc\b → abc
+            assert_eq!(
+                plain(&parse_ansi_lines("abc\u{8}", cx)),
+                vec!["abc".to_string()]
+            );
+            // 擦行:ESB[K 截掉光标后残帧
+            assert_eq!(
+                plain(&parse_ansi_lines("spinner…\r\x1b[Kdone", cx)),
+                vec!["done".to_string()]
+            );
+        });
     }
 
-    #[test]
-    fn wide_char_keeps_columns_on_redraw() {
-        // 宽字符占两列:中\rA → A + 占位空格(列位不左移)
-        assert_eq!(plain(&parse_ansi_lines("中\rA")), vec!["A ".to_string()]);
+    #[gpui_kit::test]
+    fn wide_char_keeps_columns_on_redraw(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            // 宽字符占两列:中\rA → A + 占位空格(列位不左移)
+            assert_eq!(
+                plain(&parse_ansi_lines("中\rA", cx)),
+                vec!["A ".to_string()]
+            );
+        });
     }
 
-    #[test]
-    fn tabs_expand_to_eight_column_stops() {
-        assert_eq!(
-            plain(&parse_ansi_lines("a\tb")),
-            vec!["a       b".to_string()]
-        );
+    #[gpui_kit::test]
+    fn tabs_expand_to_eight_column_stops(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            assert_eq!(
+                plain(&parse_ansi_lines("a\tb", cx)),
+                vec!["a       b".to_string()]
+            );
+        });
     }
 
-    #[test]
-    fn trailing_newline_terminator_is_not_a_blank_line() {
-        assert_eq!(plain(&parse_ansi_lines("out\n")), vec!["out".to_string()]);
-        // 真空行(双换行)保留
-        assert_eq!(
-            plain(&parse_ansi_lines("a\n\nb")),
-            vec!["a".to_string(), String::new(), "b".to_string()]
-        );
+    #[gpui_kit::test]
+    fn trailing_newline_terminator_is_not_a_blank_line(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            assert_eq!(
+                plain(&parse_ansi_lines("out\n", cx)),
+                vec!["out".to_string()]
+            );
+            // 真空行(双换行)保留
+            assert_eq!(
+                plain(&parse_ansi_lines("a\n\nb", cx)),
+                vec!["a".to_string(), String::new(), "b".to_string()]
+            );
+        });
     }
 
     #[test]
@@ -1082,18 +1113,21 @@ mod tests {
         assert_eq!(prompt_label(""), "$");
     }
 
-    #[test]
-    fn parse_cache_hits_and_misses() {
-        // 长输出(≥512B)入缓存:命中 = Arc 指针相等
-        let long = "out-line\n".repeat(128);
-        let a = parse_cached("t1", &long);
-        let b = parse_cached("t1", &long);
-        assert!(Arc::ptr_eq(&a, &b));
-        let c = parse_cached("t1", "changed");
-        assert!(!Arc::ptr_eq(&a, &c));
-        // 短输出不入缓存(解析廉价,不驻留内存)
-        let s1 = parse_cached("t2", "short");
-        let s2 = parse_cached("t2", "short");
-        assert!(!Arc::ptr_eq(&s1, &s2));
+    #[gpui_kit::test]
+    fn parse_cache_hits_and_misses(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            // 长输出(≥512B)入缓存:命中 = Arc 指针相等
+            let long = "out-line\n".repeat(128);
+            let a = parse_cached("t1", &long, cx);
+            let b = parse_cached("t1", &long, cx);
+            assert!(Arc::ptr_eq(&a, &b));
+            let c = parse_cached("t1", "changed", cx);
+            assert!(!Arc::ptr_eq(&a, &c));
+            // 短输出不入缓存(解析廉价,不驻留内存)
+            let s1 = parse_cached("t2", "short", cx);
+            let s2 = parse_cached("t2", "short", cx);
+            assert!(!Arc::ptr_eq(&s1, &s2));
+        });
     }
 }

@@ -135,8 +135,8 @@ pub(crate) fn render(
         .font_family(FONT_FAMILY)
         .text_size(px(FONT_SIZE))
         .line_height(gpui_kit::relative(LINE_HEIGHT / FONT_SIZE))
-        .bg(theme::CODE())
-        .text_color(theme::LABEL())
+        .bg(theme::code(cx))
+        .text_color(theme::label(cx))
         .overflow_hidden()
         // 焦点路径:仓库首例 track_focus 视图;点击终端区聚焦
         .track_focus(&focus)
@@ -212,11 +212,11 @@ pub(crate) fn render(
                 .flex_1()
                 .items_center()
                 .justify_center()
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(crate::kits::i18n::t!("terminal.starting").to_string()),
         );
         if exited {
-            root = root.child(exited_strip(store.clone()));
+            root = root.child(exited_strip(store.clone(), cx));
         }
         return root.into_any_element();
     };
@@ -234,8 +234,8 @@ pub(crate) fn render(
         .ok()
         .filter(|line| *line < lines.len())
         .map(|line| (line, content.cursor.point.column.0));
-    let term_fg = gpui_kit::Hsla::from(theme::LABEL());
-    let term_bg = gpui_kit::Hsla::from(theme::CODE());
+    let term_fg = gpui_kit::Hsla::from(theme::label(cx));
+    let term_bg = gpui_kit::Hsla::from(theme::code(cx));
     for (row_ix, cells) in lines.iter().enumerate() {
         let cursor_here = cursor_cell
             .filter(|(line, _)| *line == row_ix)
@@ -253,13 +253,13 @@ pub(crate) fn render(
         );
     }
     if exited {
-        root = root.child(exited_strip(store.clone()));
+        root = root.child(exited_strip(store.clone(), cx));
     }
     root.into_any_element()
 }
 
 /// 退出态条:提示 + 重开入口(点击 = 杀旧会话并重 spawn)
-fn exited_strip(store: Entity<AppStore>) -> gpui_kit::AnyElement {
+fn exited_strip(store: Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
     div()
         .flex_shrink_0()
         .h(px(28.))
@@ -268,8 +268,8 @@ fn exited_strip(store: Entity<AppStore>) -> gpui_kit::AnyElement {
         .gap(px(8.))
         .px(px(10.))
         .text_size(px(11.))
-        .text_color(theme::CAPTION())
-        .bg(theme::LAYER())
+        .text_color(theme::caption(cx))
+        .bg(theme::layer(cx))
         .child(crate::kits::i18n::t!("terminal.exited").to_string())
         .child(
             div()
@@ -278,8 +278,8 @@ fn exited_strip(store: Entity<AppStore>) -> gpui_kit::AnyElement {
                 .py(px(2.))
                 .rounded(px(5.))
                 .cursor_pointer()
-                .text_color(theme::LABEL_2())
-                .hover(|st| st.bg(theme::DOCK()).text_color(theme::LABEL()))
+                .text_color(theme::label_2(cx))
+                .hover(|st| st.bg(theme::dock(cx)).text_color(theme::label(cx)))
                 .child(crate::kits::i18n::t!("terminal.restart").to_string())
                 .on_click(move |_, _, cx| {
                     store.update(cx, |st, cx| {

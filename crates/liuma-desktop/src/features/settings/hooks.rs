@@ -193,7 +193,7 @@ pub(crate) fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
             .v_flex()
             .gap(px(12.))
             .child(section_title(t!("settings.nav_hooks")))
-            .child(intro_line(t!("settings.hooks_intro")));
+            .child(intro_line(t!("settings.hooks_intro"), cx));
         let total = bridges.len();
         col = col.child(
             div()
@@ -207,7 +207,7 @@ pub(crate) fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
                         .items_center()
                         .gap(px(4.))
                         .text_size(px(11.))
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .child(t!("settings.installed", total = total)),
                 )
                 .child(div().flex_1())
@@ -220,10 +220,10 @@ pub(crate) fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
                         .items_center()
                         .px(px(12.))
                         .rounded(px(8.))
-                        .bg(theme::LABEL())
+                        .bg(theme::label(cx))
                         .cursor_pointer()
                         .text_size(px(12.))
-                        .text_color(theme::INK())
+                        .text_color(theme::INK)
                         .hover(|s| s.opacity(0.9))
                         .on_click({
                             let st_open = st_add.clone();
@@ -236,7 +236,7 @@ pub(crate) fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
         );
         let mut rows = div().v_flex().gap(px(8.));
         if bridges.is_empty() {
-            rows = rows.child(caption_line(t!("settings.hooks_none")));
+            rows = rows.child(caption_line(t!("settings.hooks_none"), cx));
         }
         for (ix, b) in bridges.into_iter().enumerate() {
             let id = b["id"].as_str().unwrap_or_default().to_string();
@@ -255,7 +255,7 @@ pub(crate) fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
                     .items_center()
                     .gap(px(10.))
                     .rounded(px(10.))
-                    .bg(theme::LAYER())
+                    .bg(theme::layer(cx))
                     .px(px(12.))
                     .py(px(10.))
                     .child(
@@ -268,7 +268,7 @@ pub(crate) fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
                                 div()
                                     .text_size(px(13.))
                                     .font_weight(gpui_kit::FontWeight::MEDIUM)
-                                    .text_color(theme::LABEL())
+                                    .text_color(theme::label(cx))
                                     .child(id_switch_click.clone()),
                             )
                             .child(
@@ -276,7 +276,7 @@ pub(crate) fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
                                     div()
                                         .min_w(px(0.))
                                         .text_size(px(11.))
-                                        .text_color(theme::CAPTION())
+                                        .text_color(theme::caption(cx))
                                         .child(format!("{dialect} · {config_path}")),
                                 ),
                             ),
@@ -288,7 +288,7 @@ pub(crate) fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
                             .child(
                                 Switch::new(("hooks-switch-toggle", ix))
                                     .checked(enabled)
-                                    .color(theme::LABEL())
+                                    .color(theme::label(cx))
                                     .on_click({
                                         let st_switch = st_switch.clone();
                                         let id_sw = id_sw_click.clone();
@@ -311,8 +311,8 @@ pub(crate) fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
                             .rounded(px(11.))
                             .cursor_pointer()
                             .text_size(px(11.))
-                            .text_color(theme::LABEL_2())
-                            .hover(|s| s.bg(theme::DOCK()))
+                            .text_color(theme::label_2(cx))
+                            .hover(|s| s.bg(theme::dock(cx)))
                             .on_click(move |_, window, cx| {
                                 st_edit.update(cx, |st, cx| {
                                     st.open_hooks_edit(&id_ed_click, window, cx)
@@ -331,8 +331,8 @@ pub(crate) fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
                             .rounded(px(11.))
                             .cursor_pointer()
                             .text_size(px(11.))
-                            .text_color(theme::DANGER())
-                            .hover(|s| s.bg(theme::DOCK()))
+                            .text_color(theme::danger(cx))
+                            .hover(|s| s.bg(theme::dock(cx)))
                             .on_click(move |_, _, cx| {
                                 st_remove
                                     .update(cx, |st, cx| st.remove_hook_bridge(&id_rm_click, cx));
@@ -364,9 +364,9 @@ pub(crate) fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
                 .debug_selector(|| "hooks-detail-notice".to_string())
                 .text_size(px(12.))
                 .text_color(if *ok {
-                    theme::SUCCESS()
+                    theme::success(cx)
                 } else {
-                    theme::DANGER()
+                    theme::danger(cx)
                 })
                 .child(format!("{} {msg}", if *ok { "✓" } else { "⚠" }))
         }))
@@ -379,10 +379,10 @@ pub(crate) fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
                 .items_center()
                 .justify_center()
                 .rounded(px(8.))
-                .bg(theme::LAYER())
+                .bg(theme::layer(cx))
                 .cursor_pointer()
                 .text_size(px(12.))
-                .text_color(theme::LABEL_2())
+                .text_color(theme::label_2(cx))
                 .on_click({
                     let st_back = st_back.clone();
                     move |_, _, cx| {
@@ -416,12 +416,12 @@ pub(crate) fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
                             .text_color(if cc_sel {
                                 gpui_kit::white()
                             } else {
-                                theme::LABEL_2().into()
+                                theme::label_2(cx).into()
                             })
                             .bg(if cc_sel {
-                                theme::BRAND()
+                                theme::brand(cx)
                             } else {
-                                theme::LAYER()
+                                theme::layer(cx)
                             })
                             .on_click({
                                 let st_dialect_cc = st_dialect_cc.clone();
@@ -446,12 +446,12 @@ pub(crate) fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
                             .text_color(if codex_sel {
                                 gpui_kit::white()
                             } else {
-                                theme::LABEL_2().into()
+                                theme::label_2(cx).into()
                             })
                             .bg(if codex_sel {
-                                theme::BRAND()
+                                theme::brand(cx)
                             } else {
-                                theme::LAYER()
+                                theme::layer(cx)
                             })
                             .on_click({
                                 let st_dialect_codex = st_dialect_codex.clone();
@@ -471,7 +471,7 @@ pub(crate) fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
             Switch::new("hooks-form-enabled")
                 .small()
                 .checked(detail.form_enabled)
-                .color(theme::LABEL())
+                .color(theme::label(cx))
                 .on_click({
                     let st_toggle = st_toggle.clone();
                     move |_, _, cx| {
@@ -486,21 +486,25 @@ pub(crate) fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
             t!("settings.path"),
             "hooks-form-path",
             &detail.form_config_path,
+            cx,
         ))
         .child(field_input(
             "pluginRoot",
             "hooks-form-plugin-root",
             &detail.form_plugin_root,
+            cx,
         ))
         .child(field_input(
             "projectDir",
             "hooks-form-project-dir",
             &detail.form_project_dir,
+            cx,
         ))
         .child(field_input(
             t!("settings.timeout_ms_hooks"),
             "hooks-form-timeout",
             &detail.form_timeout,
+            cx,
         ))
         .child(
             div()
@@ -512,10 +516,10 @@ pub(crate) fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
                 .items_center()
                 .justify_center()
                 .rounded(px(8.))
-                .bg(theme::LABEL())
+                .bg(theme::label(cx))
                 .cursor_pointer()
                 .text_size(px(12.))
-                .text_color(theme::INK())
+                .text_color(theme::INK)
                 .hover(|s| s.opacity(0.9))
                 .on_click({
                     let st_save = st_save.clone();

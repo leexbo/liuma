@@ -33,11 +33,11 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(fixed(LiumaIcon::ListChecks, 14.).text_color(theme::LABEL_2()))
+            .child(fixed(LiumaIcon::ListChecks, 14.).text_color(theme::label_2(cx)))
             .child(
                 div()
                     .text_size(px(12.))
-                    .text_color(theme::LABEL_2())
+                    .text_color(theme::label_2(cx))
                     .child(t!("shell.plan_tab")),
             )
             .child(
@@ -45,7 +45,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
                     .debug_selector(|| "todo-dock-count".to_string())
                     .flex_1()
                     .text_size(px(11.))
-                    .text_color(theme::CAPTION())
+                    .text_color(theme::caption(cx))
                     .child(t!(
                         "chat.todo_counts",
                         done = counts.0,
@@ -54,24 +54,28 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
                     )),
             ),
         12.,
-        chat.todos.iter().map(todo_row).collect::<Vec<_>>(),
+        chat.todos
+            .iter()
+            .map(|i| todo_row(i, cx))
+            .collect::<Vec<_>>(),
         move |open, _, cx| {
             s.update(cx, |st, cx| st.set_todo_open(open, cx));
         },
+        cx,
     ))
 }
 
 /// 单条 todo(状态点 + 内容;todo_write 工具卡展开体复用同一视觉)
-pub(crate) fn todo_row(item: &TodoItem) -> impl IntoElement {
+pub(crate) fn todo_row(item: &TodoItem, cx: &App) -> impl IntoElement {
     let dot = match item.status.as_str() {
-        "completed" => theme::SUCCESS(),
-        "in_progress" => theme::BRAND(),
-        _ => theme::CAPTION(),
+        "completed" => theme::success(cx),
+        "in_progress" => theme::brand(cx),
+        _ => theme::caption(cx),
     };
     let fg = if item.status == "completed" {
-        theme::CAPTION()
+        theme::caption(cx)
     } else {
-        theme::LABEL_2()
+        theme::label_2(cx)
     };
     div()
         .flex()

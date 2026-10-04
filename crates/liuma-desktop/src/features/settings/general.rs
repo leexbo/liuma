@@ -82,6 +82,43 @@ impl AppStore {
             window,
             cx,
         ));
+        // 主题两行:选项 = registry 内置主题名(id 与显示名同值,
+        // 非词典文案,语言换档不参与重建);当前值取 theme 侧选中名
+        // (启动时已从持久化装配,空串归一为 Liuma 默认——下拉必须
+        // 能选中一项)。先收集选项(registry 借用与后面的 cx 可变
+        // 借用不重叠)
+        let theme_options: [(gpui_kit::component::ThemeMode, Vec<(String, String)>); 2] = [
+            gpui_kit::component::ThemeMode::Light,
+            gpui_kit::component::ThemeMode::Dark,
+        ]
+        .map(|m| {
+            let options: Vec<(String, String)> = gpui_kit::component::ThemeRegistry::global(&*cx)
+                .sorted_themes()
+                .iter()
+                .filter(|t| t.mode == m)
+                .map(|t| (t.name.to_string(), t.name.to_string()))
+                .collect();
+            (m, options)
+        });
+        for (m, options) in theme_options {
+            let current = theme::theme_name(m);
+            let built = Self::build_pref_select(
+                options,
+                &current,
+                if m.is_dark() {
+                    PrefMenuKind::ThemeDark
+                } else {
+                    PrefMenuKind::ThemeLight
+                },
+                window,
+                cx,
+            );
+            if m.is_dark() {
+                self.settings.theme_dark_select = Some(built);
+            } else {
+                self.settings.theme_light_select = Some(built);
+            }
+        }
     }
 
     /// 单个偏好 Select 构建(labels + 当前项 + Confirm 落盘订阅)
@@ -113,6 +150,12 @@ impl AppStore {
                             PrefMenuKind::Permission => this.set_default_permission(&id, cx),
                             PrefMenuKind::Language => this.set_language(&id, cx),
                             PrefMenuKind::BusyEnter => this.set_busy_enter(&id, cx),
+                            PrefMenuKind::ThemeLight => {
+                                this.set_theme_pref(false, &id, cx);
+                            }
+                            PrefMenuKind::ThemeDark => {
+                                this.set_theme_pref(true, &id, cx);
+                            }
                         }
                     }
                 }
@@ -181,6 +224,31 @@ impl AppStore {
             Ok(()) => {
                 i18n::apply(id, cx);
                 self.settings_refresh(cx);
+            }
+            Err(e) => {
+                self.set_settings_notice(false, t!("settings.save_failed", msg = &e.message), cx);
+            }
+        }
+    }
+
+    /// 切换主题偏好(dark = 深盘;落盘 + registry 校验生效:当前盘
+    /// 立即重装,另一盘下次翻盘时装载)
+    pub fn set_theme_pref(&mut self, dark: bool, name: &str, cx: &mut Context<Self>) {
+        let m = if dark {
+            gpui_kit::component::ThemeMode::Dark
+        } else {
+            gpui_kit::component::ThemeMode::Light
+        };
+        let saved = if dark {
+            self.bridge.host().set_theme_dark(name)
+        } else {
+            self.bridge.host().set_theme_light(name)
+        };
+        match saved {
+            Ok(()) => {
+                if !theme::set_theme(m, name, cx) {
+                    self.set_settings_notice(false, t!("settings.theme_unknown", name = name), cx);
+                }
             }
             Err(e) => {
                 self.set_settings_notice(false, t!("settings.save_failed", msg = &e.message), cx);
@@ -317,8 +385,8 @@ pub(crate) fn about_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
         .v_flex()
         .gap(px(12.))
         .child(section_title(t!("settings.about")))
-        .child(info_line(t!("settings.version"), info.version.clone()))
-        .child(intro_line(t!("settings.about_intro")))
+        .child(info_line(t!("settings.version"), info.version.clone(), cx))
+        .child(intro_line(t!("settings.about_intro"), cx))
 }
 
 /// 通用区(行序与形态按 settings.general.item):
@@ -382,6 +450,7 @@ pub(crate) fn general_section(store: &Entity<AppStore>, cx: &App) -> impl IntoEl
             &preset_options,
             preset,
             st.settings.preset_select.as_ref(),
+            cx,
         ))
         .child(selector_row(
             "permission",
@@ -390,6 +459,7 @@ pub(crate) fn general_section(store: &Entity<AppStore>, cx: &App) -> impl IntoEl
             &permission_options,
             permission,
             st.settings.permission_select.as_ref(),
+            cx,
         ))
         .child(selector_row(
             "language",
@@ -398,8 +468,11 @@ pub(crate) fn general_section(store: &Entity<AppStore>, cx: &App) -> impl IntoEl
             &language_options,
             language,
             st.settings.language_select.as_ref(),
+            cx,
         ))
-        .child(appearance_group(store, appearance))
+        .child(appearance_group(store, appearance, cx))
+        // 主题两行跟外观组(浅盘/深盘各自选一个 registry 主题)
+        .child(theme_rows(st, cx))
         .child(selector_row(
             "busy-enter",
             t!("settings.busy_title"),
@@ -407,6 +480,33 @@ pub(crate) fn general_section(store: &Entity<AppStore>, cx: &App) -> impl IntoEl
             &busy_options,
             busy,
             st.settings.busy_enter_select.as_ref(),
+            cx,
+        ))
+}
+
+/// 主题行组(浅盘/深盘主题下拉;外观组之下)
+fn theme_rows(st: &AppStore, cx: &App) -> impl IntoElement {
+    let light = theme::theme_name(gpui_kit::component::ThemeMode::Light);
+    let dark = theme::theme_name(gpui_kit::component::ThemeMode::Dark);
+    div()
+        .v_flex()
+        .child(selector_row(
+            "theme-light",
+            t!("settings.theme_light"),
+            t!("settings.theme_desc"),
+            &[],
+            &light,
+            st.settings.theme_light_select.as_ref(),
+            cx,
+        ))
+        .child(selector_row(
+            "theme-dark",
+            t!("settings.theme_dark"),
+            t!("settings.theme_desc"),
+            &[],
+            &dark,
+            st.settings.theme_dark_select.as_ref(),
+            cx,
         ))
 }
 
@@ -434,6 +534,7 @@ pub(crate) fn selector_row(
     options: &[(String, String)],
     current: &str,
     select: Option<&Entity<SelectState<Vec<gpui_kit::SharedString>>>>,
+    cx: &App,
 ) -> impl IntoElement {
     let title = title.into();
     let desc = desc.into();
@@ -446,7 +547,7 @@ pub(crate) fn selector_row(
         .v_flex()
         .py(px(16.))
         .border_b_1()
-        .border_color(theme::BORDER())
+        .border_color(theme::border(cx))
         .child(
             div()
                 .flex()
@@ -462,7 +563,7 @@ pub(crate) fn selector_row(
                             el.child(
                                 div()
                                     .text_size(px(12.))
-                                    .text_color(theme::CAPTION())
+                                    .text_color(theme::caption(cx))
                                     .child(desc.to_string()),
                             )
                         }),
@@ -482,7 +583,11 @@ pub(crate) fn selector_row(
 
 /// 外观组(标题 + cube 行;cube = 图标上文字下,
 /// r16,选中 = 模块填充 + 描边)
-pub(crate) fn appearance_group(store: &Entity<AppStore>, current: &str) -> impl IntoElement {
+pub(crate) fn appearance_group(
+    store: &Entity<AppStore>,
+    current: &str,
+    cx: &App,
+) -> impl IntoElement {
     let cubes: [(
         &str,
         std::borrow::Cow<'static, str>,
@@ -523,27 +628,27 @@ pub(crate) fn appearance_group(store: &Entity<AppStore>, current: &str) -> impl 
                 .rounded(px(16.))
                 .border_1()
                 .border_color(if active {
-                    theme::LABEL_3()
+                    theme::label_3(cx)
                 } else {
-                    theme::BORDER()
+                    theme::border(cx)
                 })
-                .when(active, |el| el.bg(theme::DOCK()))
+                .when(active, |el| el.bg(theme::dock(cx)))
                 .cursor_pointer()
                 .text_size(px(14.))
                 .text_color(if active {
-                    theme::LABEL()
+                    theme::label(cx)
                 } else {
-                    theme::LABEL_2()
+                    theme::label_2(cx)
                 })
-                .when(!active, |el| el.hover(|s| s.bg(theme::LAYER())))
+                .when(!active, |el| el.hover(|s| s.bg(theme::layer(cx))))
                 .child(icon)
                 .child(label)
-                .on_click(move |_, window, cx| {
-                    // 落盘成功即实装生效:同步切主题盘 + 组件 token(点击
-                    // 闭包已持 window,Theme::change 直刷本窗)
+                .on_click(move |_, _window, cx| {
+                    // 落盘成功即实装生效:同步切主题盘 + 组件 token
+                    // (Theme::update 自动全窗刷新)
                     let ok = s.update(cx, |st, cx| st.set_appearance(id, cx));
                     if ok {
-                        theme::apply(theme::Appearance::parse(id), Some(window), cx);
+                        theme::apply(theme::Appearance::parse(id), cx);
                     }
                 }),
         );
@@ -555,7 +660,7 @@ pub(crate) fn appearance_group(store: &Entity<AppStore>, current: &str) -> impl 
         .gap(px(8.))
         .py(px(16.))
         .border_b_1()
-        .border_color(theme::BORDER())
+        .border_color(theme::border(cx))
         .child(
             div()
                 .text_size(px(14.))

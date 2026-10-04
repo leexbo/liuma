@@ -420,7 +420,7 @@ impl Render for WorkspaceView {
             .size_full()
             .overflow_hidden()
             // 画布底由 Root 层承担(c.background = BASE),此处不重复铺底
-            .text_color(theme::LABEL())
+            .text_color(theme::label(cx))
             // 拖选实时刷新驱动器(零尺寸;见其文档)——必须与本列同窗,
             // 监听挂在窗口级,置脏后渲染循环出帧高亮才实时
             .child(SelectionRefreshDriver)
@@ -684,7 +684,7 @@ impl Render for WorkspaceView {
             // 拖拽邀请蒙层(根级;gpui-pre 将 OS 文件拖放翻译为内部
             // active_drag,拖动期间全屏重绘,蒙层即落点)
             .when(cx.has_active_drag(), |el| {
-                el.child(attachments::drop_overlay(&self.store))
+                el.child(attachments::drop_overlay(&self.store, cx))
             })
             // Mermaid 查看器(根级;与 lightbox 同构。置于 toast 前——
             // 下载完成通知须浮于查看器遮罩之上)

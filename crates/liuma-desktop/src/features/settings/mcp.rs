@@ -532,13 +532,13 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                     .debug_selector(|| "mcp-settings-notice".to_string())
                     .text_size(px(12.))
                     .text_color(if *ok {
-                        theme::SUCCESS()
+                        theme::success(cx)
                     } else {
-                        theme::DANGER()
+                        theme::danger(cx)
                     })
                     .child(format!("{} {msg}", if *ok { "✓" } else { "⚠" }))
             }))
-            .child(intro_line(t!("settings.mcp_intro")));
+            .child(intro_line(t!("settings.mcp_intro"), cx));
         // 列表头:「已安装 N」+ 新建主钮
         let total = servers.len();
         col = col.child(
@@ -553,7 +553,7 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                         .items_center()
                         .gap(px(4.))
                         .text_size(px(11.))
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .child(t!("settings.installed", total = total)),
                 )
                 .child(div().flex_1())
@@ -566,10 +566,10 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                         .items_center()
                         .px(px(12.))
                         .rounded(px(8.))
-                        .bg(theme::LABEL())
+                        .bg(theme::label(cx))
                         .cursor_pointer()
                         .text_size(px(12.))
-                        .text_color(theme::INK())
+                        .text_color(theme::INK)
                         .hover(|s| s.opacity(0.9))
                         .on_click({
                             let st_open = st_add.clone();
@@ -583,7 +583,7 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
 
         let mut rows = div().v_flex().gap(px(8.));
         if servers.is_empty() {
-            rows = rows.child(caption_line(t!("settings.mcp_none")));
+            rows = rows.child(caption_line(t!("settings.mcp_none"), cx));
         }
         for (ix, s) in servers.into_iter().enumerate() {
             let id = s["id"].as_str().unwrap_or_default().to_string();
@@ -623,17 +623,17 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
             let (id_ed_dbg, id_ed_click) = (id_edit_click.clone(), id_edit_click.clone());
             let (id_rm_dbg, id_rm_click) = (id_remove_click.clone(), id_remove_click.clone());
             let (dot_color, status_text) = match status.0.as_str() {
-                "ready" => (theme::SUCCESS(), String::new()),
+                "ready" => (theme::success(cx), String::new()),
                 "connecting" => (
-                    theme::LABEL_2(),
+                    theme::label_2(cx),
                     t!("settings.status_connecting").to_string(),
                 ),
                 "reconnecting" => (
-                    theme::LABEL_2(),
+                    theme::label_2(cx),
                     t!("settings.status_reconnecting").to_string(),
                 ),
-                "failed" => (theme::DANGER(), t!("settings.status_failed").to_string()),
-                _ => (theme::CAPTION(), String::new()),
+                "failed" => (theme::danger(cx), t!("settings.status_failed").to_string()),
+                _ => (theme::caption(cx), String::new()),
             };
             // 摘要随传输形态:url 在场 = http(host),否则 stdio(命令+参数)
             let is_http = s["url"].as_str().is_some_and(|u| !u.is_empty());
@@ -661,7 +661,7 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                     .items_center()
                     .gap(px(10.))
                     .rounded(px(10.))
-                    .bg(theme::LAYER())
+                    .bg(theme::layer(cx))
                     .px(px(12.))
                     .py(px(10.))
                     // 左列:名称行(状态点 + id)/ 摘要行
@@ -681,7 +681,7 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                                         div()
                                             .text_size(px(13.))
                                             .font_weight(gpui_kit::FontWeight::MEDIUM)
-                                            .text_color(theme::LABEL())
+                                            .text_color(theme::label(cx))
                                             .child(id_switch_click.clone()),
                                     ),
                             )
@@ -694,13 +694,13 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                                         div()
                                             .min_w(px(0.))
                                             .text_size(px(11.))
-                                            .text_color(theme::CAPTION())
+                                            .text_color(theme::caption(cx))
                                             .child(summary),
                                     )
                                     .children((!status_text.is_empty()).then(|| {
                                         div()
                                             .text_size(px(11.))
-                                            .text_color(status_color_of(&status))
+                                            .text_color(status_color_of(&status, cx))
                                             .child(status_text)
                                     })),
                             ),
@@ -714,7 +714,7 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                             .child(
                                 Switch::new(("mcp-switch-toggle", ix))
                                     .checked(enabled)
-                                    .color(theme::LABEL())
+                                    .color(theme::label(cx))
                                     .on_click({
                                         let st_switch = st_switch.clone();
                                         let id_sw = id_sw_click.clone();
@@ -737,8 +737,8 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                             .rounded(px(11.))
                             .cursor_pointer()
                             .text_size(px(11.))
-                            .text_color(theme::LABEL_2())
-                            .hover(|s| s.bg(theme::DOCK()))
+                            .text_color(theme::label_2(cx))
+                            .hover(|s| s.bg(theme::dock(cx)))
                             .on_click(move |_, window, cx| {
                                 st_edit.update(cx, |st, cx| {
                                     st.open_mcp_edit(&id_ed_click, window, cx)
@@ -757,8 +757,8 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                             .rounded(px(11.))
                             .cursor_pointer()
                             .text_size(px(11.))
-                            .text_color(theme::DANGER())
-                            .hover(|s| s.bg(theme::DOCK()))
+                            .text_color(theme::danger(cx))
+                            .hover(|s| s.bg(theme::dock(cx)))
                             .on_click(move |_, _, cx| {
                                 st_remove
                                     .update(cx, |st, cx| st.remove_mcp_server(&id_rm_click, cx));
@@ -807,13 +807,13 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                     div()
                         .text_size(px(15.))
                         .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                        .text_color(theme::LABEL())
+                        .text_color(theme::label(cx))
                         .child(title),
                 )
                 .child(
                     div()
                         .text_size(px(11.))
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .child(intro),
                 ),
         )
@@ -824,7 +824,7 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                 .items_center()
                 .gap(px(2.))
                 .rounded(px(10.))
-                .bg(theme::LAYER())
+                .bg(theme::layer(cx))
                 .p(px(2.))
                 .child(
                     div()
@@ -838,14 +838,14 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                         .cursor_pointer()
                         .text_size(px(11.))
                         .text_color(if json_open {
-                            theme::CAPTION().into()
+                            theme::caption(cx).into()
                         } else {
                             gpui_kit::white()
                         })
                         .bg(if json_open {
-                            theme::LAYER()
+                            theme::layer(cx)
                         } else {
-                            theme::BRAND()
+                            theme::brand(cx)
                         })
                         .on_click(move |_, window, cx| {
                             st_form.update(cx, |st, cx| {
@@ -872,12 +872,12 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                         .text_color(if json_open {
                             gpui_kit::white()
                         } else {
-                            theme::CAPTION().into()
+                            theme::caption(cx).into()
                         })
                         .bg(if json_open {
-                            theme::BRAND()
+                            theme::brand(cx)
                         } else {
-                            theme::LAYER()
+                            theme::layer(cx)
                         })
                         .on_click(move |_, window, cx| {
                             st_json.update(cx, |st, cx| {
@@ -900,8 +900,8 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
             .flex()
             .items_center()
             .justify_center()
-            .text_color(theme::CAPTION())
-            .hover(|s| s.bg(theme::DOCK()))
+            .text_color(theme::caption(cx))
+            .hover(|s| s.bg(theme::dock(cx)))
             .on_click(move |_, _, cx| {
                 st_close.update(cx, |st, cx| st.close_mcp_detail(cx));
             })
@@ -916,8 +916,8 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
         .gap(px(14.))
         .rounded(px(10.))
         .border_1()
-        .border_color(theme::BORDER())
-        .bg(theme::LAYER())
+        .border_color(theme::border(cx))
+        .bg(theme::layer(cx))
         .p(px(14.))
         .child(head);
 
@@ -928,7 +928,7 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                 div()
                     .v_flex()
                     .gap(px(6.))
-                    .child(caption_line(t!("settings.full_config")))
+                    .child(caption_line(t!("settings.full_config"), cx))
                     .child(
                         div()
                             .id("mcp-json-input")
@@ -943,7 +943,7 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
             card = card.child(
                 div()
                     .text_size(px(11.))
-                    .text_color(theme::DANGER())
+                    .text_color(theme::danger(cx))
                     .child(format!("⚠ {e}")),
             );
         }
@@ -953,7 +953,7 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                 list = list.child(
                     div()
                         .text_size(px(11.))
-                        .text_color(theme::LABEL_2())
+                        .text_color(theme::label_2(cx))
                         .child(format!("{} · {}", e.id, e.command)),
                 );
             }
@@ -971,7 +971,7 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                 .flex()
                 .items_center()
                 .text_size(px(12.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(id.clone())
                 .into_any_element()
         } else {
@@ -999,7 +999,7 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                         .w(px(64.))
                         .flex_shrink_0()
                         .text_size(px(11.))
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .child(t!("settings.name")),
                 )
                 .child(id_field),
@@ -1022,11 +1022,11 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                 .cursor_pointer()
                 .text_size(px(12.));
             let base = if active {
-                base.bg(theme::ONGOING().opacity(0.14))
-                    .text_color(theme::LABEL_2())
+                base.bg(theme::ongoing(cx).opacity(0.14))
+                    .text_color(theme::label_2(cx))
             } else {
-                base.text_color(theme::CAPTION())
-                    .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL_2()))
+                base.text_color(theme::caption(cx))
+                    .hover(|s| s.bg(theme::dock(cx)).text_color(theme::label_2(cx)))
             };
             base.child(label)
                 .on_click(move |_, _, cx| {
@@ -1072,13 +1072,13 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                         .w(px(64.))
                         .flex_shrink_0()
                         .text_size(px(11.))
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .child(t!("settings.transport")),
                 )
                 .child(transport_row),
         );
         if detail.form_http {
-            card = card.child(field_input("URL", "mcp-url-input", &detail.form_url));
+            card = card.child(field_input("URL", "mcp-url-input", &detail.form_url, cx));
             // 请求头(键值对;原样透传,如 Authorization)
             let mut header_rows = div().v_flex().gap(px(4.));
             for (ix, (k, v)) in detail.form_headers.iter().enumerate() {
@@ -1100,8 +1100,8 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                                 .rounded(px(6.))
                                 .cursor_pointer()
                                 .text_size(px(11.))
-                                .text_color(theme::CAPTION())
-                                .hover(|s| s.bg(theme::DOCK()).text_color(theme::DANGER()))
+                                .text_color(theme::caption(cx))
+                                .hover(|s| s.bg(theme::dock(cx)).text_color(theme::danger(cx)))
                                 .on_click({
                                     let st_rm = st_rm.clone();
                                     move |_, _, cx| {
@@ -1117,7 +1117,7 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                 div()
                     .v_flex()
                     .gap(px(4.))
-                    .child(caption_line(t!("settings.headers_desc")))
+                    .child(caption_line(t!("settings.headers_desc"), cx))
                     .child(header_rows)
                     .child(
                         div()
@@ -1129,8 +1129,8 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                             .rounded(px(6.))
                             .cursor_pointer()
                             .text_size(px(11.))
-                            .text_color(theme::CAPTION())
-                            .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL_2()))
+                            .text_color(theme::caption(cx))
+                            .hover(|s| s.bg(theme::dock(cx)).text_color(theme::label_2(cx)))
                             .on_click({
                                 let st_header_add = st_header_add.clone();
                                 move |_, window, cx| {
@@ -1146,8 +1146,9 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                 "command",
                 "mcp-command-input",
                 &detail.form_command,
+                cx,
             ));
-            card = card.child(field_input("cwd", "mcp-cwd-input", &detail.form_cwd));
+            card = card.child(field_input("cwd", "mcp-cwd-input", &detail.form_cwd, cx));
             // 参数(每参数一条;含空格的参数单行化会吞内容)
             let mut arg_rows = div().v_flex().gap(px(4.));
             for (ix, arg) in detail.form_args.iter().enumerate() {
@@ -1168,8 +1169,8 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                                 .rounded(px(6.))
                                 .cursor_pointer()
                                 .text_size(px(11.))
-                                .text_color(theme::CAPTION())
-                                .hover(|s| s.bg(theme::DOCK()).text_color(theme::DANGER()))
+                                .text_color(theme::caption(cx))
+                                .hover(|s| s.bg(theme::dock(cx)).text_color(theme::danger(cx)))
                                 .on_click({
                                     let st_rm = st_rm.clone();
                                     move |_, _, cx| {
@@ -1185,7 +1186,7 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                 div()
                     .v_flex()
                     .gap(px(4.))
-                    .child(caption_line(t!("settings.args_desc")))
+                    .child(caption_line(t!("settings.args_desc"), cx))
                     .child(arg_rows)
                     .child(
                         div()
@@ -1197,8 +1198,8 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                             .rounded(px(6.))
                             .cursor_pointer()
                             .text_size(px(11.))
-                            .text_color(theme::CAPTION())
-                            .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL_2()))
+                            .text_color(theme::caption(cx))
+                            .hover(|s| s.bg(theme::dock(cx)).text_color(theme::label_2(cx)))
                             .on_click({
                                 let st_arg_add = st_arg_add.clone();
                                 move |_, window, cx| {
@@ -1229,8 +1230,8 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                                 .rounded(px(6.))
                                 .cursor_pointer()
                                 .text_size(px(11.))
-                                .text_color(theme::CAPTION())
-                                .hover(|s| s.bg(theme::DOCK()).text_color(theme::DANGER()))
+                                .text_color(theme::caption(cx))
+                                .hover(|s| s.bg(theme::dock(cx)).text_color(theme::danger(cx)))
                                 .on_click({
                                     let st_rm = st_rm.clone();
                                     move |_, _, cx| {
@@ -1246,7 +1247,7 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                 div()
                     .v_flex()
                     .gap(px(4.))
-                    .child(caption_line(t!("settings.env_desc")))
+                    .child(caption_line(t!("settings.env_desc"), cx))
                     .child(env_rows)
                     .child(
                         div()
@@ -1258,8 +1259,8 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                             .rounded(px(6.))
                             .cursor_pointer()
                             .text_size(px(11.))
-                            .text_color(theme::CAPTION())
-                            .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL_2()))
+                            .text_color(theme::caption(cx))
+                            .hover(|s| s.bg(theme::dock(cx)).text_color(theme::label_2(cx)))
                             .on_click({
                                 let st_env_add = st_env_add.clone();
                                 move |_, window, cx| {
@@ -1274,6 +1275,7 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
             t!("settings.timeout_ms_mcp"),
             "mcp-timeout-input",
             &detail.form_timeout,
+            cx,
         ));
         // 启用开关(启停由表单随保存落盘)
         let st_enable = store.clone();
@@ -1286,9 +1288,9 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                     div()
                         .text_size(px(11.))
                         .text_color(if detail.form_enabled {
-                            theme::LABEL_2()
+                            theme::label_2(cx)
                         } else {
-                            theme::CAPTION()
+                            theme::caption(cx)
                         })
                         .child(if detail.form_enabled {
                             t!("settings.enabled")
@@ -1300,7 +1302,7 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                     Switch::new("mcp-enabled")
                         .small()
                         .checked(detail.form_enabled)
-                        .color(theme::LABEL())
+                        .color(theme::label(cx))
                         .on_click({
                             let st_enable = st_enable.clone();
                             move |_, _, cx| {
@@ -1326,8 +1328,8 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                 .rounded(px(6.))
                 .cursor_pointer()
                 .text_size(px(12.))
-                .text_color(theme::DANGER())
-                .hover(|s| s.bg(theme::DOCK()))
+                .text_color(theme::danger(cx))
+                .hover(|s| s.bg(theme::dock(cx)))
                 .on_click(move |_, _, cx| {
                     st_uninstall.update(cx, |st, cx| st.uninstall_mcp_detail(cx));
                 })
@@ -1343,11 +1345,11 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
             .items_center()
             .justify_center()
             .rounded(px(8.))
-            .bg(theme::LABEL())
+            .bg(theme::label(cx))
             .px(px(18.))
             .cursor_pointer()
             .text_size(px(12.))
-            .text_color(theme::INK())
+            .text_color(theme::INK)
             .hover(|s| s.opacity(0.9))
             .on_click(move |_, _, cx| {
                 st_save.update(cx, |st, cx| st.save_mcp_detail(cx));
@@ -1364,8 +1366,8 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
             .rounded(px(8.))
             .cursor_pointer()
             .text_size(px(12.))
-            .text_color(theme::LABEL_2())
-            .hover(|s| s.bg(theme::DOCK()))
+            .text_color(theme::label_2(cx))
+            .hover(|s| s.bg(theme::dock(cx)))
             .on_click(move |_, _, cx| {
                 st_cancel.update(cx, |st, cx| st.close_mcp_detail(cx));
             })
@@ -1376,11 +1378,11 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
 }
 
 /// MCP 连接状态着色(ready 绿 / connecting 中性 / failed 红 / 其余灰)
-pub(crate) fn status_color_of(status: &(String, String)) -> gpui_kit::Rgba {
+pub(crate) fn status_color_of(status: &(String, String), cx: &App) -> gpui_kit::Rgba {
     match status.0.as_str() {
-        "ready" => theme::SUCCESS(),
-        "connecting" => theme::LABEL_2(),
-        "failed" => theme::DANGER(),
-        _ => theme::CAPTION(),
+        "ready" => theme::success(cx),
+        "connecting" => theme::label_2(cx),
+        "failed" => theme::danger(cx),
+        _ => theme::caption(cx),
     }
 }

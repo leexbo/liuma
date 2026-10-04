@@ -1,21 +1,19 @@
-//! 双盘主题:深色盘为纯中性灰家族(内容区 #151515、侧栏/标题栏
-//! #1A1A1A,全部表面实色不透明);浅色盘对照系统亮色。窗口恒实色
-//! (无透明/毛玻璃特效),画布底由组件库 Root 层(`c.background`)
-//! 单涂层承担。色板内联为唯一来源 → gpui-component [`ThemeColor`]
-//! 映射。设置页「外观」三档(浅色/深色/跟随系统)经 [`apply`]
-//! 实装:启动读 settings.yaml、设置点击即切、「跟随系统」由窗口
-//! 外观观察者驱动(shell::store 挂 `observe_window_appearance`)。
-//!
-//! 调用点形态:`theme::BASE()` —— SCREAMING_CASE 取值 fn 保持原常量
-//! 调用形态;运行时按 [`MODE`]
-//! 原子分发双盘,渲染热路径 = 一次 Relaxed load + 字段拷贝。
+//! 主题:色板唯一来源 = ThemeRegistry 的 JSON 主题(`assets/themes/`,
+//! 内嵌加载,liuma 双盘 = "Liuma Dark/Light")。界面色一律经
+//! snake_case 包装 fn 直读 `cx.theme()` 的语义 token;无对应 token
+//! 的私有语义(composer/文字层级/发丝线/玻璃态等)由 `*_of` 公式
+//! 从基础 token 锚定派生,公式唯一源在包装层。headless 消费者
+//! (mermaid 光栅渲染/语法高亮)由调用方持 cx 处取值后穿参
+//! ([`palette_of`] / [`is_dark`])。设置页「外观」三档(浅色/深色/
+//! 跟随系统)经 [`apply`] 装载;「跟随系统」由窗口外观观察者驱动
+//! (shell::store 挂 `observe_window_appearance`)。
 
-#![allow(non_snake_case)]
-
+use std::rc::Rc;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use gpui_kit::component::{Theme, ThemeMode, ThemeTokens};
-use gpui_kit::{App, Rgba, Window, WindowAppearance, rgba};
+use gpui_kit::component::{ActiveTheme as _, Theme, ThemeConfig, ThemeMode, ThemeRegistry};
+use gpui_kit::{App, Hsla, Rgba, WindowAppearance, px, rgba};
 
 // ── 外观档位(与 registry settings.yaml appearance 字段同词汇)──
 
@@ -68,44 +66,29 @@ impl Appearance {
 /// 整字推出边界。
 pub const FONT_SANS: &str = "PingFang SC";
 
-// ── 双盘色板 ─────────────────────────────────────────────────
+// ── 派生色板 ─────────────────────────────────────────────────
 
-/// 一套完整色板(深浅两盘同构;字段语义见各取值 fn 文档)
+/// mermaid headless 渲染所需的语义色快照(字段语义见同名包装 fn
+/// 文档)。由 [`palette_of`] 从组件库 Theme 派生的纯数据,在持 cx 的
+/// 调用点一次取值后随 [`RenderTheme`](crate::kits::mermaid::RenderTheme)
+/// 穿线;界面渲染不走此结构,一律用 snake_case 包装 fn 直读
+#[derive(Clone, Copy)]
 pub struct Palette {
     pub base: Rgba,
-    pub sidebar: Rgba,
-    /// 侧栏行 hover(与内容区 hover 分族:侧栏底上压内容区 hover 显脏)
-    pub sidebar_hover: Rgba,
-    /// 侧栏行激活/选中(对照 Finder 选中行的同级提亮)
-    pub sidebar_active: Rgba,
-    /// 标题栏面(深盘与侧栏同色同源,顶条延伸侧栏观感;浅盘纯白)
-    pub title_bar: Rgba,
-    pub ink: Rgba,
     pub layer: Rgba,
     pub card: Rgba,
-    /// 输入卡面(浮出画布一档,对照 deepseek harness 输入卡 39,39,41;
-    /// 勿与 CARD 混用——工具卡/终端卡等仍走 CARD 梯位)
-    pub composer: Rgba,
     pub dock: Rgba,
     pub brand: Rgba,
     pub danger: Rgba,
     pub success: Rgba,
     pub warn: Rgba,
-    pub bubble: Rgba,
     pub label: Rgba,
     pub label_2: Rgba,
     pub label_3: Rgba,
     pub caption: Rgba,
-    pub border: Rgba,
     pub border_2: Rgba,
     pub code: Rgba,
     pub ongoing: Rgba,
-    pub glass_bg: Rgba,
-    pub glass_border: Rgba,
-    /// 工具卡扫光渐变端点(半透明,亮随暗反色)
-    pub sweep: Rgba,
-    /// 时间刻度非激活色(半透明,亮随暗反色)
-    pub tick_idle: Rgba,
 }
 
 /// 不透明 hex → RGBA(常量构造:gpui 的 `rgb()` 非 const,字段为 0..1 f32)
@@ -118,203 +101,15 @@ const fn color(hex: u32, a: f32) -> Rgba {
     }
 }
 
-/// 深色盘:纯中性灰家族——base 内容区(用户指定 RGB 21,21,21),
-/// sidebar/标题栏同色(用户指定 RGB 26,26,26);全部表面实色不透明,
-/// 其余表面按明度梯递增。文字取 label 族 alpha 语义色,语义色取系统
-/// 色暗形态
-const fn dark_palette() -> Palette {
-    Palette {
-        base: color(0x151515, 1.0),
-        sidebar: color(0x1A1A1A, 1.0),
-        // hover 沿用旧版相对基色的提亮步长(+5,+5,+4),跟随中性灰族
-        sidebar_hover: color(0x232323, 1.0),
-        // 选中行:比 hover 高一档但收敛亮度(三态互异)
-        sidebar_active: color(0x2A2A2A, 1.0),
-        // 标题栏与侧栏同色:顶条延伸侧栏观感,与内容区分色
-        title_bar: color(0x1A1A1A, 1.0),
-        ink: color(0x000000, 1.0),
-        layer: color(0x1E1E1E, 1.0),
-        card: color(0x202020, 1.0),
-        composer: color(0x272729, 1.0),
-        dock: color(0x2A2A2A, 1.0),
-        brand: color(0x0A84FF, 1.0),
-        danger: color(0xFF453A, 1.0),
-        success: color(0x30D158, 1.0),
-        warn: color(0xFF9F0A, 1.0),
-        bubble: color(0x232323, 1.0),
-        label: color(0xF9FAFB, 1.0),
-        label_2: color(0xEBEBF5, 0.72),
-        label_3: color(0xEBEBF5, 0.55),
-        caption: color(0xEBEBF5, 0.38),
-        border: color(0xFFFFFF, 0.08),
-        border_2: color(0xFFFFFF, 0.14),
-        code: color(0x101010, 1.0),
-        ongoing: color(0x0A84FF, 1.0),
-        glass_bg: color(0xFFFFFF, 0.10),
-        glass_border: color(0xFFFFFF, 0.16),
-        sweep: color(0xFFFFFF, 0.07),
-        tick_idle: color(0xFFFFFF, 0.22),
-    }
-}
-
-/// 浅色盘:macOS 亮色系统色(灰阶与深盘同构反演;文字取 label 族
-/// alpha 语义色,语义色取系统色亮形态)
-const fn light_palette() -> Palette {
-    Palette {
-        base: color(0xFFFFFF, 1.0),
-        sidebar: color(0xF0F0F2, 1.0),
-        sidebar_hover: color(0xE9E9EB, 1.0),
-        sidebar_active: color(0xDFE1E6, 1.0),
-        title_bar: color(0xFFFFFF, 1.0),
-        ink: color(0x000000, 1.0),
-        layer: color(0xECECEE, 1.0),
-        card: color(0xFFFFFF, 1.0),
-        composer: color(0xFFFFFF, 1.0),
-        dock: color(0xE9E9EB, 1.0),
-        brand: color(0x007AFF, 1.0),
-        danger: color(0xFF3B30, 1.0),
-        success: color(0x34C759, 1.0),
-        warn: color(0xFF9500, 1.0),
-        bubble: color(0xE9E9EB, 1.0),
-        label: color(0x1D1D1F, 1.0),
-        label_2: color(0x3C3C43, 0.72),
-        label_3: color(0x3C3C43, 0.50),
-        caption: color(0x3C3C43, 0.35),
-        border: color(0x000000, 0.10),
-        border_2: color(0x000000, 0.16),
-        code: color(0xF7F7F9, 1.0),
-        ongoing: color(0x007AFF, 1.0),
-        glass_bg: color(0x000000, 0.06),
-        glass_border: color(0x000000, 0.14),
-        sweep: color(0x000000, 0.08),
-        tick_idle: color(0x000000, 0.22),
-    }
-}
-
-static PALETTES: [Palette; 2] = [light_palette(), dark_palette()];
-
-// 0 = light / 1 = dark(下标即 PALETTES 下标)
-const M_LIGHT: u8 = 0;
-const M_DARK: u8 = 1;
-
-/// 当前生效盘(apply 写,取值 fn 读)
-static MODE: AtomicU8 = AtomicU8::new(M_DARK);
-
-fn cur() -> &'static Palette {
-    &PALETTES[MODE.load(Ordering::Relaxed) as usize]
-}
-
-/// 指定模式对应盘(mermaid 纯函数化测试用)
-pub(crate) fn palette_of(mode: ThemeMode) -> &'static Palette {
-    &PALETTES[if mode.is_dark() {
-        M_DARK as usize
-    } else {
-        M_LIGHT as usize
-    }]
-}
-
-// ── 取值 fn(调用点保持原常量形态;语义文档在此处)──────────
-
-/// 主背景(内容区画布,由组件库 Root 层单次铺底:深盘中性灰
-/// #151515 / 浅盘纯白)
-pub fn BASE() -> Rgba {
-    cur().base
-}
-/// 侧栏面板底(深盘中性灰 #1A1A1A,标题栏同色 / 浅盘浅灰;
-/// gpui-component list 面同源)
-pub fn SIDEBAR() -> Rgba {
-    cur().sidebar
-}
-/// 侧栏行 hover(板岩族,勿用内容区 LAYER 压板岩底)
-pub fn SIDEBAR_HOVER() -> Rgba {
-    cur().sidebar_hover
-}
-/// 侧栏行激活/选中(对照 Finder 选中行的同级提亮)
-pub fn SIDEBAR_ACTIVE() -> Rgba {
-    cur().sidebar_active
-}
-/// 纯黑双盘锚(轨迹 diff 遮挡罩、gpui-component 侧栏方案色 token;
-/// 不随盘反色——遮挡语义恒为暗)
-pub fn INK() -> Rgba {
-    cur().ink
-}
-/// 浮层/hover 层底
-pub fn LAYER() -> Rgba {
-    cur().layer
-}
-/// 输入卡/卡片底(深盘比 base 亮一档 / 浅盘纯白——
-/// 白画布上灰底显脏,靠边框+阴影分层)
-pub fn CARD() -> Rgba {
-    cur().card
-}
-/// 输入卡面(深盘 #272729,浮出画布一档;浅盘纯白同 CARD)。
-/// 仅 composer 输入卡用——工具卡/终端卡等走 CARD,两族勿混
-pub fn COMPOSER() -> Rgba {
-    cur().composer
-}
-/// 按钮底/次级填充(深盘再亮一档 / 浅盘极浅灰——chip 类填充
-/// 在白底上只求隐约成形,过深即灰蒙蒙)
-pub fn DOCK() -> Rgba {
-    cur().dock
-}
-/// 品牌蓝(macOS systemBlue:深盘 #0A84FF / 浅盘 #007AFF)
-pub fn BRAND() -> Rgba {
-    cur().brand
-}
-/// 危险(systemRed)
-pub fn DANGER() -> Rgba {
-    cur().danger
-}
-/// 成功(systemGreen)
-pub fn SUCCESS() -> Rgba {
-    cur().success
-}
-/// 警告(systemOrange)
-pub fn WARN() -> Rgba {
-    cur().warn
-}
-/// 用户气泡底
-pub fn BUBBLE() -> Rgba {
-    cur().bubble
-}
-/// 文字一级(深盘纯白 / 浅盘近黑)
-pub fn LABEL() -> Rgba {
-    cur().label
-}
-/// 文字二级(macOS label 族 alpha 语义色)
-pub fn LABEL_2() -> Rgba {
-    cur().label_2
-}
-/// 文字三级
-pub fn LABEL_3() -> Rgba {
-    cur().label_3
-}
-/// 说明文字
-pub fn CAPTION() -> Rgba {
-    cur().caption
-}
-/// 弱边框(近景白/黑 8%/10%)
-pub fn BORDER() -> Rgba {
-    cur().border
-}
-/// 二级发丝线(终端卡横幅与输出的分界)
-pub fn BORDER_2() -> Rgba {
-    cur().border_2
-}
-/// 代码块/终端卡表面(深盘比 BASE 深一阶 / 浅盘比 BASE 灰一阶)
-pub fn CODE() -> Rgba {
-    cur().code
-}
-/// 运行进行色(终端卡 running 状态点/进行态指示;StateDot ongoing
-/// 同色,随 BRAND 走 systemBlue)
-pub fn ONGOING() -> Rgba {
-    cur().ongoing
-}
+/// 纯黑双盘锚(轨迹 diff 遮挡罩;不随盘反色——遮挡语义恒为暗)
+pub const INK: Rgba = color(0x000000, 1.0);
+/// 全透明(非激活行底;双盘同值)
+pub const TRANSPARENT: Rgba = color(0x000000, 0.0);
 
 /// 文件类型徽章底色(分类配色:word 蓝 / excel 绿 /
 /// ppt 橙 / pdf 红;其余灰阶系。双盘同值——徽章恒为白字彩色方块,
 /// 深浅盘上均成立;属图标语义色,非界面分层色)
-pub fn FILE_KIND_BADGE(kind: liuma_attachment::FileKind) -> Rgba {
+pub fn file_kind_badge(kind: liuma_attachment::FileKind) -> Rgba {
     use liuma_attachment::FileKind as K;
     match kind {
         K::Word => rgba(0x2B579AFF),
@@ -330,8 +125,8 @@ pub fn FILE_KIND_BADGE(kind: liuma_attachment::FileKind) -> Rgba {
 }
 /// 文件类型家族染色(gpui SVG = alpha-mask 单色,彩色渐变图标
 /// 无法呈现;家族中饱和色双盘同值可读,属图标语义色,非界面分层色。
-/// office 三色与 [`FILE_KIND_BADGE`] 同源)
-pub fn FILE_TYPE_TINT(class: crate::kits::filetype::FileClass) -> Rgba {
+/// office 三色与 [`file_kind_badge`] 同源)
+pub fn file_type_tint(class: crate::kits::filetype::FileClass) -> Rgba {
     use crate::kits::filetype::FileClass as F;
     match class {
         F::Markdown => rgba(0x4C7DB0FF),
@@ -361,25 +156,404 @@ pub fn FILE_TYPE_TINT(class: crate::kits::filetype::FileClass) -> Rgba {
     }
 }
 
-/// 玻璃态填充(激活 tab pill;无 backdrop blur 以半透明近似磨砂)
-pub fn GLASS_BG() -> Rgba {
-    cur().glass_bg
+// ── 主题装载与派生 ───────────────────────────────────────────
+
+/// 内置主题集(`assets/themes/`,include_str 内嵌,release 免 FsPath;
+/// 官方 21 套取自 gpui-kit v0.7.0 themes/,与依赖版本同源)
+pub const BUILTIN_THEMES: &[(&str, &str)] = &[
+    ("liuma", include_str!("../../assets/themes/liuma.json")),
+    (
+        "adventure",
+        include_str!("../../assets/themes/adventure.json"),
+    ),
+    ("alduin", include_str!("../../assets/themes/alduin.json")),
+    (
+        "asciinema",
+        include_str!("../../assets/themes/asciinema.json"),
+    ),
+    ("aurora", include_str!("../../assets/themes/aurora.json")),
+    ("ayu", include_str!("../../assets/themes/ayu.json")),
+    (
+        "catppuccin",
+        include_str!("../../assets/themes/catppuccin.json"),
+    ),
+    (
+        "everforest",
+        include_str!("../../assets/themes/everforest.json"),
+    ),
+    (
+        "fahrenheit",
+        include_str!("../../assets/themes/fahrenheit.json"),
+    ),
+    ("flexoki", include_str!("../../assets/themes/flexoki.json")),
+    ("gruvbox", include_str!("../../assets/themes/gruvbox.json")),
+    ("harper", include_str!("../../assets/themes/harper.json")),
+    ("hybrid", include_str!("../../assets/themes/hybrid.json")),
+    (
+        "jellybeans",
+        include_str!("../../assets/themes/jellybeans.json"),
+    ),
+    ("kibble", include_str!("../../assets/themes/kibble.json")),
+    (
+        "macos-classic",
+        include_str!("../../assets/themes/macos-classic.json"),
+    ),
+    (
+        "mellifluous",
+        include_str!("../../assets/themes/mellifluous.json"),
+    ),
+    ("molokai", include_str!("../../assets/themes/molokai.json")),
+    (
+        "solarized",
+        include_str!("../../assets/themes/solarized.json"),
+    ),
+    (
+        "spaceduck",
+        include_str!("../../assets/themes/spaceduck.json"),
+    ),
+    (
+        "tokyonight",
+        include_str!("../../assets/themes/tokyonight.json"),
+    ),
+    (
+        "twilight",
+        include_str!("../../assets/themes/twilight.json"),
+    ),
+];
+
+/// 装载内置主题进 registry(main.rs 启动与测试 [`init`] 同走此路;
+/// 重名 first-wins——liuma 主题永远最先装入)
+pub fn load_builtin_themes(cx: &mut App) {
+    let reg = ThemeRegistry::global_mut(cx);
+    for (_, json) in BUILTIN_THEMES {
+        if let Err(err) = reg.load_themes_from_str(json) {
+            eprintln!("[theme] 内置主题解析失败: {err}");
+        }
+    }
+}
+
+/// THEME_NAMES 下标基(0 = light / 1 = dark)
+const M_LIGHT: u8 = 0;
+const M_DARK: u8 = 1;
+
+/// 指定盘的 Liuma 主题 config(registry 未装时回落库默认盘)
+/// 两盘各自选中的主题名(0 = light / 1 = dark;空串 = Liuma 默认)。
+/// set_theme 写,config_for_mode 读
+static THEME_NAMES: RwLock<[String; 2]> = RwLock::new([String::new(), String::new()]);
+
+/// 指定盘选中主题名(空串归一为 Liuma 默认名;设置页高亮与持久化用)
+pub fn theme_name(m: ThemeMode) -> String {
+    let raw = THEME_NAMES.read().unwrap_or_else(|e| e.into_inner())[if m.is_dark() {
+        M_DARK as usize
+    } else {
+        M_LIGHT as usize
+    }]
+    .clone();
+    if raw.is_empty() {
+        default_theme_name(m).to_string()
+    } else {
+        raw
+    }
+}
+
+/// Liuma 默认主题名(liuma.json 内嵌两盘)
+fn default_theme_name(m: ThemeMode) -> &'static str {
+    if m.is_dark() {
+        "Liuma Dark"
+    } else {
+        "Liuma Light"
+    }
+}
+
+/// 指定盘当前应装的 config(选中主题名缺失时回落 Liuma 默认,再缺
+/// 回落库默认盘)
+fn config_for_mode(m: ThemeMode, cx: &App) -> Rc<ThemeConfig> {
+    let reg = ThemeRegistry::global(cx);
+    let name = theme_name(m);
+    reg.themes().get(name.as_str()).cloned().unwrap_or_else(|| {
+        reg.themes()
+            .get(default_theme_name(m))
+            .cloned()
+            .unwrap_or_else(|| {
+                if m.is_dark() {
+                    reg.default_dark_theme().clone()
+                } else {
+                    reg.default_light_theme().clone()
+                }
+            })
+    })
+}
+
+/// Theme 级收口:应用主题 config 后重钉 liuma 不妥协项。
+/// 必须是 `Theme::update` 闭包体(尾部自动 tokens reconcile +
+/// sync_base + refresh_windows;`apply_config` 注册 config 并切
+/// mode,edit 判定 installed_by_edit 后不再重铺)
+fn apply_theme_config(t: &mut Theme, cfg: &Rc<ThemeConfig>) {
+    t.apply_config(cfg);
+    // 侧栏选中行实色:`apply_config` 尾部把 list_active 的 α 强制钳到
+    // ≤0.2(库的选中态半透明设计),实色选中态是 liuma 的既有观感
+    // ——从 config 原值重钉(闭包内直改 colors,`Theme::update` 的
+    // edit 尾部会把它 reconcile 进 tokens)
+    if let Some(raw) = cfg.colors.list_active.as_deref()
+        && let Ok(c) = gpui_kit::component::try_parse_color(raw)
+    {
+        t.colors.list_active = c;
+    }
+    // 字体族收口(见 [`FONT_SANS`])。必须在 `apply_config` 之后:
+    // config 的 font.family / typography reconcile 会把族覆盖回
+    // `.SystemUIFont`(theme/mod.rs:536)
+    t.font_family = FONT_SANS.into();
+    // 圆角防御:主题未给 radius 时兜底(liuma 主题已烤进 8/12)
+    t.radius = px(8.);
+    t.radius_lg = px(12.);
+}
+
+/// 逐 HSLA 字段线性混合(f = a 的比重;派生场景均为同族中性灰,
+/// hue 通道几近相同,线性插值即可)
+fn mix(a: Hsla, b: Hsla, f: f32) -> Hsla {
+    Hsla {
+        h: a.h * f + b.h * (1. - f),
+        s: a.s * f + b.s * (1. - f),
+        l: a.l * f + b.l * (1. - f),
+        a: a.a * f + b.a * (1. - f),
+    }
+}
+
+/// α 缩放(±超出 1 收口;`Colorize::opacity` 的 factor 会 clamp,
+/// 放大场景用不了)
+fn scale_alpha(x: Hsla, k: f32) -> Hsla {
+    Hsla {
+        a: (x.a * k).min(1.),
+        ..x
+    }
+}
+
+/// α 直设(前景压定 α 的玻璃态/扫光族)
+fn flat_alpha(x: Hsla, a: f32) -> Hsla {
+    Hsla { a, ..x }
+}
+
+// ── 派生公式(_of 系 = 私有语义的唯一公式源,derive 快照与
+// snake_case 包装层共用,两路永不漂移)────────────────────
+
+/// 输入卡浮出卡面一档:深盘向前景掺 ~3.5%(锚旧 #272729),
+/// 浅盘与卡面同源(白画布靠边框+阴影分层)
+fn composer_of(t: &Theme) -> Rgba {
+    let c = &t.colors;
+    (if t.is_dark() {
+        mix(c.popover, c.foreground, 0.965)
+    } else {
+        c.popover
+    })
+    .into()
+}
+
+/// 文字三级:对二级文字按盘定比缩放 α(锚旧深 0.55 / 浅 0.50)
+fn label_3_of(t: &Theme) -> Rgba {
+    scale_alpha(
+        t.colors.muted_foreground,
+        if t.is_dark() { 0.764 } else { 0.694 },
+    )
+    .into()
+}
+
+/// 说明文字(锚旧深 0.38 / 浅 0.35——浅盘层级稍收)
+fn caption_of(t: &Theme) -> Rgba {
+    scale_alpha(
+        t.colors.muted_foreground,
+        if t.is_dark() { 0.528 } else { 0.486 },
+    )
+    .into()
+}
+
+/// 二级发丝线:弱边框 α 提一档(锚旧 深 0.14 / 浅 0.16)
+fn border_2_of(t: &Theme) -> Rgba {
+    scale_alpha(t.colors.border, if t.is_dark() { 1.75 } else { 1.6 }).into()
+}
+
+/// 代码面:深盘向黑压一阶(锚旧 #101010)/ 浅盘掺前景一档
+/// (锚旧 #F7F7F9)
+fn code_of(t: &Theme) -> Rgba {
+    let c = &t.colors;
+    let black = Hsla {
+        h: 0.,
+        s: 0.,
+        l: 0.,
+        a: 1.,
+    };
+    (if t.is_dark() {
+        mix(c.background, black, 0.76)
+    } else {
+        mix(c.background, c.foreground, 0.965)
+    })
+    .into()
+}
+
+/// 玻璃态填充(锚旧深 α0.10 / 浅 α0.06)
+fn glass_bg_of(t: &Theme) -> Rgba {
+    flat_alpha(t.colors.foreground, if t.is_dark() { 0.10 } else { 0.06 }).into()
+}
+
+/// 玻璃态描边(锚旧深 α0.16 / 浅 α0.14)
+fn glass_border_of(t: &Theme) -> Rgba {
+    flat_alpha(t.colors.foreground, if t.is_dark() { 0.16 } else { 0.14 }).into()
+}
+
+/// 工具卡扫光渐变端点(锚旧深 α0.07 / 浅 α0.08)
+fn sweep_of(t: &Theme) -> Rgba {
+    flat_alpha(t.colors.foreground, if t.is_dark() { 0.07 } else { 0.08 }).into()
+}
+
+/// 时间刻度非激活色(双盘同 α0.22)
+fn tick_idle_of(t: &Theme) -> Rgba {
+    flat_alpha(t.colors.foreground, 0.22).into()
+}
+
+/// 直取 token 承担「库组件面 == 自绘面」的同源底座;无对应 token
+/// 的私有语义(composer/code/文字层级/发丝线/玻璃态)按锚定系数
+/// 从基础 token 混合/缩放——系数锚定 Liuma 双盘旧值,任意主题下
+/// 保持同等的层级关系。headless 消费者(mermaid 渲染链/锚定测试)
+/// 在持 cx 的调用点一次取值后穿参,不在渲染线程读全局
+pub(crate) fn palette_of(t: &Theme) -> Palette {
+    let c = &t.colors;
+    Palette {
+        base: c.background.into(),
+        layer: c.muted.into(),
+        card: c.popover.into(),
+        dock: c.secondary.into(),
+        brand: c.primary.into(),
+        danger: c.danger.into(),
+        success: c.success.into(),
+        warn: c.warning.into(),
+        label: c.foreground.into(),
+        label_2: c.muted_foreground.into(),
+        label_3: label_3_of(t),
+        caption: caption_of(t),
+        border_2: border_2_of(t),
+        code: code_of(t),
+        ongoing: c.primary.into(),
+    }
+}
+
+/// 指定盘派生快照(浅盘校验类测试用;生产无调用)。局部构造,
+/// 不触全局 Theme——与生产 apply 同路:clone → apply_config → palette_of
+#[cfg(test)]
+pub(crate) fn palette_for_mode(m: ThemeMode, cx: &App) -> Palette {
+    let mut t = Theme::global(cx).clone();
+    apply_theme_config(&mut t, &config_for_mode(m, cx));
+    palette_of(&t)
+}
+
+// ── 语义包装层(直读 `cx.theme()`;调用点迁移目标 API,与快照
+// 同公式同值——迁移完成后快照层退役)────────────────────────
+
+/// 主背景(内容区画布,由组件库 Root 层单次铺底)
+pub fn base(cx: &App) -> Rgba {
+    cx.theme().colors.background.into()
+}
+/// 侧栏面板底(库 list 面同源)
+pub fn sidebar(cx: &App) -> Rgba {
+    cx.theme().colors.list.into()
+}
+/// 侧栏行 hover
+pub fn sidebar_hover(cx: &App) -> Rgba {
+    cx.theme().colors.list_hover.into()
+}
+/// 侧栏行激活/选中(实色,见 [`apply_theme_config`] 的重钉)
+pub fn sidebar_active(cx: &App) -> Rgba {
+    cx.theme().colors.list_active.into()
+}
+/// 浮层/hover 层底
+pub fn layer(cx: &App) -> Rgba {
+    cx.theme().colors.muted.into()
+}
+/// 输入卡/卡片底(库浮层面 popover 同源)
+pub fn card(cx: &App) -> Rgba {
+    cx.theme().colors.popover.into()
+}
+/// 输入卡面(仅 composer 输入卡用,工具卡等走 [`card`])
+pub fn composer(cx: &App) -> Rgba {
+    composer_of(cx.theme())
+}
+/// 按钮底/次级填充(chip 类)
+pub fn dock(cx: &App) -> Rgba {
+    cx.theme().colors.secondary.into()
+}
+/// 品牌色
+pub fn brand(cx: &App) -> Rgba {
+    cx.theme().colors.primary.into()
+}
+/// 品牌填充面前景(主题 `primary.foreground`)
+pub fn on_brand(cx: &App) -> Rgba {
+    cx.theme().colors.primary_foreground.into()
+}
+/// 危险色
+pub fn danger(cx: &App) -> Rgba {
+    cx.theme().colors.danger.into()
+}
+/// 危险填充面前景(主题 `danger.foreground`)
+pub fn on_danger(cx: &App) -> Rgba {
+    cx.theme().colors.danger_foreground.into()
+}
+/// 成功色
+pub fn success(cx: &App) -> Rgba {
+    cx.theme().colors.success.into()
+}
+/// 警告色
+pub fn warning(cx: &App) -> Rgba {
+    cx.theme().colors.warning.into()
+}
+/// 用户气泡底
+pub fn bubble(cx: &App) -> Rgba {
+    cx.theme().colors.list_hover.into()
+}
+/// 文字一级
+pub fn label(cx: &App) -> Rgba {
+    cx.theme().colors.foreground.into()
+}
+/// 文字二级
+pub fn label_2(cx: &App) -> Rgba {
+    cx.theme().colors.muted_foreground.into()
+}
+/// 文字三级
+pub fn label_3(cx: &App) -> Rgba {
+    label_3_of(cx.theme())
+}
+/// 说明文字
+pub fn caption(cx: &App) -> Rgba {
+    caption_of(cx.theme())
+}
+/// 弱边框
+pub fn border(cx: &App) -> Rgba {
+    cx.theme().colors.border.into()
+}
+/// 二级发丝线
+pub fn border_2(cx: &App) -> Rgba {
+    border_2_of(cx.theme())
+}
+/// 代码块/终端卡表面
+pub fn code(cx: &App) -> Rgba {
+    code_of(cx.theme())
+}
+/// 运行进行色(随品牌色)
+pub fn ongoing(cx: &App) -> Rgba {
+    cx.theme().colors.primary.into()
+}
+/// 玻璃态填充(激活 tab pill)
+pub fn glass_bg(cx: &App) -> Rgba {
+    glass_bg_of(cx.theme())
 }
 /// 玻璃态描边
-pub fn GLASS_BORDER() -> Rgba {
-    cur().glass_border
+pub fn glass_border(cx: &App) -> Rgba {
+    glass_border_of(cx.theme())
 }
-/// 工具卡扫光渐变端点(亮随暗反色)
-pub fn SWEEP() -> Rgba {
-    cur().sweep
+/// 工具卡扫光渐变端点
+pub fn sweep(cx: &App) -> Rgba {
+    sweep_of(cx.theme())
 }
-/// 时间刻度非激活色(亮随暗反色)
-pub fn TICK_IDLE() -> Rgba {
-    cur().tick_idle
-}
-/// 全透明(非激活行底;双盘同值)
-pub fn TRANSPARENT() -> Rgba {
-    color(0x000000, 0.0)
+/// 时间刻度非激活色
+pub fn tick_idle(cx: &App) -> Rgba {
+    tick_idle_of(cx.theme())
 }
 
 // ── 运行时状态与三档应用 ─────────────────────────────────────
@@ -402,30 +576,22 @@ pub fn current_appearance() -> Appearance {
     }
 }
 
-/// 当前生效盘是否深色(自绘语法高亮/轨迹配色的分发开关)
-pub fn is_dark() -> bool {
-    MODE.load(Ordering::Relaxed) == M_DARK
-}
-
-/// 当前生效盘对应 ThemeMode
-pub fn mode() -> ThemeMode {
-    if is_dark() {
-        ThemeMode::Dark
-    } else {
-        ThemeMode::Light
-    }
+/// 当前生效盘是否深色(自绘语法高亮/轨迹配色的分发开关;直读
+/// 全局 Theme,无快照)
+pub fn is_dark(cx: &App) -> bool {
+    Theme::global(cx).is_dark()
 }
 
 /// 应用外观档(启动装配与设置页切换同一入口)。
 ///
 /// 流程:System 档先解除 NSApp 强制外观(带着强制值读到的是被强制的
 /// 外观,不是真实系统外观)→ `cx.window_appearance()` 解析生效盘 →
-/// (档位,生效盘)均未变即幂等返回 → [`Theme::change`] 打底(库默认
-/// 盘整铺,会冲掉手改 token)→ 重铺 liuma token → `sync_base`(Base 层
-/// 镜像:滚动条等,global_mut 直改不下推)→ 全窗刷新。显式浅/深档同
-/// 时强制 NSApp 外观,原生交通灯/边框跟主题,避免「应用深色 + 系统
-/// 浅色」的原生 chrome 撕裂。
-pub fn apply(choice: Appearance, window: Option<&mut Window>, cx: &mut App) {
+/// (档位,生效盘)均未变即幂等返回 → [`Theme::update`] 闭包内
+/// [`apply_theme_config`](apply_config 生效盘 + 字体族/圆角收口,
+/// edit 尾部自动 tokens reconcile + sync_base + 全窗刷新)。显式
+/// 浅/深档同时强制 NSApp 外观,原生
+/// 交通灯/边框跟主题,避免「应用深色 + 系统浅色」的原生 chrome 撕裂。
+pub fn apply(choice: Appearance, cx: &mut App) {
     set_forced_appearance(
         match choice {
             Appearance::Light => Some(WindowAppearance::Light),
@@ -451,20 +617,41 @@ pub fn apply(choice: Appearance, window: Option<&mut Window>, cx: &mut App) {
     LAST_CHOICE.store(choice_flag, Ordering::Relaxed);
     LAST_MODE.store(mode_flag, Ordering::Relaxed);
     CHOICE.store(choice_flag, Ordering::Relaxed);
-    MODE.store(mode_flag, Ordering::Relaxed);
-    Theme::change(m, window, cx);
-    apply_tokens(m, cx);
-    cx.refresh_windows();
+    let cfg = config_for_mode(m, cx);
+    Theme::update(cx, |t| apply_theme_config(t, &cfg));
+}
+
+/// 切换指定盘的主题(设置页主题行;registry 未装该名 → 不生效返回
+/// false)。写入主题名;若切的是当前盘,立即重装 config(另一盘只在
+/// 下次翻盘时装载)。System 档翻盘走 [`apply`],自动用对应盘新主题
+pub fn set_theme(m: ThemeMode, name: &str, cx: &mut App) -> bool {
+    if !ThemeRegistry::global(cx).themes().contains_key(name) {
+        return false;
+    }
+    let idx = if m.is_dark() {
+        M_DARK as usize
+    } else {
+        M_LIGHT as usize
+    };
+    THEME_NAMES.write().unwrap_or_else(|e| e.into_inner())[idx] = name.to_string();
+    if m.is_dark() == Theme::global(cx).is_dark() {
+        let cfg = config_for_mode(m, cx);
+        Theme::update(cx, |t| apply_theme_config(t, &cfg));
+    }
+    true
 }
 
 /// 测试装配:固定深色盘(UI 测试同源基线;生产入口走 main.rs 直读
-/// settings.yaml 档位的 apply)。每个测试是全新 App,而幂等守卫是
-/// 进程级——先复位,否则第二个测试的打底会被短路。
+/// settings.yaml 档位的 apply)。**不走 [`apply`]**:幂等守卫是进程级
+/// 静态,并行用例互相把守卫写成已应用态、短路掉对方全新 App 的首次
+/// 铺设(Theme 是 per-App 的);此处直接做与 apply 同款的
+/// `Theme::update` 闭包,不受竞争影响
 #[cfg(test)]
 pub fn init(cx: &mut App) {
-    LAST_CHOICE.store(255, Ordering::Relaxed);
-    LAST_MODE.store(255, Ordering::Relaxed);
-    apply(Appearance::Dark, None, cx);
+    load_builtin_themes(cx);
+    let cfg = config_for_mode(ThemeMode::Dark, cx);
+    Theme::update(cx, |t| apply_theme_config(t, &cfg));
+    CHOICE.store(Appearance::Dark as u8, Ordering::Relaxed);
 }
 
 /// NSApp 强制外观(值未变不重设,防观察者空转)
@@ -480,115 +667,76 @@ fn set_forced_appearance(target: Option<WindowAppearance>, cx: &mut App) {
     }
 }
 
-/// liuma 色板 → gpui-component token(双盘同构映射;`Theme::change`
-/// 用库默认盘整铺后必须重铺一遍)。
-fn apply_tokens(m: ThemeMode, cx: &mut App) {
-    let p = palette_of(m);
-    // 品牌/语义色填充面上的前景:双盘均取白(浅盘 label 近黑,不能
-    // 用作填充面上的前景)
-    let on_fill = if m.is_dark() {
-        p.label.into()
-    } else {
-        color(0xFFFFFF, 1.0).into()
-    };
-    let t = Theme::global_mut(cx);
-    let c = &mut t.colors;
-    c.background = p.base.into();
-    c.foreground = p.label.into();
-    c.border = p.border.into();
-    c.input = p.border.into();
-    c.caret = p.brand.into();
-    c.ring = p.brand.into();
-    c.selection = Rgba { a: 0.3, ..p.brand }.into();
-    c.primary = p.brand.into();
-    c.primary_foreground = on_fill;
-    c.primary_hover = p.brand.into();
-    c.primary_active = p.brand.into();
-    c.secondary = p.dock.into();
-    c.secondary_foreground = p.label_2.into();
-    c.secondary_hover = p.dock.into();
-    c.secondary_active = p.dock.into();
-    c.muted = p.layer.into();
-    c.accent = p.dock.into();
-    c.accent_foreground = p.label.into();
-    c.danger = p.danger.into();
-    c.danger_foreground = on_fill;
-    c.success = p.success.into();
-    c.success_foreground = on_fill;
-    // 浮层面 = 卡面(card):Popover/PopupMenu/Dialog/Tooltip 等库浮层
-    // 全读此 token,须与手绘浮层卡同走 CARD 梯位——若指向 layer,浅色
-    // 盘下迁移后的弹层会整体变灰(浅盘 layer=ECECEE ≠ card=FFFFFF)
-    c.popover = p.card.into();
-    c.popover_foreground = p.label.into();
-    c.list = p.sidebar.into();
-    c.list_hover = p.sidebar_hover.into();
-    c.list_active = p.sidebar_active.into();
-    c.sidebar = p.ink.into();
-    c.sidebar_border = p.border.into();
-    c.sidebar_foreground = p.label_2.into();
-    c.sidebar_accent = p.layer.into();
-    c.sidebar_accent_foreground = p.label.into();
-    // select 勾选图标等组件弱化文本:label_3(0.55)在深盘上几乎不可见
-    // (用户实测),映射到二级文字(0.72)保证可读
-    c.muted_foreground = p.label_2.into();
-    c.scrollbar = p.base.into();
-    c.scrollbar_thumb = p.dock.into();
-    // 模态遮罩 = 画布色 60%(原手写模态遮罩同款;库 Dialog/AlertDialog
-    // 的 overlay 层读此 token)
-    c.overlay = Rgba { a: 0.6, ..p.base }.into();
-    // 标题栏 = 中性灰面(与侧栏同色,顶条延伸侧栏观感):顶条与画布分色;
-    // title_bar_border 同面无边线
-    c.title_bar = p.title_bar.into();
-    c.title_bar_border = p.title_bar.into();
-    t.radius = gpui_kit::px(8.);
-    t.radius_lg = gpui_kit::px(12.);
-    // colors → tokens 镜像(必须):Root 画布与部分组件读 tokens
-    // (语义面),Theme::change 已把库默认色烤进 tokens——漏镜像则
-    // 画布永远是库默认底(实测:摘掉 app 层铺底后露出库默认 #0A0A0A)
-    t.tokens = ThemeTokens::from(&t.colors);
-    // 字体族收口(见 [`FONT_SANS`])。必须在 `Theme::change` 与任何
-    // semantic token 应用**之后**:theme/mod.rs:536 的
-    // `self.font_family = tokens.typography.sans` 会把族覆盖回库默认
-    // `.SystemUIFont`。mono 不动(Menlo):行内代码 chip / 代码块的族
-    // 走 markdown highlight 的 font_family,不经此字段。
-    t.font_family = FONT_SANS.into();
-    // Base 层镜像(滚动条等直接取样 gpui_base::Theme,global_mut 直改不下推)
-    Theme::sync_base(cx);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_kit::{Hsla, TestAppContext};
+    use gpui_kit::TestAppContext;
 
-    /// 双盘锚定:深盘 = 纯中性灰家族(用户指定 base 21,21,21 /
-    /// sidebar 与标题栏 26,26,26),浅盘 = 纯白底;关键字段两盘互异;
-    /// INK 双盘恒黑(diff 遮挡罩语义不随盘反色)
-    #[test]
-    fn palettes_distinct_and_anchored() {
-        let l = &PALETTES[M_LIGHT as usize];
-        let d = &PALETTES[M_DARK as usize];
-        assert_eq!(d.base, color(0x151515, 1.0));
-        assert_eq!(d.sidebar, color(0x1A1A1A, 1.0));
-        // 输入卡浮出画布一档(对照 deepseek harness 39,39,41)
-        assert_eq!(d.composer, color(0x272729, 1.0));
-        assert_ne!(d.composer, d.base);
-        assert_ne!(d.composer, d.card);
-        assert_eq!(l.composer, l.card);
-        assert_eq!(l.base, color(0xFFFFFF, 1.0));
-        assert_ne!(d.label, l.label);
-        assert_ne!(d.brand, l.brand);
-        assert_ne!(d.code, l.code);
-        assert_eq!(d.ink, l.ink);
-        assert_eq!(d.ink, color(0x000000, 1.0));
-        // 侧栏交互三态互异(hover/选中串色即侧栏语义失效)
-        assert_ne!(d.sidebar, d.sidebar_hover);
-        assert_ne!(d.sidebar_hover, d.sidebar_active);
-        // 标题栏与侧栏同色(顶条延伸侧栏观感)
-        assert_eq!(d.title_bar, d.sidebar);
-        assert_eq!(d.title_bar, color(0x1A1A1A, 1.0));
-        // 标题栏与画布分色
-        assert_ne!(d.title_bar, d.base);
+    /// 通道级近似断言(hex ↔ HSLA 往返有 ≤2/255 的舍入,精确等值
+    /// 断言会把合法往返判死)
+    fn assert_close(actual: Rgba, expected: Rgba, what: &str) {
+        let d = |a: f32, b: f32| (a - b).abs();
+        assert!(
+            d(actual.r, expected.r) <= 2. / 255.
+                && d(actual.g, expected.g) <= 2. / 255.
+                && d(actual.b, expected.b) <= 2. / 255.
+                && d(actual.a, expected.a) <= 2. / 255.,
+            "{what}: {actual:?} != {expected:?}"
+        );
+    }
+
+    /// 测试装配:组件库 init + 内置主题进 registry(生产走 main.rs
+    /// 的 gpui_kit::init + load_builtin_themes,同一份数据)
+    fn setup(cx: &mut App) {
+        gpui_kit::component::init(cx);
+        load_builtin_themes(cx);
+    }
+
+    /// 双盘锚定:Liuma 主题下包装层取值 == 旧内联色板(视觉零回归的
+    /// 机制保证)。深盘 = 纯中性灰家族(base #151515 / sidebar 与
+    /// 标题栏 #1A1A1A / composer ≈#272729 / code #101010),浅盘 =
+    /// 纯白底;关键字段两盘互异。逐盘 apply 后断言——包装层就是
+    /// 生产取值路径,断言它比断言派生公式更贴近真机
+    #[gpui_kit::test]
+    fn wrappers_distinct_and_anchored(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let apply = |m: ThemeMode, cx: &mut App| {
+                setup(cx);
+                let cfg = config_for_mode(m, cx);
+                Theme::update(cx, |t| apply_theme_config(t, &cfg));
+            };
+            apply(ThemeMode::Dark, cx);
+            assert_close(base(cx), rgba(0x151515FF), "深盘 base");
+            assert_close(sidebar(cx), rgba(0x1A1A1AFF), "深盘 sidebar");
+            assert_close(sidebar_hover(cx), rgba(0x232323FF), "深盘 sidebar_hover");
+            assert_close(sidebar_active(cx), rgba(0x2A2A2AFF), "深盘 sidebar_active");
+            // 输入卡浮出画布一档(锚旧 #272729,派生 #282828)
+            assert_close(composer(cx), rgba(0x282828FF), "深盘 composer");
+            assert_ne!(composer(cx), base(cx));
+            assert_ne!(composer(cx), card(cx));
+            assert_close(card(cx), rgba(0x202020FF), "深盘 card");
+            assert_close(dock(cx), rgba(0x2A2A2AFF), "深盘 dock");
+            assert_close(bubble(cx), rgba(0x232323FF), "深盘 bubble");
+            assert_close(code(cx), rgba(0x101010FF), "深盘 code");
+            assert_close(brand(cx), rgba(0x0A84FFFF), "深盘 brand");
+            assert_close(label(cx), rgba(0xF9FAFBFF), "深盘 label");
+            assert_close(label_2(cx), rgba(0xEBEBF5B8), "深盘 label_2");
+            assert_close(label_3(cx), rgba(0xEBEBF58C), "深盘 label_3(α0.55)");
+            assert_close(caption(cx), rgba(0xEBEBF561), "深盘 caption(α0.38)");
+            assert_close(border(cx), rgba(0xFFFFFF14), "深盘 border(α0.08)");
+            assert_close(border_2(cx), rgba(0xFFFFFF24), "深盘 border_2(α0.14)");
+            // 侧栏交互三态互异(hover/选中串色即侧栏语义失效)
+            assert_ne!(sidebar(cx), sidebar_hover(cx));
+            assert_ne!(sidebar_hover(cx), sidebar_active(cx));
+            let (d_label, d_brand, d_code) = (label(cx), brand(cx), code(cx));
+            apply(ThemeMode::Light, cx);
+            assert_close(base(cx), rgba(0xFFFFFFFF), "浅盘 base");
+            assert_close(composer(cx), card(cx), "浅盘 composer 与 card 同源");
+            assert_close(code(cx), rgba(0xF7F7F7FF), "浅盘 code(锚旧 #F7F7F9)");
+            assert_ne!(label(cx), d_label);
+            assert_ne!(brand(cx), d_brand);
+            assert_ne!(code(cx), d_code);
+        });
     }
 
     /// 档位解析与 registry settings.yaml 词汇一致,未知值回落深色
@@ -600,37 +748,67 @@ mod tests {
         assert_eq!(Appearance::parse("whatever"), Appearance::Dark);
     }
 
-    /// liuma token 铺设:只动本 App 的 Theme global,不触进程级盘静态
-    /// (与并发测试无竞争);Light 下组件面吃浅盘值
+    /// 主题切换:registry 未装的名 → false 不生效且不污染选中名;
+    /// 已知名 → theme_name 归一可读;空串选中名归一为 Liuma 默认
     #[gpui_kit::test]
-    fn apply_tokens_paints_component_theme(cx: &mut TestAppContext) {
+    fn set_theme_validates_against_registry(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_kit::component::init(cx);
-            Theme::change(ThemeMode::Light, None, cx);
-            // Theme::change 用库默认亮盘整铺;apply_tokens 后关键 token
-            // 必须等于浅盘值(danger/scrollbar_thumb 与库默认不同,相等
-            // 即证明铺设发生)
-            apply_tokens(ThemeMode::Light, cx);
+            setup(cx);
+            assert_eq!(
+                theme_name(ThemeMode::Dark),
+                "Liuma Dark",
+                "未设置时空串归一为 Liuma 默认名"
+            );
+            assert!(
+                !set_theme(ThemeMode::Dark, "No Such Theme", cx),
+                "未知名应拒绝"
+            );
+            assert_eq!(
+                theme_name(ThemeMode::Dark),
+                "Liuma Dark",
+                "拒绝后选中名不被污染"
+            );
+            assert!(set_theme(ThemeMode::Dark, "Catppuccin Mocha", cx));
+            assert_eq!(theme_name(ThemeMode::Dark), "Catppuccin Mocha");
+            // 生效盘 token 跟随新主题(Mocha 底 ≠ Liuma #151515)
+            let t = Theme::global(cx);
+            let canvas = t.colors.background;
+            assert_ne!(canvas, Hsla::from(rgba(0x151515FF)));
+            // 还原进程级静态(THEME_NAMES 是跨用例共享的,并行用例经
+            // config_for_mode/theme_name 会读到)
+            THEME_NAMES.write().unwrap_or_else(|e| e.into_inner())[1] = String::new();
+        });
+    }
+
+    /// 主题铺设:apply_config 后关键 token == liuma.json 锚值,
+    /// tokens 语义面自动 reconcile(`Theme::update` 的 edit 尾部;
+    /// 刻意不经 [`apply`]——那会写进程级档位静态量,并行用例下徒增
+    /// 互相干扰)
+    #[gpui_kit::test]
+    fn theme_config_paints_component_theme(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            setup(cx);
+            let cfg = config_for_mode(ThemeMode::Light, &*cx);
+            Theme::update(cx, |t| apply_theme_config(t, &cfg));
             let t = Theme::global(cx);
             assert!(!t.is_dark());
-            assert_eq!(
-                t.colors.background,
-                Hsla::from(palette_of(ThemeMode::Light).base)
-            );
-            assert_eq!(
-                t.colors.scrollbar_thumb,
-                Hsla::from(palette_of(ThemeMode::Light).dock)
+            assert_close(t.colors.background.into(), rgba(0xFFFFFFFF), "background");
+            assert_close(
+                t.colors.scrollbar_thumb.into(),
+                rgba(0xE9E9EBFF),
+                "scrollbar_thumb",
             );
             // 填充面前景:浅盘下仍为纯白(非近黑 label)
-            assert_eq!(
-                t.colors.primary_foreground,
-                Hsla::from(color(0xFFFFFF, 1.0))
+            assert_close(
+                t.colors.primary_foreground.into(),
+                rgba(0xFFFFFFFF),
+                "primary_foreground",
             );
-            // tokens 语义面镜像(Root 画布读 tokens.background;漏镜像
-            // = 画布露出库默认底,2026-09 主题批次实测踩坑)
-            assert_eq!(
-                *t.tokens.background,
-                Hsla::from(palette_of(ThemeMode::Light).base)
+            // tokens 语义面镜像(Root 画布读 tokens.background)
+            assert_close(
+                (*t.tokens.background).into(),
+                rgba(0xFFFFFFFF),
+                "tokens.background",
             );
         });
     }
@@ -645,17 +823,15 @@ mod tests {
     fn selected_marker_is_distinguishable_from_canvas(cx: &mut TestAppContext) {
         for mode in [ThemeMode::Dark, ThemeMode::Light] {
             cx.update(|cx| {
-                gpui_kit::component::init(cx);
-                Theme::change(mode, None, cx);
-                apply_tokens(mode, cx);
+                setup(cx);
+                let cfg = config_for_mode(mode, &*cx);
+                Theme::update(cx, |t| apply_theme_config(t, &cfg));
                 let t = Theme::global(cx);
-                let p = palette_of(mode);
-                assert_eq!(t.colors.primary, Hsla::from(p.brand));
                 let canvas = *t.tokens.background;
                 assert!(
-                    (Hsla::from(p.brand).l - canvas.l).abs() >= 0.2,
+                    (t.colors.primary.l - canvas.l).abs() >= 0.2,
                     "{mode:?}:品牌色与画布亮度差过小({} vs {}),选中点会看不出来",
-                    Hsla::from(p.brand).l,
+                    t.colors.primary.l,
                     canvas.l
                 );
             });
@@ -668,12 +844,9 @@ mod tests {
     #[gpui_kit::test]
     fn body_font_family_is_explicit_and_derived(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_kit::component::init(cx);
-            // 走生产同款次序:`Theme::change` 打底 → `apply_tokens` 收口。
-            // 刻意不经 `apply`——那会写进程级档位静态量(MODE/LAST_*),
-            // 并行用例下徒增互相干扰
-            Theme::change(ThemeMode::Dark, None, cx);
-            apply_tokens(ThemeMode::Dark, cx);
+            setup(cx);
+            let cfg = config_for_mode(ThemeMode::Dark, &*cx);
+            Theme::update(cx, |t| apply_theme_config(t, &cfg));
             let t = Theme::global(cx);
             assert_eq!(t.font_family.as_ref(), FONT_SANS);
             assert_ne!(t.font_family.as_ref(), ".SystemUIFont");
@@ -715,7 +888,7 @@ mod tests {
         assert!(
             summed - shaped <= 0.01,
             "正文族 {FONT_SANS} 逐字孤立量宽合计 {summed} 低于整行 shape {shaped}\
-             (差 {:+.2}pt):折行会多塞字,行尾越界后被 overflow_hidden 裁掉",
+            (差 {:+.2}pt):折行会多塞字,行尾越界后被 overflow_hidden 裁掉",
             shaped - summed
         );
         // 3) 机制自检:确认本用例真的量到了「行界压缩」——系统字体族必须
@@ -727,7 +900,7 @@ mod tests {
         let sys_in_line = ct::width("稳，定", sys) - ct::width("稳定", sys);
         assert!(
             sys_in_line - sys_iso > 1.,
-            "基线自检失效:系统字体族下孤立量宽 {sys_iso} 与行内实宽 {sys_in_line} \
+            "基线自检失效:系统字体族下孤立量宽 {sys_iso} 与行内实宽 {sys_in_line}\
              不再有行界压缩差——机制前提已变,请复核 FONT_SANS 的说明"
         );
     }

@@ -38,10 +38,10 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
     let risk = data.get("risk").filter(|r| r.is_object());
     let risk_label = risk.and_then(|r| r["label"].as_str());
     let (risk_text, risk_color) = match risk_label {
-        Some("low-risk") => (t!("ask.risk_low"), theme::SUCCESS()),
-        Some("risky") => (t!("ask.risk_risky"), theme::DANGER()),
-        Some(_) => (t!("ask.risk_uncertain"), theme::WARN()),
-        None => ("".into(), theme::CAPTION()),
+        Some("low-risk") => (t!("ask.risk_low"), theme::success(cx)),
+        Some("risky") => (t!("ask.risk_risky"), theme::danger(cx)),
+        Some(_) => (t!("ask.risk_uncertain"), theme::warning(cx)),
+        None => ("".into(), theme::caption(cx)),
     };
     // 理由行就地组句(不直接渲染载荷里的 detail):载荷是审计面的英文
     // 单句,卡面是中文界面——同一份判定在两边各说各的语言。
@@ -66,8 +66,8 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
             .gap(px(10.))
             .rounded(px(14.))
             .border_1()
-            .border_color(theme::BORDER())
-            .bg(theme::LAYER())
+            .border_color(theme::border(cx))
+            .bg(theme::layer(cx))
             .p(px(14.))
             // 标题行:工具名 + 模式迁移;✕ = 取消请求
             .child(
@@ -79,13 +79,13 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
                         div()
                             .text_size(px(13.))
                             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                            .text_color(theme::LABEL())
+                            .text_color(theme::label(cx))
                             .child(t!("ask.sandbox_title")),
                     )
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(theme::CAPTION())
+                            .text_color(theme::caption(cx))
                             .child(t!(
                                 "ask.sandbox_desc",
                                 tool = tool_name,
@@ -103,8 +103,8 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .text_color(theme::CAPTION())
-                            .hover(|s| s.bg(theme::DOCK()))
+                            .text_color(theme::caption(cx))
+                            .hover(|s| s.bg(theme::dock(cx)))
                             .on_click(move |_, _, cx| {
                                 dismiss.update(cx, |st, cx| st.dismiss_approval(cx));
                             })
@@ -117,10 +117,10 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
                     .w_full()
                     .min_w(px(0.))
                     .rounded(px(8.))
-                    .bg(theme::DOCK())
+                    .bg(theme::dock(cx))
                     .p(px(10.))
                     .text_size(px(12.))
-                    .text_color(theme::LABEL())
+                    .text_color(theme::label(cx))
                     .child(command),
             )
             // 决策模型风险标注(advisory;建议性,裁决仍在此卡)
@@ -149,13 +149,13 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
                         .child(
                             div()
                                 .text_size(px(11.))
-                                .text_color(theme::CAPTION())
+                                .text_color(theme::caption(cx))
                                 .child(t!("ask.risk_title")),
                         )
                         .child(
                             div()
                                 .text_size(px(11.))
-                                .text_color(theme::CAPTION())
+                                .text_color(theme::caption(cx))
                                 .child(risk_reason),
                         ),
                 )
@@ -163,7 +163,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
             .child(
                 div()
                     .text_size(px(12.))
-                    .text_color(theme::CAPTION())
+                    .text_color(theme::caption(cx))
                     .child(justification),
             )
             // 一步两钮:批准一次(allow-once)/ 拒绝(对该命令终局)
@@ -182,12 +182,12 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
                             .justify_center()
                             .rounded(px(14.))
                             .border_1()
-                            .border_color(theme::BORDER())
+                            .border_color(theme::border(cx))
                             .px(px(16.))
                             .cursor_pointer()
                             .text_size(px(13.))
-                            .text_color(theme::LABEL_2())
-                            .hover(|s| s.bg(theme::DOCK()))
+                            .text_color(theme::label_2(cx))
+                            .hover(|s| s.bg(theme::dock(cx)))
                             .on_click(move |_, _, cx| {
                                 reject.update(cx, |st, cx| st.answer_approval(false, cx));
                             })
@@ -202,7 +202,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
                             .items_center()
                             .justify_center()
                             .rounded(px(14.))
-                            .bg(theme::BRAND())
+                            .bg(theme::brand(cx))
                             .px(px(16.))
                             .cursor_pointer()
                             .text_size(px(13.))

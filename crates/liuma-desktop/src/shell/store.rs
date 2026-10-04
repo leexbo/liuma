@@ -340,9 +340,9 @@ impl AppStore {
         // (非 System 档回调即短路;显式档强制 NSApp 外观触发的回调同样
         // 短路,不会成环)。订阅存 self,drop = 退订。
         if self.appearance_sub.is_none() {
-            self.appearance_sub = Some(window.observe_window_appearance(|window, cx| {
+            self.appearance_sub = Some(window.observe_window_appearance(|_window, cx| {
                 if theme::current_appearance() == theme::Appearance::System {
-                    theme::apply(theme::Appearance::System, Some(window), cx);
+                    theme::apply(theme::Appearance::System, cx);
                 }
             }));
         }

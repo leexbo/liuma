@@ -30,7 +30,7 @@ pub(crate) fn search_field(store: &Entity<AppStore>, cx: &App) -> impl IntoEleme
             .items_center()
             .rounded(px(10.))
             .border_1()
-            .border_color(theme::BORDER_2())
+            .border_color(theme::border_2(cx))
             .pl(px(6.))
             .pr(px(4.))
             .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
@@ -42,7 +42,7 @@ pub(crate) fn search_field(store: &Entity<AppStore>, cx: &App) -> impl IntoEleme
                     // 无组件自带边框/底色/聚焦环:外框由包装层提供,
                     // 避免双层描边错位重叠
                     .appearance(false)
-                    .prefix(fixed(LiumaIcon::SearchOutline, 13.).text_color(theme::CAPTION()))
+                    .prefix(fixed(LiumaIcon::SearchOutline, 13.).text_color(theme::caption(cx)))
                     .suffix(
                         div()
                             .id("search-clear")
@@ -54,8 +54,11 @@ pub(crate) fn search_field(store: &Entity<AppStore>, cx: &App) -> impl IntoEleme
                             .justify_center()
                             .rounded_full()
                             .cursor_pointer()
-                            .text_color(theme::CAPTION())
-                            .hover(|s| s.bg(theme::SIDEBAR_HOVER()).text_color(theme::LABEL_2()))
+                            .text_color(theme::caption(cx))
+                            .hover(|s| {
+                                s.bg(theme::sidebar_hover(cx))
+                                    .text_color(theme::label_2(cx))
+                            })
                             .child(fixed(IconName::Close, 12.))
                             .on_click(move |_, window, cx| {
                                 cx.stop_propagation();
@@ -81,7 +84,7 @@ pub(crate) fn search_hits_panel(store: &Entity<AppStore>, cx: &App) -> impl Into
             .child(
                 div()
                     .text_size(px(11.))
-                    .text_color(theme::CAPTION())
+                    .text_color(theme::caption(cx))
                     .flex_1()
                     .child(t!("misc.hits_full", n = hits.len())),
             )
@@ -96,8 +99,8 @@ pub(crate) fn search_hits_panel(store: &Entity<AppStore>, cx: &App) -> impl Into
                     .rounded(px(6.))
                     .cursor_pointer()
                     .text_size(px(11.))
-                    .text_color(theme::LABEL_3())
-                    .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
+                    .text_color(theme::label_3(cx))
+                    .hover(|s| s.bg(theme::sidebar_hover(cx)))
                     .child(t!("misc.back_to_list"))
                     .on_click(move |_, window, cx| {
                         back.update(cx, |st, cx| st.clear_search(window, cx));
@@ -109,7 +112,7 @@ pub(crate) fn search_hits_panel(store: &Entity<AppStore>, cx: &App) -> impl Into
         rows.push(
             div()
                 .text_size(px(12.))
-                .text_color(theme::LABEL_3())
+                .text_color(theme::label_3(cx))
                 .child(t!("misc.no_hits"))
                 .into_any_element(),
         );
@@ -138,8 +141,8 @@ pub(crate) fn search_hits_panel(store: &Entity<AppStore>, cx: &App) -> impl Into
                 .pl(px(8.))
                 .pr(px(8.))
                 .cursor_pointer()
-                .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
-                .child(fixed(LiumaIcon::Message, 14.).text_color(theme::LABEL_3()))
+                .hover(|s| s.bg(theme::sidebar_hover(cx)))
+                .child(fixed(LiumaIcon::Message, 14.).text_color(theme::label_3(cx)))
                 .child(
                     div()
                         .v_flex()
@@ -150,14 +153,14 @@ pub(crate) fn search_hits_panel(store: &Entity<AppStore>, cx: &App) -> impl Into
                             div()
                                 .text_size(px(12.))
                                 .truncate()
-                                .text_color(theme::LABEL_2())
+                                .text_color(theme::label_2(cx))
                                 .child(title),
                         )
                         .child(
                             div()
                                 .text_size(px(11.))
                                 .truncate()
-                                .text_color(theme::CAPTION())
+                                .text_color(theme::caption(cx))
                                 .child(format!("[{kind}] {preview}")),
                         ),
                 )

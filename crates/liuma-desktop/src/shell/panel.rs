@@ -92,7 +92,7 @@ impl PanelTab {
                     .unwrap_or_default();
                 let class = crate::kits::filetype::file_class(&name);
                 crate::kits::filetype::class_icon(class, size)
-                    .text_color(theme::FILE_TYPE_TINT(class))
+                    .text_color(theme::file_type_tint(class))
             }
         }
     }
@@ -148,7 +148,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         // 面板与聊天区同底(透 Root 毛玻璃涂层,双模式一致)——分隔
         // 只靠左侧发丝线;深色下取 SIDEBAR 亮一档会显「灰底」
         .border_l_1()
-        .border_color(theme::BORDER())
+        .border_color(theme::border(cx))
         // 右栏域尾哨兵(栈底,盖整个面板列):右栏拖选落空时终点钳在
         // 右栏域,同时压住窗口级聊天哨兵在本列的命中(后注册居上)
         .child(
@@ -160,10 +160,10 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                     crate::kits::selection_order::PANEL_TAIL_ORDER,
                 )),
         )
-        .child(panel_header(store, &tabs, active_tab.clone()))
+        .child(panel_header(store, &tabs, active_tab.clone(), cx))
         .child(match active_tab {
             Some(tab) => tab_body(store, tab, window, cx),
-            None => empty_menu(store, &shortcut),
+            None => empty_menu(store, &shortcut, cx),
         });
     // 左缘拖宽把手(absolute 外沿 4px;同 sidebar_resize_handle)
     col = col.child(
@@ -231,11 +231,12 @@ fn panel_header(
     store: &Entity<AppStore>,
     tabs: &[PanelTab],
     active: Option<PanelTab>,
+    cx: &App,
 ) -> impl IntoElement {
     let mut strip: Vec<gpui_kit::AnyElement> = Vec::new();
     for tab in tabs {
         strip.push(
-            panel_tab_pill(store, tab.clone(), Some(tab.clone()) == active).into_any_element(),
+            panel_tab_pill(store, tab.clone(), Some(tab.clone()) == active, cx).into_any_element(),
         );
     }
     let s_toggle = store.clone();
@@ -257,8 +258,8 @@ fn panel_header(
                         .justify_center()
                         .rounded(px(6.))
                         .cursor_pointer()
-                        .text_color(theme::CAPTION())
-                        .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL()))
+                        .text_color(theme::caption(cx))
+                        .hover(|s| s.bg(theme::dock(cx)).text_color(theme::label(cx)))
                         .child(fixed(IconName::Plus, 13.)),
                 ))
                 .content({
@@ -266,7 +267,7 @@ fn panel_header(
                     move |_, window, cx| {
                         let shortcut = window.keystroke_text_for(&OpenPanelPlan);
                         let pop = cx.entity();
-                        plus_menu_card(&store, pop, shortcut).into_any_element()
+                        plus_menu_card(&store, pop, shortcut, cx).into_any_element()
                     }
                 })
                 .into_any_element(),
@@ -309,8 +310,8 @@ fn panel_header(
                     .cursor_pointer()
                     // 开态形态(同 topbar 面板开关,不用蓝
                     // 色):前景提亮 + 素底,hover 显灰
-                    .text_color(theme::LABEL())
-                    .hover(|s| s.bg(theme::LAYER()))
+                    .text_color(theme::label(cx))
+                    .hover(|s| s.bg(theme::layer(cx)))
                     .child(fixed(IconName::PanelRight, 14.))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(move |_, _, cx| {
@@ -325,7 +326,12 @@ fn panel_header(
 /// 圆角小方钮(深盘 DOCK 比卡底亮一档/浅盘白 CARD 浮起——两模式
 /// 分层语言),未激活素底 hover 才显底(触发钮全站约定);
 /// ✕ 独立点击(stop_propagation,不冒泡激活标签也不触发窗口拖拽)
-fn panel_tab_pill(store: &Entity<AppStore>, tab: PanelTab, active: bool) -> gpui_kit::AnyElement {
+fn panel_tab_pill(
+    store: &Entity<AppStore>,
+    tab: PanelTab,
+    active: bool,
+    cx: &App,
+) -> gpui_kit::AnyElement {
     let s_tab = store.clone();
     let s_close = store.clone();
     let key = tab.key();
@@ -345,16 +351,16 @@ fn panel_tab_pill(store: &Entity<AppStore>, tab: PanelTab, active: bool) -> gpui
         .rounded(px(8.))
         .cursor_pointer()
         .bg(if active {
-            theme::LAYER()
+            theme::layer(cx)
         } else {
-            theme::TRANSPARENT()
+            theme::TRANSPARENT
         })
         .text_color(if active {
-            theme::LABEL()
+            theme::label(cx)
         } else {
-            theme::LABEL_3()
+            theme::label_3(cx)
         })
-        .hover(|s| s.bg(theme::LAYER()))
+        .hover(|s| s.bg(theme::layer(cx)))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(tab.icon(14.))
         .child(div().text_size(px(13.)).child(tab.title()))
@@ -369,12 +375,12 @@ fn panel_tab_pill(store: &Entity<AppStore>, tab: PanelTab, active: bool) -> gpui
                 .rounded(px(6.))
                 .cursor_pointer()
                 .bg(match active {
-                    true if theme::is_dark() => theme::DOCK(),
-                    true => theme::CARD(),
-                    false => theme::TRANSPARENT(),
+                    true if theme::is_dark(cx) => theme::dock(cx),
+                    true => theme::card(cx),
+                    false => theme::TRANSPARENT,
                 })
-                .text_color(theme::CAPTION())
-                .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL()))
+                .text_color(theme::caption(cx))
+                .hover(|s| s.bg(theme::dock(cx)).text_color(theme::label(cx)))
                 .child(fixed(IconName::Close, 11.))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(move |_, _, cx| {
@@ -420,7 +426,7 @@ fn tab_body(
                 .overflow_y_scroll()
                 .px(px(12.))
                 .py(px(10.))
-                .child(panel_plan_content(latest))
+                .child(panel_plan_content(latest, cx))
                 .into_any_element()
         }
         PanelTab::Trajectory => div()
@@ -458,7 +464,7 @@ fn tab_body(
 
 /// 空态快捷菜单(面板开着、无激活标签):居中卡,
 /// 每行 = 图标 + 标题 + 右侧快捷键徽标;与「+」菜单同份 [`PanelTab::ALL`]
-fn empty_menu(store: &Entity<AppStore>, shortcut: &str) -> gpui_kit::AnyElement {
+fn empty_menu(store: &Entity<AppStore>, shortcut: &str, cx: &App) -> gpui_kit::AnyElement {
     let rows: Vec<gpui_kit::AnyElement> = PanelTab::ALL
         .iter()
         .map(|tab| {
@@ -477,17 +483,17 @@ fn empty_menu(store: &Entity<AppStore>, shortcut: &str) -> gpui_kit::AnyElement 
                 // 行面分模式:浅盘素底 hover 才灰(灰胶囊行在白面板上成
                 // 灰砖);深盘微亮面 LAYER——纯素底在
                 // 深面板上无边界,取深色行极弱亮面
-                .bg(if theme::is_dark() {
-                    theme::LAYER()
+                .bg(if theme::is_dark(cx) {
+                    theme::layer(cx)
                 } else {
-                    theme::TRANSPARENT()
+                    theme::TRANSPARENT
                 })
-                .hover(|s| s.bg(theme::DOCK()))
-                .child(tab.icon(16.).text_color(theme::LABEL_2()))
+                .hover(|s| s.bg(theme::dock(cx)))
+                .child(tab.icon(16.).text_color(theme::label_2(cx)))
                 .child(
                     div()
                         .text_size(px(13.))
-                        .text_color(theme::LABEL())
+                        .text_color(theme::label(cx))
                         .child(tab.title()),
                 )
                 .child(div().flex_1())
@@ -495,15 +501,15 @@ fn empty_menu(store: &Entity<AppStore>, shortcut: &str) -> gpui_kit::AnyElement 
                     // 快捷键徽标:小灰 pill,须比行面亮一档才可读
                     div()
                         .rounded(px(5.))
-                        .bg(if theme::is_dark() {
-                            theme::DOCK()
+                        .bg(if theme::is_dark(cx) {
+                            theme::dock(cx)
                         } else {
-                            theme::LAYER()
+                            theme::layer(cx)
                         })
                         .px(px(6.))
                         .py(px(2.))
                         .text_size(px(11.))
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .child(shortcut.to_string()),
                 )
                 .on_click(move |_, _, cx| {
@@ -535,6 +541,7 @@ fn plus_menu_card(
     store: &Entity<AppStore>,
     pop: Entity<gpui_kit::component::popover::PopoverState>,
     shortcut: String,
+    cx: &App,
 ) -> impl IntoElement {
     let items: Vec<gpui_kit::AnyElement> = PanelTab::ALL
         .iter()
@@ -553,15 +560,15 @@ fn plus_menu_card(
                 .px(px(8.))
                 .rounded(px(6.))
                 .cursor_pointer()
-                .text_color(theme::LABEL_2())
-                .hover(|st| st.bg(theme::DOCK()))
+                .text_color(theme::label_2(cx))
+                .hover(|st| st.bg(theme::dock(cx)))
                 .child(tab.icon(13.))
                 .child(div().text_size(px(12.)).child(tab.title()))
                 .child(div().flex_1())
                 .child(
                     div()
                         .text_size(px(11.))
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .child(shortcut.to_string()),
                 )
                 .on_click(move |_, window, cx| {
@@ -580,15 +587,15 @@ fn plus_menu_card(
         .gap(px(2.))
         .rounded(px(10.))
         .border_1()
-        .border_color(theme::BORDER())
-        .bg(theme::LAYER())
+        .border_color(theme::border(cx))
+        .bg(theme::layer(cx))
         .p(px(4.))
         .shadow_md()
         .children(items)
 }
 
 /// 计划 tab 内容:最新计划全文 + 状态徽标;无计划 = 空态
-fn panel_plan_content(latest: Option<(String, PlanStatus)>) -> impl IntoElement {
+fn panel_plan_content(latest: Option<(String, PlanStatus)>, cx: &App) -> impl IntoElement {
     let mut col = div().v_flex().gap(px(8.));
     match latest {
         None => {
@@ -596,17 +603,17 @@ fn panel_plan_content(latest: Option<(String, PlanStatus)>) -> impl IntoElement 
                 div()
                     .py(px(20.))
                     .text_size(px(12.))
-                    .text_color(theme::CAPTION())
+                    .text_color(theme::caption(cx))
                     .child(crate::kits::i18n::t!("shell.plan_empty")),
             );
         }
         Some((plan, status)) => {
             use crate::kits::i18n::t;
             let (status_text, status_color) = match status {
-                PlanStatus::Pending => (t!("shell.plan_pending"), theme::WARN()),
-                PlanStatus::Approved => (t!("shell.plan_approved"), theme::SUCCESS()),
-                PlanStatus::Declined => (t!("shell.plan_declined"), theme::CAPTION()),
-                PlanStatus::Cancelled => (t!("shell.plan_cancelled"), theme::CAPTION()),
+                PlanStatus::Pending => (t!("shell.plan_pending"), theme::warning(cx)),
+                PlanStatus::Approved => (t!("shell.plan_approved"), theme::success(cx)),
+                PlanStatus::Declined => (t!("shell.plan_declined"), theme::caption(cx)),
+                PlanStatus::Cancelled => (t!("shell.plan_cancelled"), theme::caption(cx)),
             };
             col = col
                 .child(
@@ -618,7 +625,7 @@ fn panel_plan_content(latest: Option<(String, PlanStatus)>) -> impl IntoElement 
                             div()
                                 .text_size(px(12.))
                                 .font_weight(gpui_kit::FontWeight::MEDIUM)
-                                .text_color(theme::LABEL_2())
+                                .text_color(theme::label_2(cx))
                                 .child(crate::kits::i18n::t!("shell.plan_tab")),
                         )
                         .child(
@@ -631,8 +638,8 @@ fn panel_plan_content(latest: Option<(String, PlanStatus)>) -> impl IntoElement 
                 .child(
                     div()
                         .text_size(px(13.))
-                        .text_color(theme::LABEL_2())
-                        .child(crate::kits::markdown_tv::tv_static("panel-plan", &plan)),
+                        .text_color(theme::label_2(cx))
+                        .child(crate::kits::markdown_tv::tv_static("panel-plan", &plan, cx)),
                 );
         }
     }

@@ -104,8 +104,8 @@ pub fn render(
             .v_flex()
             .rounded(px(14.))
             .border_1()
-            .border_color(theme::BORDER())
-            .bg(theme::LAYER())
+            .border_color(theme::border(cx))
+            .bg(theme::layer(cx))
             .p(px(14.))
             .gap(px(10.))
             .child(
@@ -143,7 +143,7 @@ pub fn render(
                                                             "ask-eyebrow".to_string()
                                                         })
                                                         .text_size(px(11.))
-                                                        .text_color(theme::CAPTION())
+                                                        .text_color(theme::caption(cx))
                                                         .child(eyebrow),
                                                 )
                                             })
@@ -172,8 +172,8 @@ pub fn render(
                                             .items_center()
                                             .justify_center()
                                             .cursor_pointer()
-                                            .text_color(theme::CAPTION())
-                                            .hover(|s| s.bg(theme::DOCK()))
+                                            .text_color(theme::caption(cx))
+                                            .hover(|s| s.bg(theme::dock(cx)))
                                             .on_click(move |_, _, cx| {
                                                 cancel.update(cx, |st, cx| st.cancel_ask(cx))
                                             })

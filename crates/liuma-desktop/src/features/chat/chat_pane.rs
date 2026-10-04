@@ -369,7 +369,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                                     .items_center()
                                     .gap(px(8.))
                                     .text_size(px(13.))
-                                    .text_color(theme::CAPTION())
+                                    .text_color(theme::caption(cx))
                                     .child(Spinner::new().small())
                                     .child(t!("chat.loading_history")),
                             ),
@@ -385,13 +385,13 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 // 排队(静态)/进行(呼吸;无进度通道的老日志)
                 let row: AnyElement = match compact_progress.as_ref() {
                     Some(p) if p.phase == "failed" => {
-                        compact_row(t!("chat.compact_failed"), false, "compact-failed")
+                        compact_row(t!("chat.compact_failed"), false, "compact-failed", cx)
                     }
                     Some(p) if !p.terminal() => compact_progress_row(p, window, cx),
                     _ if compact_running => {
-                        compact_row(t!("chat.compact_running"), true, "compact-running")
+                        compact_row(t!("chat.compact_running"), true, "compact-running", cx)
                     }
-                    _ => compact_row(t!("chat.compact_queued"), false, "compact-queued"),
+                    _ => compact_row(t!("chat.compact_queued"), false, "compact-queued", cx),
                 };
                 el.child(
                     div()
@@ -415,7 +415,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                             .pb(px(8.))
                             .text_size(px(13.))
                             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                            .text_color(theme::BRAND())
+                            .text_color(theme::brand(cx))
                             .child(
                                 div()
                                     .debug_selector(|| "turn-status".to_string())
@@ -428,7 +428,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                                             div()
                                                 .text_size(px(12.))
                                                 .font_weight(gpui_kit::FontWeight::NORMAL)
-                                                .text_color(theme::CAPTION())
+                                                .text_color(theme::caption(cx))
                                                 .child(label),
                                         )
                                     })
@@ -457,6 +457,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 nav_track,
                 ui,
                 list_state.clone(),
+                cx,
             ))
         })
         // 回底钮:离开底部时出现,右下角悬浮(与 composer 发送钮同
@@ -480,9 +481,9 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                     .items_center()
                     .justify_center()
                     .rounded_full()
-                    .bg(theme::DOCK())
+                    .bg(theme::dock(cx))
                     .border_1()
-                    .border_color(theme::BORDER_2())
+                    .border_color(theme::border_2(cx))
                     .shadow_sm()
                     .cursor_pointer()
                     // 挡点击不挡滚轮:悬浮于滚动区上,滚轮要穿透
@@ -498,7 +499,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                             cx.notify();
                         });
                     })
-                    .child(fixed(IconName::ArrowDown, 12.).text_color(theme::LABEL())),
+                    .child(fixed(IconName::ArrowDown, 12.).text_color(theme::label(cx))),
             )
         })
 }
@@ -557,7 +558,7 @@ const TOOL_SWEEP_MS: std::time::Duration = std::time::Duration::from_millis(2600
 /// 与前导 ongoing_dot 共存 = 「状态点 + 扫光」双要素)。gpui 渐变仅
 /// 两止点,以「透明→低透明白」近似 300px 三止带;`left(relative(..))`
 /// 相对行宽位移无需知道行宽;repeat 动画元素卸载即停(同 state_dot)。
-fn tool_sweep(ix: usize) -> impl IntoElement {
+fn tool_sweep(ix: usize, cx: &App) -> impl IntoElement {
     div()
         .debug_selector(move || format!("tool-sweep-{ix}"))
         .absolute()
@@ -567,7 +568,7 @@ fn tool_sweep(ix: usize) -> impl IntoElement {
         .bg(gpui_kit::linear_gradient(
             90.,
             gpui_kit::linear_color_stop(gpui_kit::transparent_black(), 0.),
-            gpui_kit::linear_color_stop(theme::SWEEP(), 1.),
+            gpui_kit::linear_color_stop(theme::sweep(cx), 1.),
         ))
         .with_animation(
             ("liuma-tool-sweep", ix),
@@ -614,6 +615,7 @@ fn nav_ticks(
     track: Option<(f32, f32)>,
     ui: NavUiState,
     list_state: gpui_kit::ListState,
+    cx: &App,
 ) -> impl IntoElement {
     let NavUiState { hovered } = ui;
     let (_, track_h) = match track {
@@ -646,9 +648,9 @@ fn nav_ticks(
         let w = TICK_WIDTHS[dist.min(4)];
         let is_active = dist == 0;
         let color = if is_active {
-            theme::LABEL()
+            theme::label(cx)
         } else {
-            theme::TICK_IDLE()
+            theme::tick_idle(cx)
         };
         // 刻度行:热区高 16,线左缘 = pl(24)(实测 23.5);行本体挡点击
         let mut el = div()
@@ -728,7 +730,7 @@ fn nav_ticks(
                 .w(px(320.))
                 .p(px(16.))
                 .rounded(px(12.))
-                .bg(theme::DOCK())
+                .bg(theme::dock(cx))
                 .shadow_md()
                 .block_mouse_except_scroll()
                 .on_hover(move |entered, _, cx| {
@@ -742,7 +744,7 @@ fn nav_ticks(
                     div()
                         .text_size(px(14.))
                         .font_weight(gpui_kit::FontWeight::MEDIUM)
-                        .text_color(theme::LABEL())
+                        .text_color(theme::label(cx))
                         .truncate()
                         .child(title),
                 );
@@ -753,7 +755,7 @@ fn nav_ticks(
                         .max_h(px(63.))
                         .overflow_hidden()
                         .text_size(px(13.))
-                        .text_color(theme::LABEL_2())
+                        .text_color(theme::label_2(cx))
                         .line_height(gpui_kit::relative(1.5))
                         .child(body),
                 );
@@ -814,7 +816,7 @@ fn nav_ticks(
             let marker_slots: Vec<Option<usize>> = anchors.iter().map(|a| a.slot_ix).collect();
             gpui_kit::canvas(
                 move |_, _, _| marker_slots,
-                move |b, marker_slots, window, _| {
+                move |b, marker_slots, window, cx| {
                     let top = list_state.logical_scroll_top().item_ix;
                     // 常亮不灭:命中区取最近已加载锚;窗口边界之上(正在看
                     // 更早轮的尾部、其锚未加载)回落到已加载首锚的前一个
@@ -840,7 +842,7 @@ fn nav_ticks(
                             origin: gpui_kit::point(x, y - px(1.)),
                             size: gpui_kit::size(px(6.), px(2.)),
                         },
-                        theme::LABEL(),
+                        theme::label(cx),
                     );
                     quad.corner_radii = px(1.).into();
                     window.paint_quad(quad);
@@ -922,7 +924,7 @@ pub fn context_provenance(source: &serde_json::Value) -> (&'static str, String) 
 /// turn 输入,用户侧信号由任务面板承担)
 fn context_block(
     store: &Entity<AppStore>,
-    _cx: &App,
+    cx: &App,
     open_context: &std::collections::HashSet<String>,
     ix: usize,
     key: &str,
@@ -960,6 +962,7 @@ fn context_block(
         open,
         false,
         Some(row_sel),
+        cx,
     )
     .id(("context", ix))
     .on_click(move |_, _, cx| {
@@ -973,7 +976,7 @@ fn context_block(
             div()
                 .mt(px(4.))
                 .text_size(px(13.))
-                .text_color(theme::LABEL_3())
+                .text_color(theme::label_3(cx))
                 .line_height(gpui_kit::relative(1.5))
                 .whitespace_normal()
                 .child(content_owned),
@@ -991,6 +994,7 @@ fn compact_row(
     message: impl Into<SharedString>,
     running: bool,
     selector: &'static str,
+    cx: &App,
 ) -> AnyElement {
     let message = message.into().to_string();
     let row = div()
@@ -999,12 +1003,12 @@ fn compact_row(
         .items_center()
         .gap(px(6.))
         .h(px(24.))
-        .child(fixed(IconName::SquareTerminal, 14.).text_color(theme::CAPTION()))
+        .child(fixed(IconName::SquareTerminal, 14.).text_color(theme::caption(cx)))
         .child(
             div()
                 .flex_shrink_0()
                 .text_size(px(13.))
-                .text_color(theme::LABEL())
+                .text_color(theme::label(cx))
                 .child("compact"),
         )
         // 2px 圆点分隔(label-caption 色)
@@ -1013,7 +1017,7 @@ fn compact_row(
                 .flex_shrink_0()
                 .size(px(2.))
                 .rounded_full()
-                .bg(theme::CAPTION()),
+                .bg(theme::caption(cx)),
         )
         .child(
             div()
@@ -1021,7 +1025,7 @@ fn compact_row(
                 .flex_1()
                 .truncate()
                 .text_size(px(13.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(message.to_string()),
         );
     if running {
@@ -1091,12 +1095,12 @@ fn compact_progress_row(
         .items_center()
         .gap(px(6.))
         .h(px(24.))
-        .child(fixed(IconName::SquareTerminal, 14.).text_color(theme::CAPTION()))
+        .child(fixed(IconName::SquareTerminal, 14.).text_color(theme::caption(cx)))
         .child(
             div()
                 .flex_shrink_0()
                 .text_size(px(13.))
-                .text_color(theme::LABEL())
+                .text_color(theme::label(cx))
                 .child("compact"),
         )
         .child(
@@ -1104,7 +1108,7 @@ fn compact_progress_row(
                 .flex_shrink_0()
                 .size(px(2.))
                 .rounded_full()
-                .bg(theme::CAPTION()),
+                .bg(theme::caption(cx)),
         )
         .child(
             div()
@@ -1112,14 +1116,14 @@ fn compact_progress_row(
                 .flex_1()
                 .truncate()
                 .text_size(px(13.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(t!("chat.compact_running_phase", phase = phase)),
         )
         .child(
             div()
                 .flex_shrink_0()
                 .text_size(px(12.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(format!("{}%", pct.round() as u32)),
         )
         // 覆盖式填充(**最后一个子元素** = 画在文字之上)
@@ -1132,7 +1136,7 @@ fn compact_progress_row(
                 .left_0()
                 .w(gpui_kit::relative(frac))
                 .rounded(px(2.))
-                .bg(fill_color(theme::BRAND()))
+                .bg(fill_color(theme::brand(cx)))
                 .into_any_element(),
             // 不定态:先涨后滑的块(库 Progress loading 同款走位)
             (true, false) => div()
@@ -1142,7 +1146,7 @@ fn compact_progress_row(
                 .bottom_0()
                 .left_0()
                 .rounded(px(2.))
-                .bg(fill_color(theme::BRAND()))
+                .bg(fill_color(theme::brand(cx)))
                 .with_animation(
                     "liuma-compact-fill",
                     Animation::new(std::time::Duration::from_millis(1200)).repeat(),
@@ -1184,6 +1188,7 @@ fn compaction_block(
     tokens: Option<u64>,
     pruned: Option<u64>,
     settle: Option<std::time::Instant>,
+    cx: &App,
 ) -> impl IntoElement {
     // 完成闪:进度会话刚收尾(年龄门控——虚拟化重挂不重放,照节点
     // 入场的既有做法);条走满 + SUCCESS 色,400ms 淡出后即静默行
@@ -1210,12 +1215,12 @@ fn compaction_block(
                 .items_center()
                 .gap(px(6.))
                 .h(px(24.))
-                .child(fixed(IconName::SquareTerminal, 14.).text_color(theme::CAPTION()))
+                .child(fixed(IconName::SquareTerminal, 14.).text_color(theme::caption(cx)))
                 .child(
                     div()
                         .flex_shrink_0()
                         .text_size(px(13.))
-                        .text_color(theme::LABEL())
+                        .text_color(theme::label(cx))
                         .child(t!("chat.compact_title")),
                 )
                 .child(
@@ -1223,7 +1228,7 @@ fn compaction_block(
                         .flex_shrink_0()
                         .size(px(2.))
                         .rounded_full()
-                        .bg(theme::CAPTION()),
+                        .bg(theme::caption(cx)),
                 )
                 .child(
                     div()
@@ -1231,11 +1236,11 @@ fn compaction_block(
                         .flex_1()
                         .truncate()
                         .text_size(px(13.))
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .child(message),
                 )
                 // 定位入台账(常显弱箭头:hover 才显的入口等于没有入口)
-                .child(fixed(IconName::ChevronRight, 12.).text_color(theme::CAPTION()))
+                .child(fixed(IconName::ChevronRight, 12.).text_color(theme::caption(cx)))
                 // 完成闪:填充走满 + SUCCESS,400ms 淡出(与进行中同一几何
                 // ——整行覆盖式填充,故交接读起来是「同一块水涨满后退场」)
                 .when_some(settle, |row, _| {
@@ -1248,7 +1253,7 @@ fn compaction_block(
                             .top_0()
                             .bottom_0()
                             .rounded(px(2.))
-                            .bg(fill_color(theme::SUCCESS()))
+                            .bg(fill_color(theme::success(cx)))
                             .with_animation(
                                 "liuma-compact-settle",
                                 Animation::new(COMPACT_SETTLE_MS)
@@ -1295,6 +1300,7 @@ fn member_row(
     open: bool,
     follow_end: bool,
     selector: Option<String>,
+    cx: &App,
 ) -> Div {
     let title = title.into().to_string();
     let mut row = div()
@@ -1307,7 +1313,7 @@ fn member_row(
         .rounded(px(6.))
         .cursor_pointer()
         .group(group.clone())
-        .hover(|s| s.bg(theme::LAYER()))
+        .hover(|s| s.bg(theme::layer(cx)))
         .when_some(selector, |el, sel: String| {
             el.debug_selector(move || sel.clone())
         })
@@ -1316,12 +1322,12 @@ fn member_row(
             div()
                 .flex_shrink_0()
                 .text_size(px(13.))
-                .text_color(theme::LABEL_2())
+                .text_color(theme::label_2(cx))
                 .child(title),
         );
     row = match summary {
         Some(summary) => {
-            let summary_color = summary_color.unwrap_or_else(theme::LABEL_3);
+            let summary_color = summary_color.unwrap_or_else(|| theme::label_3(cx));
             let text = |el: Div, summary: String| {
                 el.text_size(px(13.))
                     .text_color(summary_color)
@@ -1353,7 +1359,7 @@ fn member_row(
                             .id(SharedString::from(format!("link-{group}")))
                             .flex_shrink_0()
                             .text_size(px(13.))
-                            .text_color(theme::LABEL_2())
+                            .text_color(theme::label_2(cx))
                             .underline()
                             .child(text)
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -1371,7 +1377,7 @@ fn member_row(
                     .flex_shrink_0()
                     .size(px(2.))
                     .rounded_full()
-                    .bg(theme::CAPTION()),
+                    .bg(theme::caption(cx)),
             );
             if fill {
                 // 链接槽后补弹性占位:行尾空白仍是展开热区
@@ -1391,12 +1397,12 @@ fn member_row(
         div()
             .flex_shrink_0()
             .when(open, |el| {
-                el.child(fixed(IconName::ChevronDown, 14.).text_color(theme::CAPTION()))
+                el.child(fixed(IconName::ChevronDown, 14.).text_color(theme::caption(cx)))
             })
             .when(!open, |el| {
                 el.opacity(0.)
                     .group_hover(group, |style| style.opacity(1.))
-                    .child(fixed(IconName::ChevronRight, 14.).text_color(theme::CAPTION()))
+                    .child(fixed(IconName::ChevronRight, 14.).text_color(theme::caption(cx)))
             }),
     )
 }
@@ -1490,7 +1496,7 @@ fn turn_group_row(
         .min_h(px(33.))
         .pb(px(8.))
         .border_b_1()
-        .border_color(theme::BORDER())
+        .border_color(theme::border(cx))
         .flex_shrink_0()
         .items_center()
         .gap(px(6.))
@@ -1498,12 +1504,12 @@ fn turn_group_row(
         // 素行:无底色无圆角(hover 铺色会让组头呈选中观感)
         .text_size(px(14.))
         .debug_selector(move || sel.clone())
-        .child(fixed(LiumaIcon::Workflow, 14.).text_color(theme::CAPTION()))
+        .child(fixed(LiumaIcon::Workflow, 14.).text_color(theme::caption(cx)))
         .child(
             div()
                 .min_w(px(0.))
                 .flex_1()
-                .text_color(theme::LABEL_2())
+                .text_color(theme::label_2(cx))
                 .child(label),
         )
         .child(
@@ -1515,7 +1521,7 @@ fn turn_group_row(
                 },
                 14.,
             )
-            .text_color(theme::CAPTION()),
+            .text_color(theme::caption(cx)),
         )
         .on_click(move |_, _, cx| {
             let key = key.clone();
@@ -1652,15 +1658,15 @@ fn render_node(
                 let detail = detail
                     .clone()
                     .unwrap_or_else(|| t!("chat.unknown_error").to_string());
-                notice_error(&detail).into_any_element()
+                notice_error(&detail, cx).into_any_element()
             }
             // 宿主 settlement 原文直显(locale-owned 数据);本地通告 =
             // 构建期定稿文案
             crate::features::chat::projection::NoticeKind::Compaction { text } => {
-                notice(text).into_any_element()
+                notice(text, cx).into_any_element()
             }
             crate::features::chat::projection::NoticeKind::Local { text } => {
-                notice(text).into_any_element()
+                notice(text, cx).into_any_element()
             }
         },
         ChatNode::Compaction {
@@ -1670,10 +1676,11 @@ fn render_node(
             pruned,
         } => {
             let settle = compact_settled.filter(|(k, _)| k == key).map(|(_, at)| *at);
-            compaction_block(store, ix, key, *items, *tokens, *pruned, settle).into_any_element()
+            compaction_block(store, ix, key, *items, *tokens, *pruned, settle, cx)
+                .into_any_element()
         }
         ChatNode::CompactStatus { .. } => {
-            compact_row(t!("chat.compact_empty"), false, "compact-row").into_any_element()
+            compact_row(t!("chat.compact_empty"), false, "compact-row", cx).into_any_element()
         }
         ChatNode::Plan { key, plan, status } => {
             plan_archive_card(store, cx, ix, key, plan, *status).into_any_element()
@@ -1715,10 +1722,10 @@ fn plan_archive_card(
 ) -> impl IntoElement {
     let open = store.read(cx).chat.open_plans.contains(key);
     let (status_text, status_color) = match status {
-        PlanStatus::Pending => (t!("shell.plan_pending"), theme::WARN()),
-        PlanStatus::Approved => (t!("shell.plan_approved"), theme::SUCCESS()),
-        PlanStatus::Declined => (t!("shell.plan_declined"), theme::CAPTION()),
-        PlanStatus::Cancelled => (t!("shell.plan_cancelled"), theme::CAPTION()),
+        PlanStatus::Pending => (t!("shell.plan_pending"), theme::warning(cx)),
+        PlanStatus::Approved => (t!("shell.plan_approved"), theme::success(cx)),
+        PlanStatus::Declined => (t!("shell.plan_declined"), theme::caption(cx)),
+        PlanStatus::Cancelled => (t!("shell.plan_cancelled"), theme::caption(cx)),
     };
     let s_toggle = store.clone();
     let key_owned = key.to_string();
@@ -1733,8 +1740,8 @@ fn plan_archive_card(
         .gap(px(6.))
         .rounded(px(10.))
         .border_1()
-        .border_color(theme::BORDER())
-        .bg(theme::LAYER())
+        .border_color(theme::border(cx))
+        .bg(theme::layer(cx))
         .p(px(10.))
         // 标题行:点击展开/收起
         .child(
@@ -1746,13 +1753,13 @@ fn plan_archive_card(
                 .items_center()
                 .gap(px(8.))
                 .cursor_pointer()
-                .hover(|s| s.bg(theme::DOCK()))
-                .child(fixed(LiumaIcon::ListChecks, 14.).text_color(theme::LABEL_2()))
+                .hover(|s| s.bg(theme::dock(cx)))
+                .child(fixed(LiumaIcon::ListChecks, 14.).text_color(theme::label_2(cx)))
                 .child(
                     div()
                         .text_size(px(13.))
                         .font_weight(gpui_kit::FontWeight::MEDIUM)
-                        .text_color(theme::LABEL())
+                        .text_color(theme::label(cx))
                         .child(t!("shell.plan_tab")),
                 )
                 .child(
@@ -1781,8 +1788,8 @@ fn plan_archive_card(
                         .rounded(px(5.))
                         .cursor_pointer()
                         .text_size(px(12.))
-                        .text_color(theme::CAPTION())
-                        .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL_2()))
+                        .text_color(theme::caption(cx))
+                        .hover(|s| s.bg(theme::dock(cx)).text_color(theme::label_2(cx)))
                         .child(fixed(IconName::Eye, 12.))
                         .child(t!("chat.view"))
                         .on_click(move |_, _, cx| {
@@ -1801,7 +1808,7 @@ fn plan_archive_card(
                         },
                         12.,
                     )
-                    .text_color(theme::CAPTION()),
+                    .text_color(theme::caption(cx)),
                 )
                 .on_click(move |_, _, cx| {
                     s_toggle.update(cx, |st, cx| {
@@ -1823,8 +1830,12 @@ fn plan_archive_card(
                     .max_h(px(320.))
                     .overflow_y_scroll()
                     .text_size(px(13.))
-                    .text_color(theme::LABEL_2())
-                    .child(crate::kits::markdown_tv::tv_static(key.to_string(), plan)),
+                    .text_color(theme::label_2(cx))
+                    .child(crate::kits::markdown_tv::tv_static(
+                        key.to_string(),
+                        plan,
+                        cx,
+                    )),
             )
         })
 }
@@ -1886,11 +1897,11 @@ fn user_bubble(
                 // 撤 `.w(bw)` 固定宽——那会把「📄 justfile」撑成整列宽度。
                 .max_w(bw)
                 .rounded(px(22.))
-                .bg(theme::BUBBLE())
+                .bg(theme::bubble(cx))
                 .px(px(16.))
                 .py(px(10.))
                 .text_size(px(14.))
-                .text_color(theme::LABEL())
+                .text_color(theme::label(cx))
                 // 统一行高 = 1.5(24px @16px 同比例):
                 // 文本 div 不再继承 gpui 默认 phi()(1.618→22.5px),避免
                 // 与胶囊/图标混排时行盒高度不一致造成垂直错位
@@ -1911,7 +1922,7 @@ fn user_bubble(
                     ))
                 })
                 .when(!files.is_empty(), |el| {
-                    el.child(crate::features::attachments::message_files(files))
+                    el.child(crate::features::attachments::message_files(files, cx))
                 })
                 .when(!text.is_empty(), |el| {
                     // 超长折叠:预览行数封顶 + 底部渐隐(透明 → 气泡底色,
@@ -1923,7 +1934,7 @@ fn user_bubble(
                                 el.max_h(px(USER_PREVIEW_LINES as f32 * USER_LINE_H))
                                     .overflow_hidden()
                             })
-                            .child(bubble_rich_text(ix, text))
+                            .child(bubble_rich_text(ix, text, cx))
                             .when(collapsed, |el| {
                                 el.child(
                                     div()
@@ -1938,7 +1949,7 @@ fn user_bubble(
                                                 gpui_kit::transparent_black(),
                                                 0.,
                                             ),
-                                            gpui_kit::linear_color_stop(theme::BUBBLE(), 1.),
+                                            gpui_kit::linear_color_stop(theme::bubble(cx), 1.),
                                         ))
                                         .debug_selector(move || format!("user-fade-{ix}")),
                                 )
@@ -1955,8 +1966,8 @@ fn user_bubble(
                             .flex_shrink_0()
                             .cursor_pointer()
                             .text_size(px(13.))
-                            .text_color(theme::CAPTION())
-                            .hover(|s| s.text_color(theme::LABEL_2()))
+                            .text_color(theme::caption(cx))
+                            .hover(|s| s.text_color(theme::label_2(cx)))
                             .debug_selector(move || format!("user-fold-{ix}"))
                             .child(if collapsed {
                                 t!("common.expand").to_string()
@@ -1986,7 +1997,7 @@ fn user_bubble(
                     el.child(
                         div()
                             .text_size(px(13.))
-                            .text_color(theme::CAPTION())
+                            .text_color(theme::caption(cx))
                             .pr(px(2.))
                             .child(crate::kits::fmt::fmt_clock_md(time)),
                     )
@@ -2010,7 +2021,7 @@ fn user_bubble(
 /// 其余文本原样分段。GPUI 无真正 inline 混排,以 flex-wrap 近似:
 /// 文本片段与胶囊同为 flex item,断行由 wrap 承担。文本片段经
 /// [`gpui_kit::base::SelectableText`] 参与窗口选择(拖选/复制)。
-fn bubble_rich_text(ix: usize, text: &str) -> impl IntoElement {
+fn bubble_rich_text(ix: usize, text: &str, cx: &App) -> impl IntoElement {
     let tokens = super::reference::scan_at_tokens(text);
     // 气泡 order:聊天域 + 消息序 × 步长 + 段序(分区常量见
     // kits::selection_order)
@@ -2051,7 +2062,7 @@ fn bubble_rich_text(ix: usize, text: &str) -> impl IntoElement {
         };
     for tok in &tokens {
         text_seg(cursor..tok.start, &mut children, &mut seg);
-        children.push(bubble_ref_chip(tok).into_any_element());
+        children.push(bubble_ref_chip(tok, cx).into_any_element());
         cursor = tok.end;
     }
     text_seg(cursor..text.len(), &mut children, &mut seg);
@@ -2065,7 +2076,7 @@ fn bubble_rich_text(ix: usize, text: &str) -> impl IntoElement {
 }
 
 /// 单个 @ 引用胶囊:图标 + 主题蓝 label
-fn bubble_ref_chip(tok: &super::reference::AtToken) -> impl IntoElement {
+fn bubble_ref_chip(tok: &super::reference::AtToken, cx: &App) -> impl IntoElement {
     use super::reference::AtKind;
     let (icon, label) = match tok.kind {
         AtKind::Session => (fixed(LiumaIcon::Message, 14.), format!("@{}", tok.label)),
@@ -2079,7 +2090,7 @@ fn bubble_ref_chip(tok: &super::reference::AtToken) -> impl IntoElement {
         .items_center()
         .gap(px(4.))
         .mx(px(2.))
-        .text_color(theme::BRAND())
+        .text_color(theme::brand(cx))
         .font_weight(gpui_kit::FontWeight::MEDIUM)
         .line_height(gpui_kit::relative(1.5))
         .whitespace_nowrap()
@@ -2152,12 +2163,13 @@ fn assistant_block(
             open,
             streaming,
             Some(row_sel),
+            cx,
         )
         .id(("think", ix))
         // 流式扫光与工具行同款
         .relative()
         .overflow_hidden()
-        .when(streaming, |el| el.child(tool_sweep(ix)))
+        .when(streaming, |el| el.child(tool_sweep(ix, cx)))
         .on_click({
             let s = s.clone();
             move |_, _, cx| {
@@ -2169,7 +2181,7 @@ fn assistant_block(
         if open {
             // 展开正文:markdown 渲染 + pl22 与标题文字对齐
             col = col.child(div().mt(px(4.)).pl(px(22.)).child(
-                crate::kits::markdown_tv::tv_static(format!("think-{key}"), reasoning),
+                crate::kits::markdown_tv::tv_static(format!("think-{key}"), reasoning, cx),
             ));
         }
     }
@@ -2179,17 +2191,18 @@ fn assistant_block(
         // 正文 = gpui-kit TextView(流式经渲染前 flush 的 push_str 增量
         // 驱动,见 ChatStore::sync_chat_list;定稿幂等)。流式光标在
         // 文档尾外层追加(试验形态;mermaid 待插件批次接入)
-        let body_view = store
-            .read(cx)
-            .chat
-            .tv_streams
-            .view_composed(&key, text, |v| {
+        let body_view = store.read(cx).chat.tv_streams.view_composed(
+            &key,
+            text,
+            |v| {
                 v.plugin(
                     crate::features::chat::mermaid_plugin::MermaidTextViewPlugin {
                         store: store.clone(),
                     },
                 )
-            });
+            },
+            cx,
+        );
         let body_key = key.clone();
         let body = div()
             .debug_selector(move || format!("asst-body-{body_key}"))
@@ -2209,9 +2222,9 @@ fn assistant_block(
                         .items_center()
                         .px(px(6.))
                         .rounded(px(6.))
-                        .bg(theme::LAYER())
+                        .bg(theme::layer(cx))
                         .text_size(px(11.))
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .child(t!("chat.message_stopped")),
                 ),
             );
@@ -2304,7 +2317,7 @@ fn tool_block(
                 .debug_selector(|| "row-suffix".to_string())
                 .flex_shrink_0()
                 .text_size(px(13.))
-                .text_color(theme::LABEL_3())
+                .text_color(theme::label_3(cx))
                 .child(format!("+{}", s.extra))
                 .into_any_element()
         })
@@ -2317,7 +2330,7 @@ fn tool_block(
                         .debug_selector(|| "row-suffix".to_string())
                         .flex_shrink_0()
                         .text_size(px(11.))
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .font_family("Menlo")
                         .child(format!("+{added} -{removed}"))
                         .into_any_element()
@@ -2327,9 +2340,9 @@ fn tool_block(
     let row_sel = format!("tool-row-{key}");
     // 失败/被中断:leading 换状态点(红/amber)
     let leading: AnyElement = if failure_line.is_some() {
-        state_dot(theme::DANGER())
+        state_dot(theme::danger(cx))
     } else if state == ToolState::Stopped {
-        state_dot(theme::WARN())
+        state_dot(theme::warning(cx))
     } else {
         icons::tool_icon(name).into()
     };
@@ -2340,11 +2353,12 @@ fn tool_block(
         grp,
         title,
         Some(summary_slot),
-        failure_line.map(|_| theme::DANGER()),
+        failure_line.map(|_| theme::danger(cx)),
         suffix_el,
         expanded,
         false,
         Some(row_sel),
+        cx,
     )
     .id(("tool", ix))
     // 运行中扫光的定位上下文 + 圆角裁剪(光带随行圆角出入)
@@ -2352,7 +2366,9 @@ fn tool_block(
     .overflow_hidden()
     // 运行中扫光(Done/Error/Stopped 无;叠加层不拦截点击 —— 纯 div
     // 无 hitbox,行点击穿透)
-    .when(state == ToolState::Running, |el| el.child(tool_sweep(ix)))
+    .when(state == ToolState::Running, |el| {
+        el.child(tool_sweep(ix, cx))
+    })
     .on_click(move |_, _, cx| {
         let key = click_key.clone();
         s.update(cx, |st, cx| st.toggle_tool(&key, cx));
@@ -2428,7 +2444,7 @@ fn tool_expanded_body(
                         div()
                             .ml(px(4.))
                             .text_size(px(13.))
-                            .text_color(theme::LABEL_3())
+                            .text_color(theme::label_3(cx))
                             .child(note),
                     );
                 }
@@ -2440,19 +2456,19 @@ fn tool_expanded_body(
             // todo_write 展开体 = 该次写入的任务列表(结构化渲染,弃
             // IN/OUT JSON 卡;与 todo_dock 同一视觉语言),失败附错误首行
             _ if name == "todo_write" => {
-                todo_write_expanded(ix, arguments, output, state == ToolState::Error)
+                todo_write_expanded(ix, arguments, output, state == ToolState::Error, cx)
             }
             // skill 展开体 = Instructions 卡(加载中/失败/
-            // 正文三态;Inspect 药丸由展开体外层恒挂)
+            // 正文三态;Inspect 药丸由展开体外层恒挂, cx)
             _ if name == "skill" => {
                 toolcard::render_skill(store, cx, ix, key, output, state == ToolState::Error)
                     .into_any_element()
             }
-            _ => io_card(ix, arguments, output, state == ToolState::Error),
+            _ => io_card(ix, arguments, output, state == ToolState::Error, cx),
         }
     };
     // 展开体底部恒挂 Inspect 药丸,点击跳到轨迹该调用。
-    let inspect = inspect_button(store, ix, key);
+    let inspect = inspect_button(store, ix, key, cx);
     // 结果图片(MCP 图片桥):卡体下挂消息同款图库(引用按 id 加载)
     let mut wrap = div()
         .v_flex()
@@ -2472,7 +2488,7 @@ fn tool_expanded_body(
 
 /// 展开体底部的 Inspect 药丸:点击切到轨迹 tab 并打开该 tool
 /// 调用的检查器。样式对齐 deliverable_chip。
-fn inspect_button(store: &Entity<AppStore>, ix: usize, key: &str) -> AnyElement {
+fn inspect_button(store: &Entity<AppStore>, ix: usize, key: &str, cx: &App) -> AnyElement {
     let s = store.clone();
     let k = key.to_string();
     let sel = format!("inspect-{key}");
@@ -2490,10 +2506,10 @@ fn inspect_button(store: &Entity<AppStore>, ix: usize, key: &str) -> AnyElement 
         .rounded_full()
         .px(px(8.))
         .border_1()
-        .border_color(theme::BORDER_2())
+        .border_color(theme::border_2(cx))
         .cursor_pointer()
         .text_size(px(11.))
-        .text_color(theme::LABEL_2())
+        .text_color(theme::label_2(cx))
         .opacity(0.)
         .group_hover(grp, |st| st.opacity(1.))
         .child(fixed(LiumaIcon::Code, 12.).into_any_element())
@@ -2537,6 +2553,7 @@ fn todo_write_expanded(
     arguments: &str,
     output: Option<&str>,
     is_error: bool,
+    cx: &App,
 ) -> AnyElement {
     let parsed: Option<Vec<super::projection::TodoItem>> =
         serde_json::from_str::<serde_json::Value>(arguments)
@@ -2552,7 +2569,7 @@ fn todo_write_expanded(
                 })
             });
     let Some(todos) = parsed else {
-        return io_card(ix, arguments, output, is_error);
+        return io_card(ix, arguments, output, is_error, cx);
     };
     let mut card = div()
         .id(("todo-write-card", ix))
@@ -2561,8 +2578,8 @@ fn todo_write_expanded(
         .ml(px(4.))
         .rounded(px(12.))
         .border_1()
-        .border_color(theme::BORDER())
-        .bg(theme::LAYER())
+        .border_color(theme::border(cx))
+        .bg(theme::layer(cx))
         .overflow_hidden()
         .px(px(12.))
         .py(px(8.))
@@ -2570,30 +2587,39 @@ fn todo_write_expanded(
             el.child(
                 div()
                     .text_size(px(12.))
-                    .text_color(theme::CAPTION())
+                    .text_color(theme::caption(cx))
                     .child(t!("chat.empty_output")),
             )
         })
         .children(
             todos
                 .iter()
-                .map(super::todo_dock::todo_row)
+                .map(|i| super::todo_dock::todo_row(i, cx))
                 .collect::<Vec<_>>(),
         );
     if is_error {
         card = card.child(
-            div().text_size(px(12.)).text_color(theme::DANGER()).child(
-                output
-                    .and_then(|o| o.lines().find(|l| !l.trim().is_empty()))
-                    .map(str::to_string)
-                    .unwrap_or_else(|| t!("chat.unknown_error").into_owned()),
-            ),
+            div()
+                .text_size(px(12.))
+                .text_color(theme::danger(cx))
+                .child(
+                    output
+                        .and_then(|o| o.lines().find(|l| !l.trim().is_empty()))
+                        .map(str::to_string)
+                        .unwrap_or_else(|| t!("chat.unknown_error").into_owned()),
+                ),
         );
     }
     card.into_any_element()
 }
 
-fn io_card(ix: usize, arguments: &str, output: Option<&str>, is_error: bool) -> AnyElement {
+fn io_card(
+    ix: usize,
+    arguments: &str,
+    output: Option<&str>,
+    is_error: bool,
+    cx: &App,
+) -> AnyElement {
     let card_sel = format!("io-card-{ix}");
     let mut card = div()
         .id(("io-card", ix))
@@ -2602,8 +2628,8 @@ fn io_card(ix: usize, arguments: &str, output: Option<&str>, is_error: bool) -> 
         .ml(px(4.))
         .rounded(px(12.))
         .border_1()
-        .border_color(theme::BORDER())
-        .bg(theme::CODE())
+        .border_color(theme::border(cx))
+        .bg(theme::code(cx))
         .overflow_hidden()
         .font_family("Menlo")
         .text_size(px(12.))
@@ -2614,6 +2640,7 @@ fn io_card(ix: usize, arguments: &str, output: Option<&str>, is_error: bool) -> 
             "IN",
             &pretty_json(arguments),
             false,
+            cx,
         ));
     if let Some(o) = output {
         card = card
@@ -2622,9 +2649,9 @@ fn io_card(ix: usize, arguments: &str, output: Option<&str>, is_error: bool) -> 
                     .h(px(1.))
                     .w_full()
                     .flex_shrink_0()
-                    .bg(theme::BORDER_2()),
+                    .bg(theme::border_2(cx)),
             )
-            .child(io_section("io-out", ix, "OUT", o, is_error));
+            .child(io_section("io-out", ix, "OUT", o, is_error, cx));
     }
     card.into_any_element()
 }
@@ -2639,6 +2666,7 @@ fn io_section(
     label: &str,
     body: &str,
     error: bool,
+    cx: &App,
 ) -> impl IntoElement {
     let sel = format!("{id}-{ix}");
     div()
@@ -2652,7 +2680,7 @@ fn io_section(
         .child(
             div()
                 .flex_shrink_0()
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(label.to_string()),
         )
         .child(
@@ -2660,9 +2688,9 @@ fn io_section(
                 .min_w(px(0.))
                 .flex_1()
                 .text_color(if error {
-                    theme::DANGER()
+                    theme::danger(cx)
                 } else {
-                    theme::LABEL_2()
+                    theme::label_2(cx)
                 })
                 .child(body.to_string()),
         )
@@ -2695,11 +2723,11 @@ fn copy_button(
         .justify_center()
         .rounded(px(4.))
         .cursor_pointer()
-        .text_color(theme::CAPTION())
-        .hover(|st| st.bg(theme::LAYER()).text_color(theme::LABEL_2()))
+        .text_color(theme::caption(cx))
+        .hover(|st| st.bg(theme::layer(cx)).text_color(theme::label_2(cx)))
         .child(if copied {
             fixed(IconName::Check, 13.)
-                .text_color(theme::BRAND())
+                .text_color(theme::brand(cx))
                 .into_any_element()
         } else {
             fixed(IconName::Copy, 13.).into_any_element()
@@ -2735,11 +2763,11 @@ fn reply_copy_button(
         .justify_center()
         .rounded(px(4.))
         .cursor_pointer()
-        .text_color(theme::CAPTION())
-        .hover(|st| st.bg(theme::LAYER()).text_color(theme::LABEL_2()))
+        .text_color(theme::caption(cx))
+        .hover(|st| st.bg(theme::layer(cx)).text_color(theme::label_2(cx)))
         .child(if copied {
             fixed(IconName::Check, 13.)
-                .text_color(theme::BRAND())
+                .text_color(theme::brand(cx))
                 .into_any_element()
         } else {
             fixed(IconName::Copy, 13.).into_any_element()
@@ -2855,8 +2883,8 @@ fn turn_tail(
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .text_color(theme::CAPTION())
-                    .hover(|s| s.bg(theme::DOCK()))
+                    .text_color(theme::caption(cx))
+                    .hover(|s| s.bg(theme::dock(cx)))
                     .on_click(move |_, _, cx| {
                         fork_store.update(cx, |st, cx| {
                             st.fork_from_turn(&fork_session, &fork_turn_key, cx)
@@ -2875,7 +2903,7 @@ fn turn_tail(
                     .items_center()
                     .gap(px(4.))
                     .text_size(px(12.))
-                    .text_color(theme::CAPTION())
+                    .text_color(theme::caption(cx))
                     .child(fixed(IconName::TriangleAlert, 12.))
                     .child(t!("chat.interrupted")),
             )
@@ -2894,6 +2922,7 @@ fn turn_tail(
                 super::store::TailCardKind::Usage,
                 session.clone(),
                 turn,
+                cx,
             ))
         })
         .when(run_ms > 0, |el| {
@@ -2910,13 +2939,14 @@ fn turn_tail(
                 super::store::TailCardKind::Time,
                 session.clone(),
                 turn,
+                cx,
             ))
         })
         .when(ended_ms > 0, |el| {
             el.child(
                 div()
                     .text_size(px(12.))
-                    .text_color(theme::CAPTION())
+                    .text_color(theme::caption(cx))
                     .child(crate::kits::fmt::fmt_clock_md(ended_ms)),
             )
         });
@@ -2933,7 +2963,7 @@ fn turn_tail(
                 .child(row.opacity(0.).group_hover(grp_act, |s| s.opacity(1.))),
         )
     };
-    tail.children((!deliverables.is_empty()).then(|| deliverables_row(store, deliverables)))
+    tail.children((!deliverables.is_empty()).then(|| deliverables_row(store, deliverables, cx)))
 }
 
 /// 轮尾统计 pill(用量/用时;点击弹对应卡——组件库 Popover 托管开
@@ -2949,6 +2979,7 @@ fn tail_pill(
     kind: super::store::TailCardKind,
     session: String,
     turn: u64,
+    cx: &App,
 ) -> AnyElement {
     let s_card = store.clone();
     Popover::new(SharedString::from(format!("tail-pop-{sel}")))
@@ -2966,8 +2997,8 @@ fn tail_pill(
                 .rounded_full()
                 .cursor_pointer()
                 .text_size(px(13.))
-                .text_color(theme::LABEL_2())
-                .hover(|s| s.bg(theme::DOCK()))
+                .text_color(theme::label_2(cx))
+                .hover(|s| s.bg(theme::dock(cx)))
                 .child(icon)
                 .child(label),
         ))
@@ -2982,11 +3013,11 @@ fn tail_pill(
                 .debug_selector(|| "turn-tail-card".to_string())
                 .rounded(px(12.))
                 .border_1()
-                .border_color(theme::BORDER())
-                .bg(if theme::is_dark() {
-                    theme::LAYER()
+                .border_color(theme::border(cx))
+                .bg(if theme::is_dark(cx) {
+                    theme::layer(cx)
                 } else {
-                    theme::CARD()
+                    theme::card(cx)
                 })
                 .shadow_md()
                 .child(card)
@@ -3046,9 +3077,10 @@ pub(crate) fn turn_usage_card(
         fixed(LiumaIcon::Database, 14.).into_any_element(),
         t!("chat.turn_usage"),
         total.map(|t| format!("{} tok", crate::kits::fmt::fmt_exact_count(t))),
+        cx,
     ));
     for (label, value) in rows {
-        card = card.child(detail_row(&label, value));
+        card = card.child(detail_row(&label, value, cx));
     }
     card.into_any_element()
 }
@@ -3067,12 +3099,14 @@ pub(crate) fn turn_time_card(
         fixed(LiumaIcon::Clock, 14.).into_any_element(),
         t!("chat.turn_time_speed"),
         None,
+        cx,
     ));
     if let Some(b) = bucket {
         card = card
             .child(detail_row(
                 t!("chat.turn_total_time"),
                 crate::kits::fmt::fmt_duration_run(b["runMs"].as_i64().unwrap_or(0)),
+                cx,
             ))
             .child(detail_row(
                 t!("chat.turn_tps"),
@@ -3080,10 +3114,12 @@ pub(crate) fn turn_time_card(
                     "{} tok/s",
                     crate::kits::fmt::fmt_tps(b["tokensPerSecond"].as_f64().unwrap_or(0.0))
                 ),
+                cx,
             ))
             .child(detail_row(
                 t!("chat.turn_ttft"),
                 crate::kits::fmt::fmt_duration_compact(b["ttftMs"].as_i64().unwrap_or(0)),
+                cx,
             ));
     }
     card.into_any_element()
@@ -3114,6 +3150,7 @@ fn card_head(
     icon: AnyElement,
     title: impl Into<SharedString>,
     total: Option<String>,
+    cx: &App,
 ) -> AnyElement {
     let title = title.into();
     div()
@@ -3128,20 +3165,24 @@ fn card_head(
                 .child(
                     div()
                         .text_size(px(13.))
-                        .text_color(theme::LABEL())
+                        .text_color(theme::label(cx))
                         .child(title.to_string()),
                 )
                 .when_some(total, |el, t| {
-                    el.child(div().flex_1())
-                        .child(div().text_size(px(13.)).text_color(theme::LABEL()).child(t))
+                    el.child(div().flex_1()).child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(theme::label(cx))
+                            .child(t),
+                    )
                 }),
         )
-        .child(div().h(px(1.)).w_full().bg(theme::BORDER()))
+        .child(div().h(px(1.)).w_full().bg(theme::border(cx)))
         .into_any_element()
 }
 
 /// 详情卡行(label 左侧灰 / 值右对齐)
-fn detail_row(label: impl Into<SharedString>, value: String) -> AnyElement {
+fn detail_row(label: impl Into<SharedString>, value: String, cx: &App) -> AnyElement {
     let label = label.into();
     div()
         .flex()
@@ -3151,13 +3192,13 @@ fn detail_row(label: impl Into<SharedString>, value: String) -> AnyElement {
         .child(
             div()
                 .text_size(px(12.))
-                .text_color(theme::LABEL_2())
+                .text_color(theme::label_2(cx))
                 .child(label.to_string()),
         )
         .child(
             div()
                 .text_size(px(12.))
-                .text_color(theme::LABEL())
+                .text_color(theme::label(cx))
                 .child(value),
         )
         .into_any_element()
@@ -3174,7 +3215,11 @@ fn tok_exact_raw(v: u64) -> String {
 }
 
 /// 产物行:basename chip + 完整路径 title,点击系统打开
-fn deliverables_row(store: &Entity<AppStore>, deliverables: &[String]) -> impl IntoElement {
+fn deliverables_row(
+    store: &Entity<AppStore>,
+    deliverables: &[String],
+    cx: &App,
+) -> impl IntoElement {
     // 简化:最多显示 6 个(资源行)
     let shown = &deliverables[..deliverables.len().min(6)];
     let more = deliverables.len().saturating_sub(shown.len());
@@ -3187,22 +3232,22 @@ fn deliverables_row(store: &Entity<AppStore>, deliverables: &[String]) -> impl I
         .child(
             div()
                 .text_size(px(11.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(t!("chat.artifacts")),
         )
-        .children(shown.iter().map(|p| deliverable_chip(store, p)))
+        .children(shown.iter().map(|p| deliverable_chip(store, p, cx)))
         .when(more > 0, |el| {
             el.child(
                 div()
                     .text_size(px(11.))
-                    .text_color(theme::CAPTION())
+                    .text_color(theme::caption(cx))
                     .child(t!("chat.more_files", n = more)),
             )
         })
 }
 
 /// 单个产物 chip(basename 显示,完整路径 title;点击系统打开)
-fn deliverable_chip(store: &Entity<AppStore>, path: &str) -> impl IntoElement {
+fn deliverable_chip(store: &Entity<AppStore>, path: &str, cx: &App) -> impl IntoElement {
     let base = path.rsplit('/').next().unwrap_or(path).to_string();
     let full = path.to_string();
     let full_sel = full.clone();
@@ -3215,11 +3260,11 @@ fn deliverable_chip(store: &Entity<AppStore>, path: &str) -> impl IntoElement {
         .items_center()
         .rounded(px(12.))
         .px(px(10.))
-        .bg(theme::DOCK())
+        .bg(theme::dock(cx))
         .cursor_pointer()
-        .hover(|s| s.bg(theme::BORDER()))
+        .hover(|s| s.bg(theme::border(cx)))
         .text_size(px(12.))
-        .text_color(theme::LABEL_2())
+        .text_color(theme::label_2(cx))
         .on_click(move |_, _, cx| {
             let p = full.clone();
             s.update(cx, |st, cx| st.open_deliverable(&p, cx));
@@ -3292,6 +3337,7 @@ fn retry_row(
         open,
         false,
         Some(row_sel),
+        cx,
     )
     .id(("retry", ix))
     .on_click(move |_, _, cx| {
@@ -3307,7 +3353,7 @@ fn retry_row(
                 .v_flex()
                 .gap(px(2.))
                 .text_size(px(12.))
-                .text_color(theme::LABEL_3())
+                .text_color(theme::label_3(cx))
                 .child(detail_delay)
                 .child(detail_message),
         );
@@ -3316,7 +3362,7 @@ fn retry_row(
 }
 
 /// 通告行(压缩失败/本地通告):红状态点 + 错误色文本
-fn notice(text: &str) -> impl IntoElement {
+fn notice(text: &str, cx: &App) -> impl IntoElement {
     div()
         .debug_selector(|| "turn-notice".to_string())
         .flex()
@@ -3328,7 +3374,7 @@ fn notice(text: &str) -> impl IntoElement {
             div()
                 .flex_shrink_0()
                 .mt(px(4.))
-                .child(state_dot(theme::DANGER())),
+                .child(state_dot(theme::danger(cx))),
         )
         // 文本块 flex_1 + min_w(0):在定宽列内自动换行(长错误信息
         // 单行会溢出;点对齐首行)
@@ -3337,7 +3383,7 @@ fn notice(text: &str) -> impl IntoElement {
                 .min_w(px(0.))
                 .flex_1()
                 .text_size(px(13.))
-                .text_color(theme::DANGER())
+                .text_color(theme::danger(cx))
                 .line_height(gpui_kit::relative(1.5))
                 .child(text.to_string()),
         )
@@ -3345,7 +3391,7 @@ fn notice(text: &str) -> impl IntoElement {
 
 /// 回合错误通告:红状态点 +「本轮运行失败」
 /// 标题(error 色)+ 宿主错误原文详情(次级色,自动换行)
-fn notice_error(detail: &str) -> impl IntoElement {
+fn notice_error(detail: &str, cx: &App) -> impl IntoElement {
     div()
         .debug_selector(|| "turn-notice".to_string())
         .flex()
@@ -3356,7 +3402,7 @@ fn notice_error(detail: &str) -> impl IntoElement {
             div()
                 .flex_shrink_0()
                 .mt(px(4.))
-                .child(state_dot(theme::DANGER())),
+                .child(state_dot(theme::danger(cx))),
         )
         .child(
             div()
@@ -3368,13 +3414,13 @@ fn notice_error(detail: &str) -> impl IntoElement {
                     div()
                         .text_size(px(13.))
                         .font_weight(gpui_kit::FontWeight::MEDIUM)
-                        .text_color(theme::DANGER())
+                        .text_color(theme::danger(cx))
                         .child(t!("chat.turn_failed")),
                 )
                 .child(
                     div()
                         .text_size(px(13.))
-                        .text_color(theme::LABEL_2())
+                        .text_color(theme::label_2(cx))
                         .line_height(gpui_kit::relative(1.5))
                         .whitespace_normal()
                         .child(detail.to_string()),
@@ -3456,11 +3502,11 @@ fn pending_bubble(
                 .debug_selector(move || sel_bubble)
                 .max_w(bw)
                 .rounded(px(22.))
-                .bg(theme::BUBBLE())
+                .bg(theme::bubble(cx))
                 .px(px(16.))
                 .py(px(10.))
                 .text_size(px(14.))
-                .text_color(theme::LABEL())
+                .text_color(theme::label(cx))
                 .line_height(gpui_kit::relative(1.5))
                 .v_flex()
                 .items_end()
@@ -3487,7 +3533,7 @@ fn pending_bubble(
                                             gpui_kit::transparent_black(),
                                             0.,
                                         ),
-                                        gpui_kit::linear_color_stop(theme::BUBBLE(), 1.),
+                                        gpui_kit::linear_color_stop(theme::bubble(cx), 1.),
                                     ))
                                     .debug_selector(move || sel_fade.clone()),
                             )
@@ -3500,8 +3546,8 @@ fn pending_bubble(
                             .flex_shrink_0()
                             .cursor_pointer()
                             .text_size(px(13.))
-                            .text_color(theme::CAPTION())
-                            .hover(|s| s.text_color(theme::LABEL_2()))
+                            .text_color(theme::caption(cx))
+                            .hover(|s| s.text_color(theme::label_2(cx)))
                             .debug_selector(move || sel_fold)
                             .child(if collapsed {
                                 t!("common.expand").to_string()

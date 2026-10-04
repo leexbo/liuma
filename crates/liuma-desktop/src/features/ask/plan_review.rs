@@ -67,8 +67,8 @@ pub fn render(
             .gap(px(10.))
             .rounded(px(14.))
             .border_1()
-            .border_color(theme::BORDER())
-            .bg(theme::LAYER())
+            .border_color(theme::border(cx))
+            .bg(theme::layer(cx))
             .p(px(14.))
             // 标题行:查看入口开右栏计划标签(复用查看链路);✕ = 取消
             // 请求回到对话(原「去聊天里说」语义)
@@ -81,7 +81,7 @@ pub fn render(
                         div()
                             .text_size(px(13.))
                             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                            .text_color(theme::LABEL())
+                            .text_color(theme::label(cx))
                             .child(title),
                     )
                     .child(div().flex_1())
@@ -97,8 +97,8 @@ pub fn render(
                             .rounded(px(5.))
                             .cursor_pointer()
                             .text_size(px(12.))
-                            .text_color(theme::CAPTION())
-                            .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL_2()))
+                            .text_color(theme::caption(cx))
+                            .hover(|s| s.bg(theme::dock(cx)).text_color(theme::label_2(cx)))
                             .child(fixed(IconName::Eye, 12.))
                             .child(t!("chat.view"))
                             .on_click(move |_, _, cx| {
@@ -117,8 +117,8 @@ pub fn render(
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
-                            .text_color(theme::CAPTION())
-                            .hover(|s| s.bg(theme::DOCK()))
+                            .text_color(theme::caption(cx))
+                            .hover(|s| s.bg(theme::dock(cx)))
                             .child(fixed(IconName::Close, 12.))
                             .on_click(move |_, _, cx| {
                                 dismiss.update(cx, |st, cx| st.dismiss_plan(cx));
@@ -140,13 +140,13 @@ pub fn render(
                     .rounded(px(8.))
                     .border_1()
                     .border_color(if selection == Some(true) {
-                        theme::WARN()
+                        theme::warning(cx)
                     } else {
-                        theme::BORDER()
+                        theme::border(cx)
                     })
-                    .when(selection == Some(true), |el| el.bg(theme::DOCK()))
+                    .when(selection == Some(true), |el| el.bg(theme::dock(cx)))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme::DOCK()))
+                    .hover(|s| s.bg(theme::dock(cx)))
                     .child(
                         div()
                             .flex_shrink_0()
@@ -154,15 +154,15 @@ pub fn render(
                             .rounded_full()
                             .border_1()
                             .border_color(if selection == Some(true) {
-                                theme::WARN()
+                                theme::warning(cx)
                             } else {
-                                theme::CAPTION()
+                                theme::caption(cx)
                             })
                             .flex()
                             .items_center()
                             .justify_center()
                             .text_size(px(11.))
-                            .text_color(theme::CAPTION())
+                            .text_color(theme::caption(cx))
                             .child("1"),
                     )
                     .child(
@@ -174,7 +174,7 @@ pub fn render(
                             .child(
                                 div()
                                     .text_size(px(13.))
-                                    .text_color(theme::LABEL())
+                                    .text_color(theme::label(cx))
                                     .child(t!("ask.approve_plan")),
                             )
                             .child(
@@ -182,7 +182,7 @@ pub fn render(
                                     .id("plan-approve-desc")
                                     .debug_selector(|| "plan-approve-desc".to_string())
                                     .text_size(px(11.))
-                                    .text_color(theme::CAPTION())
+                                    .text_color(theme::caption(cx))
                                     .child(approve_desc),
                             ),
                     )
@@ -205,16 +205,16 @@ pub fn render(
                     .rounded(px(8.))
                     .border_1()
                     .border_color(if selection == Some(false) {
-                        theme::WARN()
+                        theme::warning(cx)
                     } else {
-                        theme::BORDER()
+                        theme::border(cx)
                     })
-                    .when(selection == Some(false), |el| el.bg(theme::DOCK()))
+                    .when(selection == Some(false), |el| el.bg(theme::dock(cx)))
                     .cursor_pointer()
                     .child(
                         fixed(LiumaIcon::Pencil, 14.)
                             .flex_shrink_0()
-                            .text_color(theme::CAPTION()),
+                            .text_color(theme::caption(cx)),
                     )
                     .child(
                         div()
@@ -225,7 +225,7 @@ pub fn render(
                             .child(
                                 div()
                                     .text_size(px(13.))
-                                    .text_color(theme::LABEL())
+                                    .text_color(theme::label(cx))
                                     .child(t!("ask.decline_plan")),
                             )
                             .child(
@@ -233,7 +233,7 @@ pub fn render(
                                     .id("plan-decline-desc")
                                     .debug_selector(|| "plan-decline-desc".to_string())
                                     .text_size(px(11.))
-                                    .text_color(theme::CAPTION())
+                                    .text_color(theme::caption(cx))
                                     .child(decline_desc),
                             ),
                     )
@@ -254,7 +254,7 @@ pub fn render(
                         .py(px(4.))
                         .rounded(px(8.))
                         .border_1()
-                        .border_color(theme::BORDER())
+                        .border_color(theme::border(cx))
                         .child(
                             decline_input
                                 .map(|input| {
@@ -284,8 +284,8 @@ pub fn render(
                         .rounded(px(15.))
                         .text_size(px(13.))
                         .when_some(selection, |el, _| {
-                            el.bg(theme::LABEL())
-                                .text_color(theme::LAYER())
+                            el.bg(theme::label(cx))
+                                .text_color(theme::layer(cx))
                                 .cursor_pointer()
                                 .on_click(move |_, _, cx| {
                                     submit.update(cx, |st, cx| st.submit_plan_selection(cx));
@@ -293,8 +293,8 @@ pub fn render(
                         })
                         .when(selection.is_none(), |el| {
                             el.border_1()
-                                .border_color(theme::BORDER())
-                                .text_color(theme::CAPTION())
+                                .border_color(theme::border(cx))
+                                .text_color(theme::caption(cx))
                         })
                         .child(if selection == Some(false) {
                             t!("ask.submit_q")

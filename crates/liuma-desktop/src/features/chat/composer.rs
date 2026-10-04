@@ -38,11 +38,11 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         .relative()
         .rounded(px(22.))
         .border_1()
-        .border_color(theme::BORDER())
+        .border_color(theme::border(cx))
         // 输入卡浮出画布一档(COMPOSER #272729,对照 deepseek harness
         // 输入卡 39,39,41;曾与画布同底只靠描边分层,已废);工具卡等
         // 其余卡面仍走 CARD,两族勿混
-        .bg(theme::COMPOSER())
+        .bg(theme::composer(cx))
         // 阴影:浮层面标配,与描边共同分层
         .shadow(vec![
             gpui_kit::BoxShadow::new(px(0.), px(2.), gpui_kit::rgba(0x00000014).into())
@@ -186,7 +186,7 @@ pub(crate) fn image_path_from_clipboard_text(text: &str) -> Option<std::path::Pa
 /// 命令行(输入卡内、输入框上缘):`/name` 品牌色 + 参数 hint 灰字 +
 /// × 移除钮。命令与输入文字的区分载体——命令是结构化前缀不是正文,
 /// 发送时与输入框文本拼接(/name args)走既有文本路径
-fn command_line(store: &Entity<AppStore>, name: &str, _cx: &App) -> gpui_kit::AnyElement {
+fn command_line(store: &Entity<AppStore>, name: &str, cx: &App) -> gpui_kit::AnyElement {
     let s = store.clone();
     let mut row = div()
         .flex()
@@ -202,10 +202,10 @@ fn command_line(store: &Entity<AppStore>, name: &str, _cx: &App) -> gpui_kit::An
                 .h(px(24.))
                 .px(px(8.))
                 .rounded(px(6.))
-                .bg(theme::ONGOING().opacity(0.14))
+                .bg(theme::ongoing(cx).opacity(0.14))
                 .text_size(px(13.))
                 .font_weight(gpui_kit::FontWeight::MEDIUM)
-                .text_color(theme::BRAND())
+                .text_color(theme::brand(cx))
                 .child(format!("/{name}")),
         );
     row = row.child(
@@ -218,8 +218,8 @@ fn command_line(store: &Entity<AppStore>, name: &str, _cx: &App) -> gpui_kit::An
             .size(px(20.))
             .rounded(px(10.))
             .cursor_pointer()
-            .hover(|s| s.bg(theme::LAYER()))
-            .text_color(theme::CAPTION())
+            .hover(|s| s.bg(theme::layer(cx)))
+            .text_color(theme::caption(cx))
             .child(fixed(IconName::Close, 12.))
             .on_click(move |_, _, cx| {
                 s.update(cx, |st, cx| st.clear_pending_command(cx));
@@ -250,7 +250,7 @@ fn at_completion_anchor(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElem
         // 底缘 = 输入卡顶上方 2px(锚卡挂在卡根,bottom=卡高+2;固定值
         // 会随卡高变化叠进输入框/悬空过高)
         .bottom(px(composer_h(&st.chat) + 2.))
-        .child(at_completion_card(store, at))
+        .child(at_completion_card(store, at, cx))
         .into_any_element()
 }
 
@@ -273,12 +273,12 @@ fn bottom_row(
     let plan_mode = st.current_chat().map(|c| c.plan_mode).unwrap_or(false);
     let occupancy = st.context_occupancy();
     let cmds = st.bridge.host().command_list();
-    let cmd_trigger = round_button("composer-cmd", fixed(IconName::Plus, 14.));
+    let cmd_trigger = round_button("composer-cmd", fixed(IconName::Plus, 14.), cx);
     // 菜单卡仅在确有行时开:附件移出后,命令与技能皆空 = 空浮层
     let has_menu_rows = !cmds.is_empty() || !st.chat.skill_entries.is_empty();
     // 附件独立钮(+ 旁,不经命令菜单):文件对话框多选(任意文件),
     // 按文件头分流图片管线 / 文件通道(与拖拽/粘贴同一 intake)
-    let attach_trigger = round_button("composer-attach", fixed(LiumaIcon::Paperclip, 14.))
+    let attach_trigger = round_button("composer-attach", fixed(LiumaIcon::Paperclip, 14.), cx)
         .on_click({
             let s = store.clone();
             move |_, window, cx| {
@@ -307,14 +307,19 @@ fn bottom_row(
         "chip-perm",
         permission_label(&cfg.permission),
         icons::permission_icon(&cfg.permission),
+        cx,
     );
     let model_label = format!(
         "{} · {}",
         cfg.model,
         effort_label(cfg.effort.as_deref().unwrap_or("high"))
     );
-    let model_trigger = chip("chip-model", &model_label, icons::model_icon(&cfg.model));
-
+    let model_trigger = chip(
+        "chip-model",
+        &model_label,
+        icons::model_icon(&cfg.model),
+        cx,
+    );
     div()
         .flex()
         .h(px(42.))
@@ -348,7 +353,7 @@ fn bottom_row(
                             st.chat.composer_w,
                         )
                     };
-                    commands_card(&s_card, cmds, &skills, w, pop).into_any_element()
+                    commands_card(&s_card, cmds, &skills, w, pop, cx).into_any_element()
                 })
                 .into_any_element()
         } else {
@@ -361,7 +366,7 @@ fn bottom_row(
                 .w(px(1.))
                 .h(px(16.))
                 .flex_shrink_0()
-                .bg(theme::BORDER()),
+                .bg(theme::border(cx)),
         )
         // 权限 chip(组件库 Popover:上开、左缘贴 chip 左;开态/外点
         // 关闭由库托管,bounds 捕获 canvas 移除)
@@ -383,7 +388,7 @@ fn bottom_row(
         })
         // 计划模式 chip(仅激活态渲染,退出即整个消失;进入唯一入口=
         // 命令菜单「plan」行)
-        .children(plan_mode.then(|| plan_chip(store, st.chat.plan_chip_hovered)))
+        .children(plan_mode.then(|| plan_chip(store, st.chat.plan_chip_hovered, cx)))
         .child(div().flex_1())
         // 模型/上下文触发(组件库 Popover:上开、右缘贴 chip 右向左
         // 展开——真机反馈卡体右缘被视口切掉的旧对齐保留)
@@ -408,7 +413,7 @@ fn bottom_row(
             Popover::new("composer-context-pop")
                 .appearance(false)
                 .anchor(Anchor::BottomRight)
-                .trigger(PopTrigger(context_button(o)))
+                .trigger(PopTrigger(context_button(o, cx)))
                 .content(move |_, _, cx| {
                     div()
                         .id("composer-context-menu")
@@ -418,7 +423,7 @@ fn bottom_row(
                 })
                 .into_any_element()
         }))
-        .child(send_or_stop(store, running))
+        .child(send_or_stop(store, running, cx))
 }
 
 /// @ 引用补全菜单:文件/Session 分组候选,高亮 +
@@ -426,10 +431,11 @@ fn bottom_row(
 fn at_completion_card(
     store: &Entity<AppStore>,
     at: super::store::AtCompletion,
+    cx: &App,
 ) -> gpui_kit::AnyElement {
     let mut rows: Vec<gpui_kit::AnyElement> = vec![];
     if !at.files.is_empty() {
-        rows.push(section_label(t!("chat.section_files")).into_any_element());
+        rows.push(section_label(t!("chat.section_files"), cx).into_any_element());
         for (i, f) in at.files.iter().enumerate() {
             let idx = i; // 高亮索引:文件占 0..files.len
             let s = store.clone();
@@ -456,6 +462,7 @@ fn at_completion_card(
                         });
                         let _ = cx;
                     },
+                    cx,
                 )
                 .into_any_element(),
             );
@@ -463,9 +470,9 @@ fn at_completion_card(
     }
     if !at.sessions.is_empty() {
         if !rows.is_empty() {
-            rows.push(menu_separator().into_any_element());
+            rows.push(menu_separator(cx).into_any_element());
         }
-        rows.push(section_label(t!("chat.section_sessions")).into_any_element());
+        rows.push(section_label(t!("chat.section_sessions"), cx).into_any_element());
         let file_count = at.files.len();
         for (i, s) in at.sessions.iter().enumerate() {
             let idx = file_count + i;
@@ -487,12 +494,13 @@ fn at_completion_card(
                         });
                         let _ = cx;
                     },
+                    cx,
                 )
                 .into_any_element(),
             );
         }
     }
-    menu_card(rows, None)
+    menu_card(rows, None, cx)
 }
 
 /// @ 补全单行(图标 + label;默认素底,高亮/hover 灰底)
@@ -502,6 +510,7 @@ fn at_row(
     highlighted: bool,
     icon: Icon,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
+    cx: &App,
 ) -> impl IntoElement {
     let sel = format!("at-row-{label}");
     div()
@@ -514,10 +523,10 @@ fn at_row(
         .rounded(px(6.))
         .px(px(8.))
         .cursor_pointer()
-        .when(highlighted, |el| el.bg(theme::DOCK()))
-        .hover(|s| s.bg(theme::DOCK()))
+        .when(highlighted, |el| el.bg(theme::dock(cx)))
+        .hover(|s| s.bg(theme::dock(cx)))
         .text_size(px(13.))
-        .text_color(theme::LABEL_2())
+        .text_color(theme::label_2(cx))
         .child(icon)
         // 单行截断:长会话标题/深路径换行会溢出定高行框叠绘到后续行
         // (实测报障);min_w(0) 压住 taffy 文本 min-content 撑行。
@@ -540,7 +549,7 @@ fn at_row(
 /// 「plan」行即点即执行)。形态定稿:图标 + 「计划」,
 /// 默认 ListChecks、hover 换 ⓧ 取消态(ⓧ 不常显);点击恒发 standard
 /// (绝对方向,见 store::apply_plan_mode),连发幂等收敛
-fn plan_chip(store: &Entity<AppStore>, hovered: bool) -> impl IntoElement {
+fn plan_chip(store: &Entity<AppStore>, hovered: bool, cx: &App) -> impl IntoElement {
     let s = store.clone();
     let h = store.clone();
     div()
@@ -553,10 +562,10 @@ fn plan_chip(store: &Entity<AppStore>, hovered: bool) -> impl IntoElement {
         .rounded(px(12.))
         .px(px(8.))
         .text_size(px(12.))
-        .text_color(theme::WARN())
-        .bg(theme::LAYER())
+        .text_color(theme::warning(cx))
+        .bg(theme::layer(cx))
         .cursor_pointer()
-        .hover(|s| s.bg(theme::DOCK()))
+        .hover(|s| s.bg(theme::dock(cx)))
         .on_hover(move |hovered: &bool, _, cx| {
             h.update(cx, |st, cx| {
                 st.chat.plan_chip_hovered = *hovered;
@@ -587,11 +596,12 @@ fn commands_card(
     skills: &[super::store::SkillEntry],
     composer_w: f32,
     pop: Entity<PopoverState>,
+    cx: &App,
 ) -> gpui_kit::AnyElement {
     let pop_rows = pop.clone();
     let mut rows: Vec<gpui_kit::AnyElement> = vec![];
     if !cmds.is_empty() {
-        rows.push(section_label(t!("chat.section_commands")).into_any_element());
+        rows.push(section_label(t!("chat.section_commands"), cx).into_any_element());
         for cmd in cmds {
             let s = store.clone();
             let name = cmd.name.to_string();
@@ -602,24 +612,29 @@ fn commands_card(
             let has_hint = cmd.hint.is_some();
             let pop = pop_rows.clone();
             rows.push(
-                command_row(name_static, desc, move |window, cx| {
-                    let pop = pop.clone();
-                    pop.update(cx, |state, cx| state.dismiss(window, cx));
-                    let s = s.clone();
-                    s.update(cx, move |st, cx| {
-                        if has_hint {
-                            st.set_pending_command(name_static, cx);
-                        } else {
-                            st.execute_command(name_static, cx);
-                        }
-                    });
-                })
+                command_row(
+                    name_static,
+                    desc,
+                    move |window, cx| {
+                        let pop = pop.clone();
+                        pop.update(cx, |state, cx| state.dismiss(window, cx));
+                        let s = s.clone();
+                        s.update(cx, move |st, cx| {
+                            if has_hint {
+                                st.set_pending_command(name_static, cx);
+                            } else {
+                                st.execute_command(name_static, cx);
+                            }
+                        });
+                    },
+                    cx,
+                )
                 .into_any_element(),
             )
         }
     }
     if !skills.is_empty() {
-        rows.push(section_label(t!("chat.section_skills")).into_any_element());
+        rows.push(section_label(t!("chat.section_skills"), cx).into_any_element());
         for sk in skills {
             let s = store.clone();
             let pop = pop_rows.clone();
@@ -631,16 +646,21 @@ fn commands_card(
             };
             let chip_name: &'static str = Box::leak(name.clone().into_boxed_str());
             rows.push(
-                command_row(chip_name, desc, move |window, cx| {
-                    let pop = pop.clone();
-                    pop.update(cx, |state, cx| state.dismiss(window, cx));
-                    let s = s.clone();
-                    s.update(cx, move |st, cx| {
-                        // 技能恒走草稿 chip(参数在输入框;不立即执行)——
-                        // 发送拼 /name args,host 侧手势识别接管
-                        st.set_pending_command(chip_name, cx);
-                    });
-                })
+                command_row(
+                    chip_name,
+                    desc,
+                    move |window, cx| {
+                        let pop = pop.clone();
+                        pop.update(cx, |state, cx| state.dismiss(window, cx));
+                        let s = s.clone();
+                        s.update(cx, move |st, cx| {
+                            // 技能恒走草稿 chip(参数在输入框;不立即执行)——
+                            // 发送拼 /name args,host 侧手势识别接管
+                            st.set_pending_command(chip_name, cx);
+                        });
+                    },
+                    cx,
+                )
                 .into_any_element(),
             );
         }
@@ -649,7 +669,7 @@ fn commands_card(
     // 定宽,长描述把卡撑到超窗、行内 truncate 永不生效。触发钮距卡左
     // 缘 10px(bottom_row 内边距),减 10 对齐卡右缘;首帧捕获 0 →
     // 不约束,下一帧校准(同 composer_h 锚定模式)
-    menu_card(rows, (composer_w > 0.).then_some(composer_w - 10.))
+    menu_card(rows, (composer_w > 0.).then_some(composer_w - 10.), cx)
 }
 
 /// 指令行(命令名黑 semibold + 描述灰同行;
@@ -673,6 +693,7 @@ fn command_row(
     cmd: &'static str,
     desc: String,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
+    cx: &App,
 ) -> impl IntoElement {
     let sel = cmd.to_string();
     div()
@@ -685,12 +706,12 @@ fn command_row(
         .rounded(px(8.))
         .px(px(12.))
         .cursor_pointer()
-        .hover(|s| s.bg(theme::DOCK()))
+        .hover(|s| s.bg(theme::dock(cx)))
         .child(
             div()
                 .text_size(px(14.))
                 .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                .text_color(theme::LABEL())
+                .text_color(theme::label(cx))
                 .child(cmd.to_string()),
         )
         .child(
@@ -699,7 +720,7 @@ fn command_row(
                 .flex_1()
                 .truncate()
                 .text_size(px(13.))
-                .text_color(theme::LABEL_2())
+                .text_color(theme::label_2(cx))
                 .child(desc),
         )
         // 测试钩子:行 bounds 按命令文本检索(release 空操作)
@@ -708,7 +729,10 @@ fn command_row(
 }
 
 /// 上下文占用圆环钮(环 + 百分比;触发详情卡)
-fn context_button(o: super::store::ContextOccupancy) -> gpui_kit::Stateful<gpui_kit::Div> {
+fn context_button(
+    o: super::store::ContextOccupancy,
+    cx: &App,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
     let percent = (o.percent * 100.0).round() as u64;
     div()
         .id("context-ring")
@@ -720,12 +744,12 @@ fn context_button(o: super::store::ContextOccupancy) -> gpui_kit::Stateful<gpui_
         .px(px(6.))
         .cursor_pointer()
         .rounded_full()
-        .hover(|s| s.bg(theme::DOCK()))
-        .child(super::context_meter::ring(o.percent, 14.))
+        .hover(|s| s.bg(theme::dock(cx)))
+        .child(super::context_meter::ring(o.percent, 14., cx))
         .child(
             div()
                 .text_size(px(11.))
-                .text_color(theme::LABEL_3())
+                .text_color(theme::label_3(cx))
                 .child(format!("{percent}%")),
         )
         .debug_selector(|| "context-ring".to_string())
@@ -749,20 +773,20 @@ fn context_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
             .gap(px(8.))
             .px(px(8.))
             .pt(px(6.))
-            .child(ring(o.percent, 22.))
+            .child(ring(o.percent, 22., cx))
             .child(
                 div()
                     .v_flex()
                     .child(
                         div()
                             .text_size(px(13.))
-                            .text_color(theme::LABEL())
+                            .text_color(theme::label(cx))
                             .child(t!("chat.ctx_used_pct", percent = percent)),
                     )
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(theme::CAPTION())
+                            .text_color(theme::caption(cx))
                             .child(format!("{} / {} tok", fmt_tok(o.used), fmt_tok(o.window))),
                     ),
             )
@@ -780,8 +804,8 @@ fn context_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
             .w(px(bar_w as f32))
             .rounded(px(3.))
             .overflow_hidden()
-            .bg(theme::BORDER())
-            .children(breakdown_rows(&o).iter().filter_map(|(_, color, v)| {
+            .bg(theme::border(cx))
+            .children(breakdown_rows(&o, cx).iter().filter_map(|(_, color, v)| {
                 let frac = if total > 0 {
                     o.percent * (*v as f64 / total as f64)
                 } else {
@@ -797,7 +821,7 @@ fn context_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
             }))
             .into_any_element(),
     );
-    for (label, color, v) in breakdown_rows(&o) {
+    for (label, color, v) in breakdown_rows(&o, cx) {
         let share = if total > 0 {
             v as f64 / total as f64
         } else {
@@ -811,14 +835,14 @@ fn context_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
                 .px(px(8.))
                 .pb(px(2.))
                 .text_size(px(12.))
-                .text_color(theme::LABEL_2())
+                .text_color(theme::label_2(cx))
                 .child(div().size(px(8.)).rounded_full().bg(color))
                 .child(label)
                 .child(div().flex_1())
                 .child(
                     div()
                         .text_size(px(11.))
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .child(t!(
                             "chat.tok_share",
                             v = fmt_tok(v),
@@ -828,7 +852,7 @@ fn context_card(store: &Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
                 .into_any_element(),
         );
     }
-    menu_card(children, None)
+    menu_card(children, None, cx)
 }
 
 /// 权限下拉卡(选项来自 describe permissions;当前值勾选)。
@@ -869,11 +893,12 @@ pub(crate) fn permission_card(
                         }
                     });
                 },
+                cx,
             )
             .into_any_element()
         })
         .collect();
-    menu_card(rows, None)
+    menu_card(rows, None, cx)
 }
 
 /// 模型 + 推理等级下拉(模型表空则略模型区;等级 low/high/max;
@@ -925,7 +950,7 @@ fn model_card(
     let pop_sub = pop.clone();
     // ── 一级卡:模型入口行 + 推理强度平铺(不改)──
     let mut rows: Vec<gpui_kit::AnyElement> = vec![];
-    rows.push(section_label(t!("chat.model_label")).into_any_element());
+    rows.push(section_label(t!("chat.model_label"), cx).into_any_element());
     rows.push(
         div()
             .id("model-entry")
@@ -937,18 +962,18 @@ fn model_card(
             .px(px(12.))
             .rounded(px(8.))
             .cursor_pointer()
-            .hover(|s| s.bg(theme::DOCK()))
+            .hover(|s| s.bg(theme::dock(cx)))
             .child(
                 div()
                     .text_size(px(13.))
-                    .text_color(theme::LABEL())
+                    .text_color(theme::label(cx))
                     .child(t!("chat.model_label")),
             )
             .child(div().flex_1())
             .child(
                 div()
                     .text_size(px(12.))
-                    .text_color(theme::CAPTION())
+                    .text_color(theme::caption(cx))
                     .truncate()
                     .max_w(px(120.))
                     .child(current_model.clone()),
@@ -957,13 +982,13 @@ fn model_card(
                 el.child(
                     div()
                         .text_size(px(12.))
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .truncate()
                         .max_w(px(80.))
                         .child(current_provider.clone()),
                 )
             })
-            .child(fixed(IconName::ChevronRight, 12.).text_color(theme::CAPTION()))
+            .child(fixed(IconName::ChevronRight, 12.).text_color(theme::caption(cx)))
             .on_click(move |_, _, cx| {
                 s_model_row.update(cx, |st, cx| {
                     st.toggle_model_submenu(cx);
@@ -971,8 +996,8 @@ fn model_card(
             })
             .into_any_element(),
     );
-    rows.push(menu_separator().into_any_element());
-    rows.push(section_label(t!("chat.reasoning_level")).into_any_element());
+    rows.push(menu_separator(cx).into_any_element());
+    rows.push(section_label(t!("chat.reasoning_level"), cx).into_any_element());
     for (ix, e) in efforts.iter().enumerate() {
         let s = store.clone();
         let pop = pop_sub.clone();
@@ -990,6 +1015,7 @@ fn model_card(
                     let v = v.clone();
                     s.update(cx, |st, cx| st.set_session_effort(&v, cx));
                 },
+                cx,
             )
             .into_any_element(),
         );
@@ -1002,7 +1028,7 @@ fn model_card(
     // 行的 on_click(上抬才触发)永远不响,表现为「模型选择无法切换」。
     // 并排进盒内 = 根级渲染 + 锚定计算 + 遮蔽打断三项同时成立。
     let sub = st.chat.model_submenu_open;
-    let main = menu_card(rows, None);
+    let main = menu_card(rows, None, cx);
     let mut wrap = div().flex().items_end().gap(px(8.));
     if sub {
         let mut sub_rows: Vec<gpui_kit::AnyElement> = vec![];
@@ -1014,7 +1040,7 @@ fn model_card(
                 .px(px(8.))
                 .py(px(4.))
                 .text_size(px(11.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(t!("chat.model_label"))
                 .into_any_element(),
         );
@@ -1028,7 +1054,7 @@ fn model_card(
                     .py(px(3.))
                     .text_size(px(11.))
                     .font_weight(gpui_kit::FontWeight::MEDIUM)
-                    .text_color(theme::LABEL_3())
+                    .text_color(theme::label_3(cx))
                     .child(name.clone())
                     .into_any_element(),
             );
@@ -1054,6 +1080,7 @@ fn model_card(
                                 st.set_session_provider_model(&gpid, &v, cx);
                             });
                         },
+                        cx,
                     )
                     .into_any_element(),
                 );
@@ -1065,7 +1092,7 @@ fn model_card(
                     .px(px(8.))
                     .py(px(6.))
                     .text_size(px(12.))
-                    .text_color(theme::CAPTION())
+                    .text_color(theme::caption(cx))
                     .child(t!("chat.no_models"))
                     .into_any_element(),
             );
@@ -1083,11 +1110,11 @@ fn model_card(
                     .overflow_y_scroll()
                     .rounded(px(12.))
                     .border_1()
-                    .border_color(theme::BORDER())
-                    .bg(if theme::is_dark() {
-                        theme::LAYER()
+                    .border_color(theme::border(cx))
+                    .bg(if theme::is_dark(cx) {
+                        theme::layer(cx)
                     } else {
-                        theme::CARD()
+                        theme::card(cx)
                     })
                     .shadow_md()
                     .p(px(4.))
@@ -1107,7 +1134,11 @@ fn model_card(
 /// 菜单卡(分区行列表浮层)。max_w 传入时宽度收敛——taffy 无约束
 /// 文本按 max-content 定宽,长内容行必须外部给约束,行内 truncate
 /// 才会生效(at 补全由锚定层 left/right 定宽,传 None 即可)
-fn menu_card(children: Vec<gpui_kit::AnyElement>, max_w: Option<f32>) -> gpui_kit::AnyElement {
+fn menu_card(
+    children: Vec<gpui_kit::AnyElement>,
+    max_w: Option<f32>,
+    cx: &App,
+) -> gpui_kit::AnyElement {
     div()
         .id("composer-menu-card")
         .debug_selector(|| "composer-menu-card".to_string())
@@ -1117,11 +1148,11 @@ fn menu_card(children: Vec<gpui_kit::AnyElement>, max_w: Option<f32>) -> gpui_ki
         .overflow_y_scroll()
         .rounded(px(12.))
         .border_1()
-        .border_color(theme::BORDER())
-        .bg(if theme::is_dark() {
-            theme::LAYER()
+        .border_color(theme::border(cx))
+        .bg(if theme::is_dark(cx) {
+            theme::layer(cx)
         } else {
-            theme::CARD()
+            theme::card(cx)
         })
         .shadow_md()
         .p(px(4.))
@@ -1137,6 +1168,7 @@ fn menu_row(
     label: impl Into<gpui_kit::SharedString>,
     checked: bool,
     on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &App,
 ) -> impl IntoElement {
     let label = label.into();
     let sel = label.to_string();
@@ -1150,14 +1182,14 @@ fn menu_row(
         .rounded(px(8.))
         .px(px(12.))
         .cursor_pointer()
-        .hover(|s| s.bg(theme::DOCK()))
+        .hover(|s| s.bg(theme::dock(cx)))
         .text_size(px(14.))
-        .text_color(theme::LABEL())
+        .text_color(theme::label(cx))
         .child(icon)
         .child(label.to_string())
         .child(div().flex_1())
         .when(checked, |el| {
-            el.child(fixed(IconName::Check, 14.).text_color(theme::LABEL()))
+            el.child(fixed(IconName::Check, 14.).text_color(theme::label(cx)))
         })
         // 测试钩子:行 bounds 按文案检索(release 恒等空操作)
         .debug_selector(move || sel.clone())
@@ -1165,39 +1197,43 @@ fn menu_row(
 }
 
 /// 分区小标题(左缩进与菜单行 px12 对齐)
-fn section_label(text: impl Into<gpui_kit::SharedString>) -> impl IntoElement {
+fn section_label(text: impl Into<gpui_kit::SharedString>, cx: &App) -> impl IntoElement {
     let text = text.into();
     div()
         .px(px(12.))
         .py(px(4.))
         .text_size(px(11.))
-        .text_color(theme::CAPTION())
+        .text_color(theme::caption(cx))
         .child(text.to_string())
 }
 
 /// 分区分隔线
-fn menu_separator() -> impl IntoElement {
-    div().h(px(1.)).my(px(2.)).bg(theme::BORDER())
+fn menu_separator(cx: &App) -> impl IntoElement {
+    div().h(px(1.)).my(px(2.)).bg(theme::border(cx))
 }
 
 /// 发送/停止圆钮(running → 停止方块)
-fn send_or_stop(store: &Entity<AppStore>, running: bool) -> impl IntoElement {
+fn send_or_stop(store: &Entity<AppStore>, running: bool, cx: &App) -> impl IntoElement {
     let s = store.clone();
-    // 停止态用自绘小方块(确定性优于字形;发送态箭头图标随文字色)
-    let (id, bg, child) = if running {
+    // 停止态用自绘小方块(确定性优于字形;发送态箭头图标随文字色)。
+    // 填充面前景随主题定义走(ON_BRAND/ON_DANGER):浅色 primary 的
+    // 主题(如 Default Dark 的 #FAFAFA)下恒白符号不可见
+    let (id, bg, fg, child) = if running {
         (
             "stop",
-            theme::DANGER(),
+            theme::danger(cx),
+            theme::on_danger(cx),
             div()
                 .size(px(10.))
                 .rounded(px(2.))
-                .bg(gpui_kit::rgba(0xFFFFFFFF))
+                .bg(theme::on_danger(cx))
                 .into_any_element(),
         )
     } else {
         (
             "send",
-            theme::BRAND(),
+            theme::brand(cx),
+            theme::on_brand(cx),
             fixed(IconName::ArrowUp, 16.).into_any_element(),
         )
     };
@@ -1213,9 +1249,7 @@ fn send_or_stop(store: &Entity<AppStore>, running: bool) -> impl IntoElement {
         .bg(bg)
         .cursor_pointer()
         .hover(|s| s.opacity(0.85))
-        // 填充面(品牌蓝/危险红)上的符号双盘恒白——浅色 LABEL 是近黑,
-        // 蓝底黑箭头对比脏
-        .text_color(gpui_kit::rgba(0xFFFFFFFF))
+        .text_color(fg)
         .child(child)
         .on_click(move |_, _, cx| {
             s.update(cx, |st, cx| {
@@ -1241,7 +1275,7 @@ fn send_or_stop(store: &Entity<AppStore>, running: bool) -> impl IntoElement {
 
 /// 34px 圆钮(+ 命令菜单 / 图片附件触发)。素底,hover 才显灰底
 /// (按钮语言:常驻底色=选中态,触发钮默认透明)
-fn round_button(id: &'static str, icon: Icon) -> gpui_kit::Stateful<gpui_kit::Div> {
+fn round_button(id: &'static str, icon: Icon, cx: &App) -> gpui_kit::Stateful<gpui_kit::Div> {
     let sel = id;
     div()
         .id(id)
@@ -1251,9 +1285,9 @@ fn round_button(id: &'static str, icon: Icon) -> gpui_kit::Stateful<gpui_kit::Di
         .items_center()
         .justify_center()
         .rounded_full()
-        .text_color(theme::LABEL_2())
+        .text_color(theme::label_2(cx))
         .cursor_pointer()
-        .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL()))
+        .hover(|s| s.bg(theme::dock(cx)).text_color(theme::label(cx)))
         .child(icon)
         // 测试钩子:触发钮 bounds 按 id 检索(release 空操作)
         .debug_selector(move || sel.to_string())
@@ -1265,6 +1299,7 @@ fn chip(
     id: &'static str,
     label: impl Into<gpui_kit::SharedString>,
     icon: Icon,
+    cx: &App,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
     let label = label.into();
     let sel = id;
@@ -1278,9 +1313,9 @@ fn chip(
         .rounded(px(12.))
         .px(px(10.))
         .text_size(px(12.))
-        .text_color(theme::LABEL_2())
+        .text_color(theme::label_2(cx))
         .cursor_pointer()
-        .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL()))
+        .hover(|s| s.bg(theme::dock(cx)).text_color(theme::label(cx)))
         .child(icon)
         .child(label.to_string())
         // 测试钩子:触发钮 bounds 按 id 检索(release 空操作)

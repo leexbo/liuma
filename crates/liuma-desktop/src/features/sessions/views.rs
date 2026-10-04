@@ -55,9 +55,9 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .flex_shrink_0()
         // 扁平面板(去胶囊卡):SIDEBAR 色阶 + 右缘发丝线与内容区分界;
         // 组件层(行 hover/搜索框)浮于其上
-        .bg(theme::SIDEBAR())
+        .bg(theme::sidebar(cx))
         .border_r_1()
-        .border_color(theme::BORDER())
+        .border_color(theme::border(cx))
         // 测试钩子:布局回归断言双栏分离(release 空操作)
         .debug_selector(|| "sidebar-card".to_string())
         .px(px(12.))
@@ -69,7 +69,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .child(drag_strip())
         // 顶部序:「新会话」全局钮最顶,其下为顶栏二态
         // (搜索关 = 「工作区」标题 + 三图标钮;开 = 搜索框)
-        .child(new_session_row(store))
+        .child(new_session_row(store, cx))
         .child(if st.search.search_open {
             search::search_field(store, cx).into_any_element()
         } else {
@@ -81,7 +81,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .when(store.read(cx).search.search_hits.is_none(), |el| {
             el.child(session_list(store, cx))
         })
-        .child(settings::settings_row(store))
+        .child(settings::settings_row(store, cx))
         .child(sidebar_resize_handle(store));
     // 拖宽进行中:整窗 canvas 覆盖层负责窗口级 move/up 注册(Paint 相位)。
     if drag_active {
@@ -165,7 +165,7 @@ pub(crate) fn drag_strip() -> impl IntoElement {
 }
 
 /// 「新会话」行(全局唯一;⊕ 图标 + 文字居中)
-fn new_session_row(store: &Entity<AppStore>) -> impl IntoElement {
+fn new_session_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let s = store.clone();
     div().flex().h(px(36.)).items_center().child(
         div()
@@ -179,13 +179,13 @@ fn new_session_row(store: &Entity<AppStore>) -> impl IntoElement {
             .gap(px(6.))
             .rounded(px(12.))
             .border_1()
-            .border_color(theme::BORDER())
-            .bg(theme::LAYER())
+            .border_color(theme::border(cx))
+            .bg(theme::layer(cx))
             .cursor_pointer()
             .text_size(px(13.))
             .font_weight(gpui_kit::FontWeight::MEDIUM)
-            .text_color(theme::LABEL())
-            .hover(|s| s.bg(theme::DOCK()))
+            .text_color(theme::label(cx))
+            .hover(|s| s.bg(theme::dock(cx)))
             .child(fixed(LiumaIcon::NewChat, 14.))
             .child(t!("sessions.new_session"))
             .on_click(move |_, _, cx| {
@@ -218,7 +218,7 @@ fn header_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .child(
             div()
                 .text_size(px(13.))
-                .text_color(theme::LABEL_3())
+                .text_color(theme::label_3(cx))
                 .child(if flat {
                     t!("sessions.group_flat")
                 } else {
@@ -231,6 +231,7 @@ fn header_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 "search",
                 t!("sessions.search_ph"),
                 fixed(LiumaIcon::SearchOutline, 14.),
+                cx,
             )
             .on_click(move |_, window, cx| {
                 cx.stop_propagation();
@@ -259,6 +260,7 @@ fn header_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                             "view-options",
                             t!("sessions.view_options"),
                             fixed(LiumaIcon::Personalization, 15.),
+                            cx,
                         )
                         .on_click(move |_, _, cx| {
                             s_click.update(cx, |st, cx| st.toggle_view_menu(cx));
@@ -278,6 +280,7 @@ fn header_row(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 "add-workspace",
                 t!("sessions.add_workspace"),
                 fixed(LiumaIcon::ProjectAdd, 16.),
+                cx,
             )
             .on_click(move |_, _, cx| {
                 cx.stop_propagation();
@@ -296,6 +299,7 @@ fn header_icon_button(
     sel: &'static str,
     tip: impl Into<gpui_kit::SharedString>,
     icon: Icon,
+    cx: &App,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
     let tip = tip.into();
     let id: gpui_kit::SharedString = format!("header-btn-{sel}").into();
@@ -312,8 +316,8 @@ fn header_icon_button(
         .ml(px(2.))
         .rounded_full()
         .cursor_pointer()
-        .text_color(theme::LABEL_3())
-        .hover(|s| s.bg(theme::LAYER()).text_color(theme::LABEL_2()))
+        .text_color(theme::label_3(cx))
+        .hover(|s| s.bg(theme::layer(cx)).text_color(theme::label_2(cx)))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .tooltip(crate::shell::tip(tip))
         .child(icon)
@@ -323,7 +327,7 @@ fn header_icon_button(
 const GROUP_PREVIEW: usize = 5;
 
 /// 侧栏小节标签(「置顶」/「项目」;12px 三级色,同参照布局的节头)
-fn section_label(text: impl Into<gpui_kit::SharedString>) -> gpui_kit::AnyElement {
+fn section_label(text: impl Into<gpui_kit::SharedString>, cx: &App) -> gpui_kit::AnyElement {
     let text = text.into();
     div()
         .flex_shrink_0()
@@ -331,7 +335,7 @@ fn section_label(text: impl Into<gpui_kit::SharedString>) -> gpui_kit::AnyElemen
         .pb(px(2.))
         .px(px(8.))
         .text_size(px(12.))
-        .text_color(theme::CAPTION())
+        .text_color(theme::caption(cx))
         .child(text)
         .into_any_element()
 }
@@ -372,16 +376,16 @@ fn preview_rows_in(
         .collect();
     if shown < idxs.len() {
         let hidden = idxs.len() - shown;
-        rows.push(show_more_row(store, ws, false, hidden).into_any_element());
+        rows.push(show_more_row(store, ws, false, hidden, cx).into_any_element());
     } else if query.is_empty() && extra > 0 {
-        rows.push(show_more_row(store, ws, true, 0).into_any_element());
+        rows.push(show_more_row(store, ws, true, 0, cx).into_any_element());
     }
     rows
 }
 
 /// 组空状态行(「暂无聊天」):组内无可见会话时的占位(会话全上提
 /// 置顶或本无会话);几何同 show_more_row,灰字不可交互
-fn group_empty_row(ws: &str) -> impl IntoElement {
+fn group_empty_row(ws: &str, cx: &App) -> impl IntoElement {
     div()
         .debug_selector(move || format!("ws-empty-{ws}"))
         .flex()
@@ -392,7 +396,7 @@ fn group_empty_row(ws: &str) -> impl IntoElement {
         .px(px(8.))
         .ml(px(22.))
         .text_size(px(12.))
-        .text_color(theme::CAPTION())
+        .text_color(theme::caption(cx))
         .child(t!("sessions.empty_chats"))
 }
 
@@ -402,6 +406,7 @@ fn show_more_row(
     ws: &str,
     expanded: bool,
     hidden: usize,
+    cx: &App,
 ) -> impl IntoElement {
     let s = store.clone();
     let ws = ws.to_string();
@@ -418,8 +423,11 @@ fn show_more_row(
         .ml(px(22.))
         .cursor_pointer()
         .text_size(px(12.))
-        .text_color(theme::CAPTION())
-        .hover(|s| s.bg(theme::SIDEBAR_HOVER()).text_color(theme::LABEL_2()))
+        .text_color(theme::caption(cx))
+        .hover(|s| {
+            s.bg(theme::sidebar_hover(cx))
+                .text_color(theme::label_2(cx))
+        })
         .child(if expanded {
             t!("sessions.collapse_show").to_string()
         } else {
@@ -468,22 +476,22 @@ fn pinned_session_row(store: &Entity<AppStore>, cx: &App, s: &SessionSummary) ->
         .flex_shrink_0()
         .items_center()
         .rounded(px(8.))
-        .when(active, |el| el.bg(theme::SIDEBAR_ACTIVE()))
+        .when(active, |el| el.bg(theme::sidebar_active(cx)))
         .pl(px(8.))
         .pr(px(52.))
         .gap(px(8.))
         .cursor_pointer()
-        .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
+        .hover(|s| s.bg(theme::sidebar_hover(cx)))
         .child(
             div()
                 .flex()
                 .w(px(14.))
                 .flex_shrink_0()
                 .justify_center()
-                .text_color(theme::LABEL_3())
+                .text_color(theme::label_3(cx))
                 .children(
                     running
-                        .then(running_dot)
+                        .then(|| running_dot(cx))
                         .or_else(|| Some(fixed(LiumaIcon::Message, 13.).into_any_element())),
                 ),
         )
@@ -495,9 +503,9 @@ fn pinned_session_row(store: &Entity<AppStore>, cx: &App, s: &SessionSummary) ->
                 .truncate()
                 .text_size(px(13.))
                 .text_color(if active {
-                    theme::LABEL()
+                    theme::label(cx)
                 } else {
-                    theme::LABEL_2()
+                    theme::label_2(cx)
                 })
                 .child(title),
         )
@@ -527,8 +535,8 @@ fn pinned_session_row(store: &Entity<AppStore>, cx: &App, s: &SessionSummary) ->
                         .justify_center()
                         .rounded(px(4.))
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme::SIDEBAR_ACTIVE()).text_color(theme::LABEL()))
-                        .text_color(theme::CAPTION())
+                        .hover(|s| s.bg(theme::sidebar_active(cx)).text_color(theme::label(cx)))
+                        .text_color(theme::caption(cx))
                         .child(fixed(
                             if pinned {
                                 LiumaIcon::PinOff
@@ -558,8 +566,8 @@ fn pinned_session_row(store: &Entity<AppStore>, cx: &App, s: &SessionSummary) ->
                         .justify_center()
                         .rounded(px(4.))
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme::SIDEBAR_ACTIVE()).text_color(theme::LABEL()))
-                        .text_color(theme::CAPTION())
+                        .hover(|s| s.bg(theme::sidebar_active(cx)).text_color(theme::label(cx)))
+                        .text_color(theme::caption(cx))
                         .child(fixed(LiumaIcon::Archive, 14.))
                         .tooltip(crate::shell::tip(t!("sessions.tip_archive")))
                         .on_click(move |_, _, cx| {
@@ -615,20 +623,20 @@ fn pinned_workspace_block(
                 .flex_shrink_0()
                 .items_center()
                 .rounded(px(8.))
-                .when(selected, |el| el.bg(theme::SIDEBAR_ACTIVE()))
+                .when(selected, |el| el.bg(theme::sidebar_active(cx)))
                 .px(px(8.))
                 .gap(px(8.))
                 .cursor_pointer()
-                .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
+                .hover(|s| s.bg(theme::sidebar_hover(cx)))
                 .text_color(if selected {
-                    theme::LABEL()
+                    theme::label(cx)
                 } else {
-                    theme::LABEL_2()
+                    theme::label_2(cx)
                 })
                 .child(fixed(LiumaIcon::FolderClose, 14.).text_color(if selected {
-                    theme::BRAND()
+                    theme::brand(cx)
                 } else {
-                    theme::LABEL_3()
+                    theme::label_3(cx)
                 }))
                 .child(
                     div()
@@ -680,8 +688,8 @@ fn pinned_workspace_block(
                             .rounded(px(4.))
                             .opacity(0.)
                             .group_hover(pin_grp.clone(), |s| s.opacity(1.))
-                            .hover(|s| s.bg(theme::SIDEBAR_ACTIVE()).text_color(theme::LABEL()))
-                            .text_color(theme::CAPTION())
+                            .hover(|s| s.bg(theme::sidebar_active(cx)).text_color(theme::label(cx)))
+                            .text_color(theme::caption(cx))
                             .tooltip(crate::shell::tip(t!("sessions.ws_actions")))
                             .child(fixed(IconName::Ellipsis, 14.)),
                     ))
@@ -707,8 +715,8 @@ fn pinned_workspace_block(
                         .rounded(px(4.))
                         .opacity(0.)
                         .group_hover(pin_grp.clone(), |s| s.opacity(1.))
-                        .hover(|s| s.bg(theme::SIDEBAR_ACTIVE()).text_color(theme::LABEL()))
-                        .text_color(theme::CAPTION())
+                        .hover(|s| s.bg(theme::sidebar_active(cx)).text_color(theme::label(cx)))
+                        .text_color(theme::caption(cx))
                         .tooltip(crate::shell::tip(t!("sessions.edit_project")))
                         .child(fixed(LiumaIcon::Pencil, 14.))
                         .on_hover({
@@ -735,7 +743,7 @@ fn pinned_workspace_block(
         // 清单(置顶会话已上提为气泡行);全上提/本无会话时显「暂无
         // 聊天」空状态,与项目节组空状态同款
         .children(if idxs.is_empty() {
-            vec![group_empty_row(&ws_rows).into_any_element()]
+            vec![group_empty_row(&ws_rows, cx).into_any_element()]
         } else {
             preview_rows_in(store, cx, &ws_rows, idxs, "", "pinws")
         })
@@ -771,7 +779,7 @@ pub(crate) fn ws_info_card(
             .gap(px(10.))
             .px(px(12.))
             .text_size(px(13.))
-            .text_color(theme::LABEL())
+            .text_color(theme::label(cx))
             .child(icon)
             .child(div().flex().min_w(px(0.)).truncate().child(label))
             .debug_selector(|| sel.to_string())
@@ -783,11 +791,11 @@ pub(crate) fn ws_info_card(
         .w(px(280.))
         .rounded(px(12.))
         .border_1()
-        .border_color(theme::BORDER())
-        .bg(if theme::is_dark() {
-            theme::LAYER()
+        .border_color(theme::border(cx))
+        .bg(if theme::is_dark(cx) {
+            theme::layer(cx)
         } else {
-            theme::CARD()
+            theme::card(cx)
         })
         .p(px(4.))
         .shadow_md()
@@ -800,7 +808,7 @@ pub(crate) fn ws_info_card(
                 .px(px(12.))
                 .text_size(px(13.))
                 .font_weight(gpui_kit::FontWeight::MEDIUM)
-                .text_color(theme::LABEL())
+                .text_color(theme::label(cx))
                 .child(
                     fixed(
                         if active {
@@ -811,9 +819,9 @@ pub(crate) fn ws_info_card(
                         14.,
                     )
                     .text_color(if active {
-                        theme::BRAND()
+                        theme::brand(cx)
                     } else {
-                        theme::LABEL_2()
+                        theme::label_2(cx)
                     }),
                 )
                 .child(div().flex().min_w(px(0.)).truncate().child(display))
@@ -828,8 +836,8 @@ pub(crate) fn ws_info_card(
                         .justify_center()
                         .rounded(px(6.))
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme::DOCK()))
-                        .text_color(theme::CAPTION())
+                        .hover(|s| s.bg(theme::dock(cx)))
+                        .text_color(theme::caption(cx))
                         .child(fixed(
                             if pinned {
                                 LiumaIcon::PinOff
@@ -852,20 +860,20 @@ pub(crate) fn ws_info_card(
         )
         .child(row(
             fixed(LiumaIcon::Message, 14.)
-                .text_color(theme::LABEL_2())
+                .text_color(theme::label_2(cx))
                 .into_any_element(),
             t!("sessions.ws_task_count", n = session_count).into(),
             "ws-info-count",
         ))
-        .child(div().h(px(1.)).mx(px(8.)).my(px(3.)).bg(theme::BORDER()))
+        .child(div().h(px(1.)).mx(px(8.)).my(px(3.)).bg(theme::border(cx)))
         .child(row(
             fixed(LiumaIcon::FolderClose, 14.)
-                .text_color(theme::LABEL_2())
+                .text_color(theme::label_2(cx))
                 .into_any_element(),
             path.into(),
             "ws-info-path",
         ))
-        .child(div().h(px(1.)).mx(px(8.)).my(px(3.)).bg(theme::BORDER()))
+        .child(div().h(px(1.)).mx(px(8.)).my(px(3.)).bg(theme::border(cx)))
         .child(
             div()
                 .id("ws-info-edit")
@@ -877,9 +885,9 @@ pub(crate) fn ws_info_card(
                 .rounded(px(8.))
                 .cursor_pointer()
                 .text_size(px(13.))
-                .text_color(theme::LABEL())
-                .hover(|s| s.bg(theme::DOCK()))
-                .child(fixed(LiumaIcon::Settings, 14.).text_color(theme::LABEL_2()))
+                .text_color(theme::label(cx))
+                .hover(|s| s.bg(theme::dock(cx)))
+                .child(fixed(LiumaIcon::Settings, 14.).text_color(theme::label_2(cx)))
                 .child(t!("sessions.edit_project"))
                 .on_click(move |_, window, cx| {
                     cx.stop_propagation();
@@ -1002,7 +1010,7 @@ fn session_list(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     // 行下嵌其会话清单,5 条预览纪律同组;清单已剔除置顶会话)。搜索
     // 时置顶项同样走过滤
     if !pinned_sessions.is_empty() || !pinned_ws.is_empty() {
-        children.push(section_label(t!("sessions.pinned_section")));
+        children.push(section_label(t!("sessions.pinned_section"), cx));
         for ix in &pinned_sessions {
             let s = &st.state.sessions[*ix];
             children.push(pinned_session_row(store, cx, s).into_any_element());
@@ -1033,13 +1041,13 @@ fn session_list(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             continue;
         }
         if idxs.is_empty() {
-            projects.push(group_empty_row(ws).into_any_element());
+            projects.push(group_empty_row(ws, cx).into_any_element());
         } else {
             projects.extend(preview_rows(store, cx, ws, idxs, &query));
         }
     }
     if !projects.is_empty() {
-        children.push(section_label(t!("sessions.projects_section")));
+        children.push(section_label(t!("sessions.projects_section"), cx));
         children.extend(projects);
     }
 
@@ -1079,9 +1087,9 @@ fn group_header(
         ws.to_string(),
     );
     let fg = if selected {
-        theme::LABEL()
+        theme::label(cx)
     } else {
-        theme::LABEL_3()
+        theme::label_3(cx)
     };
     let sel = format!("ws-chevron-{}", if collapsed { "closed" } else { "open" });
     // 行 hover 组:展开态 chevron 悬停才淡入,折叠态常显
@@ -1095,12 +1103,12 @@ fn group_header(
         .flex_shrink_0()
         .items_center()
         .rounded(px(8.))
-        .when(selected, |el| el.bg(theme::SIDEBAR_ACTIVE()))
+        .when(selected, |el| el.bg(theme::sidebar_active(cx)))
         .pl(px(4.))
         .pr(px(4.))
         .gap(px(4.))
         .cursor_pointer()
-        .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
+        .hover(|s| s.bg(theme::sidebar_hover(cx)))
         .text_size(px(13.))
         .text_color(fg)
         // 折叠/文件夹同槽互换:默认显文件夹,行 hover
@@ -1119,9 +1127,9 @@ fn group_header(
                         .items_center()
                         .justify_center()
                         .text_color(if selected {
-                            theme::BRAND()
+                            theme::brand(cx)
                         } else {
-                            theme::LABEL_3()
+                            theme::label_3(cx)
                         })
                         .when(collapsed, |el| el.opacity(0.))
                         .group_hover(grp.clone(), |s| s.opacity(0.))
@@ -1143,8 +1151,8 @@ fn group_header(
                         .items_center()
                         .justify_center()
                         .rounded(px(4.))
-                        .hover(|s| s.bg(theme::SIDEBAR_ACTIVE()).text_color(theme::LABEL()))
-                        .text_color(theme::CAPTION())
+                        .hover(|s| s.bg(theme::sidebar_active(cx)).text_color(theme::label(cx)))
+                        .text_color(theme::caption(cx))
                         .when(!collapsed, |el| el.opacity(0.))
                         .group_hover(grp.clone(), |s| s.opacity(1.))
                         .child(fixed(
@@ -1202,8 +1210,8 @@ fn group_header(
                         .rounded(px(4.))
                         .opacity(0.)
                         .group_hover(grp.clone(), |s| s.opacity(1.))
-                        .hover(|s| s.bg(theme::SIDEBAR_ACTIVE()).text_color(theme::LABEL()))
-                        .text_color(theme::CAPTION())
+                        .hover(|s| s.bg(theme::sidebar_active(cx)).text_color(theme::label(cx)))
+                        .text_color(theme::caption(cx))
                         .tooltip(crate::shell::tip(t!("sessions.ws_actions")))
                         .child(fixed(IconName::Ellipsis, 14.)),
                 ))
@@ -1232,8 +1240,8 @@ fn group_header(
                 .rounded(px(4.))
                 .opacity(0.)
                 .group_hover(grp.clone(), |s| s.opacity(1.))
-                .hover(|s| s.bg(theme::SIDEBAR_ACTIVE()).text_color(theme::LABEL()))
-                .text_color(theme::CAPTION())
+                .hover(|s| s.bg(theme::sidebar_active(cx)).text_color(theme::label(cx)))
+                .text_color(theme::caption(cx))
                 .tooltip(crate::shell::tip(t!("sessions.edit_project")))
                 .child(fixed(LiumaIcon::Pencil, 14.))
                 .on_hover({
@@ -1289,9 +1297,9 @@ fn session_row_in(
         .unwrap_or(0);
     let time = relative_time(now, s.updated_at);
     let (bg, fg) = if active {
-        (theme::SIDEBAR_ACTIVE(), theme::LABEL())
+        (theme::sidebar_active(cx), theme::label(cx))
     } else {
-        (theme::TRANSPARENT(), theme::LABEL_2())
+        (theme::TRANSPARENT, theme::label_2(cx))
     };
     // 后台子代理运行中(自身非 running 时)替代时间位
     let sub_running = st.running_subagent_count(&s.session_id);
@@ -1329,7 +1337,7 @@ fn session_row_in(
         .pr(px(8.))
         .gap(px(8.))
         .cursor_pointer()
-        .hover(|s| s.bg(theme::SIDEBAR_HOVER()))
+        .hover(|s| s.bg(theme::sidebar_hover(cx)))
         // 行首状态槽(活动动画在行首,非运行时空占位对齐)
         .child(
             div()
@@ -1337,7 +1345,7 @@ fn session_row_in(
                 .w(px(14.))
                 .flex_shrink_0()
                 .justify_center()
-                .children(running.then(running_dot)),
+                .children(running.then(|| running_dot(cx))),
         )
         .child(
             div()
@@ -1367,9 +1375,9 @@ fn session_row_in(
                         .items_center()
                         .group_hover(grp.clone(), |s| s.opacity(0.))
                         .child(if sub_running > 0 {
-                            sub_running_badge(sub_running)
+                            sub_running_badge(sub_running, cx)
                         } else {
-                            plain_time(&time)
+                            plain_time(&time, cx)
                         }),
                 )
                 .child(
@@ -1396,8 +1404,10 @@ fn session_row_in(
                                 .justify_center()
                                 .rounded(px(4.))
                                 .cursor_pointer()
-                                .hover(|s| s.bg(theme::SIDEBAR_ACTIVE()).text_color(theme::LABEL()))
-                                .text_color(theme::CAPTION())
+                                .hover(|s| {
+                                    s.bg(theme::sidebar_active(cx)).text_color(theme::label(cx))
+                                })
+                                .text_color(theme::caption(cx))
                                 .child(fixed(
                                     if pinned {
                                         LiumaIcon::PinOff
@@ -1430,8 +1440,10 @@ fn session_row_in(
                                 .justify_center()
                                 .rounded(px(4.))
                                 .cursor_pointer()
-                                .hover(|s| s.bg(theme::SIDEBAR_ACTIVE()).text_color(theme::LABEL()))
-                                .text_color(theme::CAPTION())
+                                .hover(|s| {
+                                    s.bg(theme::sidebar_active(cx)).text_color(theme::label(cx))
+                                })
+                                .text_color(theme::caption(cx))
                                 .child(fixed(LiumaIcon::Archive, 14.))
                                 .tooltip(crate::shell::tip(t!("sessions.tip_archive")))
                                 .on_click(move |_, _, cx| {
@@ -1489,8 +1501,8 @@ pub(crate) fn session_menu_card(
         .gap(px(2.))
         .rounded(px(10.))
         .border_1()
-        .border_color(theme::BORDER())
-        .bg(theme::LAYER())
+        .border_color(theme::border(cx))
+        .bg(theme::layer(cx))
         .p(px(4.))
         .shadow_md()
         .child(menu_item(
@@ -1510,6 +1522,7 @@ pub(crate) fn session_menu_card(
                     st.toggle_pinned_session(&id, cx);
                 });
             },
+            cx,
         ))
         .child(menu_item(
             "menu-rename",
@@ -1524,6 +1537,7 @@ pub(crate) fn session_menu_card(
                     st.open_rename(&id, window, cx);
                 });
             },
+            cx,
         ))
         .child(menu_item(
             "menu-archive",
@@ -1538,6 +1552,7 @@ pub(crate) fn session_menu_card(
                     st.archive(&id, cx);
                 });
             },
+            cx,
         ))
         .child(menu_item(
             "menu-fork",
@@ -1552,8 +1567,9 @@ pub(crate) fn session_menu_card(
                     st.fork(&id, cx);
                 });
             },
+            cx,
         ))
-        .child(menu_divider())
+        .child(menu_divider(cx))
         .child(menu_item(
             "menu-export-log",
             t!("sessions.export_log"),
@@ -1567,16 +1583,17 @@ pub(crate) fn session_menu_card(
                     st.export_session_log(&id, window, cx);
                 });
             },
+            cx,
         ))
 }
 
 /// 菜单组分隔线
-fn menu_divider() -> gpui_kit::AnyElement {
+fn menu_divider(cx: &App) -> gpui_kit::AnyElement {
     div()
         .h(px(1.))
         .mx(px(8.))
         .my(px(3.))
-        .bg(theme::BORDER())
+        .bg(theme::border(cx))
         .into_any_element()
 }
 
@@ -1590,6 +1607,7 @@ fn menu_item(
     label: impl Into<gpui_kit::SharedString>,
     icon: Icon,
     on_click: impl Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut App) + 'static,
+    cx: &App,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
     let label = label.into();
     div()
@@ -1602,9 +1620,9 @@ fn menu_item(
         .px(px(8.))
         .rounded(px(6.))
         .cursor_pointer()
-        .hover(|st| st.bg(theme::DOCK()))
+        .hover(|st| st.bg(theme::dock(cx)))
         .text_size(px(12.))
-        .text_color(theme::LABEL_2())
+        .text_color(theme::label_2(cx))
         .child(icon)
         .child(label)
         .on_click(move |ev, w, cx| {
@@ -1639,8 +1657,8 @@ fn ws_menu_card(
         .gap(px(2.))
         .rounded(px(10.))
         .border_1()
-        .border_color(theme::BORDER())
-        .bg(theme::LAYER())
+        .border_color(theme::border(cx))
+        .bg(theme::layer(cx))
         .p(px(4.))
         .shadow_md()
         .child(menu_item(
@@ -1656,6 +1674,7 @@ fn ws_menu_card(
                 let id = wid_p.clone();
                 pin_store.update(cx, |st, cx| st.toggle_pinned_workspace(&id, cx));
             },
+            cx,
         ))
         .child(menu_item(
             "menu-ws-rename",
@@ -1668,6 +1687,7 @@ fn ws_menu_card(
                 rename.update(cx, |st, cx| st.open_rename_workspace(&id, window, cx));
                 p_ren.update(cx, |state, cx| state.dismiss(window, cx));
             },
+            cx,
         ))
         .when(!is_default, |el| {
             el.child(menu_item(
@@ -1679,6 +1699,7 @@ fn ws_menu_card(
                     let id = wid_x.clone();
                     remove.update(cx, |st, cx| st.remove_workspace(&id, cx));
                 },
+                cx,
             ))
         })
 }
@@ -1702,11 +1723,11 @@ fn view_options_menu_card(
         .w(px(200.))
         .rounded(px(12.))
         .border_1()
-        .border_color(theme::BORDER())
-        .bg(theme::LAYER())
+        .border_color(theme::border(cx))
+        .bg(theme::layer(cx))
         .p(px(4.))
         .shadow_md()
-        .child(menu_section_label(t!("sessions.group_label")))
+        .child(menu_section_label(t!("sessions.group_label"), cx))
         .child(view_menu_item(
             "view-group-ws",
             t!("sessions.by_workspace"),
@@ -1715,6 +1736,7 @@ fn view_options_menu_card(
             move |_, _, cx| {
                 s_ws.update(cx, |st, cx| st.set_group_mode(GroupMode::Workspace, cx));
             },
+            cx,
         ))
         .child(view_menu_item(
             "view-group-flat",
@@ -1724,9 +1746,10 @@ fn view_options_menu_card(
             move |_, _, cx| {
                 s_flat.update(cx, |st, cx| st.set_group_mode(GroupMode::Flat, cx));
             },
+            cx,
         ))
-        .child(div().h(px(1.)).mx(px(8.)).my(px(4.)).bg(theme::BORDER()))
-        .child(menu_section_label(t!("sessions.sort_label")))
+        .child(div().h(px(1.)).mx(px(8.)).my(px(4.)).bg(theme::border(cx)))
+        .child(menu_section_label(t!("sessions.sort_label"), cx))
         .child(view_menu_item(
             "view-order-updated",
             t!("sessions.recent_updates"),
@@ -1735,6 +1758,7 @@ fn view_options_menu_card(
             move |_, _, cx| {
                 s_updated.update(cx, |st, cx| st.set_order_mode(OrderMode::Updated, cx));
             },
+            cx,
         ))
         .child(
             div()
@@ -1747,20 +1771,20 @@ fn view_options_menu_card(
                 .px(px(8.))
                 .rounded(px(8.))
                 .text_size(px(13.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(t!("sessions.manual_sort")),
         )
 }
 
 /// 菜单节标(分组方式/排序方式)
-fn menu_section_label(label: impl Into<gpui_kit::SharedString>) -> gpui_kit::AnyElement {
+fn menu_section_label(label: impl Into<gpui_kit::SharedString>, cx: &App) -> gpui_kit::AnyElement {
     let label = label.into();
     div()
         .px(px(8.))
         .pt(px(6.))
         .pb(px(2.))
         .text_size(px(12.))
-        .text_color(theme::CAPTION())
+        .text_color(theme::caption(cx))
         .child(label)
         .into_any_element()
 }
@@ -1772,6 +1796,7 @@ fn view_menu_item(
     selected: bool,
     pop: Entity<PopoverState>,
     on_click: impl Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut App) + 'static,
+    cx: &App,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
     let label = label.into();
     div()
@@ -1784,11 +1809,11 @@ fn view_menu_item(
         .px(px(8.))
         .rounded(px(8.))
         .cursor_pointer()
-        .hover(|st| st.bg(theme::DOCK()))
+        .hover(|st| st.bg(theme::dock(cx)))
         .text_size(px(13.))
-        .text_color(theme::LABEL_2())
+        .text_color(theme::label_2(cx))
         .child(div().flex_1().child(label))
-        .children(selected.then(|| fixed(IconName::Check, 14.).text_color(theme::LABEL())))
+        .children(selected.then(|| fixed(IconName::Check, 14.).text_color(theme::label(cx))))
         .on_click(move |ev, w, cx| {
             pop.update(cx, |state, cx| state.dismiss(w, cx));
             on_click(ev, w, cx)
@@ -1798,18 +1823,18 @@ fn view_menu_item(
 /// 执行中徽点(替代时间位;点阵追逐动画)
 /// 「N 个子代理运行中」行尾状态
 /// (优先级低于自身运行中,替代相对时间位)
-fn sub_running_badge(n: usize) -> gpui_kit::AnyElement {
+fn sub_running_badge(n: usize, cx: &App) -> gpui_kit::AnyElement {
     div()
         .debug_selector(|| "session-row-sub-running".to_string())
         .flex()
         .items_center()
         .gap(px(4.))
         .flex_shrink_0()
-        .child(div().size(px(6.)).rounded_full().bg(theme::ONGOING()))
+        .child(div().size(px(6.)).rounded_full().bg(theme::ongoing(cx)))
         .child(
             div()
                 .text_size(px(11.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(if n == 1 {
                     t!("sessions.subagents_one", n = n)
                 } else {
@@ -1819,16 +1844,16 @@ fn sub_running_badge(n: usize) -> gpui_kit::AnyElement {
         .into_any_element()
 }
 
-fn running_dot() -> gpui_kit::AnyElement {
-    crate::kits::state_dot::ongoing_dot(8.).into_any_element()
+fn running_dot(cx: &App) -> gpui_kit::AnyElement {
+    crate::kits::state_dot::ongoing_dot(8., cx).into_any_element()
 }
 
 /// 相对时间
-fn plain_time(time: &str) -> gpui_kit::AnyElement {
+fn plain_time(time: &str, cx: &App) -> gpui_kit::AnyElement {
     div()
         .flex_shrink_0()
         .text_size(px(11.))
-        .text_color(theme::CAPTION())
+        .text_color(theme::caption(cx))
         .child(time.to_string())
         .into_any_element()
 }

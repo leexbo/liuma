@@ -40,12 +40,12 @@ pub fn render(
                     .debug_selector(|| "files-no-workspace".to_string())
                     .p(px(14.))
                     .text_size(px(12.))
-                    .text_color(theme::CAPTION())
+                    .text_color(theme::caption(cx))
                     .child(t!("files.no_workspace")),
             );
         }
         Some(root) => {
-            col = col.child(files_header(store, &root)).child(
+            col = col.child(files_header(store, &root, cx)).child(
                 div()
                     .debug_selector(|| "files-tree".to_string())
                     .flex_1()
@@ -65,7 +65,7 @@ pub fn render(
 
 /// 头行:根路径(目录前缀灰显 + 末段全色,truncate)+ 刷新钮
 /// (头行唯一控件)
-fn files_header(store: &Entity<AppStore>, root: &std::path::Path) -> impl IntoElement {
+fn files_header(store: &Entity<AppStore>, root: &std::path::Path, cx: &App) -> impl IntoElement {
     let display = root.display().to_string();
     let (prefix, last) = match display.rsplit_once('/') {
         Some((head, tail)) if !tail.is_empty() => (format!("{head}/"), tail.to_string()),
@@ -82,7 +82,7 @@ fn files_header(store: &Entity<AppStore>, root: &std::path::Path) -> impl IntoEl
         .h(px(36.))
         .px(px(12.))
         .border_b_1()
-        .border_color(theme::BORDER())
+        .border_color(theme::border(cx))
         .child(
             div()
                 .flex_1()
@@ -90,8 +90,13 @@ fn files_header(store: &Entity<AppStore>, root: &std::path::Path) -> impl IntoEl
                 .flex()
                 .items_baseline()
                 .text_size(px(12.))
-                .child(div().truncate().text_color(theme::CAPTION()).child(prefix))
-                .child(div().truncate().text_color(theme::LABEL_2()).child(last)),
+                .child(
+                    div()
+                        .truncate()
+                        .text_color(theme::caption(cx))
+                        .child(prefix),
+                )
+                .child(div().truncate().text_color(theme::label_2(cx)).child(last)),
         )
         .child(
             div()
@@ -104,8 +109,8 @@ fn files_header(store: &Entity<AppStore>, root: &std::path::Path) -> impl IntoEl
                 .justify_center()
                 .rounded(px(6.))
                 .cursor_pointer()
-                .text_color(theme::CAPTION())
-                .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL()))
+                .text_color(theme::caption(cx))
+                .hover(|s| s.bg(theme::dock(cx)).text_color(theme::label(cx)))
                 .child(fixed(LiumaIcon::RefreshCw, 13.))
                 .on_click(move |_, _, cx| {
                     s_refresh.update(cx, |st, cx| st.refresh_files(cx));
@@ -158,10 +163,10 @@ fn files_row(store: &Entity<AppStore>, entry: &TreeEntry, cx: &mut App) -> ListI
     // 图标槽:目录 FolderClosed;文件按类型家族染色;Other 灰
     row = row.child(div().w(px(16.)).flex().justify_center().child(match kind {
         EntryKind::Directory => fixed(IconName::FolderClosed, 14.),
-        EntryKind::Other => fixed(LiumaIcon::FileSymlink, 14.).text_color(theme::CAPTION()),
+        EntryKind::Other => fixed(LiumaIcon::FileSymlink, 14.).text_color(theme::caption(cx)),
         EntryKind::File => {
             let class = file_class(&name);
-            class_icon(class, 14.).text_color(theme::FILE_TYPE_TINT(class))
+            class_icon(class, 14.).text_color(theme::file_type_tint(class))
         }
     }));
     row = row.child(

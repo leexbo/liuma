@@ -15,7 +15,7 @@
 //!
 //! 库触发器尾部的 chevron 颜色硬编码为 `cx.theme().muted_foreground`
 //! (本仓主题 = `label_3`,α 0.55/0.50),**无覆盖点**;与手绘版原用的
-//! `theme::CAPTION()`(α 0.38/0.35)相比箭头更重,这是迁移的既知代价。
+//! `theme::caption(cx)`(α 0.38/0.35)相比箭头更重,这是迁移的既知代价。
 
 use gpui_kit::component::StyledExt as _;
 use gpui_kit::component::accordion::Accordion;
@@ -38,6 +38,7 @@ pub fn strip(
     pad_x: f32,
     rows: impl IntoIterator<Item = impl IntoElement>,
     on_toggle: impl Fn(bool, &mut Window, &mut App) + 'static,
+    cx: &App,
 ) -> AnyElement {
     div()
         .id(id)
@@ -45,8 +46,8 @@ pub fn strip(
         .w_full()
         .rounded(px(14.))
         .border_1()
-        .border_color(theme::BORDER())
-        .bg(theme::LAYER())
+        .border_color(theme::border(cx))
+        .bg(theme::layer(cx))
         .overflow_hidden()
         .child(
             Accordion::new(id)
@@ -57,7 +58,7 @@ pub fn strip(
                 .item(|item| {
                     item.open(open)
                         // 面板透出容器的 LAYER(库默认读 tokens.accordion)
-                        .bg(theme::TRANSPARENT())
+                        .bg(theme::TRANSPARENT)
                         .title_style(head_style())
                         .title(div().flex().items_center().gap(px(8.)).child(title))
                         .content_style(panel_style(pad_x))

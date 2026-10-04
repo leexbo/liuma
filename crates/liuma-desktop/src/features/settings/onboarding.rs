@@ -77,8 +77,8 @@ pub(crate) fn onboarding_modal(store: &Entity<AppStore>, cx: &App) -> gpui_kit::
         .gap(px(14.))
         .rounded(px(14.))
         .border_1()
-        .border_color(theme::BORDER())
-        .bg(theme::LAYER())
+        .border_color(theme::border(cx))
+        .bg(theme::layer(cx))
         .p(px(24.))
         .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
             cx.stop_propagation()
@@ -87,20 +87,20 @@ pub(crate) fn onboarding_modal(store: &Entity<AppStore>, cx: &App) -> gpui_kit::
             div()
                 .text_size(px(17.))
                 .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                .text_color(theme::LABEL())
+                .text_color(theme::label(cx))
                 .child(t!("settings.onboarding_title")),
         )
         .child(
             div()
                 .text_size(px(13.))
-                .text_color(theme::LABEL_2())
+                .text_color(theme::label_2(cx))
                 .child(t!("settings.onboarding_desc")),
         )
         .child(
             div()
                 .v_flex()
                 .gap(px(6.))
-                .child(field_label(t!("settings.api_key")))
+                .child(field_label(t!("settings.api_key"), cx))
                 .children(st.settings.onboarding_key_input.as_ref().map(|e| {
                     div()
                         .id("onboarding-key")
@@ -114,7 +114,7 @@ pub(crate) fn onboarding_modal(store: &Entity<AppStore>, cx: &App) -> gpui_kit::
                 .id("onboarding-error")
                 .debug_selector(|| "onboarding-error".to_string())
                 .text_size(px(12.))
-                .text_color(theme::DANGER())
+                .text_color(theme::danger(cx))
                 .child(err.clone()),
         );
     }
@@ -133,11 +133,11 @@ pub(crate) fn onboarding_modal(store: &Entity<AppStore>, cx: &App) -> gpui_kit::
                     .px(px(16.))
                     .rounded(px(10.))
                     .border_1()
-                    .border_color(theme::BORDER())
+                    .border_color(theme::border(cx))
                     .cursor_pointer()
                     .text_size(px(13.))
-                    .text_color(theme::LABEL_2())
-                    .hover(|s| s.bg(theme::DOCK()))
+                    .text_color(theme::label_2(cx))
+                    .hover(|s| s.bg(theme::dock(cx)))
                     .child(t!("settings.onboarding_later"))
                     .on_click(move |_, _, cx| {
                         s_later.update(cx, |st, cx| st.onboarding_later(cx));
@@ -152,10 +152,10 @@ pub(crate) fn onboarding_modal(store: &Entity<AppStore>, cx: &App) -> gpui_kit::
                     .items_center()
                     .px(px(16.))
                     .rounded(px(10.))
-                    .bg(theme::BRAND())
+                    .bg(theme::brand(cx))
                     .cursor_pointer()
                     .text_size(px(13.))
-                    .text_color(theme::LABEL())
+                    .text_color(theme::label(cx))
                     .hover(|s| s.opacity(0.9))
                     .child(t!("settings.onboarding_save"))
                     .on_click(move |_, _, cx| {
@@ -176,7 +176,7 @@ pub(crate) fn onboarding_modal(store: &Entity<AppStore>, cx: &App) -> gpui_kit::
         .pt(px(140.))
         .bg(gpui_kit::Rgba {
             a: 0.6,
-            ..theme::BASE()
+            ..theme::base(cx)
         })
         .child(card)
         .into_any_element()

@@ -97,11 +97,29 @@ fn main() {
             // 界面语言:开窗前读持久化档位(缺省 zh;切换 = 设置页,
             // 经 i18n::apply 全窗即时生效)——先于任何窗口文案渲染
             kits::i18n::init(&bridge.host().language());
+            // 内置主题集进 registry(liuma 双盘 + 官方 21 套;
+            // 先于任何 apply)
+            kits::theme::load_builtin_themes(cx);
+            // 持久化的两盘主题名(空串 = Liuma 默认;未知名由
+            // config_for_mode 回落)
+            for (m, name) in [
+                (
+                    gpui_kit::component::ThemeMode::Light,
+                    bridge.host().theme_light(),
+                ),
+                (
+                    gpui_kit::component::ThemeMode::Dark,
+                    bridge.host().theme_dark(),
+                ),
+            ] {
+                if !name.is_empty() {
+                    kits::theme::set_theme(m, &name, cx);
+                }
+            }
             // 外观三档:开窗前读持久化档位(HostBridge 在 run
             // 前已装配,启动无闪色);theme::apply 同步双盘 + 组件 token
             kits::theme::apply(
                 kits::theme::Appearance::parse(&bridge.host().appearance()),
-                None,
                 cx,
             );
             // 应用全局键表(⇧⌘P 等;测试装配同源,见 shell::bind_global_keys)

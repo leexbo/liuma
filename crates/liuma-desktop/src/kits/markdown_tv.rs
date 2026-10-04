@@ -43,7 +43,7 @@ fn styled_view(view: TextView) -> gpui_kit::AnyElement {
         .into_any_element()
 }
 
-fn view_style() -> TextViewStyle {
+fn view_style(cx: &App) -> TextViewStyle {
     TextViewStyle {
         // 块距 16(旧值 8 过密)
         paragraph_gap: gpui_kit::rems(1.),
@@ -52,14 +52,18 @@ fn view_style() -> TextViewStyle {
         heading_font_size: Some(std::sync::Arc::new(|_level: u8, base| base)),
         // 代码块字号 13;配色全部走 theme 派生默认(不另行改色)
         code_block: StyleRefinement::default().text_size(px(12.)),
-        is_dark: crate::kits::theme::is_dark(),
+        is_dark: crate::kits::theme::is_dark(cx),
         ..Default::default()
     }
 }
 
 /// 静态 markdown 挂载(keyed 便捷构造;id 需调用点稳定)
-pub(crate) fn tv_static(id: impl Into<gpui_kit::ElementId>, text: &str) -> gpui_kit::AnyElement {
-    styled_view(TextView::markdown(id, text).style(view_style()))
+pub(crate) fn tv_static(
+    id: impl Into<gpui_kit::ElementId>,
+    text: &str,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    styled_view(TextView::markdown(id, text).style(view_style(cx)))
 }
 
 /// 卡内代码块(单围栏)。走库 **Base** `TextView` 而非 component 门面,
@@ -73,6 +77,7 @@ pub(crate) fn tv_code_block(
     id: impl Into<gpui_kit::ElementId>,
     lang: &str,
     code: &str,
+    cx: &App,
 ) -> gpui_kit::AnyElement {
     let text = format!("```{lang}\n{code}\n```");
     div()
@@ -84,24 +89,26 @@ pub(crate) fn tv_code_block(
         .line_height(relative(1.5))
         .child(
             gpui_kit::base::text::TextView::markdown(id, text)
-                .style(code_view_style())
-                .code_block_highlighter(crate::kits::highlight::code_block_highlighter()),
+                .style(code_view_style(cx))
+                .code_block_highlighter(crate::kits::highlight::code_block_highlighter(
+                    crate::kits::theme::is_dark(cx),
+                )),
         )
         .into_any_element()
 }
 
 /// 卡内代码块排版:标题/段落间距都不参与,要压的只有两件 —— 代码底色
 /// (卡片本身已是代码底,库默认再叠一层 `muted` = 双底)与代码字号行高。
-fn code_view_style() -> gpui_kit::base::text::TextViewStyle {
+fn code_view_style(cx: &App) -> gpui_kit::base::text::TextViewStyle {
     gpui_kit::base::text::TextViewStyle::default()
-        .with_foreground(crate::kits::theme::LABEL_2().into())
-        .with_code_background(crate::kits::theme::TRANSPARENT().into())
+        .with_foreground(crate::kits::theme::label_2(cx).into())
+        .with_code_background(crate::kits::theme::TRANSPARENT.into())
         .with_code_block(
             StyleRefinement::default()
                 .text_size(px(13.))
                 .line_height(relative(1.5)),
         )
-        .with_dark(crate::kits::theme::is_dark())
+        .with_dark(crate::kits::theme::is_dark(cx))
 }
 
 /// 驱动结果
@@ -193,6 +200,7 @@ impl TvStreamRegistry {
         key: &str,
         fallback_text: &str,
         compose: impl FnOnce(TextView) -> TextView,
+        cx: &App,
     ) -> gpui_kit::AnyElement {
         let view = match self.map.get(key) {
             Some((state, _, _)) => compose(TextView::new(state)),
@@ -201,7 +209,7 @@ impl TvStreamRegistry {
                 fallback_text,
             )),
         };
-        styled_view(view.style(view_style()))
+        styled_view(view.style(view_style(cx)))
     }
 
     /// 会话切换清理(state 随旧会话焚毁,重开重解析一次)
@@ -254,7 +262,7 @@ mod tests {
             fn render(
                 &mut self,
                 _: &mut Window,
-                _: &mut gpui_kit::Context<Self>,
+                _cx: &mut gpui_kit::Context<Self>,
             ) -> impl IntoElement {
                 let slot = self.0.clone();
                 div().size_full().child(
@@ -297,7 +305,7 @@ mod tests {
             fn render(
                 &mut self,
                 _: &mut Window,
-                _: &mut gpui_kit::Context<Self>,
+                cx: &mut gpui_kit::Context<Self>,
             ) -> impl IntoElement {
                 let items: Vec<_> = (0..200)
                     .map(|ix| {
@@ -308,6 +316,7 @@ mod tests {
                             .child(tv_static(
                                 SharedString::from(format!("tv-{ix}")),
                                 &format!("第 {ix} 条:正文段落,包含 **加粗** 与 `code`。\n"),
+                                cx,
                             ))
                     })
                     .collect();
@@ -352,10 +361,10 @@ mod tests {
             fn render(
                 &mut self,
                 _: &mut Window,
-                _: &mut gpui_kit::Context<Self>,
+                _cx: &mut gpui_kit::Context<Self>,
             ) -> impl IntoElement {
                 let state = self.list.clone();
-                div().size_full().child(gpui_kit::list(state, |ix, _window, _cx| {
+                div().size_full().child(gpui_kit::list(state, |ix, _window, cx| {
                     div()
                         .id(SharedString::from(format!("tvl-{ix}")))
                         .debug_selector(move || format!("tv-list-{ix}"))
@@ -365,6 +374,7 @@ mod tests {
                             &format!(
                                 "## 标题 {ix}\n\n段落一行,包含列表:\n\n- 项 A\n- 项 B\n\n```rust\nfn f{ix}() {{}}\n```\n"
                             ),
+                            cx,
                         ))
                         .into_any_element()
                 }))
@@ -404,7 +414,7 @@ mod tests {
             fn render(
                 &mut self,
                 _: &mut Window,
-                _: &mut gpui_kit::Context<Self>,
+                cx: &mut gpui_kit::Context<Self>,
             ) -> impl IntoElement {
                 div()
                     .w(px(400.))
@@ -414,14 +424,14 @@ mod tests {
                     .child(
                         div()
                             .debug_selector(|| "tv-probe-13".to_string())
-                            .child(tv_static("probe-13", LIST)),
+                            .child(tv_static("probe-13", LIST, cx)),
                     )
                     .child(
                         div()
                             .debug_selector(|| "tv-probe-16".to_string())
                             .text_size(px(16.))
                             .line_height(relative(1.75))
-                            .child(TextView::markdown("probe-16", LIST).style(view_style())),
+                            .child(TextView::markdown("probe-16", LIST).style(view_style(cx))),
                     )
             }
         }
@@ -457,7 +467,7 @@ mod tests {
             fn render(
                 &mut self,
                 _: &mut Window,
-                _: &mut gpui_kit::Context<Self>,
+                cx: &mut gpui_kit::Context<Self>,
             ) -> impl IntoElement {
                 div()
                     .w(px(430.))
@@ -469,14 +479,14 @@ mod tests {
                             .debug_selector(|| "tv-chip-13".to_string())
                             .text_size(px(13.))
                             .line_height(relative(1.75))
-                            .child(TextView::markdown("chip-13", CHIP).style(view_style())),
+                            .child(TextView::markdown("chip-13", CHIP).style(view_style(cx))),
                     )
                     .child(
                         div()
                             .debug_selector(|| "tv-chip-16".to_string())
                             .text_size(px(16.))
                             .line_height(relative(1.75))
-                            .child(TextView::markdown("chip-16", CHIP).style(view_style())),
+                            .child(TextView::markdown("chip-16", CHIP).style(view_style(cx))),
                     )
             }
         }
@@ -514,7 +524,7 @@ mod tests {
             fn render(
                 &mut self,
                 _: &mut Window,
-                _: &mut gpui_kit::Context<Self>,
+                cx: &mut gpui_kit::Context<Self>,
             ) -> impl IntoElement {
                 div()
                     .id("tv-stream-scroll")
@@ -526,14 +536,14 @@ mod tests {
                             .id("tv-stream-inc")
                             .debug_selector(|| "tv-stream-inc".to_string())
                             .w(px(400.))
-                            .child(self.reg.view_composed("k", "", |v| v)),
+                            .child(self.reg.view_composed("k", "", |v| v, cx)),
                     )
                     .child(
                         div()
                             .id("tv-stream-full")
                             .debug_selector(|| "tv-stream-full".to_string())
                             .w(px(400.))
-                            .child(tv_static("full", Self::TARGET)),
+                            .child(tv_static("full", Self::TARGET, cx)),
                     )
             }
         }
@@ -610,7 +620,7 @@ mod tests {
             fn render(
                 &mut self,
                 _: &mut Window,
-                _: &mut gpui_kit::Context<Self>,
+                cx: &mut gpui_kit::Context<Self>,
             ) -> impl IntoElement {
                 div()
                     .id("tv-fence-scroll")
@@ -622,7 +632,7 @@ mod tests {
                             .id("tv-fence-inc")
                             .debug_selector(|| "tv-fence-inc".to_string())
                             .w(px(400.))
-                            .child(self.reg.view_composed("f", "", |v| v)),
+                            .child(self.reg.view_composed("f", "", |v| v, cx)),
                     )
             }
         }

@@ -24,12 +24,12 @@ use crate::kits::i18n::t;
 
 /// 状态点:running=活动蓝,completed=done 绿,
 /// failed=红,killed=黄
-fn state_dot(dot: &'static str) -> gpui_kit::AnyElement {
+fn state_dot(dot: &'static str, cx: &App) -> gpui_kit::AnyElement {
     let color = match dot {
-        "running" => theme::ONGOING(),
-        "failed" => theme::DANGER(),
-        "killed" => theme::WARN(),
-        _ => theme::SUCCESS(),
+        "running" => theme::ongoing(cx),
+        "failed" => theme::danger(cx),
+        "killed" => theme::warning(cx),
+        _ => theme::success(cx),
     };
     div()
         .debug_selector(move || format!("lineage-dot-{dot}"))
@@ -118,18 +118,18 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
         .flex()
         .items_center()
         .gap(px(8.))
-        .child(fixed(head_icon, 14.).text_color(theme::LABEL_2()))
+        .child(fixed(head_icon, 14.).text_color(theme::label_2(cx)))
         .child(
             div()
                 .text_size(px(12.))
-                .text_color(theme::LABEL_2())
+                .text_color(theme::label_2(cx))
                 .child(head_title),
         )
         .child(
             div()
                 .flex_1()
                 .text_size(px(11.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(if running_n > 0 {
                     t!("misc.running_n", n = running_n).into_owned()
                 } else {
@@ -149,13 +149,13 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                 .gap(px(4.))
                 .rounded(px(10.))
                 .border_1()
-                .border_color(theme::BRAND())
+                .border_color(theme::brand(cx))
                 .px(px(8.))
                 .h(px(20.))
                 .cursor_pointer()
-                .hover(|st| st.bg(theme::DOCK()))
+                .hover(|st| st.bg(theme::dock(cx)))
                 .text_size(px(11.))
-                .text_color(theme::BRAND())
+                .text_color(theme::brand(cx))
                 .on_click(move |_, _, cx| {
                     let id = main_id.clone();
                     s_main.update(cx, |st, cx| st.open_session(&id, cx));
@@ -187,23 +187,23 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                 .px(px(10.))
                 .py(px(4.))
                 .bg(if viewing {
-                    theme::DOCK()
+                    theme::dock(cx)
                 } else {
-                    theme::TRANSPARENT()
+                    theme::TRANSPARENT
                 })
                 // shell job 行非会话,无跳转(点击不响应,不显手型)
                 .when(chip.kind != "shell", |el| {
                     el.cursor_pointer()
-                        .hover(|st| st.bg(theme::DOCK()))
+                        .hover(|st| st.bg(theme::dock(cx)))
                         .on_click(move |_, _, cx| {
                             let id = chip_id.clone();
                             s_chip.update(cx, |st, cx| st.open_session(&id, cx));
                         })
                 })
-                .when_some(chip.dot, |el, dot| el.child(state_dot(dot)))
+                .when_some(chip.dot, |el, dot| el.child(state_dot(dot, cx)))
                 // shell 行缀公文包图标:与子代理行同列时可辨
                 .when(chip.kind == "shell", |el| {
-                    el.child(fixed(LiumaIcon::Briefcase, 12.).text_color(theme::LABEL_2()))
+                    el.child(fixed(LiumaIcon::Briefcase, 12.).text_color(theme::label_2(cx)))
                 })
                 .child(
                     div()
@@ -211,9 +211,9 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                         .flex_1()
                         .text_size(px(12.))
                         .text_color(if viewing {
-                            theme::LABEL()
+                            theme::label(cx)
                         } else {
-                            theme::LABEL_2()
+                            theme::label_2(cx)
                         })
                         .truncate()
                         .child(chip.label.clone()),
@@ -223,13 +223,14 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                         div()
                             .flex_shrink_0()
                             .text_size(px(11.))
-                            .text_color(theme::CAPTION())
+                            .text_color(theme::caption(cx))
                             .child(timing),
                     )
                 })
                 .when(viewing, |el| {
                     el.child(
-                        fixed(gpui_kit::component::IconName::Check, 12.).text_color(theme::BRAND()),
+                        fixed(gpui_kit::component::IconName::Check, 12.)
+                            .text_color(theme::brand(cx)),
                     )
                 })
                 // 运行中行尾打断钮(自绘方块与 composer 停止钮同款
@@ -252,11 +253,11 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                             .px(px(8.))
                             .rounded(px(10.))
                             .border_1()
-                            .border_color(theme::BORDER_2())
+                            .border_color(theme::border_2(cx))
                             .cursor_pointer()
-                            .hover(|st| st.bg(theme::DANGER()).border_color(theme::DANGER()))
+                            .hover(|st| st.bg(theme::danger(cx)).border_color(theme::danger(cx)))
                             .text_size(px(11.))
-                            .text_color(theme::LABEL_2())
+                            .text_color(theme::label_2(cx))
                             .child(t!("misc.interrupt"))
                             .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
                                 cx.stop_propagation()
@@ -281,5 +282,6 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
         move |open, _, cx| {
             s.update(cx, |st, cx| st.set_task_bar_open(open, cx));
         },
+        cx,
     ))
 }

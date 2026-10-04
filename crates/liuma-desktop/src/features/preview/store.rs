@@ -643,6 +643,7 @@ impl AppStore {
                 &format!("preview-code-{}", rel.display()),
                 lang.as_deref(),
                 &refs,
+                crate::kits::theme::is_dark(cx),
             ) {
                 let Some(bucket) = self.preview.buckets.get_mut(rel) else {
                     return;
@@ -662,18 +663,23 @@ impl AppStore {
         let key = format!("preview-code-{}", rel.display());
         let store = cx.entity().clone();
         let rel_done = rel.clone();
+        let task_dark = crate::kits::theme::is_dark(cx);
         cx.spawn(async move |_this, cx| {
             let text = lines.join("\n");
             let task_lines = lines;
             let task_lang = lang;
             let task_key = key;
             let compute_lang = task_lang.clone();
-            let computed =
-                cx.background_executor()
-                    .spawn(async move {
-                        hl::code_spans(compute_lang.as_deref().unwrap_or_default(), &text)
-                    })
-                    .await;
+            let computed = cx
+                .background_executor()
+                .spawn(async move {
+                    hl::code_spans(
+                        compute_lang.as_deref().unwrap_or_default(),
+                        &text,
+                        task_dark,
+                    )
+                })
+                .await;
             let refs: Vec<&str> = task_lines.iter().map(String::as_str).collect();
             store.update(cx, |s, cx| {
                 let Some(bucket) = s.preview.buckets.get_mut(&rel_done) else {
@@ -685,7 +691,13 @@ impl AppStore {
                 bucket.highlight_pending = false;
                 if let Some(spans) = computed {
                     let spans = Arc::new(spans);
-                    hl::cache_spans(&task_key, task_lang.as_deref(), &refs, spans.clone());
+                    hl::cache_spans(
+                        &task_key,
+                        task_lang.as_deref(),
+                        &refs,
+                        spans.clone(),
+                        crate::kits::theme::is_dark(cx),
+                    );
                     bucket.spans = Some(spans);
                 }
                 // None = 两路引擎都无此语法:纯色渲染收场(照纯文本语义)

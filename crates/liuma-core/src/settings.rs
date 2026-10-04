@@ -339,6 +339,14 @@ pub struct SettingsFile {
     /// 外观偏好(light / dark / system)
     #[serde(default = "default_appearance")]
     pub appearance: String,
+    /// 主题偏好(浅盘/深盘各记一个 registry 主题名;空串 = Liuma
+    /// 默认主题。名单只存在于桌面侧加载后,此处不校验,切换入口
+    /// 在桌面侧校验)
+    #[serde(default)]
+    pub theme_light: String,
+    /// 深盘主题名(同 [`Self::theme_light`])
+    #[serde(default)]
+    pub theme_dark: String,
     /// MCP server 注册表(enabled 才会在 attach 时桥接;缺失 = 空)
     #[serde(default)]
     pub mcp_servers: Vec<McpServerEntry>,
@@ -608,6 +616,8 @@ impl Default for SettingsFile {
             busy_enter: default_busy_enter(),
             language: default_language(),
             appearance: default_appearance(),
+            theme_light: String::new(),
+            theme_dark: String::new(),
             mcp_servers: Vec::new(),
             hook_bridges: Vec::new(),
             decision: DecisionEntry::default(),
@@ -1142,6 +1152,33 @@ mod tests {
         assert_eq!(bridges.len(), 1, "hookBridges 应随文件持久");
         assert_eq!(bridges[0].id, "cc");
         assert_eq!(bridges[0].dialect, "claude-code");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn theme_pref_settings_roundtrip_persists() {
+        // 主题偏好(两盘主题名)经 SettingsStore 落盘 → 重读持久;
+        // 旧格式(无 theme_* 字段)= 空串回落 Liuma 默认
+        let dir = std::env::temp_dir().join(format!(
+            "liuma-settings-theme-{}-{}",
+            std::process::id(),
+            Uuid::now_v7().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        {
+            let store = SettingsStore::open(path.clone());
+            store
+                .update(|s| {
+                    s.theme_light = "Catppuccin Latte".into();
+                    s.theme_dark = "Catppuccin Mocha".into();
+                })
+                .unwrap();
+        }
+        let store2 = SettingsStore::open(path);
+        let s = store2.read();
+        assert_eq!(s.theme_light, "Catppuccin Latte");
+        assert_eq!(s.theme_dark, "Catppuccin Mocha");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

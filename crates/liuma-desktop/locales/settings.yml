@@ -104,6 +104,22 @@ settings:
     zh-CN: "跟随系统"
     en: "System"
 
+  theme_light:
+    zh-CN: "浅色盘主题"
+    en: "Light-mode theme"
+
+  theme_dark:
+    zh-CN: "深色盘主题"
+    en: "Dark-mode theme"
+
+  theme_desc:
+    zh-CN: "随外观档生效的配色主题"
+    en: "Color theme applied with the appearance mode"
+
+  theme_unknown:
+    zh-CN: "未知主题:%{name}"
+    en: "Unknown theme: %{name}"
+
   registry_empty:
     zh-CN: "注册表为空——「添加 Provider」,或重启后恢复内置默认。"
     en: "Registry is empty — use “Add provider”, or restart to restore built-ins."

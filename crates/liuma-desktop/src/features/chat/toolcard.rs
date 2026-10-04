@@ -5,11 +5,11 @@
 //! 通用 IN/OUT 卡(防御姿态)。UI 只 switch
 //! `card`,从不 switch 工具名。
 //!
-//! 家族几何:rounded 12、bg `theme::CODE()`(#1b1b1c)、
+//! 家族几何:rounded 12、bg `theme::code(cx)`(#1b1b1c)、
 //! 聊天位 `ml(4)`、Menlo 正文 13/22、`pre` 不软换行(内层列无定宽 →
 //! MaxContent 单行测宽,外层横向滚动)、复制钮 label-secondary
 //! 「复制→复制成功」同色、head/tail cap 8(4 头 + 4 尾 +「… 其余 N 行」
-//! /「收起」)。read/search 横幅 bg `theme::CARD()`(bluish-850 banner
+//! /「收起」)。read/search 横幅 bg `theme::card(cx)`(bluish-850 banner
 //! token);diff 无横幅(浮动复制钮)。
 
 use gpui_kit::component::StyledExt;
@@ -214,6 +214,7 @@ pub(crate) fn render_read(
             .iter()
             .map(|(_, t)| t.as_str())
             .collect::<Vec<_>>(),
+        theme::is_dark(cx),
     );
 
     let mut body_rows: Vec<gpui_kit::AnyElement> = card
@@ -221,7 +222,7 @@ pub(crate) fn render_read(
         .iter()
         .enumerate()
         .take(if ht.capped { ht.head } else { usize::MAX })
-        .map(|(i, (n, text))| read_line(*n, text, hl.as_ref().map(|h| h[i].as_slice())))
+        .map(|(i, (n, text))| read_line(*n, text, hl.as_ref().map(|h| h[i].as_slice()), cx))
         .collect();
     // 展开/收起行在 hidden>0 时**恒显示**(无条件渲染;
     // 展开后文案切「收起」,不随展开消失)。展开(capped=false)时按钮独立于
@@ -236,7 +237,7 @@ pub(crate) fn render_read(
                 .enumerate()
                 .map(|(i, (n, text))| {
                     let ix0 = card.lines.len() - ht.tail + i;
-                    read_line(*n, text, hl.as_ref().map(|h| h[ix0].as_slice()))
+                    read_line(*n, text, hl.as_ref().map(|h| h[ix0].as_slice()), cx)
                 }),
         );
     }
@@ -247,7 +248,7 @@ pub(crate) fn render_read(
         .v_flex()
         .ml(px(4.))
         .rounded(px(12.))
-        .bg(theme::CODE())
+        .bg(theme::code(cx))
         .overflow_hidden()
         .font_family("Menlo")
         .text_size(px(13.))
@@ -261,7 +262,7 @@ pub(crate) fn render_read(
                 .gap(px(12.))
                 .px(px(14.))
                 .py(px(9.))
-                .bg(theme::CARD())
+                .bg(theme::card(cx))
                 .child(
                     div()
                         .min_w(px(0.))
@@ -269,7 +270,7 @@ pub(crate) fn render_read(
                         .truncate()
                         .text_size(px(12.))
                         .line_height(px(18.))
-                        .text_color(theme::LABEL())
+                        .text_color(theme::label(cx))
                         .child(relativize(ws_root, &card.path)),
                 )
                 .when(windowed, |el| {
@@ -278,7 +279,7 @@ pub(crate) fn render_read(
                             .flex_shrink_0()
                             .text_size(px(13.))
                             .line_height(px(18.))
-                            .text_color(theme::LABEL_3())
+                            .text_color(theme::label_3(cx))
                             .child(t!(
                                 "chat.show_rows",
                                 shown = card.lines.len(),
@@ -291,7 +292,7 @@ pub(crate) fn render_read(
                         .flex_shrink_0()
                         .text_size(px(12.))
                         .line_height(px(18.))
-                        .text_color(theme::LABEL_3())
+                        .text_color(theme::label_3(cx))
                         .child(l.to_string())
                 }))
                 // 空窗口无复制钮(复制会以空串覆写剪贴板)
@@ -318,7 +319,7 @@ pub(crate) fn render_read(
 
 /// 一行读取窗口:行号槽(固定 48px 右对齐)+ 内容行(高亮 spans
 /// 横排不折行;无高亮回退单色文本)
-fn read_line(number: u64, text: &str, spans: Option<&[Span]>) -> gpui_kit::AnyElement {
+fn read_line(number: u64, text: &str, spans: Option<&[Span]>, cx: &App) -> gpui_kit::AnyElement {
     let content = match spans {
         Some(spans) if !spans.is_empty() => {
             // 横排 span(div 默认列向会竖排;pre 不折行 → 行超宽由外层横滚)
@@ -328,7 +329,7 @@ fn read_line(number: u64, text: &str, spans: Option<&[Span]>) -> gpui_kit::AnyEl
             }
             el
         }
-        _ => div().text_color(theme::LABEL()).child(text.to_string()),
+        _ => div().text_color(theme::label(cx)).child(text.to_string()),
     };
     div()
         .flex()
@@ -340,7 +341,7 @@ fn read_line(number: u64, text: &str, spans: Option<&[Span]>) -> gpui_kit::AnyEl
                 .w(px(48.))
                 .pr(px(14.))
                 .text_right()
-                .text_color(theme::LABEL_3())
+                .text_color(theme::label_3(cx))
                 .child(number.to_string()),
         )
         .child(content)
@@ -365,8 +366,8 @@ fn read_expand_row(
         .min_h(px(22.))
         .line_height(px(22.))
         .cursor_pointer()
-        .text_color(theme::LABEL_3())
-        .hover(|st| st.text_color(theme::LABEL_2()))
+        .text_color(theme::label_3(cx))
+        .hover(|st| st.text_color(theme::label_2(cx)))
         .child(if expanded {
             t!("common.collapse").to_string()
         } else if hidden == 1 {
@@ -520,7 +521,7 @@ pub(crate) fn render_search(
         .v_flex()
         .ml(px(4.))
         .rounded(px(12.))
-        .bg(theme::CODE())
+        .bg(theme::code(cx))
         .overflow_hidden()
         .font_family("Menlo")
         .text_size(px(13.))
@@ -534,7 +535,7 @@ pub(crate) fn render_search(
                 .gap(px(12.))
                 .px(px(14.))
                 .py(px(9.))
-                .bg(theme::CARD())
+                .bg(theme::card(cx))
                 .child(
                     div()
                         .min_w(px(0.))
@@ -542,7 +543,7 @@ pub(crate) fn render_search(
                         .truncate()
                         .text_size(px(13.))
                         .line_height(px(18.))
-                        .text_color(theme::LABEL_2())
+                        .text_color(theme::label_2(cx))
                         .child(summary),
                 )
                 .when(!empty, |el| {
@@ -560,7 +561,7 @@ pub(crate) fn render_search(
             div()
                 .px(px(14.))
                 .py(px(12.))
-                .text_color(theme::LABEL_3())
+                .text_color(theme::label_3(cx))
                 .child(t!("chat.no_results")),
         );
     } else {
@@ -574,12 +575,16 @@ pub(crate) fn render_search(
                 .child(
                     div().v_flex().children(
                         head.iter()
-                            .map(|r| search_row_el(store, ix, key, r))
+                            .map(|r| search_row_el(store, ix, key, r, cx))
                             .chain(std::iter::once(search_expand_row(
                                 store, cx, ix, key, ht.hidden,
                             )))
-                            .chain(tail_header.iter().map(|r| search_row_el(store, ix, key, r)))
-                            .chain(tail.iter().map(|r| search_row_el(store, ix, key, r)))
+                            .chain(
+                                tail_header
+                                    .iter()
+                                    .map(|r| search_row_el(store, ix, key, r, cx)),
+                            )
+                            .chain(tail.iter().map(|r| search_row_el(store, ix, key, r, cx)))
                             .collect::<Vec<_>>(),
                     ),
                 ),
@@ -594,6 +599,7 @@ fn search_row_el(
     ix: usize,
     key: &str,
     row: &SearchRow,
+    cx: &App,
 ) -> gpui_kit::AnyElement {
     match row {
         SearchRow::File { path, count, group } => {
@@ -614,13 +620,13 @@ fn search_row_el(
                     div()
                         .min_w(px(0.))
                         .font_weight(gpui_kit::FontWeight::BOLD)
-                        .text_color(theme::LABEL())
+                        .text_color(theme::label(cx))
                         .child(path.clone()),
                 )
                 .child(
                     div()
                         .flex_shrink_0()
-                        .text_color(theme::LABEL_3())
+                        .text_color(theme::label_3(cx))
                         .child(count.to_string()),
                 )
                 .on_click(move |_, _, cx| {
@@ -637,17 +643,17 @@ fn search_row_el(
             .child(
                 div()
                     .flex_shrink_0()
-                    .text_color(theme::LABEL_3())
+                    .text_color(theme::label_3(cx))
                     .child(format!("{number}: ")),
             )
-            .child(div().text_color(theme::LABEL()).child(line.clone()))
+            .child(div().text_color(theme::label(cx)).child(line.clone()))
             .into_any_element(),
         SearchRow::Path(path) => div()
             .flex()
             .min_h(px(22.))
             .line_height(px(22.))
             .pl(px(14.))
-            .text_color(theme::LABEL())
+            .text_color(theme::label(cx))
             .child(path.clone())
             .into_any_element(),
     }
@@ -675,8 +681,8 @@ fn search_expand_row(
         .min_h(px(22.))
         .line_height(px(22.))
         .cursor_pointer()
-        .text_color(theme::LABEL_3())
-        .hover(|st| st.text_color(theme::LABEL_2()))
+        .text_color(theme::label_3(cx))
+        .hover(|st| st.text_color(theme::label_2(cx)))
         .child(if expanded {
             t!("common.collapse").to_string()
         } else if hidden == 1 {
@@ -754,7 +760,7 @@ pub(crate) fn render_diff(
     if rows.is_empty() {
         return div().into_any_element();
     }
-    attach_diff_spans(key, &segs, &mut rows);
+    attach_diff_spans(key, &segs, &mut rows, theme::is_dark(cx));
 
     let ht = head_tail(rows.len(), CHAT_CARD_MAX_LINES, expanded);
     let head_end = if ht.capped { ht.head } else { rows.len() };
@@ -776,7 +782,7 @@ pub(crate) fn render_diff(
         .v_flex()
         .ml(px(4.))
         .rounded(px(12.))
-        .bg(theme::CODE())
+        .bg(theme::code(cx))
         .overflow_hidden()
         .font_family("Menlo")
         .text_size(px(13.))
@@ -791,14 +797,14 @@ pub(crate) fn render_diff(
                     div().v_flex().children(
                         rows[..head_end]
                             .iter()
-                            .map(diff_row_el)
+                            .map(|r| diff_row_el(r, cx))
                             .chain(std::iter::once(diff_expand_row(
                                 store, cx, ix, key, ht.hidden,
                             )))
                             .chain(
                                 rows[rows.len() - if ht.capped { ht.tail } else { 0 }..]
                                     .iter()
-                                    .map(diff_row_el),
+                                    .map(|r| diff_row_el(r, cx)),
                             )
                             .collect::<Vec<_>>(),
                     ),
@@ -809,7 +815,7 @@ pub(crate) fn render_diff(
             div()
                 .px(px(14.))
                 .pb(px(12.))
-                .text_color(theme::LABEL_3())
+                .text_color(theme::label_3(cx))
                 // 复数为手动键对(库无 CLDR):中文不随数变形,英文
                 // file/files 分列——旧的 `%{s}` 后缀把英文复数形态漏进了中文档
                 .child(if files == 1 {
@@ -851,7 +857,12 @@ pub(crate) fn render_diff(
 /// find_syntax_by_token 对扩展名亦认,未知名/无后缀回退纯文本——spans
 /// 恒 None),结果写回对应 row。key = 卡 key(`{key}·diff·{path}`),
 /// 缓存随内容哈希,重渲零重算。
-fn attach_diff_spans(key: &str, segs: &[(&str, Vec<(usize, String)>)], rows: &mut [DiffRow]) {
+fn attach_diff_spans(
+    key: &str,
+    segs: &[(&str, Vec<(usize, String)>)],
+    rows: &mut [DiffRow],
+    dark: bool,
+) {
     for (path, seg) in segs {
         if seg.is_empty() {
             continue;
@@ -867,6 +878,7 @@ fn attach_diff_spans(key: &str, segs: &[(&str, Vec<(usize, String)>)], rows: &mu
             &format!("{key}·diff·{path}"),
             Some(lang),
             &texts,
+            dark,
         ) else {
             continue;
         };
@@ -881,21 +893,21 @@ fn attach_diff_spans(key: &str, segs: &[(&str, Vec<(usize, String)>)], rows: &mu
 
 /// 一条 diff 行(Path 粗体 pr 56;Del 红 `+ Add 绿——前缀符号恒语义色,
 /// 内容段走高亮 spans(read 卡同款渲染),未知名回退单色;Gap ⋯)
-fn diff_row_el(row: &DiffRow) -> gpui_kit::AnyElement {
+fn diff_row_el(row: &DiffRow, cx: &App) -> gpui_kit::AnyElement {
     let el = match row {
         DiffRow::Path(p) => div()
             .min_h(px(22.))
             .line_height(px(22.))
             .pr(px(56.))
             .font_weight(gpui_kit::FontWeight::BOLD)
-            .text_color(theme::LABEL())
+            .text_color(theme::label(cx))
             .child(p.clone()),
-        DiffRow::Del(t, spans) => diff_code_line("-", theme::DANGER(), t, spans.as_deref()),
-        DiffRow::Add(t, spans) => diff_code_line("+", theme::SUCCESS(), t, spans.as_deref()),
+        DiffRow::Del(t, spans) => diff_code_line("-", theme::danger(cx), t, spans.as_deref(), cx),
+        DiffRow::Add(t, spans) => diff_code_line("+", theme::success(cx), t, spans.as_deref(), cx),
         DiffRow::Gap => div()
             .min_h(px(22.))
             .line_height(px(22.))
-            .text_color(theme::LABEL_3())
+            .text_color(theme::label_3(cx))
             .child("⋯"),
     };
     el.into_any_element()
@@ -908,6 +920,7 @@ fn diff_code_line(
     sign_color: gpui_kit::Rgba,
     text: &str,
     spans: Option<&[Span]>,
+    cx: &App,
 ) -> gpui_kit::Div {
     let content = match spans {
         Some(spans) if !spans.is_empty() => {
@@ -917,7 +930,7 @@ fn diff_code_line(
             }
             el
         }
-        _ => div().text_color(theme::LABEL()).child(text.to_string()),
+        _ => div().text_color(theme::label(cx)).child(text.to_string()),
     };
     div()
         .flex()
@@ -952,8 +965,8 @@ fn diff_expand_row(
         .min_h(px(22.))
         .line_height(px(22.))
         .cursor_pointer()
-        .text_color(theme::LABEL_3())
-        .hover(|st| st.text_color(theme::LABEL_2()))
+        .text_color(theme::label_3(cx))
+        .hover(|st| st.text_color(theme::label_2(cx)))
         .child(if expanded {
             t!("common.collapse").to_string()
         } else if hidden == 1 {
@@ -1013,8 +1026,8 @@ fn copy_button(
         .cursor_pointer()
         .text_size(px(13.))
         .line_height(px(18.))
-        .text_color(theme::LABEL_2())
-        .hover(|st| st.text_color(theme::LABEL()))
+        .text_color(theme::label_2(cx))
+        .hover(|st| st.text_color(theme::label(cx)))
         .child(if copied {
             t!("common.copied")
         } else {
@@ -1058,12 +1071,12 @@ pub(crate) fn render_skill(
         return div()
             .ml(px(4.))
             .rounded(px(12.))
-            .bg(theme::CODE())
+            .bg(theme::code(cx))
             .px(px(14.))
             .py(px(12.))
             .text_size(px(13.))
             .line_height(px(22.))
-            .text_color(theme::DANGER())
+            .text_color(theme::danger(cx))
             .child(first.to_string())
             .into_any_element();
     }
@@ -1071,7 +1084,7 @@ pub(crate) fn render_skill(
         return div()
             .ml(px(4.))
             .text_size(px(13.))
-            .text_color(theme::LABEL_3())
+            .text_color(theme::label_3(cx))
             .child(t!("chat.skill_loading"))
             .into_any_element();
     };
@@ -1089,7 +1102,7 @@ pub(crate) fn render_skill(
         .v_flex()
         .ml(px(4.))
         .rounded(px(12.))
-        .bg(theme::CODE())
+        .bg(theme::code(cx))
         .overflow_hidden()
         .font_family("Menlo")
         .text_size(px(13.))
@@ -1103,7 +1116,7 @@ pub(crate) fn render_skill(
                 .gap(px(12.))
                 .px(px(14.))
                 .py(px(9.))
-                .bg(theme::CARD())
+                .bg(theme::card(cx))
                 .child(
                     div()
                         .min_w(px(0.))
@@ -1111,7 +1124,7 @@ pub(crate) fn render_skill(
                         .truncate()
                         .text_size(px(12.))
                         .line_height(px(18.))
-                        .text_color(theme::LABEL())
+                        .text_color(theme::label(cx))
                         .child(t!("chat.skill_instructions")),
                 )
                 .child(copy_button(
@@ -1137,7 +1150,7 @@ pub(crate) fn render_skill(
                                     .pl(px(14.))
                                     .min_h(px(22.))
                                     .line_height(px(22.))
-                                    .text_color(theme::LABEL())
+                                    .text_color(theme::label(cx))
                                     .child(l.to_string())
                                     .into_any_element()
                             })
@@ -1175,8 +1188,8 @@ fn skill_expand_row(
         .min_h(px(22.))
         .line_height(px(22.))
         .cursor_pointer()
-        .text_color(theme::LABEL_3())
-        .hover(|st| st.text_color(theme::LABEL_2()))
+        .text_color(theme::label_3(cx))
+        .hover(|st| st.text_color(theme::label_2(cx)))
         .child(if expanded {
             t!("common.collapse").to_string()
         } else if hidden == 1 {
@@ -1312,7 +1325,7 @@ mod tests {
                 (4, "}".to_string()),
             ],
         )];
-        attach_diff_spans("k", &segs, &mut rows);
+        attach_diff_spans("k", &segs, &mut rows, true);
         // rust 后缀命中语法:代码行应回填非空 spans(字符串行应有样式段)
         for row in rows.iter().skip(1) {
             let ok = matches!(row, DiffRow::Del(_, Some(_)) | DiffRow::Add(_, Some(_)));
@@ -1332,7 +1345,7 @@ mod tests {
             DiffRow::Add("plain text".into(), None),
         ];
         let segs2 = vec![("README", vec![(1, "plain text".to_string())])];
-        attach_diff_spans("k2", &segs2, &mut plain);
+        attach_diff_spans("k2", &segs2, &mut plain, true);
         assert!(
             matches!(&plain[1], DiffRow::Add(_, None)),
             "无后缀文件应回退纯文本"

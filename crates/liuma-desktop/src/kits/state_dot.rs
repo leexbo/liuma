@@ -5,7 +5,7 @@
 //! 无法逐元素动画),配合 [`AnimationExt::with_animation`] 声明式逐帧驱动
 //! opacity;每格相位错开 1/8 周期。
 
-use gpui_kit::{Animation, AnimationExt as _, IntoElement, ParentElement, Styled, div, px};
+use gpui_kit::{Animation, AnimationExt as _, App, IntoElement, ParentElement, Styled, div, px};
 use std::time::Duration;
 
 use crate::kits::theme;
@@ -38,20 +38,20 @@ fn phase_opacity(phase: f32) -> f32 {
 
 /// 进行中状态点:`size` 为外径(px;点阵按 size/10 等比缩放)。
 /// 自动逐帧追逐,元素 drop 即停(声明式动画无泄漏)。
-pub fn ongoing_dot(size: f32) -> impl IntoElement {
+pub fn ongoing_dot(size: f32, cx: &App) -> impl IntoElement {
     let scale = size / 10.0;
     let cell = px(2.0 * scale);
     div()
         .relative()
         .size(px(size))
-        .children(MATRIX_CELLS.into_iter().enumerate().map(|(i, (cx, cy))| {
+        .children(MATRIX_CELLS.into_iter().enumerate().map(|(i, (x, y))| {
             let offset = i as f32 / MATRIX_CELLS.len() as f32;
             div()
                 .absolute()
-                .left(px(cx * scale))
-                .top(px(cy * scale))
+                .left(px(x * scale))
+                .top(px(y * scale))
                 .size(cell)
-                .bg(theme::ONGOING())
+                .bg(theme::ongoing(cx))
                 .with_animation(
                     ("liuma-state-dot-chase", i),
                     Animation::new(Duration::from_secs(1)).repeat(),

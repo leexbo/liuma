@@ -120,6 +120,9 @@ EXEMPT_TEXT = {
     "General", "Models", "Mcp", "Hooks", "Decision", "ArchivedChats", "About",
     "system-ui, sans-serif", "Helvetica", "Times New Roman", "Menlo",
     "PingFang SC", "Step",
+    # registry 主题名(liuma.json 内嵌两盘的标识;官方主题名同属线上
+    # 数据,下拉原文名直显,不进文案文件)
+    "Liuma Dark", "Liuma Light",
 }
 # 规则 2 豁免:形态(全大写缩写/技术标识符/路径/点分键)
 EXEMPT_SHAPES = [

@@ -116,6 +116,10 @@ pub enum PrefMenuKind {
     Language,
     /// 繁忙时 Enter 键行为
     BusyEnter,
+    /// 浅盘主题
+    ThemeLight,
+    /// 深盘主题
+    ThemeDark,
 }
 
 /// 设置功能切片状态(页路由/快照/onboarding/provider 编辑器与删除确认/偏好下拉)。
@@ -240,6 +244,11 @@ pub(crate) struct SettingsStore {
     pub language_select: Option<Entity<SelectState<Vec<gpui_kit::SharedString>>>>,
     /// 繁忙时 Enter 键行为下拉
     pub busy_enter_select: Option<Entity<SelectState<Vec<gpui_kit::SharedString>>>>,
+    /// 浅盘主题下拉(选项 = registry 主题名,非词典文案,语言换档
+    /// 不重建)
+    pub theme_light_select: Option<Entity<SelectState<Vec<gpui_kit::SharedString>>>>,
+    /// 深盘主题下拉
+    pub theme_dark_select: Option<Entity<SelectState<Vec<gpui_kit::SharedString>>>>,
     /// 偏好下拉构建时刻的 locale id(sync_locale_ui 换档重建判据;
     /// ensure_pref_selects 写入)
     pub selects_lang: &'static str,
@@ -337,6 +346,8 @@ impl Default for SettingsStore {
             permission_select: None,
             language_select: None,
             busy_enter_select: None,
+            theme_light_select: None,
+            theme_dark_select: None,
             selects_lang: i18n::DEFAULT,
             full_access_confirm: None,
             archived: None,

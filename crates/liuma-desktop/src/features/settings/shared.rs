@@ -8,10 +8,10 @@ pub(crate) fn sid(prefix: &str, key: &str) -> gpui_kit::SharedString {
 }
 
 /// 区说明行(13/tertiary)
-pub(crate) fn intro_line(text: impl Into<String>) -> impl IntoElement {
+pub(crate) fn intro_line(text: impl Into<String>, cx: &App) -> impl IntoElement {
     div()
         .text_size(px(14.))
-        .text_color(theme::LABEL_3())
+        .text_color(theme::label_3(cx))
         .child(text.into())
 }
 
@@ -37,6 +37,7 @@ pub(crate) fn field_row(
     sel: &'static str,
     input: &Option<Entity<InputState>>,
     control: FieldControl,
+    cx: &App,
 ) -> impl IntoElement {
     let label = label.into();
     div()
@@ -48,7 +49,7 @@ pub(crate) fn field_row(
                 .w(px(64.))
                 .flex_shrink_0()
                 .text_size(px(11.))
-                .text_color(theme::LABEL_2())
+                .text_color(theme::label_2(cx))
                 .child(label.to_string()),
         )
         .children(input.as_ref().map(|e| {
@@ -67,8 +68,9 @@ pub(crate) fn field_input(
     label: impl Into<gpui_kit::SharedString>,
     sel: &'static str,
     input: &Option<Entity<InputState>>,
+    cx: &App,
 ) -> impl IntoElement {
-    field_row(label, sel, input, |e| Input::new(e).into_any_element())
+    field_row(label, sel, input, |e| Input::new(e).into_any_element(), cx)
 }
 
 /// 数字控件(NumberInput:步进按钮 + 失焦 clamp,区间/步长在
@@ -86,6 +88,7 @@ pub(crate) fn field_number_hinted(
     sel: &'static str,
     input: &Option<Entity<InputState>>,
     hint: impl Into<gpui_kit::SharedString>,
+    cx: &App,
 ) -> impl IntoElement {
     let label = label.into();
     let hint = hint.into();
@@ -98,7 +101,7 @@ pub(crate) fn field_number_hinted(
                 .w(px(64.))
                 .flex_shrink_0()
                 .text_size(px(11.))
-                .text_color(theme::LABEL_2())
+                .text_color(theme::label_2(cx))
                 .child(label.to_string()),
         )
         .children(input.as_ref().map(|e| {
@@ -115,26 +118,26 @@ pub(crate) fn field_number_hinted(
             div()
                 .flex_shrink_0()
                 .text_size(px(11.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(hint.to_string()),
         )
 }
 
 /// 段间分隔线(字段区 / 模型目录 / 计费段之间)
-pub(crate) fn section_divider() -> gpui_kit::AnyElement {
+pub(crate) fn section_divider(cx: &App) -> gpui_kit::AnyElement {
     div()
         .w_full()
         .h(px(1.))
-        .bg(theme::BORDER_2())
+        .bg(theme::border_2(cx))
         .into_any_element()
 }
 
-pub(crate) fn field_label(text: impl Into<gpui_kit::SharedString>) -> impl IntoElement {
+pub(crate) fn field_label(text: impl Into<gpui_kit::SharedString>, cx: &App) -> impl IntoElement {
     let text = text.into();
     div()
         .text_size(px(12.))
         .font_weight(gpui_kit::FontWeight::MEDIUM)
-        .text_color(theme::LABEL_2())
+        .text_color(theme::label_2(cx))
         .child(text.to_string())
 }
 
@@ -142,6 +145,7 @@ pub(crate) fn field_label(text: impl Into<gpui_kit::SharedString>) -> impl IntoE
 pub(crate) fn info_line(
     label: impl Into<gpui_kit::SharedString>,
     value: impl Into<String>,
+    cx: &App,
 ) -> impl IntoElement {
     let label = label.into();
     div()
@@ -153,7 +157,7 @@ pub(crate) fn info_line(
                 .w(px(72.))
                 .flex_shrink_0()
                 .text_size(px(11.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(label.to_string()),
         )
         .child(
@@ -163,21 +167,25 @@ pub(crate) fn info_line(
                 .flex_1()
                 .truncate()
                 .text_size(px(13.))
-                .text_color(theme::LABEL_2())
+                .text_color(theme::label_2(cx))
                 .child(value.into()),
         )
 }
 
 /// 说明行(11 说明号)
-pub(crate) fn caption_line(text: impl Into<String>) -> impl IntoElement {
+pub(crate) fn caption_line(text: impl Into<String>, cx: &App) -> impl IntoElement {
     div()
         .text_size(px(11.))
-        .text_color(theme::CAPTION())
+        .text_color(theme::caption(cx))
         .child(text.into())
 }
 
 /// 归档区居中态(加载/空/零命中):余高内水平垂直居中
-pub(crate) fn centered_state(sel: &'static str, text: impl Into<String>) -> impl IntoElement {
+pub(crate) fn centered_state(
+    sel: &'static str,
+    text: impl Into<String>,
+    cx: &App,
+) -> impl IntoElement {
     div()
         .debug_selector(move || sel.to_string())
         .flex_1()
@@ -185,5 +193,5 @@ pub(crate) fn centered_state(sel: &'static str, text: impl Into<String>) -> impl
         .flex()
         .items_center()
         .justify_center()
-        .child(caption_line(text))
+        .child(caption_line(text, cx))
 }

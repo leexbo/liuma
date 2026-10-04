@@ -721,7 +721,7 @@ impl AppStore {
         };
         let ws_mode = self.sessions.rename_ws_target.is_some();
         let store = cx.entity();
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, _, cx| {
             let input = input.clone();
             let title = if ws_mode {
                 t!("misc.rename_workspace")
@@ -733,7 +733,7 @@ impl AppStore {
             dialog
                 .title(title)
                 .w(px(420.))
-                .bg(theme::LAYER())
+                .bg(theme::layer(cx))
                 .content({
                     let input = input.clone();
                     move |content, _, _| {
@@ -755,11 +755,11 @@ impl AppStore {
                                 .px(px(16.))
                                 .rounded(px(16.))
                                 .border_1()
-                                .border_color(theme::BORDER())
+                                .border_color(theme::border(cx))
                                 .cursor_pointer()
                                 .text_size(px(13.))
-                                .text_color(theme::LABEL_2())
-                                .hover(|s| s.bg(theme::DOCK()))
+                                .text_color(theme::label_2(cx))
+                                .hover(|s| s.bg(theme::dock(cx)))
                                 .child(t!("common.cancel"))
                                 .on_click(|_, window, cx| {
                                     window.close_dialog(cx);
@@ -774,10 +774,10 @@ impl AppStore {
                                 .items_center()
                                 .px(px(16.))
                                 .rounded(px(16.))
-                                .bg(theme::BRAND())
+                                .bg(theme::brand(cx))
                                 .cursor_pointer()
                                 .text_size(px(13.))
-                                .text_color(theme::LABEL())
+                                .text_color(theme::label(cx))
                                 .hover(|s| s.opacity(0.9))
                                 // 确认钮文案 = 动作词(参照:「重命名」)
                                 .child(if ws_mode {

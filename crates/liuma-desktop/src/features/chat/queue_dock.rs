@@ -80,8 +80,8 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         .border_t_1()
         .border_l_1()
         .border_r_1()
-        .border_color(theme::BORDER())
-        .bg(theme::LAYER())
+        .border_color(theme::border(cx))
+        .bg(theme::layer(cx))
         .py(px(2.));
     // 多条 = 计数头(可折叠;编辑态强制展开由 list_visible 承担)
     if queued.len() > 1 {
@@ -98,15 +98,15 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 .pr(px(4.))
                 .rounded(px(8.))
                 .cursor_pointer()
-                .hover(|s| s.bg(theme::DOCK()))
-                .child(fixed(LiumaIcon::ListChecks, 14.).text_color(theme::CAPTION()))
+                .hover(|s| s.bg(theme::dock(cx)))
+                .child(fixed(LiumaIcon::ListChecks, 14.).text_color(theme::caption(cx)))
                 .child(
                     div()
                         .flex_1()
                         .min_w(px(0.))
                         .truncate()
                         .text_size(px(13.))
-                        .text_color(theme::LABEL())
+                        .text_color(theme::label(cx))
                         .font_medium()
                         .child(t!("chat.queue_count", n = queued.len())),
                 )
@@ -176,10 +176,10 @@ fn queue_row(
         .rounded(px(8.));
     if ix > 0 {
         // 行间发丝分隔(DSH:inset hairline)
-        row = row.border_t_1().border_color(theme::BORDER());
+        row = row.border_t_1().border_color(theme::border(cx));
     }
     if lead {
-        row = row.child(fixed(LiumaIcon::ListChecks, 14.).text_color(theme::CAPTION()));
+        row = row.child(fixed(LiumaIcon::ListChecks, 14.).text_color(theme::caption(cx)));
     }
     if is_editing {
         let st = store.read(cx);
@@ -200,7 +200,7 @@ fn queue_row(
                 .min_w(px(0.))
                 .truncate()
                 .text_size(px(13.))
-                .text_color(theme::LABEL_2())
+                .text_color(theme::label_2(cx))
                 .child(entry.preview.clone()),
         );
     }
@@ -218,6 +218,7 @@ fn action_button(
     icon: gpui_kit::AnyElement,
     id: &'static str,
     on_click: impl Fn(&mut AppStore, &mut Window, &mut Context<AppStore>) + 'static,
+    cx: &App,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
     let s_click = store.clone();
     div()
@@ -229,8 +230,8 @@ fn action_button(
         .justify_center()
         .rounded_full()
         .cursor_pointer()
-        .text_color(theme::CAPTION())
-        .hover(|s| s.bg(theme::DOCK()).text_color(theme::LABEL()))
+        .text_color(theme::caption(cx))
+        .hover(|s| s.bg(theme::dock(cx)).text_color(theme::label(cx)))
         .tooltip(crate::shell::tip(tip))
         .on_click(move |_, window, cx| {
             s_click.update(cx, |st, cx| on_click(st, window, cx));
@@ -254,7 +255,7 @@ fn queue_actions(
     window: &mut Window,
     cx: &mut App,
 ) -> impl IntoElement {
-    let _ = (window, cx);
+    let _ = window;
     let session_id = SharedString::from(session_id.to_string());
     let item_id = entry.id.clone();
     let mut actions = div().flex().items_center().gap(px(10.));
@@ -267,6 +268,7 @@ fn queue_actions(
                 fixed(IconName::Check, 14.).into_any_element(),
                 "queue-save",
                 move |st, _window, cx| st.queue_save_edit(&sid_c, &iid_c, cx),
+                cx,
             ))
             .child(action_button(
                 store,
@@ -274,7 +276,8 @@ fn queue_actions(
                 fixed(IconName::Close, 14.).into_any_element(),
                 "queue-cancel-edit",
                 move |st, _window, cx| st.queue_cancel_edit(cx),
-            ));
+                cx,
+            ))
     } else {
         let sid_e = session_id.clone();
         let iid_e = item_id.clone();
@@ -288,6 +291,7 @@ fn queue_actions(
                     fixed(LiumaIcon::Pencil, 14.).into_any_element(),
                     "queue-edit",
                     move |st, window, cx| st.queue_begin_edit(&sid_e, &iid_e, window, cx),
+                    cx,
                 ))
             })
             // 立即投递仅运行中渲染:空闲时 steer 窗口已关(host 会回
@@ -301,6 +305,7 @@ fn queue_actions(
                     move |st, _window, cx| {
                         st.queue_action(&sid_s, &iid_s, serde_json::json!({ "kind": "steer" }), cx);
                     },
+                    cx,
                 ))
             })
             .child(action_button(
@@ -311,7 +316,8 @@ fn queue_actions(
                 move |st, _window, cx| {
                     st.queue_action(&sid_r, &iid_r, serde_json::json!({ "kind": "remove" }), cx)
                 },
-            ));
+                cx,
+            ))
     }
     actions.into_any_element()
 }

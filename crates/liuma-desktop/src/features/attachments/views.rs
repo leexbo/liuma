@@ -159,6 +159,7 @@ pub fn draft_rail(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         "draft-rail-arrow-left",
                         IconName::ChevronLeft,
                         true,
+                        cx,
                     ))
                 })
                 .when(right_on, |el| {
@@ -168,6 +169,7 @@ pub fn draft_rail(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         "draft-rail-arrow-right",
                         IconName::ChevronRight,
                         false,
+                        cx,
                     ))
                 })
                 .child(
@@ -234,6 +236,7 @@ fn rail_arrow(
     sel: &'static str,
     icon: IconName,
     align_left: bool,
+    cx: &App,
 ) -> impl IntoElement {
     let page_store = store.clone();
     div()
@@ -246,14 +249,14 @@ fn rail_arrow(
         .size(px(28.))
         .rounded_full()
         .border_1()
-        .border_color(theme::BORDER())
-        .bg(theme::DOCK())
+        .border_color(theme::border(cx))
+        .bg(theme::dock(cx))
         .shadow(vec![
             gpui_kit::BoxShadow::new(px(0.), px(2.), rgba(0x00000029).into()).blur_radius(px(8.)),
         ])
         .cursor_pointer()
-        .hover(|s| s.bg(theme::LAYER()))
-        .text_color(theme::LABEL())
+        .hover(|s| s.bg(theme::layer(cx)))
+        .text_color(theme::label(cx))
         .flex()
         .items_center()
         .justify_center()
@@ -291,7 +294,7 @@ fn draft_card(
         .flex_shrink_0()
         .rounded(px(16.))
         .overflow_hidden()
-        .bg(theme::BORDER())
+        .bg(theme::border(cx))
         .cursor_pointer()
         .on_click(move |_, _, cx| {
             open_store.update(cx, |st, cx| st.open_lightbox(&id_open, cx));
@@ -343,19 +346,19 @@ fn remove_button(
     Button::new(SharedString::from(button_id))
         .custom(
             ButtonCustomVariant::new(cx)
-                .hover(theme::DOCK().into())
-                .active(theme::DOCK().into())
-                .foreground(theme::LABEL().into()),
+                .hover(theme::dock(cx).into())
+                .active(theme::dock(cx).into())
+                .foreground(theme::label(cx).into()),
         )
         .accessibility_label(t!("common.remove").to_string())
         .debug_selector(move || sel.clone())
-        .child(fixed(IconName::Close, 10.).text_color(theme::LABEL()))
+        .child(fixed(IconName::Close, 10.).text_color(theme::label(cx)))
         .size(px(REMOVE_BUTTON_SIZE))
         .p_0()
         .rounded_full()
-        .bg(theme::BASE())
+        .bg(theme::base(cx))
         .border_1()
-        .border_color(theme::BORDER())
+        .border_color(theme::border(cx))
         .shadow_sm()
         .on_click(move |ev, window, cx| {
             // 卡自身的 on_click(开 Lightbox)不得随钮冒泡触发
@@ -384,7 +387,7 @@ fn file_kind_badge(name: &str) -> impl IntoElement {
         .size(px(28.))
         .flex_shrink_0()
         .rounded(px(6.))
-        .bg(theme::FILE_KIND_BADGE(kind))
+        .bg(theme::file_kind_badge(kind))
         .text_color(gpui_kit::white())
         .flex()
         .items_center()
@@ -411,7 +414,7 @@ fn draft_file_card(
         .id(SharedString::from(format!("draft-file-{id}")))
         .debug_selector(move || format!("draft-file-{}", id_sel).to_string())
         .flex_shrink_0()
-        .child(file_card_body(&name, size));
+        .child(file_card_body(&name, size, cx));
     card_with_remove(
         cx,
         format!("draft-file-remove-{id}"),
@@ -425,14 +428,14 @@ fn draft_file_card(
 /// 历史消息文件渲染:240×64 卡,
 /// 类型徽章 + 名称省略 + 「扩展名 大小」meta;无预览
 /// (侧栏预览是独立能力)。
-pub fn message_files(files: &[serde_json::Value]) -> impl IntoElement {
+pub fn message_files(files: &[serde_json::Value], cx: &App) -> impl IntoElement {
     let cards: Vec<gpui_kit::AnyElement> = files
         .iter()
         .filter_map(|b| {
             let a = &b["attachment"];
             let name = a["name"].as_str()?;
             let size = a["bytes"].as_u64()?;
-            Some(file_card_body(name, size).into_any_element())
+            Some(file_card_body(name, size, cx).into_any_element())
         })
         .collect();
     if cards.is_empty() {
@@ -450,7 +453,7 @@ pub fn message_files(files: &[serde_json::Value]) -> impl IntoElement {
 }
 
 /// 文件卡卡体(草稿卡/历史卡共用形态:240×64 / 28 徽章 / 名称+meta)
-fn file_card_body(name: &str, size: u64) -> impl IntoElement {
+fn file_card_body(name: &str, size: u64, cx: &App) -> impl IntoElement {
     div()
         .flex()
         .w(px(RAIL_CARD_FILE_W))
@@ -461,8 +464,8 @@ fn file_card_body(name: &str, size: u64) -> impl IntoElement {
         .px(px(12.))
         .rounded(px(16.))
         .border_1()
-        .border_color(theme::BORDER())
-        .bg(theme::CARD())
+        .border_color(theme::border(cx))
+        .bg(theme::card(cx))
         .child(file_kind_badge(name))
         .child(
             div()
@@ -472,14 +475,14 @@ fn file_card_body(name: &str, size: u64) -> impl IntoElement {
                     div()
                         .text_size(px(14.))
                         .font_weight(gpui_kit::FontWeight::MEDIUM)
-                        .text_color(theme::LABEL())
+                        .text_color(theme::label(cx))
                         .truncate()
                         .child(name.to_string()),
                 )
                 .child(
                     div()
                         .text_size(px(12.))
-                        .text_color(theme::LABEL_2())
+                        .text_color(theme::label_2(cx))
                         .truncate()
                         .child(format!(
                             "{} {}",
@@ -627,7 +630,7 @@ pub fn lightbox(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
 /// 渲染——gpui-pre 把 OS 文件拖放翻译为内部 active_drag(Entered 携带
 /// 真实路径,MouseMove 拖动,MouseUp 提交);本应用无内部拖拽生产者,
 /// 两者等价。注意:该 map 只增不清(debug_bounds),缺席断言不可用。
-pub fn drop_overlay(store: &Entity<AppStore>) -> impl IntoElement {
+pub fn drop_overlay(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let intake_store = store.clone();
     div()
         .id("drop-overlay")
@@ -653,13 +656,13 @@ pub fn drop_overlay(store: &Entity<AppStore>) -> impl IntoElement {
                 .py(px(16.))
                 .rounded(px(16.))
                 .border_1()
-                .border_color(theme::BORDER())
-                .bg(if theme::is_dark() {
-                    theme::LAYER()
+                .border_color(theme::border(cx))
+                .bg(if theme::is_dark(cx) {
+                    theme::layer(cx)
                 } else {
-                    theme::CARD()
+                    theme::card(cx)
                 })
-                .text_color(theme::LABEL())
+                .text_color(theme::label(cx))
                 .text_size(px(14.))
                 .child(fixed(LiumaIcon::Paperclip, 16.))
                 .child(t!("files.drop_add")),

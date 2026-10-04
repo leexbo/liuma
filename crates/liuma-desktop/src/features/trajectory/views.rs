@@ -38,62 +38,34 @@ fn rgb(hex: u32) -> Rgba {
     }
 }
 // ASSISTANT 紫:深盘取合成紫 0x9474BC,浅盘取 0x6E4FA3
-fn ASSISTANT_VIOLET() -> Rgba {
-    if theme::is_dark() {
-        rgb(0x9474BC)
-    } else {
-        rgb(0x6E4FA3)
-    }
+fn ASSISTANT_VIOLET(dark: bool) -> Rgba {
+    if dark { rgb(0x9474BC) } else { rgb(0x6E4FA3) }
 }
 // TTFT 弱紫 = 解码紫 54% 混卡片底(运行时混合,随盘反演)
-fn TTFT_VIOLET() -> Rgba {
-    mix(ASSISTANT_VIOLET(), theme::CARD(), 0.54)
+fn TTFT_VIOLET(cx: &App) -> Rgba {
+    mix(ASSISTANT_VIOLET(theme::is_dark(cx)), theme::card(cx), 0.54)
 }
 // TOOL 琥珀:深盘 #DD8629,浅盘 #B45309
-fn TOOL_AMBER() -> Rgba {
-    if theme::is_dark() {
-        rgb(0xDD8629)
-    } else {
-        rgb(0xB45309)
-    }
+fn TOOL_AMBER(dark: bool) -> Rgba {
+    if dark { rgb(0xDD8629) } else { rgb(0xB45309) }
 }
 // JSON 高亮(VSCode Dark+ / Light+):字符串值
-fn JSON_STRING() -> Rgba {
-    if theme::is_dark() {
-        rgb(0xCE9178)
-    } else {
-        rgb(0xA31515)
-    }
+fn JSON_STRING(dark: bool) -> Rgba {
+    if dark { rgb(0xCE9178) } else { rgb(0xA31515) }
 }
 // JSON 高亮:数字
-fn JSON_NUMBER() -> Rgba {
-    if theme::is_dark() {
-        rgb(0xB5CEA8)
-    } else {
-        rgb(0x098658)
-    }
+fn JSON_NUMBER(dark: bool) -> Rgba {
+    if dark { rgb(0xB5CEA8) } else { rgb(0x098658) }
 }
 // JSON 树配色:键蓝 / 标点白 / 箭头灰
-fn JSON_PROPERTY() -> Rgba {
-    if theme::is_dark() {
-        rgb(0x5DB0D7)
-    } else {
-        rgb(0x0451A5)
-    }
+fn JSON_PROPERTY(dark: bool) -> Rgba {
+    if dark { rgb(0x5DB0D7) } else { rgb(0x0451A5) }
 }
-fn JSON_PUNCT() -> Rgba {
-    if theme::is_dark() {
-        rgb(0xE8EAED)
-    } else {
-        rgb(0x3B3B3B)
-    }
+fn JSON_PUNCT(dark: bool) -> Rgba {
+    if dark { rgb(0xE8EAED) } else { rgb(0x3B3B3B) }
 }
-fn JSON_EXPANDER() -> Rgba {
-    if theme::is_dark() {
-        rgb(0x9AA0A6)
-    } else {
-        rgb(0x8E8E93)
-    }
+fn JSON_EXPANDER(dark: bool) -> Rgba {
+    if dark { rgb(0x9AA0A6) } else { rgb(0x8E8E93) }
 }
 
 /// 颜色混合(t = a 的权重)
@@ -120,26 +92,33 @@ fn kind_label(kind: &str) -> std::borrow::Cow<'static, str> {
 }
 
 /// kind → 标签配色(前景 + 15% 同色底)
-fn kind_colors(kind: &str) -> (Rgba, Rgba) {
+fn kind_colors(kind: &str, cx: &App) -> (Rgba, Rgba) {
+    let d = theme::is_dark(cx);
     match kind {
         // USER:business 蓝前景 + 蓝 15% 底
-        "user" => (theme::BRAND(), mix(theme::BRAND(), theme::BASE(), 0.15)),
+        "user" => (
+            theme::brand(cx),
+            mix(theme::brand(cx), theme::base(cx), 0.15),
+        ),
         // ASSISTANT:解码紫前景 + 紫 15% 底
         "message" => (
-            ASSISTANT_VIOLET(),
-            mix(ASSISTANT_VIOLET(), theme::BASE(), 0.15),
+            ASSISTANT_VIOLET(d),
+            mix(ASSISTANT_VIOLET(d), theme::base(cx), 0.15),
         ),
         // TOOL:琥珀前景 + 琥珀 15% 底
-        "tool" => (TOOL_AMBER(), mix(TOOL_AMBER(), theme::BASE(), 0.15)),
+        "tool" => (TOOL_AMBER(d), mix(TOOL_AMBER(d), theme::base(cx), 0.15)),
         // CONTEXT:success 主色混灰前景 + 绿 15% 底
         "context" => (
-            mix(theme::SUCCESS(), theme::CAPTION(), 0.32),
-            mix(theme::SUCCESS(), theme::BASE(), 0.15),
+            mix(theme::success(cx), theme::caption(cx), 0.32),
+            mix(theme::success(cx), theme::base(cx), 0.15),
         ),
         // DECISION:warn 前景 + warn 15% 底(建议面:读得到,不抢眼)
-        "decision" => (theme::WARN(), mix(theme::WARN(), theme::BASE(), 0.15)),
+        "decision" => (
+            theme::warning(cx),
+            mix(theme::warning(cx), theme::base(cx), 0.15),
+        ),
         // SYSTEM / COMPACTED:中性
-        _ => (theme::LABEL_2(), theme::DOCK()),
+        _ => (theme::label_2(cx), theme::dock(cx)),
     }
 }
 
@@ -526,15 +505,16 @@ fn build_fold_bands(records: &[TrajectoryRecord], spans: &[TlSpan]) -> Vec<FoldB
 }
 
 /// 条形主色(USER 蓝/TOOL 琥珀/error 红/ASSISTANT 紫)
-fn span_color(span: &TlSpan) -> Rgba {
+fn span_color(span: &TlSpan, cx: &App) -> Rgba {
+    let d = theme::is_dark(cx);
     if span.is_error {
-        return theme::DANGER();
+        return theme::danger(cx);
     }
     match span.kind.as_str() {
-        "user" => theme::BRAND(),
-        "tool" => TOOL_AMBER(),
-        "message" => ASSISTANT_VIOLET(),
-        _ => theme::LABEL_3(),
+        "user" => theme::brand(cx),
+        "tool" => TOOL_AMBER(d),
+        "message" => ASSISTANT_VIOLET(d),
+        _ => theme::label_3(cx),
     }
 }
 
@@ -1075,7 +1055,7 @@ fn toolbar(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                 .px(px(8.))
                 .gap(px(2.))
                 .border_b_1()
-                .border_color(theme::BORDER())
+                .border_color(theme::border(cx))
                 .content(toggle_button(
                     cx,
                     "traj-toolbar-duration",
@@ -1121,7 +1101,7 @@ fn toolbar(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         .flex_1()
                         .truncate()
                         .text_size(px(11.))
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .pl(px(8.))
                         .child(t!(
                             "trajectory.counts",
@@ -1175,25 +1155,25 @@ fn toggle_button(
                 .child(div().debug_selector(move || label_sel.clone()).child(label)),
         )
         .when(pressed, |el| {
-            el.border_1().border_color(theme::GLASS_BORDER())
+            el.border_1().border_color(theme::glass_border(cx))
         })
         .custom(
             ButtonCustomVariant::new(cx)
                 .color(if pressed {
-                    theme::GLASS_BG().into()
+                    theme::glass_bg(cx).into()
                 } else {
-                    theme::TRANSPARENT().into()
+                    theme::TRANSPARENT.into()
                 })
                 .foreground(if pressed {
-                    theme::LABEL().into()
+                    theme::label(cx).into()
                 } else {
-                    theme::LABEL_3().into()
+                    theme::label_3(cx).into()
                 })
                 // 按下态原无悬停变化,与底色同值即无变化
                 .hover(if pressed {
-                    theme::GLASS_BG().into()
+                    theme::glass_bg(cx).into()
                 } else {
-                    theme::BORDER().into()
+                    theme::border(cx).into()
                 }),
         )
         .on_click(move |ev, w, cx| on_click(ev, w, cx))
@@ -1224,9 +1204,9 @@ fn action_button(
         .cursor_pointer()
         .custom(
             ButtonCustomVariant::new(cx)
-                .color(theme::TRANSPARENT().into())
-                .foreground(theme::LABEL_3().into())
-                .hover(theme::BORDER().into()),
+                .color(theme::TRANSPARENT.into())
+                .foreground(theme::label_3(cx).into())
+                .hover(theme::border(cx).into()),
         )
         // 字形与文字自成一排(字号同 toggle_button:库对子元素内容自设
         // `.button_text_size(self.size)`,写在钮根上到不了文字)
@@ -1276,7 +1256,7 @@ fn timeline(
                     .top(px(6. + lane as f32 * 14.))
                     .text_right()
                     .text_size(px(10.))
-                    .text_color(theme::CAPTION())
+                    .text_color(theme::caption(cx))
                     .child(l.to_string())
             })
             .collect::<Vec<_>>(),
@@ -1318,8 +1298,10 @@ fn timeline(
                 .rounded(px(1.))
                 .left(gpui_kit::relative(left))
                 .w(gpui_kit::relative(w))
-                .when(is_current, |el| el.border_1().border_color(theme::BRAND()))
-                .hover(|st| st.border_1().border_color(theme::LABEL_3()))
+                .when(is_current, |el| {
+                    el.border_1().border_color(theme::brand(cx))
+                })
+                .hover(|st| st.border_1().border_color(theme::label_3(cx)))
                 .cursor_pointer()
                 .on_click(move |_, _, cx| {
                     s3.update(cx, |st, cx| st.select_trajectory_record(ix, cx));
@@ -1331,7 +1313,7 @@ fn timeline(
             let left_w = (total * split as f32).max(0.002);
             bars.push(
                 make(left_pct as f32, left_w)
-                    .bg(TTFT_VIOLET())
+                    .bg(TTFT_VIOLET(cx))
                     .into_any_element(),
             );
             bars.push(
@@ -1339,13 +1321,13 @@ fn timeline(
                     (left_pct + left_w as f64) as f32,
                     (total - left_w).max(0.002),
                 )
-                .bg(ASSISTANT_VIOLET())
+                .bg(ASSISTANT_VIOLET(theme::is_dark(cx)))
                 .into_any_element(),
             );
         } else {
             bars.push(
                 make(left_pct as f32, width.max(0.004) as f32)
-                    .bg(span_color(sp))
+                    .bg(span_color(sp, cx))
                     .into_any_element(),
             );
         }
@@ -1372,7 +1354,7 @@ fn timeline(
                     .bottom_0()
                     .left(gpui_kit::relative(x as f32))
                     .w(px(1.))
-                    .bg(theme::BORDER())
+                    .bg(theme::border(cx))
                     .into_any_element(),
             );
         }
@@ -1392,7 +1374,7 @@ fn timeline(
         let ix = band.record_index;
         let line = Rgba {
             a: 0.28,
-            ..theme::LABEL_3()
+            ..theme::label_3(cx)
         };
         fold_bands.push(
             div()
@@ -1405,7 +1387,7 @@ fn timeline(
                 .w(gpui_kit::relative(w as f32))
                 .bg(Rgba {
                     a: 0.10,
-                    ..theme::LABEL_3()
+                    ..theme::label_3(cx)
                 })
                 .border_l_1()
                 .border_r_1()
@@ -1414,7 +1396,7 @@ fn timeline(
                 .hover(|st| {
                     st.bg(Rgba {
                         a: 0.18,
-                        ..theme::LABEL_3()
+                        ..theme::label_3(cx)
                     })
                 })
                 .on_click(move |_, _, cx| {
@@ -1430,7 +1412,7 @@ fn timeline(
                             .left(px(1.))
                             .top(px(2.))
                             .text_size(px(8.))
-                            .text_color(theme::CAPTION())
+                            .text_color(theme::caption(cx))
                             .child(t!("trajectory.fold_band_clip").to_string()),
                     )
                 })
@@ -1454,7 +1436,7 @@ fn timeline(
                     .w(gpui_kit::relative((b - a) as f32))
                     .bg(Rgba {
                         a: 0.12,
-                        ..theme::BRAND()
+                        ..theme::brand(cx)
                     })
                     .into_any_element(),
             );
@@ -1466,7 +1448,7 @@ fn timeline(
                         .bottom_0()
                         .left(gpui_kit::relative(x as f32))
                         .w(px(2.))
-                        .bg(theme::BRAND())
+                        .bg(theme::brand(cx))
                         .into_any_element(),
                 );
             }
@@ -1480,7 +1462,7 @@ fn timeline(
                         .w(gpui_kit::relative(a as f32))
                         .bg(Rgba {
                             a: 0.58,
-                            ..theme::INK()
+                            ..theme::INK
                         })
                         .into_any_element(),
                 );
@@ -1495,7 +1477,7 @@ fn timeline(
                         .right_0()
                         .bg(Rgba {
                             a: 0.58,
-                            ..theme::INK()
+                            ..theme::INK
                         })
                         .into_any_element(),
                 );
@@ -1515,7 +1497,7 @@ fn timeline(
             .items_center()
             .justify_center()
             .text_size(px(10.))
-            .text_color(theme::CAPTION())
+            .text_color(theme::caption(cx))
             .child(t!("trajectory.no_timing_data"))
     });
 
@@ -1541,8 +1523,8 @@ fn timeline(
             .items_center()
             .justify_center()
             .text_size(px(11.))
-            .text_color(theme::LABEL_3())
-            .bg(theme::DOCK())
+            .text_color(theme::label_3(cx))
+            .bg(theme::dock(cx))
             .rounded_r(px(6.))
             .opacity(0.85)
             .hover(|st| st.opacity(1.))
@@ -1626,9 +1608,9 @@ fn timeline(
         .flex()
         .flex_shrink_0()
         .h(px(50.))
-        .bg(theme::CARD())
+        .bg(theme::card(cx))
         .border_b_1()
-        .border_color(theme::BORDER())
+        .border_color(theme::border(cx))
         .child(labels_col)
         .child(track)
         .child(
@@ -1637,7 +1619,7 @@ fn timeline(
                 .items_center()
                 .px(px(6.))
                 .text_size(px(9.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(t!("trajectory.drag_hint")),
         )
 }
@@ -1675,7 +1657,7 @@ fn ledger(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             .gap(px(8.))
             .py(px(40.))
             .text_size(px(12.))
-            .text_color(theme::CAPTION())
+            .text_color(theme::caption(cx))
             .when(loading_initial, |el| {
                 el.child(Spinner::new().xsmall())
                     .child(t!("trajectory.folding"))
@@ -1706,17 +1688,19 @@ fn ledger(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
             return div().into_any_element();
         };
         match row {
-            LedgerRow::LoadEarlier => load_earlier_row(st, &item_store).into_any_element(),
+            LedgerRow::LoadEarlier => load_earlier_row(st, &item_store, cx).into_any_element(),
             LedgerRow::TurnSummary { turn, steps, tools } => {
-                turn_summary_row(&item_store, *turn, *steps, *tools).into_any_element()
+                turn_summary_row(&item_store, *turn, *steps, *tools, cx).into_any_element()
             }
             LedgerRow::CallSummary {
                 message_index,
                 count,
                 names,
-            } => call_summary_row(&item_store, *message_index, *count, names).into_any_element(),
+            } => {
+                call_summary_row(&item_store, *message_index, *count, names, cx).into_any_element()
+            }
             LedgerRow::Record { rec_ix, turn_start } => match s.view.records.get(*rec_ix) {
-                Some(rec) => record_row(&item_store, &s, rec, *turn_start).into_any_element(),
+                Some(rec) => record_row(&item_store, &s, rec, *turn_start, cx).into_any_element(),
                 None => div().into_any_element(),
             },
         }
@@ -1769,6 +1753,7 @@ fn ledger(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         move |_, _, cx| {
                             top_store.update(cx, |st, cx| st.jump_trajectory_top(cx));
                         },
+                        cx,
                     )),
             )
         })
@@ -1789,6 +1774,7 @@ fn ledger(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         move |_, _, cx| {
                             bottom_store.update(cx, |st, cx| st.jump_trajectory_bottom(cx));
                         },
+                        cx,
                     )),
             )
         })
@@ -1803,6 +1789,7 @@ fn float_jump_button(
     icon: IconName,
     tip_text: String,
     on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &App,
 ) -> impl IntoElement {
     let sel = id.to_string();
     div()
@@ -1813,15 +1800,15 @@ fn float_jump_button(
         .items_center()
         .justify_center()
         .rounded_full()
-        .bg(theme::DOCK())
+        .bg(theme::dock(cx))
         .border_1()
-        .border_color(theme::BORDER_2())
+        .border_color(theme::border_2(cx))
         .shadow_sm()
         .cursor_pointer()
         .block_mouse_except_scroll()
         .hover(|s| s.opacity(0.85))
         .tooltip(crate::shell::tip(tip_text))
-        .child(fixed(icon, 12.).text_color(theme::LABEL()))
+        .child(fixed(icon, 12.).text_color(theme::label(cx)))
         .on_click(move |ev, window, cx| {
             cx.stop_propagation();
             on_click(ev, window, cx);
@@ -1829,7 +1816,7 @@ fn float_jump_button(
 }
 
 /// 「加载更早」行(30px;has_older 时置行首)
-fn load_earlier_row(st: &AppStore, store: &Entity<AppStore>) -> impl IntoElement {
+fn load_earlier_row(st: &AppStore, store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let loading = st.trajectory.trajectory.loading_older;
     let remaining = st
         .trajectory
@@ -1849,8 +1836,8 @@ fn load_earlier_row(st: &AppStore, store: &Entity<AppStore>) -> impl IntoElement
         .gap(px(6.))
         .cursor_pointer()
         .text_size(px(12.))
-        .text_color(theme::LABEL_3())
-        .hover(|st| st.bg(theme::LAYER()).text_color(theme::LABEL_2()))
+        .text_color(theme::label_3(cx))
+        .hover(|st| st.bg(theme::layer(cx)).text_color(theme::label_2(cx)))
         .debug_selector(|| "load-earlier".to_string())
         .when(loading, |el| {
             el.child(Spinner::new().xsmall())
@@ -1870,6 +1857,7 @@ fn turn_summary_row(
     turn: u64,
     steps: usize,
     tools: usize,
+    cx: &App,
 ) -> impl IntoElement {
     let s = store.clone();
     div()
@@ -1884,8 +1872,8 @@ fn turn_summary_row(
         .pl(px(40.))
         .cursor_pointer()
         .text_size(px(11.))
-        .text_color(theme::CAPTION())
-        .hover(|st| st.text_color(theme::LABEL_3()))
+        .text_color(theme::caption(cx))
+        .hover(|st| st.text_color(theme::label_3(cx)))
         .debug_selector(move || format!("turn-summary-{turn}"))
         .child(
             // 长文本截断(record_row 正文列同款):窄面板下不让行内容
@@ -1907,6 +1895,7 @@ fn call_summary_row(
     message_index: u64,
     count: usize,
     names: &[String],
+    cx: &App,
 ) -> impl IntoElement {
     let s = store.clone();
     div()
@@ -1921,8 +1910,8 @@ fn call_summary_row(
         .pl(px(40.))
         .cursor_pointer()
         .text_size(px(11.))
-        .text_color(theme::CAPTION())
-        .hover(|st| st.text_color(theme::LABEL_3()))
+        .text_color(theme::caption(cx))
+        .hover(|st| st.text_color(theme::label_3(cx)))
         .debug_selector(move || format!("call-summary-{message_index}"))
         .child(
             // 长文本截断(record_row 正文列同款):窄面板下不让行内容
@@ -1945,15 +1934,16 @@ fn record_row(
     s: &Snap<'_>,
     rec: &TrajectoryRecord,
     turn_start: bool,
+    cx: &App,
 ) -> impl IntoElement {
     let selected = s.inspector == Some(InspectTarget::Record(rec.index));
     // 选中轮由 `snap()` 每帧算一次(原为每行全表扫)
     let selected_turn = s.inspector_turn.is_some_and(|t| Some(t) == rec.turn);
 
     let rail_color = if rec.is_error {
-        mix(theme::DANGER(), theme::BASE(), 0.22)
+        mix(theme::danger(cx), theme::base(cx), 0.22)
     } else {
-        mix(theme::BRAND(), theme::BASE(), 0.22)
+        mix(theme::brand(cx), theme::base(cx), 0.22)
     };
 
     // event 列
@@ -1984,12 +1974,12 @@ fn record_row(
                 .left(px(2.))
                 .top(px(1.))
                 .rounded_b(px(2.))
-                .bg(theme::DOCK())
+                .bg(theme::dock(cx))
                 .px(px(5.))
                 .py(px(1.))
                 .font_family("Menlo")
                 .text_size(px(8.))
-                .text_color(theme::LABEL_3())
+                .text_color(theme::label_3(cx))
                 .child(t!("trajectory.turn_n", t = t)),
         );
     }
@@ -2001,11 +1991,11 @@ fn record_row(
             .iter()
             .any(|q| q.number == n && q.status == "error")
         {
-            theme::DANGER()
+            theme::danger(cx)
         } else if s.inspector == Some(InspectTarget::Request(n)) {
-            theme::BRAND()
+            theme::brand(cx)
         } else {
-            theme::CAPTION()
+            theme::caption(cx)
         };
         let active_req = s.inspector == Some(InspectTarget::Request(n));
         event = event.child(
@@ -2023,7 +2013,9 @@ fn record_row(
                         .size(px(5.))
                         .rounded_full()
                         .bg(dot_color)
-                        .when(active_req, |el| el.border_1().border_color(theme::BRAND())),
+                        .when(active_req, |el| {
+                            el.border_1().border_color(theme::brand(cx))
+                        }),
                 )
                 .hover(|st| st.opacity(0.85))
                 .on_click(move |_, _, cx| {
@@ -2032,7 +2024,7 @@ fn record_row(
                 }),
         );
     }
-    let (fg, bg) = kind_colors(&rec.kind);
+    let (fg, bg) = kind_colors(&rec.kind, cx);
     event = event.child(div().flex_1());
     event = event.child(
         div()
@@ -2054,11 +2046,11 @@ fn record_row(
     let content: gpui_kit::AnyElement = if rec.kind == "tool" {
         let (name, args) = split_tool_text(&rec.text);
         let result_color = if rec.is_error {
-            theme::DANGER()
+            theme::danger(cx)
         } else if rec.result.as_deref() == Some("No output") {
-            theme::CAPTION()
+            theme::caption(cx)
         } else {
-            theme::LABEL_3()
+            theme::label_3(cx)
         };
         div()
             .flex()
@@ -2072,7 +2064,7 @@ fn record_row(
                     .flex_shrink_0()
                     .text_size(px(12.))
                     .font_family("Menlo")
-                    .text_color(theme::LABEL_2())
+                    .text_color(theme::label_2(cx))
                     .child(name.to_string()),
             )
             .child(
@@ -2082,7 +2074,7 @@ fn record_row(
                     .truncate()
                     .text_size(px(12.))
                     .font_family("Menlo")
-                    .text_color(theme::LABEL_3())
+                    .text_color(theme::label_3(cx))
                     .child(args.to_string()),
             )
             .when_some(rec.result.clone(), |el, r| {
@@ -2097,7 +2089,7 @@ fn record_row(
                         .child(
                             div()
                                 .text_size(px(12.))
-                                .text_color(theme::CAPTION())
+                                .text_color(theme::caption(cx))
                                 .child("→"),
                         )
                         .child(
@@ -2113,7 +2105,7 @@ fn record_row(
             // 守卫裁决**(本次调用的一个阶段)**:不另立行,行尾一句话
             // 交代结论;细节进检查器「决策」页
             .when_some(rec.decision.clone(), |el, d| {
-                el.child(decision_chip(rec.index, &d))
+                el.child(decision_chip(rec.index, &d, cx))
             })
             .into_any_element()
     } else if rec.kind == "decision" {
@@ -2127,16 +2119,21 @@ fn record_row(
             .items_center()
             .gap(px(7.))
             .px(px(8.))
-            .child(div().text_size(px(12.)).text_color(theme::LABEL_2()).child(
-                decision_scenario_label(rec.decision.as_ref().map(|d| d.scenario.as_str())),
-            ))
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(theme::label_2(cx))
+                    .child(decision_scenario_label(
+                        rec.decision.as_ref().map(|d| d.scenario.as_str()),
+                    )),
+            )
             .child(
                 div()
                     .min_w(px(0.))
                     .flex_1()
                     .truncate()
                     .text_size(px(12.))
-                    .text_color(theme::LABEL_3())
+                    .text_color(theme::label_3(cx))
                     .child(
                         rec.decision
                             .as_ref()
@@ -2162,7 +2159,7 @@ fn record_row(
                     .w(px(2.))
                     .h(px(16.))
                     .rounded(px(1.))
-                    .bg(mix(theme::BRAND(), theme::BASE(), 0.45)),
+                    .bg(mix(theme::brand(cx), theme::base(cx), 0.45)),
             );
         }
         row = row.child(
@@ -2171,22 +2168,22 @@ fn record_row(
                 .flex_1()
                 .truncate()
                 .text_size(px(12.))
-                .text_color(theme::LABEL_3())
+                .text_color(theme::label_3(cx))
                 .child(match rec.text.as_str() {
                     "Context compacted" => t!("trajectory.compact_fallback").to_string(),
                     _ => rec.text.clone(),
                 }),
         );
         if let Some(f) = &rec.fold {
-            row = row.child(fold_chip(rec.index, f));
+            row = row.child(fold_chip(rec.index, f, cx));
         }
         row.into_any_element()
     } else {
         let color = match rec.kind.as_str() {
-            "user" => theme::LABEL(),
-            "message" if rec.text == "(tool call only)" => theme::CAPTION(),
-            "message" => theme::LABEL_2(),
-            _ => theme::LABEL_3(),
+            "user" => theme::label(cx),
+            "message" if rec.text == "(tool call only)" => theme::caption(cx),
+            "message" => theme::label_2(cx),
+            _ => theme::label_3(cx),
         };
         div()
             .min_w(px(0.))
@@ -2220,10 +2217,10 @@ fn record_row(
         .flex_shrink_0()
         .items_center()
         .when(turn_start, |el| {
-            el.border_t_2().border_color(theme::BORDER())
+            el.border_t_2().border_color(theme::border(cx))
         })
-        .when(selected, |el| el.bg(theme::LAYER()))
-        .when(!selected, |el| el.hover(|st| st.bg(theme::LAYER())))
+        .when(selected, |el| el.bg(theme::layer(cx)))
+        .when(!selected, |el| el.hover(|st| st.bg(theme::layer(cx))))
         .cursor_pointer()
         .debug_selector(move || format!("trajectory-row-{ix}"))
         .child(event)
@@ -2383,28 +2380,28 @@ fn inspector(
                     .size(px(5.))
                     .rounded_full()
                     .bg(if q.status == "error" {
-                        theme::DANGER()
+                        theme::danger(cx)
                     } else {
-                        theme::BRAND()
+                        theme::brand(cx)
                     }),
             )
             .child(
                 div()
                     .font_family("Menlo")
                     .text_size(px(12.))
-                    .text_color(theme::LABEL_2())
+                    .text_color(theme::label_2(cx))
                     .child(t!("trajectory.request_n", n = n)),
             )
             .child(
                 div()
                     .font_family("Menlo")
                     .text_size(px(11.))
-                    .text_color(theme::CAPTION())
+                    .text_color(theme::caption(cx))
                     .child(t!("trajectory.turn_n", t = q.turn)),
             )
             .into_any_element(),
         (_, Some(r), _) => {
-            let (fg, bg) = kind_colors(&r.kind);
+            let (fg, bg) = kind_colors(&r.kind, cx);
             let location = match (&r.turn, r.group.as_str()) {
                 (Some(t), g) if g.starts_with("Step") => t!("trajectory.turn_at", t = t, at = g),
                 (Some(t), _) => t!("trajectory.turn_message", t = t),
@@ -2431,7 +2428,7 @@ fn inspector(
                     div()
                         .font_family("Menlo")
                         .text_size(px(11.))
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .child(location),
                 )
                 .into_any_element()
@@ -2442,29 +2439,29 @@ fn inspector(
     let close_store = store.clone();
     let body: gpui_kit::AnyElement = match (record, request, active) {
         // ── 请求 ──
-        (None, Some(q), "usage") => usage_body(q).into_any_element(),
-        (None, Some(q), "timing") => request_timing_body(q).into_any_element(),
-        (None, Some(q), _) => request_summary_body(store, &s, q).into_any_element(),
+        (None, Some(q), "usage") => usage_body(q, cx).into_any_element(),
+        (None, Some(q), "timing") => request_timing_body(q, cx).into_any_element(),
+        (None, Some(q), _) => request_summary_body(store, &s, q, cx).into_any_element(),
         // ── 记录 ──
-        (Some(r), _, "payload") => payload_body(store, &s, r).into_any_element(),
-        (Some(r), _, "result") => result_body(store, &s, r).into_any_element(),
-        (Some(r), _, "raw") => raw_body(store, &s, r).into_any_element(),
+        (Some(r), _, "payload") => payload_body(store, &s, r, cx).into_any_element(),
+        (Some(r), _, "result") => result_body(store, &s, r, cx).into_any_element(),
+        (Some(r), _, "raw") => raw_body(store, &s, r, cx).into_any_element(),
         (Some(r), _, "preview") => match r.kind.as_str() {
-            "message" => assistant_preview_body(store, &s, r).into_any_element(),
-            _ => preview_tab_body(r).into_any_element(),
+            "message" => assistant_preview_body(store, &s, r, cx).into_any_element(),
+            _ => preview_tab_body(r, cx).into_any_element(),
         },
-        (Some(r), _, "source") => source_tab_body(r).into_any_element(),
-        (Some(r), _, "system") => system_body(r).into_any_element(),
-        (Some(r), _, "tools") => tools_body(store, &s, r).into_any_element(),
-        (Some(r), _, "diff") => diff_body(&s, r).into_any_element(),
-        (Some(r), _, "schema") => schema_body(store, &s, r).into_any_element(),
-        (Some(r), _, "decision") => decision_tab_body(r).into_any_element(),
-        (Some(r), _, "fold") => fold_tab_body(r).into_any_element(),
-        (Some(r), _, "timing") => timing_body(r).into_any_element(),
-        (Some(r), _, _) => summary_body(store, &s, r).into_any_element(),
+        (Some(r), _, "source") => source_tab_body(r, cx).into_any_element(),
+        (Some(r), _, "system") => system_body(r, cx).into_any_element(),
+        (Some(r), _, "tools") => tools_body(store, &s, r, cx).into_any_element(),
+        (Some(r), _, "diff") => diff_body(&s, r, cx).into_any_element(),
+        (Some(r), _, "schema") => schema_body(store, &s, r, cx).into_any_element(),
+        (Some(r), _, "decision") => decision_tab_body(r, cx).into_any_element(),
+        (Some(r), _, "fold") => fold_tab_body(r, cx).into_any_element(),
+        (Some(r), _, "timing") => timing_body(r, cx).into_any_element(),
+        (Some(r), _, _) => summary_body(store, &s, r, cx).into_any_element(),
         // 目标数据已不在窗口(翻页/直播后):占位
         (None, None, _) => div()
-            .child(empty_text(t!("trajectory.na")))
+            .child(empty_text(t!("trajectory.na"), cx))
             .into_any_element(),
     };
 
@@ -2481,8 +2478,8 @@ fn inspector(
             // 约束会长画到面板右缘才被 trajectory-view 裁掉
             .overflow_hidden()
             .border_l_1()
-            .border_color(theme::BORDER())
-            .bg(theme::LAYER())
+            .border_color(theme::border(cx))
+            .bg(theme::layer(cx))
             .debug_selector(|| "trajectory-inspector".to_string())
             // 左缘拖宽把手(320..720;move/up 在 render 期窗口级注册)
             .child(
@@ -2510,7 +2507,7 @@ fn inspector(
                     .px(px(12.))
                     .gap(px(4.))
                     .border_b_1()
-                    .border_color(theme::BORDER())
+                    .border_color(theme::border(cx))
                     .child(header)
                     .child(div().flex_1())
                     .child(
@@ -2522,8 +2519,8 @@ fn inspector(
                             .justify_center()
                             .rounded(px(6.))
                             .cursor_pointer()
-                            .text_color(theme::LABEL_3())
-                            .hover(|st| st.bg(theme::DOCK()))
+                            .text_color(theme::label_3(cx))
+                            .hover(|st| st.bg(theme::dock(cx)))
                             .child(fixed(IconName::Close, 14.))
                             .on_click(move |_, _, cx| {
                                 close_store.update(cx, |st, cx| st.close_inspector(cx));
@@ -2539,7 +2536,7 @@ fn inspector(
                     .gap(px(2.))
                     .px(px(8.))
                     .border_b_1()
-                    .border_color(theme::BORDER())
+                    .border_color(theme::border(cx))
                     .children(tabs.iter().enumerate().map(|(ti, t)| {
                         let s2 = store.clone();
                         let name = *t;
@@ -2554,13 +2551,13 @@ fn inspector(
                             .cursor_pointer()
                             .text_size(px(12.))
                             .when(is_active, |el| {
-                                el.bg(theme::GLASS_BG())
-                                    .text_color(theme::LABEL())
+                                el.bg(theme::glass_bg(cx))
+                                    .text_color(theme::label(cx))
                                     .font_weight(gpui_kit::FontWeight::MEDIUM)
                             })
                             .when(!is_active, |el| {
-                                el.text_color(theme::LABEL_3())
-                                    .hover(|st| st.text_color(theme::LABEL_2()))
+                                el.text_color(theme::label_3(cx))
+                                    .hover(|st| st.text_color(theme::label_2(cx)))
                             })
                             .debug_selector(move || format!("inspector-tab-{name}"))
                             .child(tab_label(name).to_string())
@@ -2603,7 +2600,7 @@ fn tab_label(name: &str) -> std::borrow::Cow<'static, str> {
 // ── 检查器主体(tab 内容)──────────────────────────────────────
 
 /// 信息行(96px 标签列)
-fn dl_row(label: impl Into<gpui_kit::SharedString>, value: impl IntoElement) -> Div {
+fn dl_row(label: impl Into<gpui_kit::SharedString>, value: impl IntoElement, cx: &App) -> Div {
     let label = label.into();
     div()
         .flex()
@@ -2615,7 +2612,7 @@ fn dl_row(label: impl Into<gpui_kit::SharedString>, value: impl IntoElement) -> 
                 .w(px(96.))
                 .flex_shrink_0()
                 .text_size(px(11.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(label.to_string()),
         )
         .child(
@@ -2623,14 +2620,18 @@ fn dl_row(label: impl Into<gpui_kit::SharedString>, value: impl IntoElement) -> 
                 .min_w(px(0.))
                 .flex_1()
                 .text_size(px(12.))
-                .text_color(theme::LABEL_2())
+                .text_color(theme::label_2(cx))
                 .line_height(gpui_kit::relative(1.5))
                 .child(value),
         )
 }
 
 /// 小节标题(Stateful 供调用方链 on_click)
-fn section(id: &'static str, title: impl Into<gpui_kit::SharedString>) -> gpui_kit::Stateful<Div> {
+fn section(
+    id: &'static str,
+    title: impl Into<gpui_kit::SharedString>,
+    cx: &App,
+) -> gpui_kit::Stateful<Div> {
     let title = title.into();
     let sel = id.to_string();
     // 标题 + `>` 跳转箭头(点击进完整 tab;调用方挂 on_click)
@@ -2644,15 +2645,19 @@ fn section(id: &'static str, title: impl Into<gpui_kit::SharedString>) -> gpui_k
         .cursor_pointer()
         .text_size(px(11.))
         .font_weight(gpui_kit::FontWeight::MEDIUM)
-        .text_color(theme::CAPTION())
-        .hover(|st| st.text_color(theme::LABEL_3()))
+        .text_color(theme::caption(cx))
+        .hover(|st| st.text_color(theme::label_3(cx)))
         .child(title.to_string())
-        .child(fixed(IconName::ChevronRight, 11.).text_color(theme::CAPTION()))
+        .child(fixed(IconName::ChevronRight, 11.).text_color(theme::caption(cx)))
         .debug_selector(move || sel.clone())
 }
 
 /// 层级跳转链接(文字 + 小箭头)
-fn nav_link(id: &'static str, text: impl Into<gpui_kit::SharedString>) -> gpui_kit::Stateful<Div> {
+fn nav_link(
+    id: &'static str,
+    text: impl Into<gpui_kit::SharedString>,
+    cx: &App,
+) -> gpui_kit::Stateful<Div> {
     let text = text.into();
     let sel = id.to_string();
     div()
@@ -2662,23 +2667,28 @@ fn nav_link(id: &'static str, text: impl Into<gpui_kit::SharedString>) -> gpui_k
         .gap(px(2.))
         .font_family("Menlo")
         .text_size(px(12.))
-        .text_color(theme::BRAND())
+        .text_color(theme::brand(cx))
         .cursor_pointer()
         .hover(|st| st.opacity(0.8))
         .child(text)
-        .child(fixed(IconName::ChevronRight, 10.).text_color(theme::BRAND()))
+        .child(fixed(IconName::ChevronRight, 10.).text_color(theme::brand(cx)))
         .debug_selector(move || sel.clone())
 }
 
 /// 等宽文本块(限高容器内滚动;长非断行 token 水平裁剪不折行——
 /// 溢出由检查器 overflow_hidden 收口)
-fn mono_block(id: impl Into<gpui_kit::ElementId>, text: &str, color: Rgba) -> impl IntoElement {
+fn mono_block(
+    id: impl Into<gpui_kit::ElementId>,
+    text: &str,
+    color: Rgba,
+    cx: &App,
+) -> impl IntoElement {
     div()
         .id(id)
         .min_w(px(0.))
         .overflow_hidden()
         .rounded(px(8.))
-        .bg(theme::CODE())
+        .bg(theme::code(cx))
         .p(px(10.))
         .text_size(px(12.))
         .text_color(color)
@@ -2772,13 +2782,14 @@ fn json_tokens(line: &str) -> Vec<(JKind, String)> {
     out
 }
 
-fn jkind_color(kind: JKind) -> Rgba {
+fn jkind_color(kind: JKind, cx: &App) -> Rgba {
+    let d = theme::is_dark(cx);
     match kind {
-        JKind::Key => theme::BRAND(),
-        JKind::Str => JSON_STRING(),
-        JKind::Num => JSON_NUMBER(),
-        JKind::Kw => ASSISTANT_VIOLET(),
-        JKind::Plain => theme::LABEL_3(),
+        JKind::Key => theme::brand(cx),
+        JKind::Str => JSON_STRING(d),
+        JKind::Num => JSON_NUMBER(d),
+        JKind::Kw => ASSISTANT_VIOLET(d),
+        JKind::Plain => theme::label_3(cx),
     }
 }
 
@@ -2832,63 +2843,64 @@ fn jt_child_path(key_path: &str, key: &str, index: usize, is_array: bool) -> Str
     }
 }
 
-fn json_leaf_token(value: &serde_json::Value) -> (Rgba, String) {
+fn json_leaf_token(value: &serde_json::Value, dark: bool) -> (Rgba, String) {
     match value {
-        serde_json::Value::String(s) => {
-            (JSON_STRING(), serde_json::to_string(s).unwrap_or_default())
-        }
-        serde_json::Value::Number(n) => (JSON_NUMBER(), n.to_string()),
-        serde_json::Value::Bool(b) => (JSON_NUMBER(), b.to_string()),
-        serde_json::Value::Null => (JSON_NUMBER(), "null".into()),
-        _ => (JSON_PUNCT(), value.to_string()),
+        serde_json::Value::String(s) => (
+            JSON_STRING(dark),
+            serde_json::to_string(s).unwrap_or_default(),
+        ),
+        serde_json::Value::Number(n) => (JSON_NUMBER(dark), n.to_string()),
+        serde_json::Value::Bool(b) => (JSON_NUMBER(dark), b.to_string()),
+        serde_json::Value::Null => (JSON_NUMBER(dark), "null".into()),
+        _ => (JSON_PUNCT(dark), value.to_string()),
     }
 }
 
 /// 折叠态单行内联预览;键名取标点色,深度 ≥2 的容器只显示 `{…}`
-fn json_preview_tokens(value: &serde_json::Value, depth: usize) -> Vec<(Rgba, String)> {
+fn json_preview_tokens(value: &serde_json::Value, depth: usize, dark: bool) -> Vec<(Rgba, String)> {
     let mut out = Vec::new();
     match value {
         serde_json::Value::Object(m) => {
-            out.push((JSON_PUNCT(), "{".into()));
+            out.push((JSON_PUNCT(dark), "{".into()));
             let limit = 4;
             if depth < 2 && !m.is_empty() {
                 for (i, (k, v)) in m.iter().enumerate() {
                     if i >= limit {
-                        out.push((JSON_PUNCT(), ", …".into()));
+                        out.push((JSON_PUNCT(dark), ", …".into()));
                         break;
                     }
                     if i > 0 {
-                        out.push((JSON_PUNCT(), ", ".into()));
+                        out.push((JSON_PUNCT(dark), ", ".into()));
                     }
-                    out.push((JSON_PUNCT(), format!("{k}: ")));
-                    out.extend(json_preview_tokens(v, depth + 1));
+                    out.push((JSON_PUNCT(dark), format!("{k}: ")));
+                    out.extend(json_preview_tokens(v, depth + 1, dark));
                 }
             } else if !m.is_empty() {
-                out.push((JSON_PUNCT(), "…".into()));
+                out.push((JSON_PUNCT(dark), "…".into()));
             }
-            out.push((JSON_PUNCT(), "}".into()));
+            out.push((JSON_PUNCT(dark), "}".into()));
         }
         serde_json::Value::Array(a) => {
-            out.push((JSON_PUNCT(), "[".into()));
+            out.push((JSON_PUNCT(dark), "[".into()));
             let limit = 5;
             if depth < 2 && !a.is_empty() {
                 for (i, v) in a.iter().enumerate() {
                     if i >= limit {
-                        out.push((JSON_PUNCT(), ", …".into()));
+                        out.push((JSON_PUNCT(dark), ", …".into()));
                         break;
                     }
                     if i > 0 {
-                        out.push((JSON_PUNCT(), ", ".into()));
+                        out.push((JSON_PUNCT(dark), ", ".into()));
                     }
-                    out.extend(json_preview_tokens(v, depth + 1));
+                    out.extend(json_preview_tokens(v, depth + 1, dark));
                 }
             } else if !a.is_empty() {
-                out.push((JSON_PUNCT(), "…".into()));
+                out.push((JSON_PUNCT(dark), "…".into()));
             }
-            out.push((JSON_PUNCT(), "]".into()));
+            out.push((JSON_PUNCT(dark), "]".into()));
         }
         _ => {
-            let (c, t) = json_leaf_token(value);
+            let (c, t) = json_leaf_token(value, dark);
             out.push((c, t));
         }
     }
@@ -2910,11 +2922,12 @@ fn json_tree_rows(
     value: &serde_json::Value,
     last: bool,
     depth: usize,
+    dark: bool,
 ) -> Vec<gpui_kit::AnyElement> {
     let JtCtx { store, s, ix } = *ctx;
     let mut row: Vec<gpui_kit::AnyElement> = Vec::new();
     if let Some(f) = field {
-        row.push(jt_span(JSON_PROPERTY(), format!("{f}:")));
+        row.push(jt_span(JSON_PROPERTY(dark), format!("{f}:")));
     }
     match value {
         serde_json::Value::Object(_) | serde_json::Value::Array(_)
@@ -2923,13 +2936,13 @@ fn json_tree_rows(
             // 叶子 / 空容器
             if value.is_object() || value.is_array() {
                 let (o, c) = json_brackets(value);
-                row.push(jt_span(JSON_PUNCT(), format!("{o}{c}")));
+                row.push(jt_span(JSON_PUNCT(dark), format!("{o}{c}")));
             } else {
-                let (c, t) = json_leaf_token(value);
+                let (c, t) = json_leaf_token(value, dark);
                 row.push(jt_span(c, t));
             }
             if !last {
-                row.push(jt_span(JSON_PUNCT(), ","));
+                row.push(jt_span(JSON_PUNCT(dark), ","));
             }
             return vec![jt_row(depth, row)];
         }
@@ -2944,7 +2957,7 @@ fn json_tree_rows(
             .id(format!("jt-{ix}-{key_path}"))
             .flex_shrink_0()
             .cursor_pointer()
-            .text_color(JSON_EXPANDER())
+            .text_color(JSON_EXPANDER(dark))
             .child(fixed(
                 if expanded {
                     IconName::ChevronDown
@@ -2959,13 +2972,13 @@ fn json_tree_rows(
             })
             .into_any_element(),
     );
-    row.push(jt_span(JSON_PUNCT(), o));
-    for t in json_preview_tokens(value, 0) {
+    row.push(jt_span(JSON_PUNCT(dark), o));
+    for t in json_preview_tokens(value, 0, dark) {
         row.push(jt_span(t.0, t.1));
     }
-    row.push(jt_span(JSON_PUNCT(), c));
+    row.push(jt_span(JSON_PUNCT(dark), c));
     if !last {
-        row.push(jt_span(JSON_PUNCT(), ","));
+        row.push(jt_span(JSON_PUNCT(dark), ","));
     }
     let mut rows = vec![jt_row(depth, row)];
     if expanded {
@@ -2981,6 +2994,7 @@ fn json_tree_rows(
                 v,
                 i == n - 1,
                 depth + 1,
+                dark,
             ));
         }
     }
@@ -2993,18 +3007,19 @@ fn json_tree_block(
     s: &Snap<'_>,
     ix: u64,
     value: &serde_json::Value,
+    dark: bool,
 ) -> Div {
     let ctx = JtCtx { store, s, ix };
     let is_array = value.is_array();
     let entries = json_entries(value);
     let n = entries.len();
     let (open, close) = json_brackets(value);
-    let mut rows: Vec<gpui_kit::AnyElement> = vec![jt_span(JSON_PUNCT(), open)];
+    let mut rows: Vec<gpui_kit::AnyElement> = vec![jt_span(JSON_PUNCT(dark), open)];
     for (i, (k, v)) in entries.into_iter().enumerate() {
         let path = jt_child_path("", &k, i, is_array);
-        rows.extend(json_tree_rows(&ctx, path, Some(&k), v, i == n - 1, 1));
+        rows.extend(json_tree_rows(&ctx, path, Some(&k), v, i == n - 1, 1, dark));
     }
-    rows.push(jt_span(JSON_PUNCT(), close));
+    rows.push(jt_span(JSON_PUNCT(dark), close));
     div()
         .v_flex()
         .text_size(px(12.))
@@ -3015,13 +3030,13 @@ fn json_tree_block(
 
 /// JSON 高亮块:逐行分色 token(pretty JSON 行短,行内不换行)。
 /// 高度不封顶——检查器主体(inspector-body)整页滚,内容全高展开
-fn json_block(id: &'static str, text: &str) -> impl IntoElement {
+fn json_block(id: &'static str, text: &str, cx: &App) -> impl IntoElement {
     div()
         .id(id)
         .min_w(px(0.))
         .overflow_hidden()
         .rounded(px(8.))
-        .bg(theme::CODE())
+        .bg(theme::code(cx))
         .p(px(10.))
         .v_flex()
         .text_size(px(12.))
@@ -3033,21 +3048,21 @@ fn json_block(id: &'static str, text: &str) -> impl IntoElement {
             div().flex().min_w(px(0.)).overflow_hidden().children(
                 json_tokens(line)
                     .into_iter()
-                    .map(|(kind, s)| div().text_color(jkind_color(kind)).child(s))
+                    .map(|(kind, s)| div().text_color(jkind_color(kind, cx)).child(s))
                     .collect::<Vec<_>>(),
             )
         }))
 }
 
 /// 代码块选择:内容为 JSON 对象/数组 → 高亮;否则等宽纯文本
-fn code_block(id: &'static str, text: &str, plain_color: Rgba) -> gpui_kit::AnyElement {
+fn code_block(id: &'static str, text: &str, plain_color: Rgba, cx: &App) -> gpui_kit::AnyElement {
     let is_json = serde_json::from_str::<serde_json::Value>(text)
         .map(|v| v.is_object() || v.is_array())
         .unwrap_or(false);
     if is_json {
-        json_block(id, text).into_any_element()
+        json_block(id, text, cx).into_any_element()
     } else {
-        mono_block(id, text, plain_color).into_any_element()
+        mono_block(id, text, plain_color, cx).into_any_element()
     }
 }
 
@@ -3078,7 +3093,7 @@ fn owning_request<'a>(
 /// Summary tab(记录):
 /// Hierarchy 跳转 → Status(工具含 Pending)→ Tokens/Duration →
 /// Payload/Result 预览 → Request Timing / Timing 小节
-fn summary_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
+fn summary_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord, cx: &App) -> Div {
     let requests = &s.view.requests;
     let req = owning_request(r, requests);
     let mut col = div().v_flex().gap(px(2.));
@@ -3090,29 +3105,37 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) ->
             let s2 = store.clone();
             col = col.child(dl_row(
                 t!("trajectory.row_source"),
-                nav_link("goto-source", message_source_label(source)).on_click(move |_, _, cx| {
-                    s2.update(cx, |st, cx| st.set_inspector_tab("source", cx));
-                }),
+                nav_link("goto-source", message_source_label(source), cx).on_click(
+                    move |_, _, cx| {
+                        s2.update(cx, |st, cx| st.set_inspector_tab("source", cx));
+                    },
+                ),
+                cx,
             ));
         }
         col = col.child(dl_row(
             t!("trajectory.row_status"),
             t!("trajectory.status_completed"),
+            cx,
         ));
         col = col.child(dl_row(
             t!("trajectory.row_duration"),
             fmt_ms(rec_total_ms(r).unwrap_or(0)),
+            cx,
         ));
         let s2 = store.clone();
         col = col
             .child(
-                section("sec-preview", t!("trajectory.tab_preview")).on_click(move |_, _, cx| {
-                    s2.update(cx, |st, cx| st.set_inspector_tab("preview", cx));
-                }),
+                section("sec-preview", t!("trajectory.tab_preview"), cx).on_click(
+                    move |_, _, cx| {
+                        s2.update(cx, |st, cx| st.set_inspector_tab("preview", cx));
+                    },
+                ),
             )
             .child(context_markdown_body(
                 r,
                 &format!("traj-ctx-prev-{}", r.index),
+                cx,
             ));
         return col;
     }
@@ -3130,7 +3153,7 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) ->
             let s2 = store.clone();
             let n = q.number;
             dd = dd.child(
-                nav_link("goto-request", t!("trajectory.request_n", n = n)).on_click(
+                nav_link("goto-request", t!("trajectory.request_n", n = n), cx).on_click(
                     move |_, _, cx| {
                         s2.update(cx, |st, cx| st.select_trajectory_request(n, cx));
                     },
@@ -3141,7 +3164,7 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) ->
             let s2 = store.clone();
             let ix = p.index;
             dd = dd.child(
-                nav_link("goto-message", t!("trajectory.nav_assistant_message")).on_click(
+                nav_link("goto-message", t!("trajectory.nav_assistant_message"), cx).on_click(
                     move |_, _, cx| {
                         s2.update(cx, |st, cx| st.select_trajectory_record(ix, cx));
                     },
@@ -3154,13 +3177,13 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) ->
         } else {
             t!("trajectory.row_hierarchy")
         };
-        col = col.child(dl_row(dt, dd.into_any_element()));
+        col = col.child(dl_row(dt, dd.into_any_element(), cx));
     }
 
     // Status(message:Failed 红 / Completed)
     if r.kind == "message" {
         let (label, color) = if r.is_error {
-            (t!("trajectory.status_failed"), Some(theme::DANGER()))
+            (t!("trajectory.status_failed"), Some(theme::danger(cx)))
         } else {
             (t!("trajectory.status_completed"), None)
         };
@@ -3169,6 +3192,7 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) ->
             div()
                 .when_some(color, |el, c| el.text_color(c))
                 .child(label),
+            cx,
         ));
     }
 
@@ -3178,19 +3202,21 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) ->
         let s2 = store.clone();
         col = col
             .child(
-                section("sec-preview", t!("trajectory.tab_preview")).on_click(move |_, _, cx| {
-                    s2.update(cx, |st, cx| st.set_inspector_tab("preview", cx));
-                }),
+                section("sec-preview", t!("trajectory.tab_preview"), cx).on_click(
+                    move |_, _, cx| {
+                        s2.update(cx, |st, cx| st.set_inspector_tab("preview", cx));
+                    },
+                ),
             )
-            .child(assistant_preview_body(store, s, r));
+            .child(assistant_preview_body(store, s, r, cx));
     }
 
     // Status(Failed 红 / Pending 无结果 / Completed)
     if r.kind == "tool" {
         let (label, color) = if r.is_error {
-            (t!("trajectory.status_failed"), Some(theme::DANGER()))
+            (t!("trajectory.status_failed"), Some(theme::danger(cx)))
         } else if r.result.is_none() {
-            (t!("trajectory.status_pending"), Some(theme::WARN()))
+            (t!("trajectory.status_pending"), Some(theme::warning(cx)))
         } else {
             (t!("trajectory.status_completed"), None)
         };
@@ -3199,6 +3225,7 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) ->
             div()
                 .when_some(color, |el, c| el.text_color(c))
                 .child(label),
+            cx,
         ));
     }
 
@@ -3210,11 +3237,13 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) ->
             .child(dl_row(
                 t!("trajectory.row_tokens"),
                 format!("{} tok", fmt_tok(out)),
+                cx,
             ))
-            .child(dl_row(t!("trajectory.row_reasoning"), fmt_tok(think)))
+            .child(dl_row(t!("trajectory.row_reasoning"), fmt_tok(think), cx))
             .child(dl_row(
                 t!("trajectory.row_content"),
                 fmt_tok(out.saturating_sub(think)),
+                cx,
             ));
     }
     // Duration(user)
@@ -3224,6 +3253,7 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) ->
         col = col.child(dl_row(
             t!("trajectory.row_duration"),
             fmt_ms((sec * 1000.) as i64),
+            cx,
         ));
     }
 
@@ -3234,32 +3264,34 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) ->
         let s2 = store.clone();
         col = col
             .child(
-                section("sec-payload", t!("trajectory.tab_payload")).on_click(move |_, _, cx| {
-                    s2.update(cx, |st, cx| st.set_inspector_tab("payload", cx));
-                }),
+                section("sec-payload", t!("trajectory.tab_payload"), cx).on_click(
+                    move |_, _, cx| {
+                        s2.update(cx, |st, cx| st.set_inspector_tab("payload", cx));
+                    },
+                ),
             )
-            .child(preview_block(store, s, r, "payload"));
+            .child(preview_block(store, s, r, "payload", cx));
     }
     if r.kind != "message" && (r.kind == "tool" || r.result.is_some() || r.output_detail.is_some())
     {
         let s2 = store.clone();
         col = col
             .child(
-                section("sec-result", t!("trajectory.tab_result")).on_click(move |_, _, cx| {
+                section("sec-result", t!("trajectory.tab_result"), cx).on_click(move |_, _, cx| {
                     s2.update(cx, |st, cx| st.set_inspector_tab("result", cx));
                 }),
             )
-            .child(preview_block(store, s, r, "result"));
+            .child(preview_block(store, s, r, "result", cx));
     }
     if r.kind == "tool" {
         let s2 = store.clone();
         col = col
             .child(
-                section("sec-schema", t!("trajectory.tab_schema")).on_click(move |_, _, cx| {
+                section("sec-schema", t!("trajectory.tab_schema"), cx).on_click(move |_, _, cx| {
                     s2.update(cx, |st, cx| st.set_inspector_tab("schema", cx));
                 }),
             )
-            .child(preview_block(store, s, r, "schema"));
+            .child(preview_block(store, s, r, "schema", cx));
     }
 
     let total = rec_total_ms(r);
@@ -3284,29 +3316,44 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) ->
                 dl_row(
                     t!("trajectory.row_started"),
                     r.started_at.map(fmt_clock).unwrap_or_else(|| "—".into()),
+                    cx,
                 ),
-                dl_row(t!("trajectory.row_total"), fmt_ms(q.duration_ms)),
-                dl_row("TTFT", r.ttft_ms.map(fmt_ms).unwrap_or_else(|| "—".into())),
-                dl_row(t!("trajectory.row_generation"), generation),
-                dl_row(t!("trajectory.row_throughput"), throughput),
-                dl_row(t!("trajectory.tab_timing"), timing_source(total.is_some())),
+                dl_row(t!("trajectory.row_total"), fmt_ms(q.duration_ms), cx),
+                dl_row(
+                    "TTFT",
+                    r.ttft_ms.map(fmt_ms).unwrap_or_else(|| "—".into()),
+                    cx,
+                ),
+                dl_row(t!("trajectory.row_generation"), generation, cx),
+                dl_row(t!("trajectory.row_throughput"), throughput, cx),
+                dl_row(
+                    t!("trajectory.tab_timing"),
+                    timing_source(total.is_some()),
+                    cx,
+                ),
             ]
         } else {
             vec![
                 dl_row(
                     t!("trajectory.row_started"),
                     r.started_at.map(fmt_clock).unwrap_or_else(|| "—".into()),
+                    cx,
                 ),
                 dl_row(
                     t!("trajectory.row_duration"),
                     total.map(fmt_ms).unwrap_or_else(|| "—".into()),
+                    cx,
                 ),
-                dl_row(t!("trajectory.tab_timing"), timing_source(total.is_some())),
+                dl_row(
+                    t!("trajectory.tab_timing"),
+                    timing_source(total.is_some()),
+                    cx,
+                ),
             ]
         };
         col = col
             .child(
-                section("sec-req-timing", t!("trajectory.sec_request_timing")).on_click(
+                section("sec-req-timing", t!("trajectory.sec_request_timing"), cx).on_click(
                     move |_, _, cx| {
                         s2.update(cx, |st, cx| {
                             st.select_trajectory_request(n, cx);
@@ -3322,7 +3369,7 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) ->
     if r.kind == "tool" {
         let s2 = store.clone();
         let timing_sec =
-            section("sec-timing", t!("trajectory.tab_timing")).on_click(move |_, _, cx| {
+            section("sec-timing", t!("trajectory.tab_timing"), cx).on_click(move |_, _, cx| {
                 s2.update(cx, |st, cx| st.set_inspector_tab("timing", cx));
             });
         col = col
@@ -3330,14 +3377,17 @@ fn summary_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) ->
             .child(dl_row(
                 t!("trajectory.row_started"),
                 r.started_at.map(fmt_clock).unwrap_or_else(|| "—".into()),
+                cx,
             ))
             .child(dl_row(
                 t!("trajectory.row_duration"),
                 total.map(fmt_ms).unwrap_or_else(|| "—".into()),
+                cx,
             ))
             .child(dl_row(
                 t!("trajectory.row_timing_source"),
                 timing_source(total.is_some()),
+                cx,
             ));
     }
     col
@@ -3351,6 +3401,7 @@ fn preview_block(
     s: &Snap<'_>,
     r: &TrajectoryRecord,
     tab: &'static str,
+    cx: &App,
 ) -> impl IntoElement {
     let missing = match tab {
         "payload" => t!("trajectory.no_payload"),
@@ -3389,7 +3440,7 @@ fn preview_block(
                     div()
                         .text_size(px(12.))
                         .font_weight(gpui_kit::FontWeight::MEDIUM)
-                        .text_color(theme::LABEL())
+                        .text_color(theme::label(cx))
                         .child(name),
                 );
             }
@@ -3397,7 +3448,7 @@ fn preview_block(
                 col = col.child(
                     div()
                         .text_size(px(12.))
-                        .text_color(theme::LABEL_2())
+                        .text_color(theme::label_2(cx))
                         .line_height(gpui_kit::relative(1.5))
                         .child(description),
                 );
@@ -3408,10 +3459,16 @@ fn preview_block(
                         .mt(px(4.))
                         .text_size(px(11.))
                         .font_weight(gpui_kit::FontWeight::MEDIUM)
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .child(t!("trajectory.sec_parameters")),
                 )
-                .child(json_tree_block(store, s, r.index, params));
+                .child(json_tree_block(
+                    store,
+                    s,
+                    r.index,
+                    params,
+                    theme::is_dark(cx),
+                ));
             return div()
                 .id(("sec-tree", r.index))
                 .max_h(px(96.))
@@ -3430,10 +3487,10 @@ fn preview_block(
         .max_h(px(96.))
         .overflow_y_scroll()
         .rounded(px(8.))
-        .bg(theme::CODE())
+        .bg(theme::code(cx))
         .p(px(10.))
         .text_size(px(12.))
-        .text_color(theme::LABEL_3())
+        .text_color(theme::label_3(cx))
         .font_family("Menlo")
         .line_height(gpui_kit::relative(1.55))
         .child(shown)
@@ -3443,54 +3500,55 @@ fn preview_block(
 }
 
 /// Payload tab(JSON 容器 → JsonTree;否则原文等宽)
-fn payload_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
+fn payload_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord, cx: &App) -> Div {
     match &r.payload {
-        None => div().child(empty_text(t!("trajectory.no_payload"))),
+        None => div().child(empty_text(t!("trajectory.no_payload"), cx)),
         Some(p) => match serde_json::from_str::<serde_json::Value>(p) {
             Ok(v) if v.is_object() || v.is_array() => {
-                div().child(json_tree_block(store, s, r.index, &v))
+                div().child(json_tree_block(store, s, r.index, &v, theme::is_dark(cx)))
             }
             _ => div().child(code_block(
                 "mono-payload",
                 &pretty_json(p),
-                theme::LABEL_3(),
+                theme::label_3(cx),
+                cx,
             )),
         },
     }
 }
 
 /// Result tab(错误全套红;JSON 容器 → JsonTree)
-fn result_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
+fn result_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord, cx: &App) -> Div {
     let color = if r.is_error {
-        theme::DANGER()
+        theme::danger(cx)
     } else {
-        theme::LABEL_3()
+        theme::label_3(cx)
     };
     let text = match (&r.output_detail, &r.result) {
         (None, None) => {
-            return div().child(empty_text(t!("trajectory.no_result")));
+            return div().child(empty_text(t!("trajectory.no_result"), cx));
         }
         (Some(d), _) => d,
         (None, Some(s)) => s,
     };
     match serde_json::from_str::<serde_json::Value>(text) {
         Ok(v) if v.is_object() || v.is_array() => {
-            div().child(json_tree_block(store, s, r.index, &v))
+            div().child(json_tree_block(store, s, r.index, &v, theme::is_dark(cx)))
         }
-        _ => div().child(code_block("mono-result", text, color)),
+        _ => div().child(code_block("mono-result", text, color, cx)),
     }
 }
 
 /// Raw tab(ASSISTANT:Thinking 折叠 + 输出全文)
-fn raw_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
+fn raw_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord, cx: &App) -> Div {
     let mut col = div().v_flex().gap(px(8.));
     // CONTEXT:注入文本为单 text 块,「Block #1 text」头 + 等宽原文
     if r.kind == "context" {
-        return col.child(context_source_block(r));
+        return col.child(context_source_block(r, cx));
     }
     // MESSAGE:thinking/text/tool-call 连续编号
     if r.kind == "message" {
-        return assistant_source_blocks(store, s, r);
+        return assistant_source_blocks(store, s, r, cx);
     }
     if let Some(t) = &r.thinking_detail {
         let open = s.raw_thinking;
@@ -3502,7 +3560,7 @@ fn raw_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div
                 .v_flex()
                 .gap(px(4.))
                 .border_l_2()
-                .border_color(theme::BORDER())
+                .border_color(theme::border(cx))
                 .pl(px(10.))
                 .child(
                     div()
@@ -3512,8 +3570,8 @@ fn raw_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div
                         .gap(px(4.))
                         .cursor_pointer()
                         .text_size(px(11.))
-                        .text_color(theme::CAPTION())
-                        .hover(|st| st.text_color(theme::LABEL_3()))
+                        .text_color(theme::caption(cx))
+                        .hover(|st| st.text_color(theme::label_3(cx)))
                         .child(t!("trajectory.thinking"))
                         .child(fixed(
                             if open {
@@ -3531,7 +3589,7 @@ fn raw_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div
                     el.child(
                         div()
                             .text_size(px(12.))
-                            .text_color(theme::LABEL_3())
+                            .text_color(theme::label_3(cx))
                             .line_height(gpui_kit::relative(1.55))
                             .child(t2.clone()),
                     )
@@ -3539,28 +3597,31 @@ fn raw_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div
         );
     }
     match &r.output_detail {
-        Some(o) => col = col.child(mono_block("mono-raw", o, theme::LABEL_3())),
-        None => col = col.child(empty_text(t!("trajectory.na"))),
+        Some(o) => col = col.child(mono_block("mono-raw", o, theme::label_3(cx), cx)),
+        None => col = col.child(empty_text(t!("trajectory.na"), cx)),
     }
     col
 }
 
 /// Timing tab(记录)
-fn timing_body(r: &TrajectoryRecord) -> Div {
+fn timing_body(r: &TrajectoryRecord, cx: &App) -> Div {
     let total = rec_total_ms(r);
     let mut col = div().v_flex().gap(px(2.));
     col = col.child(dl_row(
         t!("trajectory.row_started"),
         r.started_at.map(fmt_clock).unwrap_or_else(|| "—".into()),
+        cx,
     ));
     col = col.child(dl_row(
         t!("trajectory.row_duration"),
         total.map(fmt_ms).unwrap_or_else(|| "—".into()),
+        cx,
     ));
     if r.kind == "message" {
         col = col.child(dl_row(
             "TTFT",
             r.ttft_ms.map(fmt_ms).unwrap_or_else(|| "—".into()),
+            cx,
         ));
         col = col.child(dl_row(
             t!("trajectory.row_generation"),
@@ -3568,40 +3629,54 @@ fn timing_body(r: &TrajectoryRecord) -> Div {
                 (Some(t), Some(ms)) if ms > t => fmt_ms(ms - t),
                 _ => "—".into(),
             },
+            cx,
         ));
     }
     col.child(dl_row(
         t!("trajectory.tab_timing"),
         timing_source(total.is_some()),
+        cx,
     ))
 }
 
 /// Summary tab(请求):Status/Provider/Model/Tool calls/
 /// …/Result 跳转行——链到该请求产出的助手消息或压缩记录)
-fn request_summary_body(store: &Entity<AppStore>, s: &Snap<'_>, q: &TrajectoryRequest) -> Div {
+fn request_summary_body(
+    store: &Entity<AppStore>,
+    s: &Snap<'_>,
+    q: &TrajectoryRequest,
+    cx: &App,
+) -> Div {
     let mut col = div().v_flex().gap(px(2.));
     col = col.child(dl_row(
         t!("trajectory.row_status"),
         if q.status == "error" {
             div()
-                .text_color(theme::DANGER())
+                .text_color(theme::danger(cx))
                 .child(t!("trajectory.status_failed"))
         } else {
             div().child(t!("trajectory.status_complete"))
         },
+        cx,
     ));
-    col = col.child(dl_row(t!("trajectory.row_provider"), q.provider.clone()));
-    col = col.child(dl_row(t!("trajectory.row_model"), q.model.clone()));
+    col = col.child(dl_row(
+        t!("trajectory.row_provider"),
+        q.provider.clone(),
+        cx,
+    ));
+    col = col.child(dl_row(t!("trajectory.row_model"), q.model.clone(), cx));
     col = col.child(dl_row(
         t!("trajectory.row_tool_calls"),
         fmt_tok(q.tool_calls),
+        cx,
     ));
     if let Some(e) = &q.reasoning_effort {
-        col = col.child(dl_row(t!("trajectory.row_reasoning"), e.clone()));
+        col = col.child(dl_row(t!("trajectory.row_reasoning"), e.clone(), cx));
     }
     col = col.child(dl_row(
         t!("trajectory.row_started"),
         fmt_clock(q.started_at),
+        cx,
     ));
     // Result:该请求产出的记录(message/compacted),`>` 跳转其 Summary
     if let Some(res) = s.view.records.iter().find(|r| {
@@ -3616,27 +3691,32 @@ fn request_summary_body(store: &Entity<AppStore>, s: &Snap<'_>, q: &TrajectoryRe
         let ix = res.index;
         col = col.child(dl_row(
             t!("trajectory.row_result"),
-            nav_link("goto-req-result", label).on_click(move |_, _, cx| {
+            nav_link("goto-req-result", label, cx).on_click(move |_, _, cx| {
                 s2.update(cx, |st, cx| st.select_trajectory_record(ix, cx));
             }),
+            cx,
         ));
     }
     col
 }
 
 /// Usage tab(请求:This request / Session cumulative 两组五桶)
-fn usage_body(q: &TrajectoryRequest) -> Div {
+fn usage_body(q: &TrajectoryRequest, cx: &App) -> Div {
     let mut col = div().v_flex().gap(px(2.));
     match &q.usage {
-        None => col = col.child(empty_text(t!("trajectory.usage_na"))),
-        Some(u) => col = col.child(usage_group(t!("trajectory.usage_this"), u)),
+        None => col = col.child(empty_text(t!("trajectory.usage_na"), cx)),
+        Some(u) => col = col.child(usage_group(t!("trajectory.usage_this"), u, cx)),
     }
-    col.child(section("sec-cumulative", t!("trajectory.usage_cumulative")))
-        .child(usage_group("", &q.cumulative))
+    col.child(section(
+        "sec-cumulative",
+        t!("trajectory.usage_cumulative"),
+        cx,
+    ))
+    .child(usage_group("", &q.cumulative, cx))
 }
 
 /// 用量组(Input/Cached/Other/Output/Reasoning/Content)
-fn usage_group(title: impl Into<gpui_kit::SharedString>, u: &TrajectoryUsage) -> Div {
+fn usage_group(title: impl Into<gpui_kit::SharedString>, u: &TrajectoryUsage, cx: &App) -> Div {
     let title = title.into();
     div()
         .v_flex()
@@ -3646,32 +3726,47 @@ fn usage_group(title: impl Into<gpui_kit::SharedString>, u: &TrajectoryUsage) ->
                     .mb(px(2.))
                     .text_size(px(11.))
                     .font_weight(gpui_kit::FontWeight::MEDIUM)
-                    .text_color(theme::CAPTION())
+                    .text_color(theme::caption(cx))
                     .child(title.to_string()),
             )
         })
         .child(dl_row(
             t!("trajectory.legend_input"),
             format!("{} tok", fmt_tok(u.input)),
+            cx,
         ))
-        .child(dl_row(t!("trajectory.row_cached"), fmt_tok(u.cached)))
-        .child(dl_row(t!("trajectory.row_kind_other"), fmt_tok(u.other)))
+        .child(dl_row(t!("trajectory.row_cached"), fmt_tok(u.cached), cx))
+        .child(dl_row(
+            t!("trajectory.row_kind_other"),
+            fmt_tok(u.other),
+            cx,
+        ))
         .child(dl_row(
             t!("trajectory.row_output"),
             format!("{} tok", fmt_tok(u.output)),
+            cx,
         ))
-        .child(dl_row(t!("trajectory.row_reasoning"), fmt_tok(u.reasoning)))
-        .child(dl_row(t!("trajectory.row_content"), fmt_tok(u.content())))
+        .child(dl_row(
+            t!("trajectory.row_reasoning"),
+            fmt_tok(u.reasoning),
+            cx,
+        ))
+        .child(dl_row(
+            t!("trajectory.row_content"),
+            fmt_tok(u.content()),
+            cx,
+        ))
 }
 
 /// Timing tab(请求)
-fn request_timing_body(q: &TrajectoryRequest) -> Div {
+fn request_timing_body(q: &TrajectoryRequest, cx: &App) -> Div {
     div()
         .v_flex()
         .gap(px(2.))
         .child(dl_row(
             t!("trajectory.row_started"),
             fmt_clock(q.started_at),
+            cx,
         ))
         .child(dl_row(
             t!("trajectory.row_completed"),
@@ -3680,21 +3775,27 @@ fn request_timing_body(q: &TrajectoryRequest) -> Div {
             } else {
                 "—".into()
             },
+            cx,
         ))
-        .child(dl_row(t!("trajectory.row_total"), fmt_ms(q.duration_ms)))
+        .child(dl_row(
+            t!("trajectory.row_total"),
+            fmt_ms(q.duration_ms),
+            cx,
+        ))
         .child(dl_row(
             "TTFT",
             q.ttft_ms.map(fmt_ms).unwrap_or_else(|| "—".into()),
+            cx,
         ))
 }
 
 /// 缺失文案
-fn empty_text(text: impl Into<gpui_kit::SharedString>) -> Div {
+fn empty_text(text: impl Into<gpui_kit::SharedString>, cx: &App) -> Div {
     let text = text.into();
     div()
         .py(px(14.))
         .text_size(px(12.))
-        .text_color(theme::LABEL_3())
+        .text_color(theme::label_3(cx))
         .child(text.to_string())
 }
 
@@ -3725,9 +3826,15 @@ fn decision_scenario_label(scenario: Option<&str>) -> String {
 /// None = 这份 receipt 本就没有「裁决」这一维:`decide` 工具(scenario=tool)
 /// 的答案是模型自拟的问题,常是 noul,拿它当裁决会显示成「未决」——把一次
 /// 正常应答说成没结论。调用方见 None 改显答案摘要。
-fn decision_verdict(d: &liuma_core::trajectory::DecisionRecord) -> Option<(String, Rgba)> {
+fn decision_verdict(
+    d: &liuma_core::trajectory::DecisionRecord,
+    cx: &App,
+) -> Option<(String, Rgba)> {
     if d.error.is_some() {
-        return Some((t!("trajectory.verdict_failed").to_string(), theme::DANGER()));
+        return Some((
+            t!("trajectory.verdict_failed").to_string(),
+            theme::danger(cx),
+        ));
     }
     let choice = d.answers.as_ref().and_then(|a| {
         let by_id = &a["verdict"]["choice"];
@@ -3747,10 +3854,13 @@ fn decision_verdict(d: &liuma_core::trajectory::DecisionRecord) -> Option<(Strin
     Some(match choice.as_str() {
         "proceed" => (
             t!("trajectory.verdict_proceed").to_string(),
-            theme::SUCCESS(),
+            theme::success(cx),
         ),
-        "block" => (t!("trajectory.verdict_block").to_string(), theme::DANGER()),
-        other => (other.to_string(), theme::LABEL_2()),
+        "block" => (
+            t!("trajectory.verdict_block").to_string(),
+            theme::danger(cx),
+        ),
+        other => (other.to_string(), theme::label_2(cx)),
     })
 }
 
@@ -3829,14 +3939,14 @@ fn decision_summary(d: &liuma_core::trajectory::DecisionRecord) -> String {
 /// 工具行尾的裁决标记(方案甲:守卫裁决是**本次调用的一个阶段**,不
 /// 另立行——见 `liuma_core::trajectory::TrajectoryRecord::decision`)。
 /// `ix` = 记录行号(调试选择器用,与台账行同号)。
-fn decision_chip(ix: u64, d: &liuma_core::trajectory::DecisionRecord) -> Div {
+fn decision_chip(ix: u64, d: &liuma_core::trajectory::DecisionRecord, cx: &App) -> Div {
     // 无裁决维度(decide 工具一类)→ 显答案摘要,颜色与字重退到次级:
     // 那份 receipt 没有「放行/拦下」这回事,不该借守卫的词说话
-    let (text, color, weight) = match decision_verdict(d) {
+    let (text, color, weight) = match decision_verdict(d, cx) {
         Some((verdict, color)) => (verdict, color, gpui_kit::FontWeight::SEMIBOLD),
         None => (
             decision_summary(d),
-            theme::CAPTION(),
+            theme::caption(cx),
             gpui_kit::FontWeight::NORMAL,
         ),
     };
@@ -3850,7 +3960,7 @@ fn decision_chip(ix: u64, d: &liuma_core::trajectory::DecisionRecord) -> Div {
         .child(
             div()
                 .text_size(px(11.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(decision_scenario_label(Some(&d.scenario))),
         )
         .child(
@@ -3863,7 +3973,7 @@ fn decision_chip(ix: u64, d: &liuma_core::trajectory::DecisionRecord) -> Div {
 }
 
 /// 折叠行 chip(触发来源 + 条数 + prefix token + 已裁条数)
-fn fold_chip(ix: u64, f: &liuma_core::trajectory::FoldRecord) -> Div {
+fn fold_chip(ix: u64, f: &liuma_core::trajectory::FoldRecord, cx: &App) -> Div {
     let mut text = t!(
         "trajectory.fold_chip",
         items = f.items,
@@ -3883,13 +3993,13 @@ fn fold_chip(ix: u64, f: &liuma_core::trajectory::FoldRecord) -> Div {
         .child(
             div()
                 .text_size(px(11.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .child(fold_trigger_label(&f.trigger)),
         )
         .child(
             div()
                 .text_size(px(11.))
-                .text_color(theme::LABEL_3())
+                .text_color(theme::label_3(cx))
                 .child(text),
         )
 }
@@ -3906,34 +4016,38 @@ fn fold_trigger_label(trigger: &str) -> String {
 
 /// 折叠页正文:触发 / 压力 / 门槛 / 保留尾 / 遮蔽范围 / 条数 / 前缀
 /// token / 价值裁定计数 / 本次耗时。全部来自落档事件,没有第二权威。
-fn fold_tab_body(r: &TrajectoryRecord) -> Div {
+fn fold_tab_body(r: &TrajectoryRecord, cx: &App) -> Div {
     let mut col = div()
         .v_flex()
         .gap(px(2.))
         .debug_selector(|| "inspector-fold-body".to_string());
     let Some(f) = &r.fold else {
-        return col.child(empty_text(t!("trajectory.no_fold")));
+        return col.child(empty_text(t!("trajectory.no_fold"), cx));
     };
     col = col.child(dl_row(
         t!("trajectory.row_trigger"),
         fold_trigger_label(&f.trigger),
+        cx,
     ));
     if f.pressure_tokens > 0 {
         col = col.child(dl_row(
             t!("trajectory.row_pressure"),
             format!("{} tok", fmt_tok(f.pressure_tokens)),
+            cx,
         ));
     }
     if let Some(t) = f.threshold_tokens {
         col = col.child(dl_row(
             t!("trajectory.row_threshold"),
             format!("{} tok", fmt_tok(t)),
+            cx,
         ));
     }
     if f.retain_tokens > 0 {
         col = col.child(dl_row(
             t!("trajectory.row_retain"),
             format!("{} tok", fmt_tok(f.retain_tokens)),
+            cx,
         ));
     }
     if f.shadowed_end > 0 {
@@ -3944,15 +4058,18 @@ fn fold_tab_body(r: &TrajectoryRecord) -> Div {
                 a = f.shadowed_start.min(f.shadowed_end),
                 b = f.shadowed_end
             )),
+            cx,
         ));
     }
     col = col.child(dl_row(
         t!("trajectory.row_fold_items"),
         t!("trajectory.fold_items_count", n = f.items),
+        cx,
     ));
     col = col.child(dl_row(
         t!("trajectory.row_prefix_tokens"),
         format!("{} tok", fmt_tok(f.prefix_tokens)),
+        cx,
     ));
     // 价值裁定:候选分母诚实(评估 M / 共 N),裁掉分「已生效」与
     // 「判为无价值」(仅记录档两者不同)
@@ -3969,46 +4086,51 @@ fn fold_tab_body(r: &TrajectoryRecord) -> Div {
         if unjudged > 0 {
             line.push_str(&t!("trajectory.judge_unjudged", n = unjudged));
         }
-        col = col.child(dl_row(t!("trajectory.row_judge"), line));
+        col = col.child(dl_row(t!("trajectory.row_judge"), line, cx));
     } else {
         col = col.child(dl_row(
             t!("trajectory.row_judge"),
             t!("trajectory.judge_none"),
+            cx,
         ));
     }
     col = col.child(dl_row(
         t!("trajectory.row_duration"),
         rec_total_ms(r).map(fmt_ms).unwrap_or_else(|| "—".into()),
+        cx,
     ));
     col
 }
 
 /// 决策页正文:场景 / 模型 / 裁决 / 应答 / 问题 / 耗时 / 状态摘要;
 /// 失败给原因(裁决词已由 decision_verdict 置为「已失败」)。
-fn decision_tab_body(r: &TrajectoryRecord) -> Div {
+fn decision_tab_body(r: &TrajectoryRecord, cx: &App) -> Div {
     let mut col = div().v_flex().gap(px(2.));
     let Some(d) = &r.decision else {
-        return col.child(empty_text(t!("trajectory.no_decision")));
+        return col.child(empty_text(t!("trajectory.no_decision"), cx));
     };
     col = col.child(dl_row(
         t!("trajectory.row_scenario"),
         decision_scenario_label(Some(&d.scenario)),
+        cx,
     ));
-    col = col.child(dl_row(t!("trajectory.row_model"), d.model.clone()));
-    if let Some((verdict, color)) = decision_verdict(d) {
+    col = col.child(dl_row(t!("trajectory.row_model"), d.model.clone(), cx));
+    if let Some((verdict, color)) = decision_verdict(d, cx) {
         col = col.child(dl_row(
             t!("trajectory.row_verdict"),
             div().text_color(color).child(verdict),
+            cx,
         ));
     }
     let summary = decision_summary(d);
     if !summary.is_empty() {
-        col = col.child(dl_row(t!("trajectory.row_answers"), summary));
+        col = col.child(dl_row(t!("trajectory.row_answers"), summary, cx));
     }
     if !d.questions.is_empty() {
         col = col.child(dl_row(
             t!("trajectory.row_questions"),
             d.questions.join(", "),
+            cx,
         ));
     }
     col = col.child(dl_row(
@@ -4018,11 +4140,13 @@ fn decision_tab_body(r: &TrajectoryRecord) -> Div {
         } else {
             "—".into()
         },
+        cx,
     ));
     if let Some(n) = d.pruned {
         col = col.child(dl_row(
             t!("trajectory.row_pruned"),
             t!("trajectory.pruned_count", n = n),
+            cx,
         ));
     }
     if let Some(digest) = &d.state_digest {
@@ -4033,6 +4157,7 @@ fn decision_tab_body(r: &TrajectoryRecord) -> Div {
                 .text_size(px(11.))
                 .truncate()
                 .child(digest.clone()),
+            cx,
         ));
     }
     match &d.error {
@@ -4040,7 +4165,7 @@ fn decision_tab_body(r: &TrajectoryRecord) -> Div {
             div().pt(px(6.)).child(
                 div()
                     .text_size(px(12.))
-                    .text_color(theme::DANGER())
+                    .text_color(theme::danger(cx))
                     .child(reason.clone()),
             ),
         ),
@@ -4079,7 +4204,11 @@ fn message_source_label(source: &serde_json::Value) -> String {
 /// 工具调用行(单行形态:扳手 + name + 空格 + args 同行截断——
 /// args 取 text 的紧凑段,payload 是 pretty 多行 JSON 不可用;
 /// 12px Menlo,名称 LABEL_2 / 参数 LABEL_3。点击跳工具记录)
-fn assistant_tool_call_row(store: &Entity<AppStore>, call: &TrajectoryRecord) -> impl IntoElement {
+fn assistant_tool_call_row(
+    store: &Entity<AppStore>,
+    call: &TrajectoryRecord,
+    cx: &App,
+) -> impl IntoElement {
     let (name, args) = match call.text.split_once(' ') {
         Some((n, a)) => (n, a),
         None => (call.text.as_str(), ""),
@@ -4101,7 +4230,7 @@ fn assistant_tool_call_row(store: &Entity<AppStore>, call: &TrajectoryRecord) ->
                 .flex_shrink_0()
                 .font_family("Menlo")
                 .text_size(px(12.))
-                .text_color(theme::LABEL_2())
+                .text_color(theme::label_2(cx))
                 .child(name.to_string()),
         )
         .child(
@@ -4109,7 +4238,7 @@ fn assistant_tool_call_row(store: &Entity<AppStore>, call: &TrajectoryRecord) ->
                 .min_w(px(0.))
                 .font_family("Menlo")
                 .text_size(px(12.))
-                .text_color(theme::LABEL_3())
+                .text_color(theme::label_3(cx))
                 .truncate()
                 .child(args.to_string()),
         )
@@ -4121,7 +4250,12 @@ fn assistant_tool_call_row(store: &Entity<AppStore>, call: &TrajectoryRecord) ->
 
 /// Preview 页(Summary 小节同款):Thinking 折叠(默认收)+ 正文
 /// markdown + 工具调用行
-fn assistant_preview_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
+fn assistant_preview_body(
+    store: &Entity<AppStore>,
+    s: &Snap<'_>,
+    r: &TrajectoryRecord,
+    cx: &App,
+) -> Div {
     let mut col = div()
         .debug_selector(move || format!("traj-preview-{}", r.index))
         .v_flex();
@@ -4134,7 +4268,7 @@ fn assistant_preview_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &Trajectory
                 .id("assistant-preview-thinking")
                 .v_flex()
                 .border_l_2()
-                .border_color(theme::BORDER())
+                .border_color(theme::border(cx))
                 .pl(px(10.))
                 .child(
                     div()
@@ -4145,7 +4279,7 @@ fn assistant_preview_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &Trajectory
                         .cursor_pointer()
                         .text_size(px(12.))
                         .font_weight(gpui_kit::FontWeight::MEDIUM)
-                        .text_color(theme::LABEL_2())
+                        .text_color(theme::label_2(cx))
                         .child(t!("trajectory.thinking"))
                         .child(fixed(
                             if open {
@@ -4163,7 +4297,7 @@ fn assistant_preview_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &Trajectory
                     el.child(
                         div()
                             .text_size(px(12.))
-                            .text_color(theme::LABEL_2())
+                            .text_color(theme::label_2(cx))
                             .line_height(gpui_kit::relative(1.5))
                             .child(t2.clone()),
                     )
@@ -4174,17 +4308,18 @@ fn assistant_preview_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &Trajectory
         col = col.child(div().mt(px(6.)).child(crate::kits::markdown_tv::tv_static(
             gpui_kit::SharedString::from(format!("traj-preview-{}", r.index)),
             o,
+            cx,
         )));
     }
     if r.output_detail.is_none() && r.thinking_detail.is_none() {
-        col = col.child(empty_text(t!("trajectory.no_content")));
+        col = col.child(empty_text(t!("trajectory.no_content"), cx));
     }
     for c in s
         .index
         .map(|i| i.step_tool_calls(&s.view.records, r).collect::<Vec<_>>())
         .unwrap_or_default()
     {
-        col = col.child(assistant_tool_call_row(store, c));
+        col = col.child(assistant_tool_call_row(store, c, cx));
     }
     col
 }
@@ -4195,6 +4330,7 @@ fn source_block_header(
     n: usize,
     kind: &'static str,
     jump: Option<u64>,
+    cx: &App,
 ) -> gpui_kit::AnyElement {
     let label = format!("Block #{n} {kind}");
     match jump {
@@ -4210,7 +4346,7 @@ fn source_block_header(
                 .child(
                     div()
                         .text_size(px(11.))
-                        .text_color(theme::CAPTION())
+                        .text_color(theme::caption(cx))
                         .child(label),
                 )
                 .child(fixed(IconName::ChevronRight, 12.))
@@ -4222,7 +4358,7 @@ fn source_block_header(
         }
         None => div()
             .text_size(px(11.))
-            .text_color(theme::CAPTION())
+            .text_color(theme::caption(cx))
             .child(label)
             .into_any_element(),
     }
@@ -4230,26 +4366,31 @@ fn source_block_header(
 
 /// Raw 页块形态:thinking / text / tool-call 按模型
 /// 输出序连续编号;块序 = reasoning → 正文 → 同步工具调用
-fn assistant_source_blocks(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
+fn assistant_source_blocks(
+    store: &Entity<AppStore>,
+    s: &Snap<'_>,
+    r: &TrajectoryRecord,
+    cx: &App,
+) -> Div {
     let mut col = div().v_flex().gap(px(6.));
     let mut n = 0usize;
     if let Some(t) = &r.thinking_detail {
         n += 1;
         col = col
-            .child(source_block_header(store, n, "thinking", None))
-            .child(mono_block(("mono-block", n), t, theme::LABEL()));
+            .child(source_block_header(store, n, "thinking", None, cx))
+            .child(mono_block(("mono-block", n), t, theme::label(cx), cx));
     }
     if let Some(o) = &r.output_detail {
         n += 1;
         col = col
-            .child(source_block_header(store, n, "text", None))
-            .child(mono_block(("mono-block", n), o, theme::LABEL()));
+            .child(source_block_header(store, n, "text", None, cx))
+            .child(mono_block(("mono-block", n), o, theme::label(cx), cx));
     }
     if n == 0 {
         n += 1;
         col = col
-            .child(source_block_header(store, n, "text", None))
-            .child(mono_block(("mono-block", n), &r.text, theme::LABEL()));
+            .child(source_block_header(store, n, "text", None, cx))
+            .child(mono_block(("mono-block", n), &r.text, theme::label(cx), cx));
     }
     for c in s
         .index
@@ -4258,11 +4399,18 @@ fn assistant_source_blocks(store: &Entity<AppStore>, s: &Snap<'_>, r: &Trajector
     {
         n += 1;
         col = col
-            .child(source_block_header(store, n, "tool-call", Some(c.index)))
+            .child(source_block_header(
+                store,
+                n,
+                "tool-call",
+                Some(c.index),
+                cx,
+            ))
             .child(mono_block(
                 ("mono-block", n),
                 c.payload.as_deref().unwrap_or_default(),
-                theme::LABEL(),
+                theme::label(cx),
+                cx,
             ));
     }
     col
@@ -4270,19 +4418,23 @@ fn assistant_source_blocks(store: &Entity<AppStore>, s: &Snap<'_>, r: &Trajector
 
 /// Summary 的注入文本预览 + Preview tab(markdown 渲染;
 /// Summary 内为 preview 紧凑形)
-fn context_markdown_body(r: &TrajectoryRecord, key: &str) -> Div {
+fn context_markdown_body(r: &TrajectoryRecord, key: &str, cx: &App) -> Div {
     let mut col = div().v_flex();
     match r.payload.as_deref() {
         Some(text) if !text.is_empty() => {
-            col = col.child(crate::kits::markdown_tv::tv_static(key.to_string(), text));
+            col = col.child(crate::kits::markdown_tv::tv_static(
+                key.to_string(),
+                text,
+                cx,
+            ));
         }
-        _ => col = col.child(empty_text(t!("trajectory.no_content"))),
+        _ => col = col.child(empty_text(t!("trajectory.no_content"), cx)),
     }
     col
 }
 
 /// Preview tab(完整渲染)
-fn preview_tab_body(r: &TrajectoryRecord) -> Div {
+fn preview_tab_body(r: &TrajectoryRecord, cx: &App) -> Div {
     let key = format!("traj-preview-{}", r.index);
     let mut col = div().debug_selector(move || key.clone()).v_flex();
     match r.payload.as_deref() {
@@ -4290,42 +4442,43 @@ fn preview_tab_body(r: &TrajectoryRecord) -> Div {
             col = col.child(crate::kits::markdown_tv::tv_static(
                 gpui_kit::SharedString::from(format!("traj-preview-{}", r.index)),
                 text,
+                cx,
             ));
         }
-        _ => col = col.child(empty_text(t!("trajectory.no_content"))),
+        _ => col = col.child(empty_text(t!("trajectory.no_content"), cx)),
     }
     col
 }
 
 /// Raw tab 的块形态(text 块 = 「Block #1 text」头 + 原文)
-fn context_source_block(r: &TrajectoryRecord) -> Div {
+fn context_source_block(r: &TrajectoryRecord, cx: &App) -> Div {
     let mut col = div().v_flex();
     let Some(text) = r.payload.as_deref() else {
-        return col.child(empty_text(t!("trajectory.no_content")));
+        return col.child(empty_text(t!("trajectory.no_content"), cx));
     };
     col = col
         .child(
             div()
                 .text_size(px(11.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .pb(px(4.))
                 .child("Block #1 text"),
         )
-        .child(mono_block("mono-context-raw", text, theme::LABEL()));
+        .child(mono_block("mono-context-raw", text, theme::label(cx), cx));
     col
 }
 
 /// Source tab(染色对象数据:以「Message JSON」标签 + 高亮块呈现)
-fn source_tab_body(r: &TrajectoryRecord) -> Div {
+fn source_tab_body(r: &TrajectoryRecord, cx: &App) -> Div {
     let mut col = div().v_flex();
     let Some(source) = &r.source else {
-        return col.child(empty_text(t!("trajectory.source_not_recorded")));
+        return col.child(empty_text(t!("trajectory.source_not_recorded"), cx));
     };
     col = col
         .child(
             div()
                 .text_size(px(11.))
-                .text_color(theme::CAPTION())
+                .text_color(theme::caption(cx))
                 .pb(px(4.))
                 .child(t!("trajectory.message_json")),
         )
@@ -4334,6 +4487,7 @@ fn source_tab_body(r: &TrajectoryRecord) -> Div {
                 json_block(
                     "mono-context-source",
                     &serde_json::to_string_pretty(source).unwrap_or_default(),
+                    cx,
                 )
                 .into_any_element(),
             ),
@@ -4344,14 +4498,14 @@ fn source_tab_body(r: &TrajectoryRecord) -> Div {
 // ── SYSTEM 详情(System Prompt / Tools / Diff)与 TOOL Schema ────
 
 /// System Prompt 页:Markdown 渲染(空则缺省文案)
-fn system_body(r: &TrajectoryRecord) -> Div {
+fn system_body(r: &TrajectoryRecord, cx: &App) -> Div {
     let mut col = div().v_flex();
     match &r.system_prompt {
         Some(p) if !p.is_empty() => {
             let key = format!("traj-sys-{}", r.index);
-            col = col.child(crate::kits::markdown_tv::tv_static(key.clone(), p));
+            col = col.child(crate::kits::markdown_tv::tv_static(key.clone(), p, cx));
         }
-        _ => col = col.child(empty_text(t!("trajectory.no_system_prompt"))),
+        _ => col = col.child(empty_text(t!("trajectory.no_system_prompt"), cx)),
     }
     col
 }
@@ -4377,13 +4531,13 @@ fn spec_name(t: &serde_json::Value) -> String {
 /// Tools 页:工具目录(扁平行 + 底部分隔线;折叠行 =
 /// chevron + 图标 + mono 名称 + 内联灰描述单行截断;展开 = 完整描述 +
 /// 参数 JSON)
-fn tools_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
+fn tools_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord, cx: &App) -> Div {
     let mut col = div().v_flex();
     let Some(catalog) = &r.tools_catalog else {
-        return col.child(empty_text(t!("trajectory.no_tools")));
+        return col.child(empty_text(t!("trajectory.no_tools"), cx));
     };
     if catalog.is_empty() {
-        return col.child(empty_text(t!("trajectory.no_tools")));
+        return col.child(empty_text(t!("trajectory.no_tools"), cx));
     }
     for (ti, t) in catalog.iter().enumerate() {
         let name = spec_name(t);
@@ -4404,7 +4558,7 @@ fn tools_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> D
             .px(px(12.))
             .py(px(4.))
             .gap(px(5.))
-            .hover(|st| st.bg(theme::DOCK()))
+            .hover(|st| st.bg(theme::dock(cx)))
             .child(fixed(
                 if open {
                     IconName::ChevronDown
@@ -4419,7 +4573,7 @@ fn tools_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> D
                     .font_family("Menlo")
                     .text_size(px(12.))
                     .font_weight(gpui_kit::FontWeight::MEDIUM)
-                    .text_color(theme::LABEL())
+                    .text_color(theme::label(cx))
                     .child(name.clone()),
             )
             .child(
@@ -4427,7 +4581,7 @@ fn tools_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> D
                     .min_w(px(0.))
                     .flex_1()
                     .text_size(px(12.))
-                    .text_color(theme::LABEL_3())
+                    .text_color(theme::label_3(cx))
                     .truncate()
                     .child(description.clone()),
             );
@@ -4437,7 +4591,7 @@ fn tools_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> D
             .v_flex()
             .flex_shrink_0()
             .border_b_1()
-            .border_color(theme::BORDER())
+            .border_color(theme::border(cx))
             .child(
                 div()
                     .id(("inspector-tool", ti))
@@ -4457,7 +4611,7 @@ fn tools_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> D
                         .pb(px(4.))
                         .pr(px(14.))
                         .text_size(px(12.))
-                        .text_color(theme::LABEL_2())
+                        .text_color(theme::label_2(cx))
                         .line_height(gpui_kit::relative(1.5))
                         .child(description.clone()),
                 );
@@ -4471,7 +4625,7 @@ fn tools_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> D
                         .child(
                             div()
                                 .text_size(px(11.))
-                                .text_color(theme::CAPTION())
+                                .text_color(theme::caption(cx))
                                 .mb(px(4.))
                                 .child(format!("{name} parameters JSON")),
                         )
@@ -4480,6 +4634,7 @@ fn tools_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> D
                                 json_block(
                                     "mono-tool-params",
                                     &serde_json::to_string_pretty(&p).unwrap_or_default(),
+                                    cx,
                                 )
                                 .into_any_element(),
                             ),
@@ -4541,13 +4696,13 @@ fn line_diff(a: &[&str], b: &[&str]) -> Vec<(DiffOp, String)> {
 
 /// Diff 页:对照前一 SYSTEM 快照,分 System Prompt / Tools 两节
 /// (行级 LCS diff)
-fn diff_body(s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
+fn diff_body(s: &Snap<'_>, r: &TrajectoryRecord, cx: &App) -> Div {
     let prev = s
         .index
         .and_then(|i| i.previous_system_snapshot(&s.view.records, r));
     let mut col = div().v_flex().gap(px(8.));
     let Some(prev) = prev else {
-        return col.child(empty_text(t!("trajectory.na")));
+        return col.child(empty_text(t!("trajectory.na"), cx));
     };
     let mut has_diff = false;
     // System Prompt 节
@@ -4559,8 +4714,9 @@ fn diff_body(s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
             .child(section(
                 "sec-diff-system",
                 t!("trajectory.tab_system_prompt"),
+                cx,
             ))
-            .child(diff_block("diff-system", a, b));
+            .child(diff_block("diff-system", a, b, cx));
     }
     // Tools 节(目录 pretty 序列化后行 diff)
     if let (Some(a), Some(b)) = (&prev.tools_catalog, &r.tools_catalog)
@@ -4570,17 +4726,17 @@ fn diff_body(s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
         let pa = serde_json::to_string_pretty(a).unwrap_or_default();
         let pb = serde_json::to_string_pretty(b).unwrap_or_default();
         col = col
-            .child(section("sec-diff-tools", t!("trajectory.tab_tools")))
-            .child(diff_block("diff-tools", &pa, &pb));
+            .child(section("sec-diff-tools", t!("trajectory.tab_tools"), cx))
+            .child(diff_block("diff-tools", &pa, &pb, cx));
     }
     if !has_diff {
-        col = col.child(empty_text(t!("trajectory.na")));
+        col = col.child(empty_text(t!("trajectory.na"), cx));
     }
     col
 }
 
 /// diff 渲染块(加绿/删红/同灰;等宽 11px)
-fn diff_block(id: &'static str, a: &str, b: &str) -> impl IntoElement {
+fn diff_block(id: &'static str, a: &str, b: &str, cx: &App) -> impl IntoElement {
     let la: Vec<&str> = a.lines().collect();
     let lb: Vec<&str> = b.lines().collect();
     div()
@@ -4588,7 +4744,7 @@ fn diff_block(id: &'static str, a: &str, b: &str) -> impl IntoElement {
         .max_h(px(360.))
         .overflow_y_scroll()
         .rounded(px(8.))
-        .bg(theme::CODE())
+        .bg(theme::code(cx))
         .py(px(6.))
         .v_flex()
         .font_family("Menlo")
@@ -4598,21 +4754,21 @@ fn diff_block(id: &'static str, a: &str, b: &str) -> impl IntoElement {
             let (prefix, color, bg) = match op {
                 DiffOp::Add => (
                     "+ ",
-                    theme::SUCCESS(),
+                    theme::success(cx),
                     Rgba {
                         a: 0.10,
-                        ..theme::SUCCESS()
+                        ..theme::success(cx)
                     },
                 ),
                 DiffOp::Del => (
                     "- ",
-                    theme::DANGER(),
+                    theme::danger(cx),
                     Rgba {
                         a: 0.10,
-                        ..theme::DANGER()
+                        ..theme::danger(cx)
                     },
                 ),
-                DiffOp::Same => ("  ", theme::LABEL_3(), theme::TRANSPARENT()),
+                DiffOp::Same => ("  ", theme::label_3(cx), theme::TRANSPARENT),
             };
             div()
                 .flex()
@@ -4624,14 +4780,16 @@ fn diff_block(id: &'static str, a: &str, b: &str) -> impl IntoElement {
 }
 
 /// Schema 页(TOOL):name + description + Parameters(高亮)
-fn schema_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> Div {
+fn schema_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord, cx: &App) -> Div {
     let Some(raw) = &r.schema_detail else {
-        return div().v_flex().child(empty_text(t!("trajectory.schema_na")));
+        return div()
+            .v_flex()
+            .child(empty_text(t!("trajectory.schema_na"), cx));
     };
     let Ok(spec) = serde_json::from_str::<serde_json::Value>(raw) else {
         return div()
             .v_flex()
-            .child(mono_block("mono-schema", raw, theme::LABEL_3()));
+            .child(mono_block("mono-schema", raw, theme::label_3(cx), cx));
     };
     let name = spec_name(&spec);
     let description = spec_field(&spec, "description")
@@ -4651,7 +4809,7 @@ fn schema_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> 
                     div()
                         .font_family("Menlo")
                         .text_size(px(13.))
-                        .text_color(theme::LABEL_2())
+                        .text_color(theme::label_2(cx))
                         .child(name),
                 ),
         );
@@ -4660,7 +4818,7 @@ fn schema_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> 
         col = col.child(
             div()
                 .text_size(px(12.))
-                .text_color(theme::LABEL_3())
+                .text_color(theme::label_3(cx))
                 .line_height(gpui_kit::relative(1.5))
                 .child(description),
         );
@@ -4671,8 +4829,9 @@ fn schema_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> 
                 .child(section(
                     "sec-schema-params",
                     t!("trajectory.sec_parameters"),
+                    cx,
                 ))
-                .child(json_tree_block(store, s, r.index, &p))
+                .child(json_tree_block(store, s, r.index, &p, theme::is_dark(cx)))
         }
         Some(p) => {
             let pretty = serde_json::to_string_pretty(&p).unwrap_or_default();
@@ -4680,10 +4839,16 @@ fn schema_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord) -> 
                 .child(section(
                     "sec-schema-params",
                     t!("trajectory.sec_parameters"),
+                    cx,
                 ))
-                .child(code_block("mono-schema-params", &pretty, theme::LABEL_3()))
+                .child(code_block(
+                    "mono-schema-params",
+                    &pretty,
+                    theme::label_3(cx),
+                    cx,
+                ))
         }
-        None => col = col.child(empty_text(t!("trajectory.schema_na"))),
+        None => col = col.child(empty_text(t!("trajectory.schema_na"), cx)),
     }
     col
 }
@@ -4712,8 +4877,16 @@ mod tests {
     ///
     /// decide 工具(scenario=tool)的答案是模型自拟的问题,常是 noul;
     /// 拿它当裁决会显示成「未决」——把一次正常应答说成没结论。
-    #[test]
-    fn verdict_only_for_receipts_that_have_one() {
+    #[gpui_kit::test]
+    fn verdict_only_for_receipts_that_have_one(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|app| {
+            gpui_kit::component::init(app);
+            theme::init(app);
+            verdict_cases(app);
+        });
+    }
+
+    fn verdict_cases(app: &App) {
         // 守卫:proceed/block 是既定义项
         let proceed = decision(
             "guard",
@@ -4722,7 +4895,7 @@ mod tests {
             })),
         );
         assert_eq!(
-            decision_verdict(&proceed).map(|(v, _)| v).as_deref(),
+            decision_verdict(&proceed, app).map(|(v, _)| v).as_deref(),
             Some("放行")
         );
         let block = decision(
@@ -4732,7 +4905,7 @@ mod tests {
             })),
         );
         assert_eq!(
-            decision_verdict(&block).map(|(v, _)| v).as_deref(),
+            decision_verdict(&block, app).map(|(v, _)| v).as_deref(),
             Some("拦下")
         );
 
@@ -4743,7 +4916,10 @@ mod tests {
                 "is_transient": { "type": "noul", "noul": 0.93 },
             })),
         );
-        assert!(decision_verdict(&advisory).is_none(), "noul 应答没有裁决词");
+        assert!(
+            decision_verdict(&advisory, app).is_none(),
+            "noul 应答没有裁决词"
+        );
         assert_eq!(decision_summary(&advisory), "is_transient=0.93");
 
         // 无 verdict 问但有 choice 应答:退回该选项(逐字,不翻)
@@ -4754,16 +4930,16 @@ mod tests {
             })),
         );
         assert_eq!(
-            decision_verdict(&other).map(|(v, _)| v).as_deref(),
+            decision_verdict(&other, app).map(|(v, _)| v).as_deref(),
             Some("retry")
         );
 
         // 未收口/失败
-        assert!(decision_verdict(&decision("guard", None)).is_none());
+        assert!(decision_verdict(&decision("guard", None), app).is_none());
         let mut failed = decision("guard", None);
         failed.error = Some("decision timeout".into());
         assert_eq!(
-            decision_verdict(&failed).map(|(v, _)| v).as_deref(),
+            decision_verdict(&failed, app).map(|(v, _)| v).as_deref(),
             Some("已失败")
         );
     }

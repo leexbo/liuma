@@ -44,14 +44,14 @@ pub(crate) fn attachment_toast_card(store: &Entity<AppStore>, cx: &App) -> impl 
                 .rounded(px(12.))
                 .bg(gpui_kit::Rgba {
                     a: 0.95,
-                    ..theme::LAYER()
+                    ..theme::layer(cx)
                 })
                 .border_1()
-                .border_color(theme::BORDER())
+                .border_color(theme::border(cx))
                 .px(px(14.))
                 .py(px(10.))
                 .text_size(px(13.))
-                .text_color(theme::LABEL())
+                .text_color(theme::label(cx))
                 .child(fixed(IconName::TriangleAlert, 14.))
                 .child(toast.text.clone()),
         )
@@ -85,12 +85,12 @@ pub(crate) fn workspace_menu_rows(
                 .rounded(px(6.))
                 .px(px(8.))
                 .cursor_pointer()
-                .hover(|s| s.bg(theme::DOCK()))
+                .hover(|s| s.bg(theme::dock(cx)))
                 .text_size(px(13.))
                 .text_color(if is_active {
-                    theme::LABEL()
+                    theme::label(cx)
                 } else {
-                    theme::LABEL_2()
+                    theme::label_2(cx)
                 })
                 .child(fixed(
                     if is_active {
@@ -103,7 +103,7 @@ pub(crate) fn workspace_menu_rows(
                 .child(w.clone())
                 .child(div().flex_1())
                 .when(is_active, |el| {
-                    el.child(fixed(IconName::Check, 14.).text_color(theme::LABEL()))
+                    el.child(fixed(IconName::Check, 14.).text_color(theme::label(cx)))
                 })
                 // 测试钩子(release 空操作)
                 .debug_selector(move || sel.clone())
@@ -120,7 +120,7 @@ pub(crate) fn workspace_menu_rows(
         div()
             .h(px(1.))
             .my(px(2.))
-            .bg(theme::BORDER())
+            .bg(theme::border(cx))
             .into_any_element(),
     );
     let s_add = store.clone();
@@ -134,9 +134,9 @@ pub(crate) fn workspace_menu_rows(
             .rounded(px(6.))
             .px(px(8.))
             .cursor_pointer()
-            .hover(|s| s.bg(theme::DOCK()))
+            .hover(|s| s.bg(theme::dock(cx)))
             .text_size(px(13.))
-            .text_color(theme::LABEL_2())
+            .text_color(theme::label_2(cx))
             .child(fixed(IconName::Plus, 14.))
             .child(t!("misc.add_workspace_ellipsis"))
             .on_click(move |_, window, cx| {
@@ -154,6 +154,7 @@ pub(crate) fn overlay_card(
     id: &'static str,
     width: f32,
     rows: Vec<gpui_kit::AnyElement>,
+    cx: &App,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
     use gpui_kit::MouseButton;
     div()
@@ -163,12 +164,12 @@ pub(crate) fn overlay_card(
         .gap(px(2.))
         .rounded(px(12.))
         .border_1()
-        .border_color(theme::BORDER())
+        .border_color(theme::border(cx))
         // 浅盘白浮层(同 composer menu_card;LAYER 是画布 hover 语言)
-        .bg(if theme::is_dark() {
-            theme::LAYER()
+        .bg(if theme::is_dark(cx) {
+            theme::layer(cx)
         } else {
-            theme::CARD()
+            theme::card(cx)
         })
         .p(px(4.))
         .shadow_md()
