@@ -45,11 +45,11 @@ jsonpath-rust = "1.0"
 thiserror = "2"
 toml = "1"
 clap = { version = "4", features = ["derive"] }
-wit-parser = "0.259"
+wit-parser = "0.261.0"
 tokio = { version = "1", features = ["full"] }
 wasmtime = { version = "49", features = ["async"] }
 wasmtime-wasi = "49"
-turso = { version = "0.7.2", features = ["fts"] }
+turso = { version = "0.8.1", features = ["fts"] }
 # /export ZIP 打包(stored 条目 + deflate)
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 # 用户主题目录监听(kits/theme:init_user_themes;notify 7 与
