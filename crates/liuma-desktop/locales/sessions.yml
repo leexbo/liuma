@@ -44,13 +44,17 @@ sessions:
     zh-CN: "分叉"
     en: "Fork"
 
+  export:
+    zh-CN: "导出"
+    en: "Export"
+
   export_log:
-    zh-CN: "导出日志(ZIP)"
-    en: "Export log (ZIP)"
+    zh-CN: "日志(ZIP)"
+    en: "Log (ZIP)"
 
   export_markdown:
-    zh-CN: "导出 Markdown"
-    en: "Export Markdown"
+    zh-CN: "Markdown 文档"
+    en: "Markdown document"
 
   delete_workspace:
     zh-CN: "删除工作区"

@@ -63,6 +63,8 @@ pub(crate) struct SessionsStore {
     /// 标题栏会话 ⋯ 菜单开态(受控 Popover;该钮在标题栏拖拽区上,
     /// 须保留 mousedown 豁免 → 无法用库内部开态,退化为纯 bool)
     pub session_menu_open: bool,
+    /// 会话菜单「导出」二级组展开态(受控;菜单收起即复位)
+    pub export_menu_open: bool,
     /// 侧栏视图选项菜单开态(受控;同上,钮在侧栏头拖拽区上)
     pub view_menu_open: bool,
     /// 重命名输入态(挂窗后建)
@@ -592,9 +594,10 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 标题栏会话 ⋯ 菜单开/收(受控 Popover)
+    /// 标题栏会话 ⋯ 菜单开/收(受控 Popover);开/收都复位导出二级组
     pub fn toggle_session_menu(&mut self, cx: &mut Context<Self>) {
         self.sessions.session_menu_open = !self.sessions.session_menu_open;
+        self.sessions.export_menu_open = false;
         cx.notify();
     }
 

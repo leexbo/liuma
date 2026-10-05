@@ -29,5 +29,14 @@
 	<string>public.app-category.developer-tools</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<!-- 声明中文本地化:系统保存/目录选择面板(NSPanel)的按钮与
+	     标题文案跟随 app 声明的语言,缺省(无声明)= 英文。cargo run
+	     开发态无 bundle,面板仍为英文(macOS 对裸可执行文件的既定行为) -->
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh-CN</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>zh-CN</string>
+	</array>
 </dict>
 </plist>

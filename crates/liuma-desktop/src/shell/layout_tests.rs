@@ -4296,10 +4296,25 @@ fn session_menu_renders_at_root(cx: &mut TestAppContext) {
         card.right(),
         btn_right
     );
-    // 导出入口已从顶栏药丸移入菜单(该窗口从未渲染过药丸,缺席可断言)
+    // 导出入口已从顶栏药丸移入菜单(该窗口从未渲染过药丸,缺席可断言);
+    // 导出为二级组:父项在场,子项展开后才在
+    assert!(
+        wcx.debug_bounds("menu-export").is_some(),
+        "菜单应含「导出」组"
+    );
+    assert!(
+        wcx.debug_bounds("menu-export-log").is_none(),
+        "未展开时不应有导出子项"
+    );
+    click_sel(&mut wcx, "menu-export");
+    redraw(cx, &mut wcx);
     assert!(
         wcx.debug_bounds("menu-export-log").is_some(),
-        "菜单应含「导出日志」项"
+        "展开后应含「日志(ZIP)」子项"
+    );
+    assert!(
+        wcx.debug_bounds("menu-export-markdown").is_some(),
+        "展开后应含「Markdown 文档」子项"
     );
     assert!(
         wcx.debug_bounds("export-log").is_none(),
@@ -4429,6 +4444,8 @@ fn session_export_prompts_for_path_then_notifies(cx: &mut TestAppContext) {
     // 右上角(会正确遮住标题栏 ⋯ 钮),先出通知会让后续点击落空
     click_sel(&mut wcx, "session-menu-btn");
     redraw(cx, &mut wcx);
+    click_sel(&mut wcx, "menu-export");
+    redraw(cx, &mut wcx);
     click_sel(&mut wcx, "menu-export-log");
     redraw(cx, &mut wcx);
     assert!(
@@ -4447,6 +4464,8 @@ fn session_export_prompts_for_path_then_notifies(cx: &mut TestAppContext) {
 
     // ② 选定路径:落盘 + 恰一条通知
     click_sel(&mut wcx, "session-menu-btn");
+    redraw(cx, &mut wcx);
+    click_sel(&mut wcx, "menu-export");
     redraw(cx, &mut wcx);
     click_sel(&mut wcx, "menu-export-log");
     redraw(cx, &mut wcx);
@@ -4494,6 +4513,8 @@ fn session_export_markdown_prompts_and_writes_md(cx: &mut TestAppContext) {
     let out = root.join("导出目标.md");
     let id = cx.update(|app| store.read(app).state.current_id.clone());
     click_sel(&mut wcx, "session-menu-btn");
+    redraw(cx, &mut wcx);
+    click_sel(&mut wcx, "menu-export");
     redraw(cx, &mut wcx);
     click_sel(&mut wcx, "menu-export-markdown");
     redraw(cx, &mut wcx);

@@ -1485,26 +1485,19 @@ pub(crate) fn session_menu_card(
                 .any(|v| v == id)
         })
         .unwrap_or(false);
-    let (rename, archive, fork, export_log, export_md, pin_store) = (
-        store.clone(),
+    let (rename, archive, fork, export_store, pin_store) = (
         store.clone(),
         store.clone(),
         store.clone(),
         store.clone(),
         store.clone(),
     );
-    let (p_arch, p_fork, p_export, p_export_md, p_pin) = (
-        pop.clone(),
-        pop.clone(),
-        pop.clone(),
-        pop.clone(),
-        pop.clone(),
-    );
+    let (p_arch, p_fork, p_pin, p_rename) = (pop.clone(), pop.clone(), pop.clone(), pop.clone());
     div()
         .id("session-menu-card")
         .debug_selector(|| "session-menu-card".to_string())
         .v_flex()
-        .w(px(112.))
+        .min_w(px(112.))
         .gap(px(2.))
         .rounded(px(10.))
         .border_1()
@@ -1536,7 +1529,7 @@ pub(crate) fn session_menu_card(
             t!("sessions.rename"),
             fixed(LiumaIcon::Pencil, 13.),
             move |_, window, cx| {
-                pop.update(cx, |state, cx| state.dismiss(window, cx));
+                p_rename.update(cx, |state, cx| state.dismiss(window, cx));
                 rename.update(cx, |st, cx| {
                     let Some(id) = st.state.current_id.clone() else {
                         return;
@@ -1577,36 +1570,7 @@ pub(crate) fn session_menu_card(
             cx,
         ))
         .child(menu_divider(cx))
-        .child(menu_item(
-            "menu-export-log",
-            t!("sessions.export_log"),
-            fixed(LiumaIcon::Download, 13.),
-            move |_, window, cx| {
-                p_export.update(cx, |state, cx| state.dismiss(window, cx));
-                export_log.update(cx, |st, cx| {
-                    let Some(id) = st.state.current_id.clone() else {
-                        return;
-                    };
-                    st.export_session_log(&id, false, window, cx);
-                });
-            },
-            cx,
-        ))
-        .child(menu_item(
-            "menu-export-markdown",
-            t!("sessions.export_markdown"),
-            fixed(IconName::FileText, 13.),
-            move |_, window, cx| {
-                p_export_md.update(cx, |state, cx| state.dismiss(window, cx));
-                export_md.update(cx, |st, cx| {
-                    let Some(id) = st.state.current_id.clone() else {
-                        return;
-                    };
-                    st.export_session_log(&id, true, window, cx);
-                });
-            },
-            cx,
-        ))
+        .child(export_group(store, &export_store, pop.clone(), cx))
 }
 
 /// 菜单组分隔线
@@ -1617,6 +1581,95 @@ fn menu_divider(cx: &App) -> gpui_kit::AnyElement {
         .my(px(3.))
         .bg(theme::border(cx))
         .into_any_element()
+}
+
+/// 「导出」二级菜单组:父项点击展开(不收菜单),子项执行后随菜单
+/// 一并收起。展开态受控(`sessions.export_menu_open`,菜单开/收时复位)
+fn export_group(
+    store: &Entity<AppStore>,
+    s_export: &Entity<AppStore>,
+    pop: Entity<PopoverState>,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    let open = store.read(cx).sessions.export_menu_open;
+    let s_toggle = store.clone();
+    let mut col = div().v_flex().gap(px(2.)).child(
+        div()
+            .id("menu-export")
+            .debug_selector(|| "menu-export".to_string())
+            .flex()
+            .h(px(26.))
+            .items_center()
+            .gap(px(6.))
+            .px(px(8.))
+            .rounded(px(6.))
+            .cursor_pointer()
+            .hover(|st| st.bg(theme::dock(cx)))
+            .text_size(px(12.))
+            .text_color(theme::label_2(cx))
+            .on_click(move |_, _, cx| {
+                s_toggle.update(cx, |st, cx| {
+                    st.sessions.export_menu_open = !st.sessions.export_menu_open;
+                    cx.notify();
+                });
+            })
+            // 图标 + 文字 + 右缘展开指示(展开态旋转)
+            .child(fixed(LiumaIcon::Download, 13.))
+            .child(t!("sessions.export"))
+            .child(
+                fixed(IconName::ChevronRight, 12.)
+                    .text_color(theme::caption(cx))
+                    .rotate(if open {
+                        gpui_kit::Percentage(0.25)
+                    } else {
+                        gpui_kit::Percentage(0.)
+                    }),
+            ),
+    );
+    if open {
+        let (s_zip, s_md, p_zip, p_md) =
+            (s_export.clone(), s_export.clone(), pop.clone(), pop.clone());
+        col = col
+            .child(
+                menu_item(
+                    "menu-export-log",
+                    t!("sessions.export_log"),
+                    fixed(LiumaIcon::FileArchive, 13.),
+                    move |_, window, cx| {
+                        p_zip.update(cx, |state, cx| state.dismiss(window, cx));
+                        s_zip.update(cx, |st, cx| {
+                            st.sessions.export_menu_open = false;
+                            let Some(id) = st.state.current_id.clone() else {
+                                return;
+                            };
+                            st.export_session_log(&id, false, window, cx);
+                        });
+                    },
+                    cx,
+                )
+                .pl(px(20.)),
+            )
+            .child(
+                menu_item(
+                    "menu-export-markdown",
+                    t!("sessions.export_markdown"),
+                    fixed(IconName::FileText, 13.),
+                    move |_, window, cx| {
+                        p_md.update(cx, |state, cx| state.dismiss(window, cx));
+                        s_md.update(cx, |st, cx| {
+                            st.sessions.export_menu_open = false;
+                            let Some(id) = st.state.current_id.clone() else {
+                                return;
+                            };
+                            st.export_session_log(&id, true, window, cx);
+                        });
+                    },
+                    cx,
+                )
+                .pl(px(20.)),
+            );
+    }
+    col.into_any_element()
 }
 
 /// 菜单项(图标 + 文字)
@@ -1675,7 +1728,7 @@ fn ws_menu_card(
         .id("ws-menu-card")
         .debug_selector(|| "ws-menu-card".to_string())
         .v_flex()
-        .w(px(112.))
+        .min_w(px(112.))
         .gap(px(2.))
         .rounded(px(10.))
         .border_1()
