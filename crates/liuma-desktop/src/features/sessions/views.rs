@@ -1,6 +1,7 @@
 //! 侧栏:会话列表(280px;收起完全隐藏)。
 //! 按工作区分组(前缀推导),支持本地搜索过滤、新建、切换。
 
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui_kit::component::Icon;
@@ -10,13 +11,14 @@ use gpui_kit::component::StyledExt;
 use gpui_kit::component::popover::{Popover, PopoverState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Anchor, App, Entity, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, StatefulInteractiveElement, Styled, div, px,
+    Anchor, App, AppContext as _, Entity, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, StatefulInteractiveElement,
+    Styled, div, px,
 };
 use liuma_core::proto::SessionSummary;
 
 use crate::features::search;
-use crate::features::sessions::store::{GroupMode, OrderMode};
+use crate::features::sessions::store::{GroupMode, OrderMode, manual_flat_order};
 use crate::features::settings;
 use crate::kits::i18n::t;
 use crate::kits::icons::{LiumaIcon, fixed};
@@ -372,7 +374,7 @@ fn preview_rows_in(
     };
     let mut rows: Vec<gpui_kit::AnyElement> = idxs[..shown]
         .iter()
-        .map(|ix| session_row_in(store, cx, &st.state.sessions[*ix], *ix, ns).into_any_element())
+        .map(|ix| session_row_in(store, cx, &st.state.sessions[*ix], ns).into_any_element())
         .collect();
     if shown < idxs.len() {
         let hidden = idxs.len() - shown;
@@ -909,20 +911,42 @@ fn session_list(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .map(|e| e.read(cx).value().trim().to_lowercase())
         .unwrap_or_default();
 
-    // 单列表:全部会话平铺(subagent 仍隐藏;宿主清单序 = 最近更新,
-    // 手动排序未实现前 order_mode 无渲染差异)
+    // 单列表:全部会话平铺(subagent 仍隐藏)。最近更新 = 宿主清单序;
+    // 手动排序 = session_order 全序快照(空 overlay 退化为 updated 序,
+    // 缺席 id 剪除)。行恒接拖拽重排(dsh:落拖即保存并切手动排序)
     if st.sessions.group_mode == GroupMode::Flat {
-        let rows: Vec<gpui_kit::AnyElement> = st
-            .state
-            .sessions
-            .iter()
-            .enumerate()
+        let manual = st.sessions.order_mode == OrderMode::Manual;
+        let ordered: Vec<(String, &SessionSummary)> = if manual {
+            manual_flat_order(
+                &st.state.sessions,
+                &st.sessions.session_order,
+                &st.sessions.pinned_sessions,
+                st.current_blank_id().as_deref(),
+            )
+            .into_iter()
+            .filter_map(|id| {
+                st.state
+                    .sessions
+                    .iter()
+                    .find(|s| s.session_id == id)
+                    .map(|s| (id, s))
+            })
+            .collect()
+        } else {
+            st.state
+                .sessions
+                .iter()
+                .map(|s| (s.session_id.clone(), s))
+                .collect()
+        };
+        let rows: Vec<gpui_kit::AnyElement> = ordered
+            .into_iter()
             .filter(|(_, s)| {
                 s.origin.as_deref() != Some("subagent")
                     && (query.is_empty()
                         || st.title_for(&s.session_id).to_lowercase().contains(&query))
             })
-            .map(|(ix, s)| session_row(store, cx, s, ix).into_any_element())
+            .map(|(_, s)| session_row(store, cx, s).into_any_element())
             .collect();
         return div()
             .id("sidebar-sessions")
@@ -961,6 +985,27 @@ fn session_list(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     // 搜索时隐藏无匹配会话的组(空组对搜索不可达,保持既有搜索语义)
     if !query.is_empty() {
         groups.retain(|(_, v)| !v.is_empty());
+    }
+    // 手动排序:各组内成员按全序快照排名重排(排序与分组正交——
+    // dsh 双维口径;组员在快照中缺席时殿后)
+    if st.sessions.order_mode == OrderMode::Manual {
+        let rank: HashMap<String, usize> = manual_flat_order(
+            &st.state.sessions,
+            &st.sessions.session_order,
+            &st.sessions.pinned_sessions,
+            st.current_blank_id().as_deref(),
+        )
+        .into_iter()
+        .enumerate()
+        .map(|(i, id)| (id, i))
+        .collect();
+        for (_, v) in groups.iter_mut() {
+            v.sort_by_key(|ix| {
+                rank.get(&st.state.sessions[*ix].session_id)
+                    .copied()
+                    .unwrap_or(usize::MAX)
+            });
+        }
     }
 
     let pinned_ws: Vec<&String> = st
@@ -1267,14 +1312,9 @@ fn group_header(
 }
 
 /// 单个会话行(行高 34:行首活动状态槽 + 标题 + 尾部时间↔归档;
-/// 当前选中高亮)
-fn session_row(
-    store: &Entity<AppStore>,
-    cx: &App,
-    s: &SessionSummary,
-    ix: usize,
-) -> impl IntoElement {
-    session_row_in(store, cx, s, ix, "sess")
+/// 当前选中高亮)。行恒为拖拽源/落点(排序与分组正交)
+fn session_row(store: &Entity<AppStore>, cx: &App, s: &SessionSummary) -> impl IntoElement {
+    session_row_in(store, cx, s, "sess")
 }
 
 /// `grp_ns` = hover 组命名空间:置顶块(pinws)与项目节(sess)的行
@@ -1284,7 +1324,6 @@ fn session_row_in(
     store: &Entity<AppStore>,
     cx: &App,
     s: &SessionSummary,
-    ix: usize,
     grp_ns: &str,
 ) -> impl IntoElement {
     let st = store.read(cx);
@@ -1308,6 +1347,19 @@ fn session_row_in(
         .pinned_sessions
         .iter()
         .any(|v| v == &s.session_id);
+    // 拖拽落点指示(拖拽进行中且提示命中本行):落点提示由行级
+    // on_drag_move 维护,上半行 = 落其前,下半行 = 落其后
+    let hint = cx.has_active_drag()
+        && st
+            .sessions
+            .drop_hint
+            .as_ref()
+            .is_some_and(|(tid, _)| tid == &s.session_id);
+    let hint_after = st
+        .sessions
+        .drop_hint
+        .as_ref()
+        .is_some_and(|(tid, a)| tid == &s.session_id && *a);
     let target = store.clone();
     let archived = store.clone();
     let pin_store = store.clone();
@@ -1315,15 +1367,22 @@ fn session_row_in(
     let arch_id = id.clone();
     let pin_id = id.clone();
     let sel = format!("session-row-{id}");
-    let sel_arch = format!("session-archive-{ix}");
+    let sel_arch = format!("session-archive-{id}");
     let sel_pin = format!("session-pin-{id}");
     // 行 hover 组:尾部时间 ↔ 双钮(置顶+归档)互换
-    let grp = format!("{grp_ns}-grp-{ix}");
+    let grp = format!("{grp_ns}-grp-{id}");
     // 元素 id 同样带 ns:同一会话在置顶块与项目节双渲染,撞 id 会让
-    // gpui 元素状态(hover/交互)跨实例串扰
+    // gpui 元素状态(hover/交互)跨实例串扰。id 用会话 id(非序数):
+    // 可重排内容按序数编 id 会让 hover/交互状态随重排串行
     let id_ns = grp_ns.to_string();
+    let drag_title = title.clone();
+    let drag_id = id.clone();
+    let hint_store = store.clone();
+    let hint_id = id.clone();
+    let drop_store = store.clone();
+    let drop_id = id.clone();
     div()
-        .id(gpui_kit::SharedString::from(format!("{id_ns}-{ix}")))
+        .id(gpui_kit::SharedString::from(format!("{id_ns}-{id}")))
         .relative()
         .group(grp.clone())
         .flex()
@@ -1338,6 +1397,52 @@ fn session_row_in(
         .gap(px(8.))
         .cursor_pointer()
         .hover(|s| s.bg(theme::sidebar_hover(cx)))
+        // 行即拖拽源与落点(排序与分组正交;落拖即保存并切手动排序)。
+        // gpui 语义拖放(2px 阈值起拖,起拖清 pending click —— 与
+        // 「点击打开会话」天然互斥);ghost 构造器照组件库 DataTable
+        // 列拖拽(纯样式 clone,零监听)
+        .on_drag(
+            SessionDrag {
+                session_id: drag_id.clone().into(),
+                title: drag_title.into(),
+            },
+            {
+                let flag_store = store.clone();
+                move |drag, _, _, cx| {
+                    // 内部拖拽起手:精确的「内部拖拽开始」回调,顺手清
+                    // 外部文件拖入标志(残 true 只会让蒙层误现,见 shell 根)
+                    flag_store.update(cx, |st, cx| st.set_external_drag(false, cx));
+                    cx.stop_propagation();
+                    cx.new(|_| drag.clone())
+                }
+            },
+        )
+        .on_drag_move(move |ev: &gpui_kit::DragMoveEvent<SessionDrag>, _, cx| {
+            // DataTable 同款防御:指针不在本行 bounds 内不更新提示
+            if !ev.bounds.contains(&ev.event.position) {
+                return;
+            }
+            let after = ev.event.position.y > ev.bounds.origin.y + ev.bounds.size.height / 2.;
+            hint_store.update(cx, |st, cx| {
+                let next = Some((hint_id.clone(), after));
+                if st.sessions.drop_hint != next {
+                    st.sessions.drop_hint = next;
+                    cx.notify();
+                }
+            });
+        })
+        .on_drop(move |drag: &SessionDrag, _, cx| {
+            let d = drag.session_id.clone();
+            drop_store.update(cx, |st, cx| {
+                let after = st
+                    .sessions
+                    .drop_hint
+                    .as_ref()
+                    .is_some_and(|(tid, a)| tid == &drop_id && *a);
+                st.sessions.drop_hint = None;
+                st.reorder_session_manual(&d, &drop_id, after, cx);
+            });
+        })
         // 行首状态槽(活动动画在行首,非运行时空占位对齐)
         .child(
             div()
@@ -1395,7 +1500,7 @@ fn session_row_in(
                         .child(
                             div()
                                 .id(gpui_kit::SharedString::from(format!(
-                                    "{id_ns}-session-pin-{ix}"
+                                    "{id_ns}-session-pin-{pin_id}"
                                 )))
                                 .debug_selector(move || sel_pin.clone())
                                 .flex()
@@ -1431,7 +1536,7 @@ fn session_row_in(
                         .child(
                             div()
                                 .id(gpui_kit::SharedString::from(format!(
-                                    "{id_ns}-session-archive-{ix}"
+                                    "{id_ns}-session-archive-{arch_id}"
                                 )))
                                 .debug_selector(move || sel_arch.clone())
                                 .flex()
@@ -1454,12 +1559,60 @@ fn session_row_in(
                         ),
                 ),
         )
+        // 拖拽落点指示线(行顶/底缘 2px;hint 门含 has_active_drag,
+        // drop 后自动隐去,无需额外清态)
+        .when(hint, move |el| {
+            el.child(
+                div()
+                    .absolute()
+                    .left(px(4.))
+                    .right(px(4.))
+                    .h(px(2.))
+                    .rounded(px(1.))
+                    .bg(theme::brand(cx))
+                    .when(hint_after, |el| el.bottom(px(-1.)))
+                    .when(!hint_after, |el| el.top(px(-1.))),
+            )
+        })
         // 测试钩子:按会话 id 稳定检索(release 空操作)
         .debug_selector(move || sel.clone())
         .on_click(move |_, _, cx| {
             let id = id.clone();
             target.update(cx, |st, cx| st.open_session(&id, cx));
         })
+}
+
+/// 会话行拖拽载荷(session_id = 提交源,title = ghost 文案)与 ghost
+/// 预览。ghost 必须是纯样式 div 零监听:gpui 经 prepaint_as_root 独立
+/// 绘制 ghost,带监听的元素会请求 hitbox,遮住行级 drop 悬停(组件库
+/// DataTable 列拖拽同款约定)
+#[derive(Clone)]
+struct SessionDrag {
+    session_id: gpui_kit::SharedString,
+    title: gpui_kit::SharedString,
+}
+
+impl gpui_kit::Render for SessionDrag {
+    fn render(
+        &mut self,
+        _: &mut gpui_kit::Window,
+        cx: &mut gpui_kit::Context<'_, SessionDrag>,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .max_w(px(220.))
+            .px(px(10.))
+            .py(px(5.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme::border(cx))
+            .bg(theme::layer(cx))
+            .shadow_md()
+            .text_size(px(12.))
+            .text_color(theme::label_2(cx))
+            .truncate()
+            .child(self.title.clone())
+    }
 }
 
 /// 标题栏会话菜单卡(会话管理:重命名/归档/分叉 | 导出日志;作用于
@@ -1794,8 +1947,8 @@ fn ws_menu_card(
 }
 
 /// 顶栏视图选项菜单(分组方式/排序方式两组;组件库 Popover 内容,
-/// 库托管开合/定位)。「手动排序」本期占位:置灰不可点,拖拽重排
-/// 后续实现
+/// 库托管开合/定位)。「手动排序」与「单列表」互斥绑定:选手动排序
+/// 即切单列表(store 侧联动),选分组即还原最近更新
 fn view_options_menu_card(
     store: &Entity<AppStore>,
     pop: Entity<PopoverState>,
@@ -1803,8 +1956,9 @@ fn view_options_menu_card(
 ) -> impl IntoElement {
     let st = store.read(cx);
     let (group, order) = (st.sessions.group_mode, st.sessions.order_mode);
-    let (s_ws, s_flat, s_updated) = (store.clone(), store.clone(), store.clone());
-    let (p_ws, p_flat, p_updated) = (pop.clone(), pop.clone(), pop.clone());
+    let (s_ws, s_flat, s_updated, s_manual) =
+        (store.clone(), store.clone(), store.clone(), store.clone());
+    let (p_ws, p_flat, p_updated, p_manual) = (pop.clone(), pop.clone(), pop.clone(), pop.clone());
     div()
         .id("view-menu-card")
         .debug_selector(|| "view-menu-card".to_string())
@@ -1849,20 +2003,16 @@ fn view_options_menu_card(
             },
             cx,
         ))
-        .child(
-            div()
-                .id("view-order-manual")
-                .debug_selector(|| "view-order-manual".to_string())
-                .flex()
-                .h(px(30.))
-                .items_center()
-                .gap(px(8.))
-                .px(px(8.))
-                .rounded(px(8.))
-                .text_size(px(13.))
-                .text_color(theme::caption(cx))
-                .child(t!("sessions.manual_sort")),
-        )
+        .child(view_menu_item(
+            "view-order-manual",
+            t!("sessions.manual_sort"),
+            order == OrderMode::Manual,
+            p_manual,
+            move |_, _, cx| {
+                s_manual.update(cx, |st, cx| st.set_order_mode(OrderMode::Manual, cx));
+            },
+            cx,
+        ))
 }
 
 /// 菜单节标(分组方式/排序方式)

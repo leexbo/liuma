@@ -14329,10 +14329,7 @@ mod tests {
         // 全量覆写(非追加)
         host.set_session_order(vec!["c".into(), "a".into()])
             .unwrap();
-        assert_eq!(
-            host.session_order(),
-            vec!["c".to_string(), "a".to_string()]
-        );
+        assert_eq!(host.session_order(), vec!["c".to_string(), "a".to_string()]);
         // 落盘(settings_view 直读宿主设置;跨重启即此文件)
         assert_eq!(
             host.settings_view()["sessionOrder"],

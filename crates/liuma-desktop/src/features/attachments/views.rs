@@ -6,7 +6,9 @@
 //!
 //! 遮罩层以元素树顺序(后绘制在上)叠于内容上。外部文件拖放由
 //! gpui-pre 翻译为内部 `active_drag`(值 = `ExternalPaths` 真实路径),
-//! 蒙层在 `has_active_drag()` 时渲染并作为落点。语义:草稿图直接预览
+//! 蒙层在 `has_active_drag() && external_drag` 时渲染并作为落点(载荷
+//! 类型经 external_drag 标志分流——active_drag 无公开判型面,内部
+//! 拖拽如会话行手动排序不得触发蒙层)。语义:草稿图直接预览
 //! bytes,历史图经 `read_attachment` 异步解码缓存(`image_cache`);
 //! 文件直传源路径,发送时宿主落盘。
 
@@ -626,10 +628,11 @@ pub fn lightbox(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
 
 /// 拖拽邀请蒙层:外部文件拖入窗口期间
 /// 全屏遮罩 + 居中邀请卡;蒙层自身即落点(Submit 时按路径 intake,
-/// 图片/文件通道由文件头分流)。shell 根层在 `has_active_drag()` 时
-/// 渲染——gpui-pre 把 OS 文件拖放翻译为内部 active_drag(Entered 携带
-/// 真实路径,MouseMove 拖动,MouseUp 提交);本应用无内部拖拽生产者,
-/// 两者等价。注意:该 map 只增不清(debug_bounds),缺席断言不可用。
+/// 图片/文件通道由文件头分流)。shell 根层在 `has_active_drag() &&
+/// external_drag` 时渲染——gpui-pre 把 OS 文件拖放翻译为内部
+/// active_drag(Entered 携带真实路径,MouseMove 拖动,MouseUp 提交),
+/// 载荷类型经 external_drag 标志分流,内部拖拽(会话行手动排序等)
+/// 不渲染蒙层。注意:该 map 只增不清(debug_bounds),缺席断言不可用。
 pub fn drop_overlay(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let intake_store = store.clone();
     div()
@@ -643,7 +646,10 @@ pub fn drop_overlay(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .items_center()
         .justify_center()
         .on_drop(move |paths: &ExternalPaths, _window, cx| {
-            intake_store.update(cx, |st, _| st.intake_dropped_paths(paths.paths()));
+            intake_store.update(cx, |st, cx| {
+                st.set_external_drag(false, cx);
+                st.intake_dropped_paths(paths.paths());
+            });
         })
         .child(
             div()

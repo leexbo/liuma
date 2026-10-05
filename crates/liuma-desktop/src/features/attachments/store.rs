@@ -165,6 +165,10 @@ pub(crate) struct AttachmentsStore {
     pub scroll_handle: gpui_kit::ScrollHandle,
     /// 轨道视口宽(px;canvas paint 期捕获,点击翻页步长的分子)
     pub rail_viewport_w: std::cell::Cell<f32>,
+    /// OS 文件拖入进行中(typed on_drag_move::<ExternalPaths> 置位,
+    /// drop/Exited/内部拖拽起手三处清除)。gpui 的 active_drag 无公开
+    /// 判型面,附件蒙层靠它与内部拖拽(会话行手动排序等)分流
+    pub external_drag: bool,
     /// 两端箭头当前可见性。canvas paint 期由最新滚动几何推导(1px
     /// 容差),变化才 notify;构造期读
     /// 此值有至多一帧滞后,由该 notify 驱动收敛帧
@@ -197,6 +201,15 @@ impl AppStore {
     /// 附件拒收文案(reason → zh;映射单源见 [`image_reject_text`])
     pub fn attachment_error_text(&self, reason: &str) -> String {
         image_reject_text(reason, self.bridge.host().image_limits())
+    }
+
+    /// 外部文件拖入标志(变化才写 + notify;蒙层门 = has_active_drag()
+    /// && 本标志,见 shell 根过滤)
+    pub fn set_external_drag(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.attachments.external_drag != on {
+            self.attachments.external_drag = on;
+            cx.notify();
+        }
     }
 
     // ── 图片附件(intake 前置检查 / 草稿态 / 拖拽)──────────────────

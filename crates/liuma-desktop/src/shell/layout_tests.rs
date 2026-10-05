@@ -2548,7 +2548,7 @@ fn file_drop_overlay_invites_and_intakes(cx: &mut TestAppContext) {
     // Entered:蒙层出现(active_drag 置位 → 全屏重绘)
     wcx.simulate_event(gpui_kit::FileDropEvent::Entered {
         position: gpui_kit::point(px(200.), px(200.)),
-        paths: gpui_kit::ExternalPaths(smallvec::smallvec![doc_path.clone()]),
+        paths: ExternalPaths(smallvec::smallvec![doc_path.clone()]),
     });
     wcx.refresh().expect("刷新失败");
     cx.update(|_: &mut App| {});
@@ -4598,6 +4598,242 @@ fn session_row_archive_button(cx: &mut TestAppContext) {
         cx.update(|app| store.read(app).state.current_id.clone()),
         Some(current),
         "归档非当前会话不影响当前"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 手动排序拖拽:按住下侧行拖到相邻上侧行**上半**释放 = 落其前 →
+/// 全序快照落 session_order(host settings)且渲染序翻转;当前空会话
+/// 不可拖(自动置顶);拖拽进行中不得触发外部文件蒙层(drop-overlay
+/// 只服务 OS 文件拖入)
+#[gpui_kit::test]
+fn sidebar_manual_drag_reorders_flat_list(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "sb-drag");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut App| {});
+        cx.run_until_parked();
+    };
+    redraw(cx, &mut wcx);
+    let current = cx
+        .update(|app| store.read(app).state.current_id.clone())
+        .expect("前置:当前会话在场");
+    // 再建两只旁观会话;updated_at 同毫秒时宿主序不稳,拖拽方向按
+    // 实际渲染 y 序取(下行者拖到上侧行上半 = 落其前)
+    let (s2, s3) = cx.update(|app| {
+        store.update(app, |st, _| {
+            (
+                st.bridge.host().create_session(None, None, None),
+                st.bridge.host().create_session(None, None, None),
+            )
+        })
+    });
+    // 切手动排序,等三行落地
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.set_order_mode(sessions::store::OrderMode::Manual, cx)
+        })
+    });
+    redraw(cx, &mut wcx);
+    let sel =
+        |id: &str| -> &'static str { Box::leak(format!("session-row-{id}").into_boxed_str()) };
+    let (cur_sel, s2_sel, s3_sel) = (sel(&current), sel(&s2), sel(&s3));
+    let mut rows = None;
+    for _ in 0..50 {
+        match (
+            wcx.debug_bounds(cur_sel),
+            wcx.debug_bounds(s2_sel),
+            wcx.debug_bounds(s3_sel),
+        ) {
+            (Some(a), Some(b), Some(c)) => {
+                rows = Some((a, b, c));
+                break;
+            }
+            _ => {
+                redraw(cx, &mut wcx);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+    let (row_cur, row_s2, row_s3) = rows.expect("Manual 态三行缺失");
+    // 旁观两只里 y 大者为下侧(D,拖拽源),另一只上侧(U,落点)
+    let (d_id, u_id, d_row, u_row, d_sel, u_sel) = if row_s2.origin.y > row_s3.origin.y {
+        (&s2, &s3, row_s2, row_s3, s2_sel, s3_sel)
+    } else {
+        (&s3, &s2, row_s3, row_s2, s3_sel, s2_sel)
+    };
+    let center = |b: Bounds<Pixels>| gpui_kit::Point {
+        x: b.origin.x + b.size.width / 2.,
+        y: b.origin.y + b.size.height / 2.,
+    };
+    // 落点 = 上侧行**上半**(= 落其前);先小步起拖(>2px 激活),
+    // 激活与 drag_move 分事件走
+    wcx.simulate_mouse_down(
+        center(d_row),
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    wcx.simulate_mouse_move(
+        gpui_kit::Point {
+            x: center(d_row).x,
+            y: center(d_row).y + px(10.),
+        },
+        Some(gpui_kit::MouseButton::Left),
+        gpui_kit::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("drop-overlay").is_none(),
+        "内部会话拖拽不得渲染外部文件蒙层"
+    );
+    let drop_at = gpui_kit::Point {
+        x: u_row.origin.x + u_row.size.width / 2.,
+        y: u_row.origin.y + u_row.size.height * 0.25,
+    };
+    wcx.simulate_mouse_move(
+        drop_at,
+        Some(gpui_kit::MouseButton::Left),
+        gpui_kit::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    wcx.simulate_mouse_up(
+        drop_at,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    redraw(cx, &mut wcx);
+
+    // 全序快照:D 排到 U 前(渲染序翻转)
+    let order = cx.update(|app| store.read(app).sessions.session_order.clone());
+    let id_pos = |o: &[String], id: &str| o.iter().position(|v| v == id).expect("应入序");
+    assert!(
+        id_pos(&order, d_id) < id_pos(&order, u_id),
+        "拖拽行应排到落点行前: {order:?}"
+    );
+    let mut seq = None;
+    for _ in 0..50 {
+        if let (Some(x), Some(y)) = (wcx.debug_bounds(d_sel), wcx.debug_bounds(u_sel)) {
+            seq = Some((x, y));
+            break;
+        }
+        redraw(cx, &mut wcx);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let (rd, ru) = seq.expect("重排后两行缺失");
+    assert!(
+        rd.origin.y < ru.origin.y,
+        "渲染序应翻转(拖拽行在上): {:?} vs {:?}",
+        rd.origin.y,
+        ru.origin.y
+    );
+
+    // 当前空会话不可拖(自动置顶守卫):提交被拒,顺序原样
+    wcx.simulate_mouse_down(
+        center(row_cur),
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    wcx.simulate_mouse_move(
+        gpui_kit::Point {
+            x: center(row_cur).x,
+            y: center(row_cur).y + px(10.),
+        },
+        Some(gpui_kit::MouseButton::Left),
+        gpui_kit::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    wcx.simulate_mouse_up(
+        gpui_kit::Point {
+            x: center(row_cur).x,
+            y: center(row_cur).y + px(10.),
+        },
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    redraw(cx, &mut wcx);
+    assert_eq!(
+        cx.update(|app| store.read(app).sessions.session_order.clone()),
+        order,
+        "当前空会话拖动应被拒"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 拖拽与点击互斥:按住行移 >2px 再释放不开会话(起拖清 pending
+/// click);同行纯点击仍打开
+#[gpui_kit::test]
+fn sidebar_drag_suppresses_click(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "sb-drag-click");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut App| {});
+        cx.run_until_parked();
+    };
+    redraw(cx, &mut wcx);
+    let s2 = cx.update(|app| {
+        store.update(app, |st, _| {
+            st.bridge.host().create_session(None, None, None)
+        })
+    });
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.set_order_mode(sessions::store::OrderMode::Manual, cx)
+        })
+    });
+    redraw(cx, &mut wcx);
+    let s2_sel: &'static str = Box::leak(format!("session-row-{s2}").into_boxed_str());
+    let mut row = None;
+    for _ in 0..50 {
+        if let Some(b) = wcx.debug_bounds(s2_sel) {
+            row = Some(b);
+            break;
+        }
+        redraw(cx, &mut wcx);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let row = row.expect("s2 行缺失");
+    let at = gpui_kit::Point {
+        x: row.origin.x + row.size.width / 2.,
+        y: row.origin.y + row.size.height / 2.,
+    };
+    // 拖拽释放(20px 位移):不得打开会话
+    wcx.simulate_mouse_down(
+        at,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    wcx.simulate_mouse_move(
+        gpui_kit::Point {
+            x: at.x,
+            y: at.y + px(20.),
+        },
+        Some(gpui_kit::MouseButton::Left),
+        gpui_kit::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    wcx.simulate_mouse_up(
+        gpui_kit::Point {
+            x: at.x,
+            y: at.y + px(20.),
+        },
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::default(),
+    );
+    redraw(cx, &mut wcx);
+    assert_ne!(
+        cx.update(|app| store.read(app).state.current_id.clone())
+            .as_deref(),
+        Some(s2.as_str()),
+        "拖拽释放不应打开会话"
+    );
+    // 同行纯点击:打开
+    wcx.simulate_click(at, gpui_kit::Modifiers::default());
+    redraw(cx, &mut wcx);
+    assert_eq!(
+        cx.update(|app| store.read(app).state.current_id.clone()),
+        Some(s2),
+        "同行纯点击应打开会话"
     );
     let _ = std::fs::remove_dir_all(root);
 }
@@ -8497,7 +8733,8 @@ fn sidebar_pinned_section_and_group_preview(cx: &mut TestAppContext) {
 }
 
 /// 视图选项菜单:滑块钮开菜单(分组/排序两组);单列表切换落 store、
-/// 选择即收菜单;「手动排序」本期置灰占位(点击无效果)
+/// 选择即收菜单;分组与排序独立两维(照 dsh WorkspaceBrowser:选手
+/// 动排序不改分组,切分组不改排序)
 #[gpui_kit::test]
 fn sidebar_view_options_menu(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "view-menu");
@@ -8527,47 +8764,48 @@ fn sidebar_view_options_menu(cx: &mut TestAppContext) {
         "单列表项应渲染"
     );
     assert!(
-        wcx.debug_bounds("view-order-manual").is_some(),
-        "手动排序占位应渲染"
+        wcx.debug_bounds("view-item-view-order-manual").is_some(),
+        "手动排序项应渲染"
     );
 
-    // 手动排序:置灰无 on_click —— 点击后排序方式不变、菜单不收
-    click_sel(&mut wcx, "view-order-manual");
+    // 手动排序:选择即收菜单 + order_mode 落 store,**分组不动**
+    // (两维正交;dsh 同款)
+    click_sel(&mut wcx, "view-item-view-order-manual");
     cx.run_until_parked();
+    let (mode, group) = cx.update(|app| {
+        let st = store.read(app);
+        (st.sessions.order_mode, st.sessions.group_mode)
+    });
     assert_eq!(
-        cx.update(|app| store.read(app).sessions.order_mode),
-        sessions::store::OrderMode::Updated,
-        "手动排序本阶段不可选中"
+        mode,
+        sessions::store::OrderMode::Manual,
+        "手动排序未落 store"
     );
-    assert!(
-        wcx.debug_bounds("view-menu-card").is_some(),
-        "点占位项不应收菜单"
-    );
-
-    // 单列表:选择即收菜单 + group_mode 落 store(组头消失的渲染断言
-    // 不可行:debug_bounds map 只增不清,Appearance 断言恒真)
-    click_sel(&mut wcx, "view-item-view-group-flat");
-    cx.run_until_parked();
     assert_eq!(
-        cx.update(|app| store.read(app).sessions.group_mode),
-        sessions::store::GroupMode::Flat,
-        "单列表未落 store"
+        group,
+        sessions::store::GroupMode::Workspace,
+        "选手动排序不得改分组(两维正交)"
     );
     assert!(
         wcx.debug_bounds("view-menu-card").is_none(),
         "选择后应收菜单"
     );
 
-    // 切回按工作区(菜单重开 → 选按工作区)
+    // 切单列表(菜单重开 → 选单列表):分组落 store,排序**保持手动**
     click_sel(&mut wcx, "header-btn-view-options");
     cx.run_until_parked();
     wcx.refresh().expect("刷新失败");
-    click_sel(&mut wcx, "view-item-view-group-ws");
+    click_sel(&mut wcx, "view-item-view-group-flat");
     cx.run_until_parked();
+    let (group, order) = cx.update(|app| {
+        let st = store.read(app);
+        (st.sessions.group_mode, st.sessions.order_mode)
+    });
+    assert_eq!(group, sessions::store::GroupMode::Flat, "未切单列表");
     assert_eq!(
-        cx.update(|app| store.read(app).sessions.group_mode),
-        sessions::store::GroupMode::Workspace,
-        "未切回按工作区"
+        order,
+        sessions::store::OrderMode::Manual,
+        "切分组不得还原排序(两维正交)"
     );
     let _ = std::fs::remove_dir_all(root);
 }

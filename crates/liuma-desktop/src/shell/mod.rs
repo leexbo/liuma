@@ -19,9 +19,9 @@ use crate::kits::modals::attachment_toast_card;
 use gpui_kit::component::StyledExt;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Bounds, Context, DispatchPhase, Element, ElementId, Entity, GlobalElementId,
-    InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseMoveEvent, ParentElement,
-    Pixels, Render, StatefulInteractiveElement as _, Style, Styled, Window, div, px,
+    App, Bounds, Context, DispatchPhase, Element, ElementId, Entity, ExternalPaths,
+    GlobalElementId, InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseMoveEvent,
+    ParentElement, Pixels, Render, StatefulInteractiveElement as _, Style, Styled, Window, div, px,
 };
 
 use crate::features::ask;
@@ -418,6 +418,8 @@ impl Render for WorkspaceView {
         let st = self.store.read(cx);
         let hero = st.hero();
         let sidebar_collapsed = st.sidebar_collapsed;
+        // 外部文件拖入标志(根级蒙层门的一半;见链尾 drop_overlay 条目)
+        let external_drag = st.attachments.external_drag;
         // 对话列宽(消息列/composer/hero 统一;见 metrics 策略;侧栏拖宽后
         // 随 sidebar_px 收窄内容区)
         let col_w = metrics::window_chat_col_w(
@@ -439,6 +441,18 @@ impl Render for WorkspaceView {
             .overflow_hidden()
             // 画布底由 Root 层承担(c.background = BASE),此处不重复铺底
             .text_color(theme::label(cx))
+            // 外部文件拖入判定(载荷类型分流):typed on_drag_move 只收
+            // ExternalPaths(OS 文件拖入翻译成的内部拖拽),内部拖拽
+            // (会话行手动排序等)不触发;EXIT = 平台拖拽离开窗口即清。
+            // 蒙层门 = has_active_drag() && external_drag(下同)
+            .on_drag_move::<ExternalPaths>({
+                let store = self.store.clone();
+                move |_, _, cx| store.update(cx, |s, cx| s.set_external_drag(true, cx))
+            })
+            .on_file_drop_exit({
+                let store = self.store.clone();
+                move |_, _, cx| store.update(cx, |s, cx| s.set_external_drag(false, cx))
+            })
             // 拖选实时刷新驱动器(零尺寸;见其文档)——必须与本列同窗,
             // 监听挂在窗口级,置脏后渲染循环出帧高亮才实时
             .child(SelectionRefreshDriver)
@@ -700,8 +714,10 @@ impl Render for WorkspaceView {
                 el.child(attachments::lightbox(&self.store, cx))
             })
             // 拖拽邀请蒙层(根级;gpui-pre 将 OS 文件拖放翻译为内部
-            // active_drag,拖动期间全屏重绘,蒙层即落点)
-            .when(cx.has_active_drag(), |el| {
+            // active_drag,拖动期间全屏重绘,蒙层即落点)。active_drag
+            // 无公开判型面,载荷类型由 external_drag 标志旁路(见根级
+            // on_drag_move::<ExternalPaths>):内部拖拽不渲染蒙层
+            .when(cx.has_active_drag() && external_drag, |el| {
                 el.child(attachments::drop_overlay(&self.store, cx))
             })
             // Mermaid 查看器(根级;与 lightbox 同构。置于 toast 前——

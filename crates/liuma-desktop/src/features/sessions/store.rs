@@ -44,13 +44,15 @@ pub(crate) enum GroupMode {
     Flat,
 }
 
-/// 侧栏列表排序方式(视图选项菜单;内存视图态,不持久化)
+/// 侧栏列表排序方式(视图选项菜单;内存视图态,不持久化——排序
+/// 产物 session_order 落 host settings,视图态重启回默认)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum OrderMode {
     /// 最近更新(宿主清单序即 updated_at 降序,默认)
     #[default]
     Updated,
-    /// 手动排序(拖拽重排;本期仅菜单占位,不可选中)
+    /// 手动排序(拖拽重排;与分组正交——单列表按全序快照排,分组
+    /// 视图按组内成员相对序排,照 dsh 双维正交口径)
     Manual,
 }
 
@@ -90,6 +92,13 @@ pub(crate) struct SessionsStore {
     pub pinned_sessions: Vec<String>,
     /// 置顶工作区(host settings 权威;置顶的工作区从「项目」节提出)
     pub pinned_workspaces: Vec<String>,
+    /// 会话手动排序(host settings 权威,refresh 时拉取;单列表全序
+    /// 快照,缺席 id 渲染侧剪除/按最近更新排前)
+    pub session_order: Vec<String>,
+    /// 拖拽落点提示(Some(目标会话 id, 是否落其后)):行级 on_drag_move
+    /// 按指针所在半行更新,提交与插入指示线共用。仅拖拽进行中有意义
+    /// (渲染以 has_active_drag 为门,drop 后自动隐去)
+    pub drop_hint: Option<(String, bool)>,
     /// 「展开显示」已额外展开的批数(键 = 工作区;每批 5 条,分页
     /// 渐进;重置 = 收起。内存视图态)
     pub expanded_show: HashMap<String, usize>,
@@ -405,6 +414,7 @@ impl AppStore {
         let (pinned_sessions, pinned_workspaces) = self.bridge.host().pinned();
         self.sessions.pinned_sessions = pinned_sessions;
         self.sessions.pinned_workspaces = pinned_workspaces;
+        self.sessions.session_order = self.bridge.host().session_order();
     }
 
     /// 置顶/取消置顶会话(host 落盘为权威,成功后本地同步 + 清单刷新)
@@ -607,20 +617,76 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 切换列表分组方式(菜单项选择即收菜单)
+    /// 切换列表分组方式(菜单项选择即收菜单)。与排序方式独立两维
+    /// (照 dsh WorkspaceBrowser:分组管组构形,排序管成员序)
     pub fn set_group_mode(&mut self, mode: GroupMode, cx: &mut Context<Self>) {
         self.sessions.group_mode = mode;
         cx.notify();
     }
 
-    /// 切换列表排序方式(菜单项选择即收菜单)。手动排序本期仅占位:
-    /// 拖拽重排未实现,菜单项置灰不触发
+    /// 切换列表排序方式(菜单项选择即收菜单)。手动排序与分组正交:
+    /// 分组视图按组内成员序生效,单列表按全序生效
     pub fn set_order_mode(&mut self, mode: OrderMode, cx: &mut Context<Self>) {
-        if mode == OrderMode::Manual {
-            return;
-        }
         self.sessions.order_mode = mode;
         cx.notify();
+    }
+
+    /// 手动排序拖拽提交(dsh 语义 = 保存顺序并切手动排序):全序上
+    /// 落槽位,变化才写 host(失败静默——本次会话渲染序仍生效,同
+    /// toggle_pinned 纪律)并本地同步;置顶块与普通块不互通(拖拽起
+    /// 点与落点置顶态不同即忽略)。不 refresh_list(清单成员未变)
+    pub fn reorder_session_manual(
+        &mut self,
+        drag: &str,
+        target: &str,
+        after: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let pinned_drag = self.sessions.pinned_sessions.iter().any(|v| v == drag);
+        let pinned_target = self.sessions.pinned_sessions.iter().any(|v| v == target);
+        if pinned_drag != pinned_target {
+            return;
+        }
+        // 当前空会话不可拖(照 dsh sessionDragOrder 的 source.blank
+        // 守卫:它由置顶规则恒排首位,拖动必被重钉回顶,无意义;
+        // liuma 空会话行全员可见,非当前的空白行照常可拖)
+        if self.current_blank_id().as_deref() == Some(drag) {
+            return;
+        }
+        let blank = self.current_blank_id();
+        let full = manual_flat_order(
+            &self.state.sessions,
+            &self.sessions.session_order,
+            &self.sessions.pinned_sessions,
+            blank.as_deref(),
+        );
+        let mut next = apply_session_move(full, drag, target, after);
+        // 新建空会话恒置顶(照 dsh pinCurrentBlank:拖拽产物同样重钉)
+        if let Some(b) = blank
+            && let Some(pos) = next.iter().position(|v| v == &b)
+            && pos > 0
+        {
+            next.remove(pos);
+            next.insert(0, b);
+        }
+        if next == self.sessions.session_order {
+            return;
+        }
+        let _ = self.bridge.host().set_session_order(next.clone());
+        self.sessions.session_order = next;
+        self.sessions.order_mode = OrderMode::Manual;
+        self.sessions.drop_hint = None;
+        cx.notify();
+    }
+
+    /// 当前会话的空会话 id(未发首条消息的会话;手动排序置顶用)
+    pub(crate) fn current_blank_id(&self) -> Option<String> {
+        let id = self.state.current_id.as_deref()?;
+        self.state
+            .sessions
+            .iter()
+            .find(|s| s.session_id == id && s.blank)
+            .map(|s| s.session_id.clone())
     }
 
     /// 打开工作区重命名(复用会话重命名输入态)
@@ -1082,6 +1148,72 @@ fn single_line(title: &str) -> String {
     title.replace(['\n', '\r'], " ").trim().to_string()
 }
 
+/// 手动排序渲染序(照 dsh reconcileManualOrder:置顶块前导 + 已存
+/// 相对序 + 缺席成员按最近更新殿后,另加当前空会话恒置顶):当前
+/// 空会话 → 已置顶(pinned_sessions 序)→ overlay 写入序 → 其余按
+/// 最近更新。各段均剪除清单缺席 id;空 overlay + 无置顶 = 退化为
+/// 宿主 updated 降序
+pub(crate) fn manual_flat_order(
+    sessions: &[liuma_core::proto::SessionSummary],
+    overlay: &[String],
+    pinned: &[String],
+    current_blank: Option<&str>,
+) -> Vec<String> {
+    fn push_present(
+        out: &mut Vec<String>,
+        id: &str,
+        sessions: &[liuma_core::proto::SessionSummary],
+    ) {
+        if sessions.iter().any(|s| s.session_id == id) && !out.iter().any(|v| v == id) {
+            out.push(id.to_string());
+        }
+    }
+    let mut out: Vec<String> = Vec::with_capacity(sessions.len());
+    if let Some(blank) = current_blank {
+        push_present(&mut out, blank, sessions);
+    }
+    for id in pinned {
+        push_present(&mut out, id, sessions);
+    }
+    for id in overlay {
+        push_present(&mut out, id, sessions);
+    }
+    let mut rest: Vec<&liuma_core::proto::SessionSummary> = sessions
+        .iter()
+        .filter(|s| !out.iter().any(|v| v == &s.session_id))
+        .collect();
+    rest.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
+    out.extend(rest.iter().map(|s| s.session_id.clone()));
+    out
+}
+
+/// 手动排序的拖拽落点提交(纯函数):移除被拖项后在 target 槽位插回
+/// (after = target 之后,落行下半 = after)。drag==target 或任一不在
+/// 序 = 原序原样返回
+pub(crate) fn apply_session_move(
+    mut order: Vec<String>,
+    drag: &str,
+    target: &str,
+    after: bool,
+) -> Vec<String> {
+    if drag == target {
+        return order;
+    }
+    if !order.iter().any(|id| id == drag) || !order.iter().any(|id| id == target) {
+        return order;
+    }
+    let pos = order.iter().position(|id| id == drag).unwrap_or(0);
+    let id = order.remove(pos);
+    // target 仍在列(drag != target 且先验在序),移除 drag 后下标以
+    // 现序为准;末尾 after = 追加
+    let to = match order.iter().position(|x| x == target) {
+        Some(p) => p + usize::from(after),
+        None => return order,
+    };
+    order.insert(to, id);
+    order
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1100,5 +1232,100 @@ mod tests {
         assert_eq!(single_line("  首尾留白  "), "首尾留白");
         // 其余空白(含全角)原样保留:只折硬换行
         assert_eq!(single_line("甲　乙 丙"), "甲　乙 丙");
+    }
+
+    /// 手动排序渲染序(dsh reconcileManualOrder 口径):当前空会话
+    /// 恒置顶 → 置顶块 → overlay 保序 → 缺席成员按最近更新;各段
+    /// 剪除清单外 id;空 overlay + 无置顶 = 退化为 updated 降序
+    #[test]
+    fn manual_flat_order_overlay_and_prune() {
+        let s = |id: &str, at: u64| liuma_core::proto::SessionSummary {
+            session_id: id.into(),
+            updated_at: at,
+            running: false,
+            blank: false,
+            parent_session_id: None,
+            origin: None,
+            cwd: None,
+            agent_preset: None,
+            projections: None,
+        };
+        let sessions = vec![s("a", 30), s("b", 20), s("c", 10)];
+        let ov = |ids: &[&str]| ids.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        // 空 overlay:退化为 updated 降序
+        assert_eq!(
+            manual_flat_order(&sessions, &[], &[], None),
+            ["a", "b", "c"]
+        );
+        // overlay 保序在前(即便与 updated 序相逆),缺席成员殿后
+        assert_eq!(
+            manual_flat_order(&sessions, &ov(&["c", "a"]), &[], None),
+            ["c", "a", "b"]
+        );
+        // 清单外 id 剪除
+        assert_eq!(
+            manual_flat_order(&sessions, &ov(&["gone", "b"]), &[], None),
+            ["b", "a", "c"]
+        );
+        // 置顶块前导(pinned_sessions 序),overlay 随后
+        assert_eq!(
+            manual_flat_order(&sessions, &ov(&["a"]), &ov(&["c"]), None),
+            ["c", "a", "b"]
+        );
+        // 当前空会话恒置顶(压过置顶块);清单外空会话 id 忽略
+        let blank = liuma_core::proto::SessionSummary {
+            blank: true,
+            ..s("b", 20)
+        };
+        let with_blank = vec![sessions[0].clone(), blank, sessions[2].clone()];
+        assert_eq!(
+            manual_flat_order(&with_blank, &ov(&["a"]), &[], Some("b")),
+            ["b", "a", "c"]
+        );
+        assert_eq!(
+            manual_flat_order(&with_blank, &[], &[], Some("gone")),
+            ["a", "b", "c"],
+            "缺席空会话 id 忽略"
+        );
+    }
+
+    /// 手动排序落点:前移/后移/落行下半(after)/末尾 after=追加;
+    /// drag==target 与缺席成员原样返回
+    #[test]
+    fn apply_session_move_slots() {
+        let ord = || {
+            ["a", "b", "c", "d"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        };
+        // 前移:A 落 C 前
+        assert_eq!(
+            apply_session_move(ord(), "a", "c", false),
+            ["b", "a", "c", "d"]
+        );
+        // 后移:D 落 B 前
+        assert_eq!(
+            apply_session_move(ord(), "d", "b", false),
+            ["a", "d", "b", "c"]
+        );
+        // 落行下半(after):B 落 D 后 = 追加到末尾
+        assert_eq!(
+            apply_session_move(ord(), "b", "d", true),
+            ["a", "c", "d", "b"]
+        );
+        // 原样:拖到自身 / 任一缺席
+        assert_eq!(
+            apply_session_move(ord(), "b", "b", true),
+            ["a", "b", "c", "d"]
+        );
+        assert_eq!(
+            apply_session_move(ord(), "x", "b", false),
+            ["a", "b", "c", "d"]
+        );
+        assert_eq!(
+            apply_session_move(ord(), "b", "x", false),
+            ["a", "b", "c", "d"]
+        );
     }
 }
