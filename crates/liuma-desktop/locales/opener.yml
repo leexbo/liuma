@@ -1,0 +1,126 @@
+# opener 面文案(「在编辑器中打开」切片;key 根段 == 文件 stem)。
+# 值一律加引号(YAML 裸标量会被解析成非字符串,rust-i18n 只收字符串叶子)。
+# 品牌名键两档同形,登记在 scripts/verify-desktop-i18n 的 SAME_VALUE_KEYS。
+_version: 2
+
+opener:
+
+  app_finder:
+    zh-CN: "访达"
+    en: "Finder"
+
+  app_terminal:
+    zh-CN: "终端"
+    en: "Terminal"
+
+  app_cursor:
+    zh-CN: "Cursor"
+    en: "Cursor"
+
+  app_vscode:
+    zh-CN: "VS Code"
+    en: "VS Code"
+
+  app_vscodeinsiders:
+    zh-CN: "VS Code - Insiders"
+    en: "VS Code - Insiders"
+
+  app_windsurf:
+    zh-CN: "Windsurf"
+    en: "Windsurf"
+
+  app_zed:
+    zh-CN: "Zed"
+    en: "Zed"
+
+  app_sublimetext:
+    zh-CN: "Sublime Text"
+    en: "Sublime Text"
+
+  app_xcode:
+    zh-CN: "Xcode"
+    en: "Xcode"
+
+  app_androidstudio:
+    zh-CN: "Android Studio"
+    en: "Android Studio"
+
+  app_intellij:
+    zh-CN: "IntelliJ IDEA"
+    en: "IntelliJ IDEA"
+
+  app_pycharm:
+    zh-CN: "PyCharm"
+    en: "PyCharm"
+
+  app_webstorm:
+    zh-CN: "WebStorm"
+    en: "WebStorm"
+
+  app_phpstorm:
+    zh-CN: "PhpStorm"
+    en: "PhpStorm"
+
+  app_goland:
+    zh-CN: "GoLand"
+    en: "GoLand"
+
+  app_rider:
+    zh-CN: "Rider"
+    en: "Rider"
+
+  app_rustrover:
+    zh-CN: "RustRover"
+    en: "RustRover"
+
+  app_fork:
+    zh-CN: "Fork"
+    en: "Fork"
+
+  app_sourcetree:
+    zh-CN: "Sourcetree"
+    en: "Sourcetree"
+
+  app_tower:
+    zh-CN: "Tower"
+    en: "Tower"
+
+  app_sublimemerge:
+    zh-CN: "Sublime Merge"
+    en: "Sublime Merge"
+
+  app_ghostty:
+    zh-CN: "Ghostty"
+    en: "Ghostty"
+
+  app_warp:
+    zh-CN: "Warp"
+    en: "Warp"
+
+  app_iterm:
+    zh-CN: "iTerm"
+    en: "iTerm"
+
+  app_kitty:
+    zh-CN: "kitty"
+    en: "kitty"
+
+  app_default_label:
+    zh-CN: "%{name}（默认）"
+    en: "%{name} (default)"
+
+  tip_open_with:
+    zh-CN: "用 %{app} 打开"
+    en: "Open with %{app}"
+
+  tip_choose_app:
+    zh-CN: "选择打开方式"
+    en: "Choose an app"
+
+  launch_failed:
+    zh-CN: "用 %{app} 打开失败：%{msg}"
+    en: "Failed to open with %{app}: %{msg}"
+
+  launch_channel_failed:
+    zh-CN: "打开任务通道中断"
+    en: "Open task channel dropped"

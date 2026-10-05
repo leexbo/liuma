@@ -82,6 +82,11 @@ pub fn title_bar_row(store: &Entity<AppStore>, window: &mut Window, cx: &App) ->
         // 弹性占位:面板开关推到标题栏右缘(仅关态渲染;面板开着时
         // 同款钮挪入面板头右缘)
         .child(div().flex_1())
+        // 「在编辑器中打开」分体钮(会话 ⋯ 左侧;非 macOS / 无工作区
+        // 目录 / 清单未就绪不渲染,判据见 opener::split_button_visible)
+        .when(crate::features::opener::split_button_visible(st), |el| {
+            el.child(crate::features::opener::open_with_split(store, cx))
+        })
         // 会话管理菜单钮(右侧面板开关左侧;作用于当前会话,无会话不渲染)
         .when(st.state.current_id.is_some(), |el| {
             el.child(session_menu_button(store, cx))

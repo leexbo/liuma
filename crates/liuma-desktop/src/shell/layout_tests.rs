@@ -1,6 +1,7 @@
 use super::*;
 use crate::features::attachments::DraftAttachment;
 use crate::features::chat::projection::{ChatNode, ChatState, ToolState};
+use crate::features::opener::probe;
 use crate::shell::host::HostBridge;
 use crate::shell::store::AppStore;
 use gpui_kit::{AppContext, Bounds, TestAppContext};
@@ -15144,6 +15145,95 @@ fn user_theme_hot_load_rebuilds_settings_selects(cx: &mut TestAppContext) {
     assert_ne!(
         after_removal, sig_loaded,
         "删除用户主题应改变签名(下拉重建,选项面消失)"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 「在编辑器中打开」分体钮:播种探测清单后可见(finder/terminal
+/// fixed 恒在)→ chevron 开菜单列应用行 → 再点收起(store 开态断言;
+/// debug_bounds 只增不清,关闭态不可用缺席断言)。行点击会真启动
+/// 目标应用,不在集成面点击;启动链路 catalog 纯函数已覆盖。
+#[gpui_kit::test]
+fn opener_split_button_and_menu(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "opener-menu");
+    // 测试面不走挂窗探测(见 opener_ensure_probed 的 cfg!(test) 早退),
+    // 此处同步播种真实探测结果(一次 stat + xcode-select,毫秒级)
+    cx.update(|app| {
+        store.update(app, |s, cx| {
+            s.opener.apps = probe::detect_apps();
+            s.opener.selected = s.opener.apps.first().map(|a| a.id);
+            cx.notify();
+        });
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut App| {});
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("open-with").is_some(),
+        "分体钮未出现(清单未就绪?)"
+    );
+    // chevron 开菜单:访达行在场(overlay_card 只有 .id 无
+    // debug_selector,bounds 不可断;行 debug_selector + store 开态双证)
+    click_sel(&mut wcx, "open-with-chevron");
+    let mut opened = false;
+    for _ in 0..150 {
+        cx.update(|_: &mut App| {});
+        cx.run_until_parked();
+        wcx.refresh().expect("刷新失败");
+        if wcx.debug_bounds("open-with-row-finder").is_some() {
+            opened = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(opened, "应用菜单访达行未开");
+    assert!(
+        cx.update(|app| store.read(app).opener.menu_open),
+        "菜单开态应落地"
+    );
+    // 再点收起:开态翻转, bounds 缺席不可断(只增不清)
+    click_sel(&mut wcx, "open-with-chevron");
+    cx.update(|_: &mut App| {});
+    cx.run_until_parked();
+    assert!(
+        !cx.update(|app| store.read(app).opener.menu_open),
+        "chevron 复点应收起菜单"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 选中切换:改选中后主钮结构不塌、选择落地(真启动路径不经集成
+/// 面点击)。目标取清单末位(终端,fixed 恒在),不依赖机器装了
+/// 哪些编辑器。
+#[gpui_kit::test]
+fn opener_selection_switch_keeps_button(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "opener-select");
+    // 播种探测(同 opener_split_button_and_menu;测试面不走挂窗探测)
+    let last = cx
+        .update(|app| {
+            store.update(app, |s, cx| {
+                s.opener.apps = probe::detect_apps();
+                let last = s.opener.apps.last().map(|a| a.id);
+                s.opener.selected = s.opener.apps.first().map(|a| a.id);
+                cx.notify();
+                last
+            })
+        })
+        .expect("清单未就绪");
+    cx.update(|app| {
+        store.update(app, |st, _| st.opener.selected = Some(last));
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut App| {});
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|app| store.read(app).opener.selected),
+        Some(last),
+        "选中应落地"
+    );
+    assert!(
+        wcx.debug_bounds("open-with-main").is_some(),
+        "选中切换后主钮应仍在"
     );
     let _ = std::fs::remove_dir_all(root);
 }

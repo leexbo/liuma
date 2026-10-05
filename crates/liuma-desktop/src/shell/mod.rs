@@ -27,6 +27,7 @@ use gpui_kit::{
 use crate::features::ask;
 use crate::features::attachments;
 use crate::features::chat;
+use crate::features::opener;
 use crate::features::sessions;
 use crate::features::settings;
 use crate::features::subagents;
@@ -733,6 +734,10 @@ impl Render for WorkspaceView {
                 self.store.read(cx).attachments.attachment_toast.is_some(),
                 |el| el.child(attachment_toast_card(&self.store, cx)),
             )
+            // 「在编辑器中打开」启动失败 toast(与附件拒收 toast 同构)
+            .when(self.store.read(cx).opener.launch_error.is_some(), |el| {
+                el.child(opener::launch_error_toast(&self.store, cx))
+            })
         // Dialog/Sheet/Notification 三层由 Root 托管(0.7.0 起 Root
         // 自渲染,应用根视图不再挂层;`Root::render_*_layer` 已删)。
         // 层位于 Root 的 absolute/inset_0 overlay 子树,绘制在手写

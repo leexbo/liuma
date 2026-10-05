@@ -11,6 +11,7 @@ use crate::features::ask::AskStore;
 use crate::features::attachments::AttachmentsStore;
 use crate::features::chat::{ChatNode, ChatStore};
 use crate::features::feedback::FeedbackStore;
+use crate::features::opener::OpenerStore;
 use crate::features::search::SearchStore;
 use crate::features::sessions::SessionsStore;
 use crate::features::settings::SettingsStore;
@@ -121,6 +122,9 @@ pub struct AppStore {
     /// 终端功能切片状态(右栏「终端」标签:多路 shell 会话/网格尺寸;
     /// 域与行为见 features::terminal)
     pub terminal: crate::features::terminal::store::TerminalStore,
+    /// 「在编辑器中打开」功能切片状态(应用清单/选中/图标缓存/菜单
+    /// 开态/失败 toast;域与行为见 features::opener)
+    pub opener: OpenerStore,
     /// 状态边沿刷新的延迟任务(重触发即替换;见 Effect::StatusRefresh)
     pub(crate) status_refresh: Option<gpui_kit::Task<()>>,
     /// 状态边沿刷新代次(替换任务时 +1,过期任务到期自弃)
@@ -272,6 +276,7 @@ impl AppStore {
             preview: crate::features::preview::PreviewStore::default(),
             preview_poll: None,
             terminal: crate::features::terminal::store::TerminalStore::new(),
+            opener: OpenerStore::default(),
             status_refresh: None,
             status_refresh_gen: 0,
             local_notice_seq: 0,
@@ -362,6 +367,8 @@ impl AppStore {
         self.start_billing_tick(cx);
         // 模型探测兜底(挂窗一次):清单缺席的 provider 静默拉 /models
         self.ensure_models_probed(cx);
+        // 应用清单探测(挂窗一次):「在编辑器中打开」控件的数据面
+        self.opener_ensure_probed(cx);
         // 回底钮滚动跟手(挂窗一次):gpui list 滚动只 notify 列表视图,
         // 兄弟元素(回底钮)不重渲染——可见性会滞留在旧状态直到下一次
         // 无关 notify。滚动事件自带 `is_following_tail`(列表自身跟随

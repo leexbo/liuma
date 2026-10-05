@@ -55,6 +55,30 @@ SAME_VALUE_KEYS = {
     "settings.dialect_display_chat",  # wire 协议专名,两语言同形
     "settings.dialect_display_responses",
     "settings.dialect_display_anthropic",
+    # opener:编辑器/终端产品名(专名,两档同形;访达/终端走翻译,不在此列)
+    "opener.app_cursor",
+    "opener.app_vscode",
+    "opener.app_vscodeinsiders",
+    "opener.app_windsurf",
+    "opener.app_zed",
+    "opener.app_sublimetext",
+    "opener.app_xcode",
+    "opener.app_androidstudio",
+    "opener.app_intellij",
+    "opener.app_pycharm",
+    "opener.app_webstorm",
+    "opener.app_phpstorm",
+    "opener.app_goland",
+    "opener.app_rider",
+    "opener.app_rustrover",
+    "opener.app_fork",
+    "opener.app_sourcetree",
+    "opener.app_tower",
+    "opener.app_sublimemerge",
+    "opener.app_ghostty",
+    "opener.app_warp",
+    "opener.app_iterm",
+    "opener.app_kitty",
 }
 
 # ── 规则 1/2 的判定面 ──
@@ -123,6 +147,22 @@ EXEMPT_TEXT = {
     # registry 主题名(liuma.json 内嵌两盘的标识;官方主题名同属线上
     # 数据,下拉原文名直显,不进文案文件)
     "Liuma Dark", "Liuma Light",
+    # opener 应用清单的 bundle 真名(features/opener/catalog.rs;文件
+    # 系统探测标识,非界面文案。带空格/大写开头故形态豁免兜不住)
+    "Zed Preview.app",
+    "Visual Studio Code.app",
+    "Visual Studio Code - Insiders.app",
+    "Sublime Text.app",
+    "Android Studio.app",
+    "IntelliJ IDEA.app",
+    "IntelliJ IDEA Ultimate.app",
+    "IntelliJ IDEA CE.app",
+    "PyCharm Professional.app",
+    "PyCharm CE.app",
+    "PyCharm Community.app",
+    "Sublime Merge.app",
+    "JetBrains Rider.app",
+    "Terminal",
 }
 # 规则 2 豁免:形态(全大写缩写/技术标识符/路径/点分键)
 EXEMPT_SHAPES = [
