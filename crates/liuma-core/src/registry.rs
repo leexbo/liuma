@@ -638,6 +638,8 @@ pub struct AppHost {
     preset_overrides: std::sync::RwLock<HashMap<String, String>>,
     /// 会话 → 推理等级覆盖(low / high / max;空 = 默认)
     effort_overrides: std::sync::RwLock<HashMap<String, String>>,
+    /// 已并入覆盖 sidecar 的工作区(projectKey;每工作区进程内只读盘一次)
+    overrides_loaded: std::sync::RwLock<std::collections::HashSet<String>>,
     /// 会话 → 重命名标题(持久化 .liuma/titles.json;优先于首条投影)。
     /// LLM 语义标题(4b)也写入此映射——手动 rename 随时覆盖,二者不冲突。
     titles: std::sync::RwLock<HashMap<String, String>>,
@@ -1481,6 +1483,7 @@ impl AppHost {
             model_overrides: std::sync::RwLock::new(HashMap::new()),
             preset_overrides: std::sync::RwLock::new(HashMap::new()),
             effort_overrides: std::sync::RwLock::new(HashMap::new()),
+            overrides_loaded: std::sync::RwLock::new(std::collections::HashSet::new()),
             titles: std::sync::RwLock::new(titles),
             list_cache: Mutex::new(HashMap::new()),
             title_gen_inflight: Mutex::new(std::collections::HashSet::new()),
@@ -2407,6 +2410,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
 
     /// 会话当前模型(会话覆盖 > 工作区 liuma.toml > 设置工作区默认 > 默认模型)
     pub fn session_model(&self, id: &str) -> String {
+        self.load_session_overrides(id);
         if let Some(m) = self.model_overrides.read_recover().get(id) {
             return m.clone();
         }
@@ -2457,6 +2461,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
 
     /// 会话当前 preset(覆盖 > 工作区 liuma.toml > 设置工作区默认 > standard)
     pub fn session_preset(&self, id: &str) -> String {
+        self.load_session_overrides(id);
         if let Some(p) = self.preset_overrides.read_recover().get(id) {
             return p.clone();
         }
@@ -2488,6 +2493,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
     /// 会话当前推理等级(覆盖 > 工作区 liuma.toml > 设置工作区默认 > 装配默认;
     /// 兜底 High:思考输出需 thinking 参数)
     pub fn session_effort(&self, id: &str) -> Option<String> {
+        self.load_session_overrides(id);
         if let Some(e) = self.effort_overrides.read_recover().get(id) {
             return Some(e.clone());
         }
@@ -2511,10 +2517,11 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             return Err(RpcError::bad_request("未知推理等级"));
         }
         self.detach_if_idle(id)?;
+        self.load_session_overrides(id);
         self.effort_overrides
             .write_recover()
             .insert(id.into(), effort.into());
-        self.persist_workspace_default(id, |d| d.effort = Some(effort.into()))
+        self.persist_session_override(id, "effort", effort)
     }
 
     /// 权限预设清单(sandbox+approval 捆绑)。
@@ -2656,10 +2663,11 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             return Err(RpcError::bad_request("未知模型"));
         }
         self.detach_if_idle(id)?;
+        self.load_session_overrides(id);
         self.model_overrides
             .write_recover()
             .insert(id.into(), model.into());
-        self.persist_workspace_default(id, |d| d.model = Some(model.into()))
+        self.persist_session_override(id, "model", model)
     }
 
     /// 切换访问模式(经驱动通道落档 sandbox/mode;工具执行时动态 fold
@@ -2704,23 +2712,71 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             return Err(RpcError::bad_request("未知 preset"));
         }
         self.detach_if_idle(id)?;
+        self.load_session_overrides(id);
         self.preset_overrides
             .write_recover()
             .insert(id.into(), preset.into());
-        self.persist_workspace_default(id, |d| d.preset = Some(preset.into()))
+        self.persist_session_override(id, "preset", preset)
     }
 
-    /// 会话所属工作区默认落盘(projectKey 键控,与冷装配读取同键)
-    fn persist_workspace_default(
-        &self,
-        id: &str,
-        f: impl FnOnce(&mut crate::settings::WorkspaceDefaults),
-    ) -> Result<(), RpcError> {
+    /// 会话级配置覆盖 sidecar(`<工作区>/.liuma/overrides.json`,
+    /// 读侧懒并入内存映射)。工作区默认(settings)是**新会话的出厂
+    /// 值**:单会话切换只写本会话的覆盖,不得顺带改写出厂值——否则
+    /// 没有显式覆盖的会话全部跟随漂移。文件读写同 titles 的原子
+    /// 顶替纪律(tmp + rename;半截 JSON = 整表丢弃回默认)
+    const OVERRIDES_FILE: &str = ".liuma/overrides.json";
+
+    /// 把该会话所属工作区的 sidecar 并入内存覆盖映射(每工作区进程
+    /// 内一次;内存映射是唯一读面)
+    fn load_session_overrides(&self, id: &str) {
         let (ws_root, _) = self.resolve_session(id);
         let key = project_key(&ws_root.display().to_string());
-        self.settings
-            .update(|s| f(s.workspaces.entry(key).or_default()))
-            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))
+        if !self.overrides_loaded.write_recover().insert(key) {
+            return;
+        }
+        let Ok(text) = std::fs::read_to_string(ws_root.join(Self::OVERRIDES_FILE)) else {
+            return;
+        };
+        let Ok(v) = serde_json::from_str::<Value>(&text) else {
+            return;
+        };
+        let merge = |dst: &std::sync::RwLock<HashMap<String, String>>, field: &str| {
+            if let Some(map) = v[field].as_object() {
+                let mut w = dst.write_recover();
+                for (sid, val) in map {
+                    if let Some(s) = val.as_str() {
+                        w.insert(sid.clone(), s.to_string());
+                    }
+                }
+            }
+        };
+        merge(&self.effort_overrides, "effort");
+        merge(&self.model_overrides, "model");
+        merge(&self.preset_overrides, "preset");
+    }
+
+    /// 单会话覆盖落盘(读改写 sidecar 的一个字段;其余字段原样保留)
+    fn persist_session_override(&self, id: &str, field: &str, value: &str) -> Result<(), RpcError> {
+        let (ws_root, _) = self.resolve_session(id);
+        let path = ws_root.join(Self::OVERRIDES_FILE);
+        let mut root = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        if !root.is_object() {
+            root = serde_json::json!({});
+        }
+        root[field][id] = serde_json::json!(value);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))?;
+        }
+        let tmp = ws_root.join(format!("{}.tmp", Self::OVERRIDES_FILE));
+        std::fs::write(&tmp, serde_json::to_string(&root).unwrap_or_default())
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))?;
+        std::fs::rename(&tmp, &path)
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))?;
+        Ok(())
     }
 
     /// 设置快照(设置页数据源):onboarding/provider 注册表/工作区
@@ -12664,8 +12720,8 @@ mod tests {
         assert!(host.list_archived_sessions().is_empty());
     }
 
-    /// setter 落盘工作区默认,重启(重建宿主)后冷会话沿用。
-    /// 权限不再走工作区默认(已迁日志 fold),此处只验 model/preset/effort。
+    /// setter 落盘会话 sidecar,重启(重建宿主)后同会话沿用。
+    /// 权限不走工作区默认(已迁日志 fold),此处只验 model/preset/effort。
     #[tokio::test]
     async fn setter_persists_workspace_default_across_reload() {
         let host = temp_host("setpersist");
@@ -12677,7 +12733,7 @@ mod tests {
         assert_eq!(host.session_model("s1"), "deepseek-v4-pro");
         assert_eq!(host.session_preset("s1"), "minimal");
         assert_eq!(host.session_effort("s1").as_deref(), Some("low"));
-        assert!(host.sessions_root.join("settings.yaml").exists());
+        assert!(host.workspace.join(".liuma/overrides.json").exists());
 
         // 模拟重启:同会话根重建宿主——内存覆盖清零,设置层接管
         let host2 = AppHost::new_at(
@@ -12692,7 +12748,8 @@ mod tests {
         assert_eq!(host2.session_effort("s1").as_deref(), Some("low"));
     }
 
-    /// 合并序:工作区 liuma.toml 显式值 > 设置层;会话内存覆盖仍最高
+    /// 合并序:会话 sidecar 覆盖(重启保留)> 工作区 liuma.toml 显式值
+    /// > 设置层;无覆盖的会话落 toml
     #[tokio::test]
     async fn liuma_toml_beats_settings_layer() {
         let host = temp_host("tomlprec");
@@ -12717,8 +12774,13 @@ mod tests {
         .unwrap();
         assert_eq!(
             host2.session_model("s1"),
+            "deepseek-v4-pro",
+            "会话 sidecar 覆盖重启保留,仍高于 liuma.toml"
+        );
+        assert_eq!(
+            host2.session_model("s2"),
             "toml-model",
-            "liuma.toml > 设置层"
+            "无覆盖会话:liuma.toml > 设置层"
         );
     }
 
@@ -14320,6 +14382,45 @@ mod tests {
             serde_json::json!(["c", "a"]),
             "手动排序应落盘"
         );
+    }
+
+    /// 会话级模型/preset/推理等级切换只影响本会话:不写工作区默认
+    /// (没有显式覆盖的兄弟会话不跟随),且经 sidecar 跨重启保留
+    #[tokio::test]
+    async fn session_cfg_switches_are_session_scoped_and_persist() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuma-cfg-scope-{}-{}",
+            std::process::id(),
+            Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sroot =
+            std::env::temp_dir().join(format!("liuma-cfg-scope-root-{}", Uuid::new_v4().simple()));
+        let host = AppHost::new_at(dir.clone(), true, "test-key", sroot.clone()).unwrap();
+        host.ensure_models().await; // fake → demo 清单进缓存(set_model 校验依赖)
+        let a = host.create_session(None, None, None);
+        let b = host.create_session(None, None, None);
+        let b_model_before = host.session_model(&b);
+
+        host.set_model(&a, "deepseek-v4-pro").unwrap();
+        host.set_preset(&a, "minimal").unwrap();
+        host.set_effort(&a, "low").unwrap();
+
+        assert_eq!(host.session_model(&a), "deepseek-v4-pro");
+        assert_eq!(host.session_preset(&a), "minimal");
+        assert_eq!(host.session_effort(&a).as_deref(), Some("low"));
+        // 兄弟会话不跟随(工作区默认未被单会话切换改写)
+        assert_eq!(host.session_model(&b), b_model_before, "B 模型不得跟随 A");
+
+        // 重开宿主(同根):覆盖经 sidecar 保留;工作区默认(出厂值)未动
+        let host2 = AppHost::new_at(dir.clone(), true, "test-key", sroot.clone()).unwrap();
+        host2.ensure_models().await; // 与 host1 对齐默认模型解析基线
+        assert_eq!(host2.session_model(&a), "deepseek-v4-pro");
+        assert_eq!(host2.session_preset(&a), "minimal");
+        assert_eq!(host2.session_effort(&a).as_deref(), Some("low"));
+        assert_eq!(host2.session_model(&b), b_model_before);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&sroot);
     }
 
     /// 孤儿子代理清扫:父已亡(历史无级联时期遗留)的隐藏子代理在
