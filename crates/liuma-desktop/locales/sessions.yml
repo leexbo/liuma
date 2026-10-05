@@ -45,8 +45,12 @@ sessions:
     en: "Fork"
 
   export_log:
-    zh-CN: "导出日志"
-    en: "Export log"
+    zh-CN: "导出日志(ZIP)"
+    en: "Export log (ZIP)"
+
+  export_markdown:
+    zh-CN: "导出 Markdown"
+    en: "Export Markdown"
 
   delete_workspace:
     zh-CN: "删除工作区"
@@ -175,6 +179,10 @@ sessions:
   exported_zip:
     zh-CN: "已导出(含分叉后代)"
     en: "Exported (with fork descendants)"
+
+  exported_markdown:
+    zh-CN: "已导出 Markdown(含分叉后代)"
+    en: "Exported Markdown (with fork descendants)"
 
   export_unreadable:
     zh-CN: "导出失败:会话日志不可读"

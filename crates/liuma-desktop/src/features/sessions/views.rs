@@ -1485,14 +1485,21 @@ pub(crate) fn session_menu_card(
                 .any(|v| v == id)
         })
         .unwrap_or(false);
-    let (rename, archive, fork, export_log, pin_store) = (
+    let (rename, archive, fork, export_log, export_md, pin_store) = (
+        store.clone(),
         store.clone(),
         store.clone(),
         store.clone(),
         store.clone(),
         store.clone(),
     );
-    let (p_arch, p_fork, p_export, p_pin) = (pop.clone(), pop.clone(), pop.clone(), pop.clone());
+    let (p_arch, p_fork, p_export, p_export_md, p_pin) = (
+        pop.clone(),
+        pop.clone(),
+        pop.clone(),
+        pop.clone(),
+        pop.clone(),
+    );
     div()
         .id("session-menu-card")
         .debug_selector(|| "session-menu-card".to_string())
@@ -1580,7 +1587,22 @@ pub(crate) fn session_menu_card(
                     let Some(id) = st.state.current_id.clone() else {
                         return;
                     };
-                    st.export_session_log(&id, window, cx);
+                    st.export_session_log(&id, false, window, cx);
+                });
+            },
+            cx,
+        ))
+        .child(menu_item(
+            "menu-export-markdown",
+            t!("sessions.export_markdown"),
+            fixed(IconName::FileText, 13.),
+            move |_, window, cx| {
+                p_export_md.update(cx, |state, cx| state.dismiss(window, cx));
+                export_md.update(cx, |st, cx| {
+                    let Some(id) = st.state.current_id.clone() else {
+                        return;
+                    };
+                    st.export_session_log(&id, true, window, cx);
                 });
             },
             cx,

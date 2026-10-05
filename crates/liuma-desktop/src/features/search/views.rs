@@ -6,8 +6,8 @@ use gpui_kit::component::Sizable;
 use gpui_kit::component::StyledExt;
 use gpui_kit::component::input::Input;
 use gpui_kit::{
-    App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
-    Styled, div, px,
+    App, Entity, HighlightStyle, InteractiveElement, IntoElement, ParentElement,
+    StatefulInteractiveElement, Styled, StyledText, div, px,
 };
 
 use crate::kits::i18n::t;
@@ -117,17 +117,27 @@ pub(crate) fn search_hits_panel(store: &Entity<AppStore>, cx: &App) -> impl Into
                 .into_any_element(),
         );
     }
+    // 查询词取当前输入框值(命中面板仅在检索后呈现,输入仍在)
+    let query = st
+        .search
+        .search_input
+        .as_ref()
+        .map(|i| i.read(cx).value().to_string())
+        .unwrap_or_default();
     for (ix, h) in hits.iter().enumerate() {
         let s = store.clone();
         let sid = h["sessionId"].as_str().unwrap_or_default().to_string();
         let seq = h["seq"].as_u64().unwrap_or(0);
         let title = st.title_for(&sid);
         let kind = h["kind"].as_str().unwrap_or_default();
-        let preview: String = {
-            let c = h["content"].as_str().unwrap_or_default();
-            let first = c.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-            first.chars().take(40).collect()
+        let content = h["content"].as_str().unwrap_or_default();
+        let (preview, hl_ranges) = hit_preview(content, &query, 40);
+        let mark = HighlightStyle {
+            background_color: Some(gpui_kit::Hsla::from(theme::brand(cx)).opacity(0.35)),
+            ..Default::default()
         };
+        let runs: Vec<(std::ops::Range<usize>, HighlightStyle)> =
+            hl_ranges.into_iter().map(|r| (r, mark)).collect();
         let sel = format!("search-hit-{ix}");
         rows.push(
             div()
@@ -158,10 +168,25 @@ pub(crate) fn search_hits_panel(store: &Entity<AppStore>, cx: &App) -> impl Into
                         )
                         .child(
                             div()
-                                .text_size(px(11.))
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .min_w(px(0.))
                                 .truncate()
-                                .text_color(theme::caption(cx))
-                                .child(format!("[{kind}] {preview}")),
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .text_size(px(11.))
+                                        .text_color(theme::caption(cx))
+                                        .child(format!("[{kind}]")),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .truncate()
+                                        .text_color(theme::caption(cx))
+                                        .child(StyledText::new(preview).with_highlights(runs)),
+                                ),
                         ),
                 )
                 .on_click(move |_, _, cx| {
@@ -181,4 +206,110 @@ pub(crate) fn search_hits_panel(store: &Entity<AppStore>, cx: &App) -> impl Into
         .gap(px(2.))
         .pb(px(8.))
         .children(rows)
+}
+
+/// 命中摘要 + 高亮区间(纯函数;§6 检索收口的呈现侧):忽略大小写
+/// 子串定位(char 对齐,CJK 安全),预览窗口以首命中为中心;无命中
+/// 回落平文前 max 字符。返回 (预览文本, 预览内字节高亮区间)
+pub(crate) fn hit_preview(
+    content: &str,
+    query: &str,
+    max: usize,
+) -> (String, Vec<std::ops::Range<usize>>) {
+    // 平文折叠 + 逐字符小写(1:1 字符对齐;不取 to_lowercase 的整串
+    // 变换——个别字符会展开变长,字节错位)
+    let flat: String = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    let chars: Vec<char> = flat.chars().collect();
+    let lower: String = chars
+        .iter()
+        .map(|c| c.to_lowercase().next().unwrap_or(*c))
+        .collect();
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .map(|t| t.trim_end_matches('*').replace('"', "").trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+    // 全部词出现区间(char 索引;上限防御超长文档)
+    let mut hits: Vec<(usize, usize)> = Vec::new();
+    for t in &terms {
+        let tl: String = t
+            .chars()
+            .map(|c| c.to_lowercase().next().unwrap_or(c))
+            .collect();
+        if tl.is_empty() {
+            continue;
+        }
+        let tlen = tl.chars().count();
+        let mut from = 0usize;
+        while let Some(rel) = lower[from..].find(&tl) {
+            let b = from + rel;
+            let cs = lower[..b].chars().count();
+            hits.push((cs, cs + tlen));
+            from = b + tl.len();
+            if hits.len() >= 32 {
+                break;
+            }
+        }
+    }
+    let byte_at = |ci: usize| {
+        flat.char_indices()
+            .nth(ci)
+            .map(|(b, _)| b)
+            .unwrap_or(flat.len())
+    };
+    match hits.first() {
+        None => (chars.iter().take(max).collect(), vec![]),
+        Some(&(hs, he)) => {
+            let total = chars.len();
+            let win = max.min(total);
+            let start = hs
+                .saturating_sub(win.saturating_sub(he - hs) / 2)
+                .min(total.saturating_sub(win));
+            let sb = byte_at(start);
+            let end_char = (start + win).min(total);
+            let preview: String = chars[start..end_char].iter().collect();
+            // 窗口内全部命中映射为预览内字节区间
+            let ranges = hits
+                .iter()
+                .filter(|(s, e)| *s >= start && *e <= end_char)
+                .map(|(s, e)| byte_at(*s) - sb..byte_at(*e) - sb)
+                .collect();
+            (preview, ranges)
+        }
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::hit_preview;
+
+    #[test]
+    fn hit_preview_centers_and_marks_cjk() {
+        let content = "这是开头。中间有一段提到持久化的设计,后面还有内容继续延伸";
+        let (preview, ranges) = hit_preview(content, "持久化", 20);
+        assert!(preview.contains("持久化"), "预览应含命中: {preview}");
+        assert_eq!(ranges.len(), 1);
+        let marked = &preview[ranges[0].clone()];
+        assert_eq!(marked, "持久化", "区间应精确切中命中词");
+        // 首命中居中:命中不在窗口首位
+        assert!(ranges[0].start > 0, "命中应居中而非贴窗首");
+    }
+
+    #[test]
+    fn hit_preview_case_insensitive_ascii_and_fallback() {
+        // 星号剥除后按查询词长度标记(命中 Provider 的前 6 字符)
+        let (preview, ranges) = hit_preview("fix Provider registry later on", "provid*", 40);
+        assert!(preview.contains("Provider"));
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(&preview[ranges[0].clone()], "Provid");
+        // 无命中:平文回落,无区间
+        let (preview, ranges) = hit_preview("普通内容一行", "不存在词", 40);
+        assert_eq!(preview, "普通内容一行");
+        assert!(ranges.is_empty());
+        // 多词:各词分别定位
+        let (preview, ranges) = hit_preview("alpha beta gamma", "beta gamma", 40);
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(&preview[ranges[0].clone()], "beta");
+        assert_eq!(&preview[ranges[1].clone()], "gamma");
+    }
 }

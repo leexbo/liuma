@@ -878,19 +878,28 @@ impl AppStore {
         }
     }
 
-    /// 导出会话日志(会话行菜单入口,按行 id 导出而非仅当前会话):
-    /// 先弹系统保存对话框由用户选定路径(不再默认落 ~/Downloads),
-    /// 选定后写 ZIP(根 + fork 后代血缘);ZIP 失败回落单文件文本
-    /// (扩展名换 .jsonl)。结果以右上角通知呈现(不占消息流),
-    /// 取消 = 静默。
-    pub fn export_session_log(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    /// 导出会话(会话行菜单入口,按行 id 导出而非仅当前会话):先弹
+    /// 系统保存对话框由用户选定路径(不再默认落 ~/Downloads),按格式
+    /// 取数——ZIP = 根 + fork 后代血缘(失败回落单 JSONL 文本);Markdown
+    /// = 人类可读消息流 + 工具卡摘要 + 血缘小节(无回落形态)。结果以
+    /// 右上角通知呈现(不占消息流),取消 = 静默
+    pub fn export_session_log(
+        &mut self,
+        id: &str,
+        markdown: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         use gpui_kit::component::WindowExt as _;
         use gpui_kit::component::notification::Notification;
         let host = self.bridge.host().clone();
         let id = id.to_string();
         let safe = id.replace('/', "-");
-        let rx =
-            cx.prompt_for_new_path(&downloads_dir(), Some(&format!("liuma-session-{safe}.zip")));
+        let ext = if markdown { "md" } else { "zip" };
+        let rx = cx.prompt_for_new_path(
+            &downloads_dir(),
+            Some(&format!("liuma-session-{safe}.{ext}")),
+        );
         window
             .spawn(cx, async move |cx| {
                 let notify_err = |cx: &mut gpui_kit::AsyncWindowContext, msg: String| {
@@ -912,17 +921,33 @@ impl AppStore {
                     }
                     Err(_) => return, // 通道断开(窗口销毁)
                 };
-                let (path, bytes, title) = match host.export_session_zip(&id, true) {
-                    Ok(bytes) => (chosen, bytes, t!("sessions.exported_zip").to_string()),
-                    Err(_) => {
-                        let Ok(log) = host.export_session_log(&id) else {
+                let (path, bytes, title) = if markdown {
+                    match host.export_session_markdown(&id, true) {
+                        Ok(md) => (
+                            chosen,
+                            md.into_bytes(),
+                            t!("sessions.exported_markdown").to_string(),
+                        ),
+                        Err(_) => {
                             return notify_err(cx, t!("sessions.export_unreadable").to_string());
-                        };
-                        (
-                            chosen.with_extension("jsonl"),
-                            log.into_bytes(),
-                            t!("sessions.exported_single").to_string(),
-                        )
+                        }
+                    }
+                } else {
+                    match host.export_session_zip(&id, true) {
+                        Ok(bytes) => (chosen, bytes, t!("sessions.exported_zip").to_string()),
+                        Err(_) => {
+                            let Ok(log) = host.export_session_log(&id) else {
+                                return notify_err(
+                                    cx,
+                                    t!("sessions.export_unreadable").to_string(),
+                                );
+                            };
+                            (
+                                chosen.with_extension("jsonl"),
+                                log.into_bytes(),
+                                t!("sessions.exported_single").to_string(),
+                            )
+                        }
                     }
                 };
                 if let Err(e) = std::fs::write(&path, bytes) {

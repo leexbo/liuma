@@ -4480,6 +4480,50 @@ fn session_export_prompts_for_path_then_notifies(cx: &mut TestAppContext) {
     assert!(!notice_in_chat, "导出提示不应再插入消息流");
 }
 
+/// Markdown 导出:行菜单格式项 → 保存对话框 → 落盘 .md(文档头 +
+/// 消息流;人类可读形态)+ 恰一条通知。ZIP 项行为由上一用例锁定
+#[gpui_kit::test]
+fn session_export_markdown_prompts_and_writes_md(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    let (store, mut wcx, root) = menu_harness(cx, "export-md");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut App| {});
+        cx.run_until_parked();
+    };
+    let out = root.join("导出目标.md");
+    let id = cx.update(|app| store.read(app).state.current_id.clone());
+    click_sel(&mut wcx, "session-menu-btn");
+    redraw(cx, &mut wcx);
+    click_sel(&mut wcx, "menu-export-markdown");
+    redraw(cx, &mut wcx);
+    assert!(wcx.did_prompt_for_new_path(), "markdown 导出应弹保存对话框");
+    let picked = out.clone();
+    wcx.simulate_new_path_selection(move |_dir| Some(picked.clone()));
+    let mut landed = false;
+    for _ in 0..50 {
+        redraw(cx, &mut wcx);
+        if out.exists() {
+            landed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(landed, "选定路径后应落盘:{}", out.display());
+    let md = std::fs::read_to_string(&out).expect("markdown 可读");
+    let Some(id) = id else {
+        panic!("harness 应有当前会话");
+    };
+    assert!(
+        md.starts_with(&format!("# Session {id}")),
+        "文档头应为会话 id;got: {}",
+        md.lines().next().unwrap_or_default()
+    );
+    redraw(cx, &mut wcx);
+    let notes = wcx.update(|window, cx| window.notifications(cx).len());
+    assert_eq!(notes, 1, "导出结果应经右上角通知呈现");
+}
+
 /// 会话行尾归档钮(hover 显隐,元素常在可命中):点击行右缘 →
 /// 该会话归档移出清单,当前会话不受影响
 #[gpui_kit::test]

@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn summarize_call_prefers_readable_keys() {
         let shell = liuma_sandbox::shell::tool_name();
-        let s = summarize_call(&shell, r#"{"description":"跑测试","command":"cargo test"}"#);
+        let s = summarize_call(shell, r#"{"description":"跑测试","command":"cargo test"}"#);
         assert_eq!(s, "跑测试");
         assert_eq!(
             summarize_call("file_read", r#"{"path":"/a/b.rs"}"#),
