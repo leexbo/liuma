@@ -100,7 +100,12 @@ impl FileTools {
             .root
             .canonicalize()
             .map_err(|e| format!("workspace root not accessible ({e})"))?;
-        if !canonical_parent.starts_with(&root) {
+        // 写边界与 bash 的 workspace-write 沙箱同界:工作区 + 平台临时区
+        // (两侧都过 canonicalize——macOS 的 /tmp 是符号链接)。模型在
+        // 临时区的草稿文件,编辑工具必须能接着加工
+        let temp = std::env::temp_dir().canonicalize().ok();
+        let in_temp = temp.is_some_and(|t| canonical_parent.starts_with(t));
+        if !canonical_parent.starts_with(&root) && !in_temp {
             return Err(format!(
                 "write outside workspace root denied: {path} (root: {})",
                 self.root.display()
@@ -876,14 +881,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn edit_denies_write_outside_root() {
-        let root = temp_root("edit-deny");
-        let outside = std::env::temp_dir().join(format!(
-            "liuma-file-outside-{}-{}.txt",
-            std::process::id(),
-            root.file_name().unwrap().to_string_lossy()
-        ));
+    async fn edit_denies_write_outside_roots() {
+        // 「外部」= 既不在工作区根、也不在平台临时区:落在当前目录下
+        // 的独立目录(temp_root 本身在临时区内,已属可写)
+        let outside_dir = std::env::current_dir()
+            .unwrap()
+            .join(format!("target/liuma-file-outside-{}", std::process::id()));
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        let outside = outside_dir.join("a.txt");
         std::fs::write(&outside, "x").unwrap();
+        let root = temp_root("edit-deny");
         let tools = FileTools::new(&root);
         let out = tools
             .file_edit(&json!({
@@ -893,6 +900,32 @@ mod tests {
             .await;
         assert!(!out.success);
         assert!(out.output.contains("denied"));
+        let _ = std::fs::remove_dir_all(&outside_dir);
+    }
+
+    /// 平台临时区与工作区同界(bash 沙箱契约;模型在临时区的草稿要
+    /// 能被编辑工具接着加工)
+    #[tokio::test]
+    async fn edit_allows_platform_temp_area() {
+        let root = temp_root("edit-tmp-allow");
+        let scratch_dir = std::env::temp_dir().join(format!(
+            "liuma-file-scratch-{}-{}",
+            std::process::id(),
+            root.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::create_dir_all(&scratch_dir).unwrap();
+        let scratch = scratch_dir.join("scratch.txt");
+        std::fs::write(&scratch, "x").unwrap();
+        let tools = FileTools::new(&root);
+        let out = tools
+            .file_edit(&json!({
+                "path": scratch.display().to_string(),
+                "old_text": "x", "new_text": "y"
+            }))
+            .await;
+        assert!(out.success, "{}", out.output);
+        assert_eq!(std::fs::read_to_string(&scratch).unwrap(), "y");
+        let _ = std::fs::remove_dir_all(&scratch_dir);
     }
 
     #[tokio::test]
