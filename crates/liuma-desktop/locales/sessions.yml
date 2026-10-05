@@ -17,8 +17,8 @@ sessions:
     en: "Workspaces"
 
   search_ph:
-    zh-CN: "搜索会话"
-    en: "Search sessions"
+    zh-CN: "过滤会话,回车搜全文"
+    en: "Filter sessions, Enter for full-text"
 
   view_options:
     zh-CN: "视图选项"
