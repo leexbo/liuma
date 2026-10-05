@@ -329,6 +329,10 @@ pub struct SettingsFile {
     /// 置顶工作区(basename;侧栏「置顶」节顺序,写侧去重截断)
     #[serde(default)]
     pub pinned_workspaces: Vec<String>,
+    /// 会话手动排序(侧栏「手动排序」拖拽产物;单列表全序快照,写入序即
+    /// 展示序,写侧去重不截断。缺席 id 由渲染侧按最近更新排前)
+    #[serde(default)]
+    pub session_order: Vec<String>,
     /// 运行中 Enter 行为(queue = 排队下一轮 / steer = 转向当前轮)
     #[serde(default = "default_busy_enter")]
     pub busy_enter: String,
@@ -613,6 +617,7 @@ impl Default for SettingsFile {
             workspace_titles: HashMap::new(),
             pinned_sessions: Vec::new(),
             pinned_workspaces: Vec::new(),
+            session_order: Vec::new(),
             busy_enter: default_busy_enter(),
             language: default_language(),
             appearance: default_appearance(),
@@ -1179,6 +1184,33 @@ mod tests {
         let s = store2.read();
         assert_eq!(s.theme_light, "Catppuccin Latte");
         assert_eq!(s.theme_dark, "Catppuccin Mocha");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_order_roundtrip_and_legacy_default() {
+        // 手动排序(单列表全序快照)经 SettingsStore 落盘 → 重读持久;
+        // 旧格式(无 session_order 字段)= 空 serde default
+        let dir = std::env::temp_dir().join(format!(
+            "liuma-settings-order-{}-{}",
+            std::process::id(),
+            Uuid::now_v7().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, "language: zh\n").unwrap();
+        {
+            let store = SettingsStore::open(path.clone());
+            assert!(store.read().session_order.is_empty(), "旧格式落空 default");
+            store
+                .update(|s| s.session_order = vec!["a".into(), "b".into()])
+                .unwrap();
+        }
+        let store2 = SettingsStore::open(path);
+        assert_eq!(
+            store2.read().session_order,
+            vec!["a".to_string(), "b".to_string()]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

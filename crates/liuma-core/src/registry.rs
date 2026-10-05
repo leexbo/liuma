@@ -2088,6 +2088,28 @@ impl AppHost {
         Ok(())
     }
 
+    /// 会话手动排序(侧栏单列表拖拽产物;写入序即展示序)
+    pub fn session_order(&self) -> Vec<String> {
+        self.settings.read().session_order.clone()
+    }
+
+    /// 全量覆写会话手动排序(trim/去空/保序去重,不截断——清单可超
+    /// 置顶的 32 量级)。不校验存在性:清单随工作区扫描漂移,缺席 id
+    /// 由渲染侧剪除;不广播帧(桌面拖拽本地即应用,同 toggle_pinned
+    /// 落盘不 send 口径)
+    pub fn set_session_order(&self, ids: Vec<String>) -> Result<(), RpcError> {
+        let mut seen = std::collections::HashSet::new();
+        let ids: Vec<String> = ids
+            .into_iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty() && seen.insert(id.clone()))
+            .collect();
+        self.settings
+            .update(|s| s.session_order = ids)
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))?;
+        Ok(())
+    }
+
     /// 移除工作区(仅出清单;默认工作区不可移除)。该工作区的附着会话
     /// 随之卸载(槽移除,文件保留——重新添加即恢复);标题覆盖清理
     pub fn remove_workspace(&self, name: &str) -> Result<(), RpcError> {
@@ -2768,6 +2790,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             "themeDark": file.theme_dark,
             "pinnedSessions": file.pinned_sessions,
             "pinnedWorkspaces": file.pinned_workspaces,
+            "sessionOrder": file.session_order,
             "sessionsRoot": self.sessions_root.display().to_string(),
             // 通用区偏好行数据(preset / permission 选项与缺省)
             "presetOptions": self.presets(),
@@ -14283,6 +14306,39 @@ mod tests {
         assert_eq!(host.pinned(), (vec![], vec![]));
         // 未知工作区拒绝
         assert!(host.toggle_pinned_workspace("no-such-ws").is_err());
+    }
+
+    /// 侧栏手动排序:全量覆写去重去空、二次覆盖、落盘 settings.yaml
+    #[test]
+    fn session_order_roundtrip_dedup_and_overwrite() {
+        let host = temp_host("ws-order");
+        assert!(host.session_order().is_empty());
+        host.set_session_order(vec![
+            "a".into(),
+            "".into(),
+            " b ".into(),
+            "a".into(),
+            "c".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            host.session_order(),
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            "trim/去空/保序去重"
+        );
+        // 全量覆写(非追加)
+        host.set_session_order(vec!["c".into(), "a".into()])
+            .unwrap();
+        assert_eq!(
+            host.session_order(),
+            vec!["c".to_string(), "a".to_string()]
+        );
+        // 落盘(settings_view 直读宿主设置;跨重启即此文件)
+        assert_eq!(
+            host.settings_view()["sessionOrder"],
+            serde_json::json!(["c", "a"]),
+            "手动排序应落盘"
+        );
     }
 
     /// 孤儿子代理清扫:父已亡(历史无级联时期遗留)的隐藏子代理在
