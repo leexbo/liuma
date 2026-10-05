@@ -5511,6 +5511,60 @@ fn full_track_scrollbar_reaches_true_bottom(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 少而高条目的滚动条可见性回归:组件库按 content_size ≤ 轨道高整轴
+/// 隐藏(滚动中也不画),行程域必须取列表真实可滚量——两条长消息
+/// (条数×比例行高低于轨道高)也须被组件库视为溢出
+#[gpui_kit::test]
+fn few_tall_rows_keep_scrollbar_track_overflow(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "few-tall-rows");
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            use crate::features::chat::projection::{ChatNode, ChatState};
+            let id = st.state.current_id.clone().expect("当前会话");
+            let mut chat = ChatState::default();
+            for ix in 0..4 {
+                chat.nodes.push(ChatNode::User {
+                    key: format!("user:{ix}"),
+                    text: big_md(&format!("长文 {ix}")),
+                    images: vec![],
+                    files: Vec::new(),
+                    time: 0,
+                });
+            }
+            st.state.chats.insert(id, chat);
+            cx.notify();
+        })
+    });
+    wcx.simulate_resize(gpui_kit::size(px(960.), px(640.)));
+    wcx.run_until_parked();
+    wcx.refresh().expect("窗口刷新失败");
+    wcx.run_until_parked();
+
+    cx.update(|app| {
+        use gpui_kit::component::scroll::ScrollbarHandle as _;
+        let st = store.read(app);
+        let list = &st.chat.chat_list;
+        let track = st.chat.track_h;
+        let viewport = f32::from(list.viewport_bounds().size.height);
+        let max_off = f32::from(list.max_offset_for_scrollbar().y);
+        let extra = (track - viewport).max(0.);
+        // 测试前提:条数估算域低于轨道高(旧行为整轴隐藏的场景),且
+        // 内容真实可滚
+        let estimated = list.item_count() as f32 * 64. + extra;
+        assert!(
+            estimated <= track && max_off > 0.,
+            "测试前提:估算高 {estimated} 应 ≤ 轨道 {track} 且真实可滚量 {max_off} > 0"
+        );
+        let handle = scroll::FullTrackHandle::new(list, px(extra));
+        let content_h = f32::from(handle.content_size().height);
+        assert!(
+            content_h > track,
+            "真实行程必须让组件库视为溢出:content={content_h} ≤ track={track}"
+        );
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 面板标签生命周期:开计划标签 → 标签条 +
 /// 计划视图在场;关最后标签 → 空态快捷菜单在场且面板列不自动收;
 /// 空态行点击 → 计划视图恢复

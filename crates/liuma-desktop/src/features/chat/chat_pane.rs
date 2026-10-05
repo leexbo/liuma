@@ -14,7 +14,7 @@ use gpui_kit::component::spinner::Spinner;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, Animation, AnimationExt as _, AnyElement, App, Div, Entity, InteractiveElement,
-    IntoElement, MouseButton, MouseDownEvent, ParentElement, Rgba, SharedString,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Rgba, SharedString,
     StatefulInteractiveElement, Styled, Window, actions, div, px,
 };
 
@@ -464,44 +464,118 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         // 列)。可见性读
         // 权威的 at_bottom()(实时);at_bottom_ui 只是滚动回调的
         // notify 去重缓存,初排瞬态事件翻转它时不代表真实位置
-        // 运行态上移让位「深入探索中…」状态行(它在下方正常流中)
+        // 运行态上移让位「深入探索中…」状态行(它在下方正常流中)。
+        // 输出中在外圈叠品牌色旋转弧光,收尾即退回常态钮
         .when(!store.read(cx).at_bottom(), |el| {
             let s = store.clone();
             let lift = if has_run_status { 44. } else { 16. };
             el.child(
                 div()
-                    .id("back-to-bottom")
-                    .debug_selector(|| "back-to-bottom".to_string())
                     .absolute()
                     .bottom(px(lift))
                     // 右下角:离卡片右缘留出呼吸间隙
                     .right(px(28.))
                     .flex()
-                    .size(px(28.))
+                    .size(px(38.))
                     .items_center()
                     .justify_center()
-                    .rounded_full()
-                    .bg(theme::dock(cx))
-                    .border_1()
-                    .border_color(theme::border_2(cx))
-                    .shadow_sm()
-                    .cursor_pointer()
-                    // 挡点击不挡滚轮:悬浮于滚动区上,滚轮要穿透
-                    .block_mouse_except_scroll()
-                    .hover(|s| s.opacity(0.85))
-                    .on_click(move |_, _, cx| {
-                        s.update(cx, |st, cx| {
-                            st.chat.pinned = true;
-                            st.chat.chat_list.scroll_to(gpui_kit::ListOffset {
-                                item_ix: usize::MAX,
-                                offset_in_item: px(0.),
-                            });
-                            cx.notify();
-                        });
-                    })
-                    .child(fixed(IconName::ArrowDown, 12.).text_color(theme::label(cx))),
+                    .when(has_run_status, |el| el.child(stream_ring()))
+                    .child(
+                        div()
+                            .id("back-to-bottom")
+                            .debug_selector(|| "back-to-bottom".to_string())
+                            .flex()
+                            .size(px(28.))
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .bg(theme::dock(cx))
+                            .border_1()
+                            .border_color(theme::border_2(cx))
+                            .shadow_sm()
+                            .cursor_pointer()
+                            // 挡点击不挡滚轮:悬浮于滚动区上,滚轮要穿透
+                            .block_mouse_except_scroll()
+                            .hover(|s| s.opacity(0.85))
+                            .on_click(move |_, _, cx| {
+                                s.update(cx, |st, cx| {
+                                    st.chat.pinned = true;
+                                    st.chat.chat_list.scroll_to(gpui_kit::ListOffset {
+                                        item_ix: usize::MAX,
+                                        offset_in_item: px(0.),
+                                    });
+                                    cx.notify();
+                                });
+                            })
+                            .child(fixed(IconName::ArrowDown, 12.).text_color(theme::label(cx))),
+                    ),
             )
         })
+}
+
+/// 回底钮输出中特效:品牌色旋转弧光(亮弧 + 拖尾折线近似)。相位取
+/// 进程级单调时钟(元素每帧重建,构造时刻不能当相位基准);重绘由
+/// with_animation 驱动,元素卸载即停
+fn stream_ring() -> impl IntoElement {
+    div()
+        .absolute()
+        .inset_0()
+        .child(
+            gpui_kit::canvas(
+                move |_, _, _| {},
+                move |bounds, _, window, cx| {
+                    let center = gpui_kit::point(
+                        bounds.origin.x + bounds.size.width / 2.,
+                        bounds.origin.y + bounds.size.height / 2.,
+                    );
+                    let radius = f32::from(bounds.size.width) / 2. - 2.;
+                    let head = spin_phase(1.4) * std::f64::consts::TAU;
+                    let stroke = 2.;
+                    if let Ok(trail) = arc_span(center, radius, stroke, head - 2.4, 2.4) {
+                        window.paint_path(trail, theme::brand(cx).opacity(0.25));
+                    }
+                    if let Ok(bright) = arc_span(center, radius, stroke, head - 1.75, 1.75) {
+                        window.paint_path(bright, theme::brand(cx));
+                    }
+                },
+            )
+            .size_full(),
+        )
+        .with_animation(
+            "back-to-bottom-spin",
+            Animation::new(std::time::Duration::from_millis(1400)).repeat(),
+            |el, _| el,
+        )
+}
+
+/// 旋转相位(0..1;进程级单调时钟)
+fn spin_phase(period_secs: f64) -> f64 {
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let t0 = EPOCH.get_or_init(std::time::Instant::now);
+    (t0.elapsed().as_secs_f64() % period_secs) / period_secs
+}
+
+/// 圆弧路径(圆心/半径/描边宽/起角/弧长,弧度;折线近似)
+fn arc_span(
+    center: gpui_kit::Point<Pixels>,
+    radius: f32,
+    stroke: f32,
+    start_rad: f64,
+    sweep_rad: f64,
+) -> Result<gpui_kit::Path<Pixels>, anyhow::Error> {
+    let mut builder = gpui_kit::PathBuilder::stroke(px(stroke));
+    let segments = ((sweep_rad.abs() / std::f64::consts::TAU * 64.0).ceil() as usize).clamp(2, 64);
+    let pts: Vec<gpui_kit::Point<Pixels>> = (0..=segments)
+        .map(|i| {
+            let angle = start_rad + sweep_rad * (i as f64) / (segments as f64);
+            gpui_kit::point(
+                center.x + px((angle.cos() * radius as f64) as f32),
+                center.y + px((angle.sin() * radius as f64) as f32),
+            )
+        })
+        .collect();
+    builder.add_polygon(&pts, false);
+    builder.build()
 }
 
 /// 新节点入场窗口(140ms 淡入 + 6px 上移)
@@ -1541,7 +1615,7 @@ fn render_node(
     open_retries: &std::collections::HashSet<String>,
     ix: usize,
     node: &ChatNode,
-    col_w: gpui_kit::Pixels,
+    col_w: Pixels,
 ) -> impl IntoElement {
     match node {
         ChatNode::User {
@@ -1876,7 +1950,7 @@ fn user_bubble(
     images: &[serde_json::Value],
     files: &[serde_json::Value],
     time: i64,
-    col_w: gpui_kit::Pixels,
+    col_w: Pixels,
 ) -> impl IntoElement {
     let bw = crate::shell::metrics::bubble_w(col_w);
     // 超长判定(渲染期现算:窗口宽变 → 气泡宽变 → 折叠态自然重判)。
@@ -2121,7 +2195,7 @@ fn assistant_block(
     streaming: bool,
     interrupted_after: bool,
     hide_reasoning: bool,
-    col_w: gpui_kit::Pixels,
+    col_w: Pixels,
 ) -> impl IntoElement {
     let open = open_reasoning.contains(key);
     let s = store.clone();
@@ -3477,7 +3551,7 @@ fn pending_bubble(
     key: &str,
     text: &str,
     prefix: &'static str,
-    col_w: gpui_kit::Pixels,
+    col_w: Pixels,
 ) -> impl IntoElement {
     let bw = crate::shell::metrics::bubble_w(col_w);
     let text_w = f32::from(bw) - 2. * 16.;
