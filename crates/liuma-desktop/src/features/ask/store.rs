@@ -235,6 +235,10 @@ impl AppStore {
     /// 放行口(与「跳过才放行」同义)、单选 choice 与自由文本互斥
     /// (`activate_choice` 清自由文本、输入清 choice,与「选项/自定义互斥」
     /// 同义)、末题 `confirm_current` 即提交。
+    ///
+    /// 点击路径走库的 `choose`:单选 = 选中 + 翻页,末页直接提交(再点
+    /// 已选项 = 立即确认)。要用「其他」直接点输入框打字(输入清
+    /// choice);点选后可经「上一题」回看。本域只消费 Submit 事件。
     pub fn ensure_ask_questionnaire(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ask) = self.state.pending_ask.clone() else {
             self.ask.ask_questionnaire = None;

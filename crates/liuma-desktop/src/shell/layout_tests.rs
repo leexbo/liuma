@@ -6325,6 +6325,8 @@ fn ask_custom_input_not_rewritten_each_frame(cx: &mut TestAppContext) {
 /// 跳过),有缺口 → 跳回缺口题报错,绝不静默代答。
 /// 回归锁:旧实现任意页恒显可点的「提交」,未作答的后续题被静默按空答
 /// 提交(用户还没看到的问题就交了白卷)。
+/// 本测试经 activate_choice 状态 API 作答(仅选中、不确认),锁的是门控
+/// 与校验状态机;真机点击路径的「点选即确认」不在本锁范围。
 #[gpui_kit::test]
 fn ask_card_multi_page_gating(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "ask-pager");

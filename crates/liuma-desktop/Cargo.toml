@@ -44,8 +44,8 @@ resvg.workspace = true
 usvg.workspace = true
 # 语法高亮(read 卡/markdown 代码块;default-fancy = fancy-regex 后端,零 C 依赖)
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
-# 用户主题目录文件监听(kits/theme:init_user_themes;gpui-component 0.7.1
-# 起要求 8.2,单实例跟随)
+# 用户主题目录文件监听(kits/theme:init_user_themes;与 gpui-component
+# 的 notify 依赖保持同大版,锁单一实例)
 notify.workspace = true
 # notify 事件 → 主循环 async 通道(去抖静默合并)
 smol.workspace = true

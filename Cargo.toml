@@ -52,8 +52,8 @@ wasmtime-wasi = "49"
 turso = { version = "0.8.1", features = ["fts"] }
 # /export ZIP 打包(stored 条目 + deflate)
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
-# 用户主题目录监听(kits/theme:init_user_themes;gpui-component 0.7.1
-# 起要求 8.2,单实例跟随)
+# 用户主题目录监听(kits/theme:init_user_themes;与 gpui-component 的
+# notify 依赖保持同大版,锁单一实例 = 单一 watcher 栈)
 notify = "8"
 # notify 回调线程 → 主循环 async 通道(与 gpui 运行时同源)
 smol = "2"
