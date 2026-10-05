@@ -81,32 +81,75 @@ async fn fts_ngram_cjk_and_prefix() {
 
     // 中文子串(ngram 2-3)
     let sub = texts(&conn, "SELECT content FROM docs WHERE content MATCH '持久'").await;
-    eprintln!("[spike] ngram 中文子串「持久」: {sub:?}");
-    assert_eq!(sub.len(), 1, "子串「持久」应命中 1 条");
+    assert_eq!(sub.len(), 1, "子串「持久」应命中 1 条;got {sub:?}");
 
     // 中文整词
-    let whole = texts(&conn, "SELECT content FROM docs MATCH '队列持久化'").await;
-    eprintln!("[spike] ngram 整词「队列持久化」: {whole:?}");
+    let whole = texts(
+        &conn,
+        "SELECT content FROM docs WHERE content MATCH '队列持久化'",
+    )
+    .await;
+    assert_eq!(
+        whole.len(),
+        1,
+        "整词「队列持久化」应命中 1 条;got {whole:?}"
+    );
 
-    // 英文前缀(tantivy 查询语法)
+    // 英文前缀:`*` 后缀在 0.8.1 仍不命中(PhrasePrefix 与 ngram 索引
+    // 不联动);剥 `*` 后的裸词走 gram 短语 = 子串语义,命中
     let pfx = texts(
         &conn,
         "SELECT content FROM docs WHERE content MATCH 'provid*'",
     )
     .await;
-    eprintln!("[spike] ngram 前缀 provid*: {pfx:?}");
+    assert_eq!(pfx.len(), 0, "前缀 provid* 不命中(应用层剥 * 的依据)");
+    let bare = texts(
+        &conn,
+        "SELECT content FROM docs WHERE content MATCH 'provid'",
+    )
+    .await;
+    assert_eq!(bare.len(), 2, "裸前缀 provid 应命中两条;got {bare:?}");
 
-    // 单字(ngram 下限 2 的预期限制)
-    let single = texts(&conn, "SELECT content FROM docs WHERE content MATCH '队'").await;
-    eprintln!("[spike] ngram 单字「队」: {single:?}(ngram 下限 2,单字预期不中)");
+    // 单字查询:ngram(2,3) 产不出 token——裸单字与单字 + `*` 都是
+    // Ok 空结果(lenient 解析器吞掉 parser 错误),不会报错但永不命中;
+    // 应用层走 LIKE 兜底才有语义(search.rs rewrite_query 的依据)
+    let single = conn
+        .query("SELECT content FROM docs WHERE content MATCH '队'", ())
+        .await;
+    assert!(single.is_ok(), "裸单字 MATCH 应 Ok(空结果)");
+    let starred = conn
+        .query("SELECT content FROM docs WHERE content MATCH '队*'", ())
+        .await;
+    assert!(starred.is_ok(), "单字 + `*` 亦 Ok(lenient 吞 parser 错误)");
+    assert_eq!(
+        texts(&conn, "SELECT content FROM docs WHERE content MATCH '队'")
+            .await
+            .len(),
+        0,
+        "单字 MATCH 永不命中,应用层走 LIKE 兜底"
+    );
 
-    // highlight 函数(fts_highlight)
+    // highlight 函数(fts_highlight):0.8.1 下对本用法完全惰性——
+    // CJK 与英文整词都原样返回;应用层高亮是唯一路径(desktop hit_preview)
     let hl = texts(
         &conn,
         "SELECT fts_highlight(content, '持久', '[', ']') FROM docs WHERE id = 1",
     )
     .await;
-    eprintln!("[spike] highlight: {hl:?}");
+    assert_eq!(hl.len(), 1);
+    assert_eq!(
+        hl[0], "修复了队列持久化的 bug",
+        "fts_highlight 对 CJK 不标注"
+    );
+    let hl_en = texts(
+        &conn,
+        "SELECT fts_highlight(content, 'durable', '[', ']') FROM docs WHERE id = 2",
+    )
+    .await;
+    assert_eq!(
+        hl_en[0], "added durable queue splice replay",
+        "fts_highlight 对英文整词亦不标注(函数惰性)"
+    );
 
     // 英文子串(ngram 对查询侧同样切 gram)
     let en = texts(
@@ -114,15 +157,15 @@ async fn fts_ngram_cjk_and_prefix() {
         "SELECT content FROM docs WHERE content MATCH 'queue'",
     )
     .await;
-    eprintln!("[spike] ngram 英文子串 queue: {en:?}");
+    assert_eq!(en.len(), 1, "子串 queue 只在 id 2;got {en:?}");
 
-    // 多词(AND 组合)
+    // 多词(OR 组合):设置 → 3;provider → 3/4
     let multi = texts(
         &conn,
         "SELECT content FROM docs WHERE content MATCH '设置 provider'",
     )
     .await;
-    eprintln!("[spike] ngram 多词「设置 provider」: {multi:?}");
+    assert_eq!(multi.len(), 2, "多词 OR 应命中 id 3/4;got {multi:?}");
 
     let _ = std::fs::remove_file(&path);
 }

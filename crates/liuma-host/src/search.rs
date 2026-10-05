@@ -10,9 +10,17 @@
 //!   (tantivy 后端;2-3 gram);
 //! - 查询 `WHERE content MATCH '...'`(多词 = OR)。
 //!
-//! 已知限制(显式记录):前缀 `provid*` 不命中、单字不命中
-//! (ngram 下限 2)、`fts_highlight` 对 CJK 不标注(default 分词的独立
-//! 函数,与 ngram 索引不联动)——摘要/高亮由应用层做。
+//! 查询面由应用层改写([`rewrite_query`],进 SQL 前的纯函数):
+//! - 词尾 `*` 剥除——实测 `provid*` 在 0.8.1 恒空(PhrasePrefix 与
+//!   ngram 索引不联动),而剥 `*` 后的裸词走 gram 短语即子串语义;
+//! - 词双引号包裹——MATCH 语法字符(`:` `(` 等)防御,词内 `"` 剥除;
+//! - 单字词不进 MATCH——ngram(2,3) 产不出 token,MATCH 恒空(lenient
+//!   解析器吞掉 parser 错误):纯单字查询走 LIKE OR 兜底,混合查询
+//!   丢弃单字词;
+//! - MATCH 报错回落 LIKE 全词子串扫(未知语法面的防御网)。
+//!
+//! 摘要/高亮由应用层做:`fts_highlight` 是 default 分词的独立函数,与
+//! ngram 索引不联动,CJK 不标注。
 
 use std::path::Path;
 
@@ -105,6 +113,57 @@ pub fn project(ev: &EventEnvelope) -> Option<(&'static str, String)> {
         }
         _ => None,
     }
+}
+
+/// 改写后的查询计划(MATCH / LIKE 两执行路径)
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum QueryPlan {
+    /// MATCH 全文路径(每词双引号包裹;多词 = OR)
+    Match(String),
+    /// LIKE 子串兜底(词集 OR;单字查询与 MATCH 报错回落)
+    Like(Vec<String>),
+}
+
+/// 查询改写(纯函数;None = 无可执行词):
+/// 词尾 `*` 与词内 `"` 剥除后——多字词双引号包裹进 MATCH(gram 短语 =
+/// 子串语义);单字词(ngram(2,3) 产不出 token,MATCH 恒空)在纯单字
+/// 查询时整体走 LIKE,混合查询时丢弃
+pub(crate) fn rewrite_query(query: &str) -> Option<QueryPlan> {
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .map(|t| t.trim_end_matches('*').replace('"', "").trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+    if terms.is_empty() {
+        return None;
+    }
+    let multi: Vec<&String> = terms.iter().filter(|t| t.chars().count() > 1).collect();
+    if multi.is_empty() {
+        return Some(QueryPlan::Like(terms));
+    }
+    let matched = multi
+        .iter()
+        .map(|t| format!("\"{t}\""))
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(QueryPlan::Match(matched))
+}
+
+/// MATCH 失败的 LIKE 回落词表(剥掉引号与 `*` 的原词;全词 OR 子串扫)
+fn fallback_terms(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .map(|t| t.trim_end_matches('*').replace('"', "").trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+/// LIKE 模式的 SQL 转义(`%` `_` `\` 走 ESCAPE,单引号翻倍)
+fn like_pattern(term: &str) -> String {
+    term.replace('\'', "''")
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 impl SearchIndex {
@@ -239,20 +298,42 @@ impl SearchIndex {
         Ok(())
     }
 
-    /// 全文检索(命中按会话/seq 升序;多词 = OR,turso MATCH 语义)
+    /// 全文检索(命中按会话/seq 升序;多词 = OR)。查询先经
+    /// [`rewrite_query`] 改写:常规词走 MATCH,单字词走 LIKE 兜底,
+    /// MATCH 报错再回落 LIKE(未知语法面的防御网)
     pub async fn search(
         &self,
         query: &str,
         limit: usize,
     ) -> Result<Vec<SearchHit>, PersistenceError> {
-        let q = query.trim();
-        if q.is_empty() {
+        let Some(plan) = rewrite_query(query) else {
             return Ok(vec![]);
+        };
+        match plan {
+            QueryPlan::Match(m) => match self.match_search(&m, limit).await {
+                Ok(hits) => Ok(hits),
+                Err(e) => {
+                    let terms = fallback_terms(query);
+                    if terms.is_empty() {
+                        return Err(e);
+                    }
+                    self.like_search(&terms, limit).await
+                }
+            },
+            QueryPlan::Like(terms) => self.like_search(&terms, limit).await,
         }
+    }
+
+    /// MATCH 路径(turso FTS;ngram gram 短语 = 子串语义)
+    async fn match_search(
+        &self,
+        matched: &str,
+        limit: usize,
+    ) -> Result<Vec<SearchHit>, PersistenceError> {
         let sql = format!(
             "SELECT session, seq, kind, content FROM docs WHERE content MATCH '{}' \
              ORDER BY session, seq LIMIT {}",
-            q.replace('\'', "''"),
+            matched.replace('\'', "''"),
             limit
         );
         let mut rows = self
@@ -260,6 +341,34 @@ impl SearchIndex {
             .query(&sql, ())
             .await
             .map_err(|e| PersistenceError::Turso(e.to_string()))?;
+        self.read_hits(&mut rows).await
+    }
+
+    /// LIKE 子串路径(单字/回落;词集 OR,ESCAPE 转义通配符)
+    async fn like_search(
+        &self,
+        terms: &[String],
+        limit: usize,
+    ) -> Result<Vec<SearchHit>, PersistenceError> {
+        let conds = terms
+            .iter()
+            .map(|t| format!("content LIKE '%{}%' ESCAPE '\\'", like_pattern(t)))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let sql = format!(
+            "SELECT session, seq, kind, content FROM docs WHERE {conds} \
+             ORDER BY session, seq LIMIT {limit}"
+        );
+        let mut rows = self
+            .conn
+            .query(&sql, ())
+            .await
+            .map_err(|e| PersistenceError::Turso(e.to_string()))?;
+        self.read_hits(&mut rows).await
+    }
+
+    /// 行 → 命中(共用读取面)
+    async fn read_hits(&self, rows: &mut turso::Rows) -> Result<Vec<SearchHit>, PersistenceError> {
         let mut hits = vec![];
         while let Some(row) = rows
             .next()
@@ -471,5 +580,93 @@ mod tests {
     /// envelope → JSONL 行
     fn envelope_line(ev: &EventEnvelope) -> String {
         format!("{}\n", serde_json::to_string(ev).unwrap())
+    }
+
+    /// 改写纯函数:剥 `*` 与词内 `"`、短语包裹、单字判定
+    #[test]
+    fn rewrite_strips_asterisk_and_quotes_terms() {
+        assert_eq!(
+            rewrite_query("provid*"),
+            Some(QueryPlan::Match("\"provid\"".into()))
+        );
+        assert_eq!(
+            rewrite_query("持久 splice"),
+            Some(QueryPlan::Match("\"持久\" \"splice\"".into()))
+        );
+        // 语法字符:整体进短语包裹(词内 `"` 剥除)
+        assert_eq!(
+            rewrite_query("pro:vider(1)"),
+            Some(QueryPlan::Match("\"pro:vider(1)\"".into()))
+        );
+        assert_eq!(
+            rewrite_query("a\"b 持久"),
+            Some(QueryPlan::Match("\"ab\" \"持久\"".into()))
+        );
+        // 纯单字 → LIKE;混合 → 单字词丢弃
+        assert_eq!(
+            rewrite_query("修"),
+            Some(QueryPlan::Like(vec!["修".to_string()]))
+        );
+        assert_eq!(
+            rewrite_query("修 持久"),
+            Some(QueryPlan::Match("\"持久\"".into()))
+        );
+        // 全剥空 → None
+        assert_eq!(rewrite_query(" * * "), None);
+        assert_eq!(rewrite_query("   "), None);
+    }
+
+    /// 改写行为收口:前缀星号命中、单字 LIKE 兜底命中、通配符转义、
+    /// 语法字符不炸(返回 Ok)
+    #[tokio::test]
+    async fn rewritten_queries_hit_prefix_single_char_and_syntax() {
+        let dir = tmp("rw");
+        std::fs::create_dir_all(&dir).unwrap();
+        let log_a = dir.join("a.jsonl");
+        let mut log = EventLog::new();
+        log.append(EventEnvelope::new(
+            "user/message",
+            1,
+            serde_json::json!({
+                "content": [ { "type": "text", "text": "provider 注册表怎么配" } ]
+            }),
+        ))
+        .unwrap();
+        log.append(EventEnvelope::new(
+            "assistant/message",
+            2,
+            serde_json::json!({
+                "message": { "content": [ { "type": "text", "text": "先修复队列持久化" } ] }
+            }),
+        ))
+        .unwrap();
+        std::fs::write(
+            &log_a,
+            log.iter().map(|ev| envelope_line(&ev)).collect::<String>(),
+        )
+        .unwrap();
+        let index = SearchIndex::open(dir.join("search.db").to_str().unwrap())
+            .await
+            .expect("建索引");
+        index.sync_session("ws/a", &log_a).await.expect("同步");
+
+        // 前缀:带 `*` 与裸前缀等价(ngram 短语 = 子串语义)
+        for q in ["provid*", "provid"] {
+            let hits = index.search(q, 10).await.expect("前缀检索");
+            assert_eq!(hits.len(), 1, "q={q} 应命中 provider 文档");
+            assert_eq!(hits[0].seq, 1);
+        }
+        // 单字:LIKE 兜底命中
+        let hits = index.search("修", 10).await.expect("单字检索");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].seq, 2);
+        // 单字 SQL 通配符:转义后按字面查(不匹配全部行)
+        let hits = index.search("%", 10).await.expect("通配符字面检索");
+        assert!(hits.is_empty(), "% 应转义为字面,不得全表命中");
+        // 语法字符:引号包裹防御,不炸(命中与否由 gram 序列决定)
+        let hits = index.search("注册表:", 10).await.expect("语法字符检索");
+        assert!(hits.is_empty() || hits[0].seq == 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

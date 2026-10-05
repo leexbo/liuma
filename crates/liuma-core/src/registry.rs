@@ -13710,6 +13710,37 @@ mod tests {
         // 空查询 → 空结果
         let out = host.search_sessions("  ", 10, None).await.unwrap();
         assert!(out["hits"].as_array().unwrap().is_empty());
+
+        // 改写收口:host 面上前缀星号、单字、语法字符都有语义(§6 收口)
+        let out = host.search_sessions("持久*", 10, None).await.unwrap();
+        assert!(
+            out["hits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|h| h["kind"] == "user"),
+            "词尾星号应剥除后照常命中: {out}"
+        );
+        let out = host.search_sessions("修", 10, None).await.unwrap();
+        assert!(
+            out["hits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|h| h["kind"] == "assistant"),
+            "单字应走 LIKE 兜底命中: {out}"
+        );
+        let out = host.search_sessions("怎么修复:", 10, None).await;
+        assert!(out.is_ok(), "语法字符查询不得报错(短语包裹防御): {out:?}");
+        let out = host.search_sessions("\"持久化\"", 10, None).await.unwrap();
+        assert!(
+            out["hits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|h| h["kind"] == "user"),
+            "用户输入引号应剥除后照常命中: {out}"
+        );
     }
 
     /// 通用区偏好:busy_enter 落盘 + 校验 + 重启保留 + view 携带
