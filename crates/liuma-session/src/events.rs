@@ -605,6 +605,15 @@ pub fn message_from_event(type_name: &str, data: &serde_json::Value) -> Option<s
             "content": data["content"],
         })),
         "assistant/message" => {
+            // 空消息不进模型面:无文本且无 tool_calls 的 assistant 是
+            // provider 必拒形状,重发历史会永久卡死会话(携带 tool_calls
+            // 的空文本是正常工具步,照常透传)
+            let has_tool_calls = data
+                .get("tool_calls")
+                .is_some_and(|tc| tc.as_array().is_some_and(|a| !a.is_empty()));
+            if data["content"].as_str().is_none_or(str::is_empty) && !has_tool_calls {
+                return None;
+            }
             let mut m = serde_json::json!({
                 "role": "assistant",
                 "content": data["content"],
@@ -1273,6 +1282,40 @@ mod tests {
         assert_eq!(arr[3]["id"], "call_b");
         assert_eq!(arr[3]["output"], DANGLING_TOOL_PLACEHOLDER);
         assert_eq!(arr[4]["role"], "user");
+    }
+
+    /// 空 assistant(无文本且无 tool_calls)不进模型面——provider 拒绝
+    /// 空内容消息,历史里留一条即永久卡死会话;携带 tool_calls 的空文本
+    /// 是正常工具步,照常透传
+    #[test]
+    fn derive_skips_empty_assistant_message() {
+        let evs = [
+            envelope("user/message", 1, json!({ "content": "go" })),
+            envelope("assistant/message", 2, json!({ "content": "" })),
+            envelope(
+                "assistant/message",
+                3,
+                json!({
+                    "content": "",
+                    "tool_calls": [
+                        { "id": "call_a", "name": "bash", "arguments": "{}" },
+                    ],
+                }),
+            ),
+            envelope("assistant/message", 4, json!({ "content": "正文" })),
+        ];
+        let visible = derive_visible_messages(evs.iter());
+        let arr = visible.as_array().unwrap();
+        assert_eq!(
+            arr.len(),
+            4,
+            "空 assistant 剔除;tool_calls 空文本保留(缺结果补占位): {arr:?}"
+        );
+        assert_eq!(arr[0]["role"], "user");
+        assert_eq!(arr[1]["role"], "assistant");
+        assert!(arr[1]["tool_calls"].is_array());
+        assert_eq!(arr[2]["role"], "tool");
+        assert_eq!(arr[3]["content"], "正文");
     }
 
     /// 全配对的回合不受后处理影响;末尾悬空(日志截断)同样补齐

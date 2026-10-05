@@ -688,12 +688,20 @@ impl LoopEngine {
 
     /// 流正常结束后的失败判定:流内失败帧优先,其次空响应
     /// (零 chunk 且零物化消息 = provider 未产出任何可用内容;
-    /// 带 tool_calls 的物化消息不算空——那是正常的工具步)
+    /// 物化消息须有文本或 tool_calls 才算非空——推理烧尽输出预算时
+    /// provider 会回「空文本消息」,落档即成历史毒丸,重发被 provider 拒)
     fn post_stream_failure(acc: &StreamAcc) -> Option<TransportError> {
         if let Some(v) = &acc.failure {
             return Some(Self::classify_stream_failure(v));
         }
-        if acc.final_message.is_none() && acc.assistant_text.is_empty() {
+        let materialized = acc.final_message.as_ref();
+        let materialized_empty = materialized.is_some_and(|m| {
+            m["content"].as_str().is_none_or(str::is_empty)
+                && m["tool_calls"]
+                    .as_array()
+                    .is_none_or(|calls| calls.is_empty())
+        });
+        if materialized_empty || (acc.final_message.is_none() && acc.assistant_text.is_empty()) {
             return Some(TransportError::EmptyResponse);
         }
         None
@@ -3100,6 +3108,59 @@ mod streaming_tests {
             .data["code"]
             .clone();
         assert_eq!(code, "EMPTY_RESPONSE");
+    }
+
+    /// 空物化消息同样按空响应处理:provider 只回思考、最终消息无文本
+    /// 且无 tool_calls(推理烧尽输出预算的形态)→ 走重试而非落档;
+    /// 空消息一旦入日志即成历史毒丸,重发被 provider 拒绝。重试成功
+    /// 后落档的是有内容的消息,日志全程无空 assistant/message
+    #[tokio::test]
+    async fn empty_materialized_message_retries_without_poison() {
+        let log = Arc::new(Mutex::new(EventLog::new()));
+        let mut engine = LoopEngine::new(header(), Arc::clone(&log));
+        engine.set_retry_policy(fast_policy());
+        let mut transport = RetryScriptTransport {
+            // 首尝试:空文本物化消息;次尝试:正常文本消息
+            script: vec![
+                Ok(vec![
+                    LlmEvent::AssistantMessage(serde_json::json!({
+                        "content": "", "tool_calls": []
+                    })),
+                    LlmEvent::Done,
+                ]),
+                Ok(vec![
+                    LlmEvent::Chunk("正文".into()),
+                    LlmEvent::AssistantMessage(serde_json::json!({ "content": "正文" })),
+                    LlmEvent::Done,
+                ]),
+            ],
+            attempts: AtomicUsize::new(0),
+        };
+        let mut tools = NoTools;
+        let clock = || 1i64;
+        let r = engine
+            .run_turn(
+                "hi",
+                None,
+                &[],
+                &[],
+                &[],
+                &mut transport,
+                &mut tools,
+                &clock,
+                &mut |_| {},
+            )
+            .await;
+        assert!(r.is_ok(), "重试应成功: {r:?}");
+        assert_eq!(transport.attempts.load(AtomicOrdering::SeqCst), 2);
+        assert_eq!(count_events(&log, "assistant/message"), 1, "只落成功消息");
+        assert_eq!(count_events(&log, "llm/retry"), 1, "空物化消息按空响应重试");
+        let locked = log.lock().unwrap();
+        let persisted = locked
+            .iter()
+            .find(|e| e.r#type == "assistant/message")
+            .expect("成功消息在场");
+        assert_eq!(persisted.data["content"], "正文");
     }
 
     /// mid-stream 断流:已落档残段以 stream-reset 标记丢弃,最终
