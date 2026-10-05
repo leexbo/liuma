@@ -22,6 +22,15 @@ use crate::shell::store::AppStore;
 
 actions!(panel, [OpenPanelPlan]);
 
+/// 终端标签 id(一路标签 = 一路 shell;`NEW` = 菜单哨兵,经
+/// `open_panel_tab` 兑换为真实 id)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalTabId(pub u64);
+
+impl TerminalTabId {
+    pub const NEW: Self = Self(0);
+}
+
 /// 预览标签数据(工作区相对路径 + 行导航参数)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreviewTab {
@@ -32,7 +41,8 @@ pub struct PreviewTab {
 }
 
 /// 面板标签页(静态种同类去重,序 = 打开序;Preview 按路径去重、
-/// 只经文件树点击进入,不进「+」与空态清单)
+/// 只经文件树点击进入,不进「+」与空态清单;Terminal 按 id 可多开,
+/// 「+」与空态清单带 NEW 哨兵,每次点 = 新开一路 shell)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PanelTab {
     /// 计划(当前会话最新计划只读)
@@ -42,18 +52,19 @@ pub enum PanelTab {
     /// 文件(工作区文件树,lazy 逐层装载;点文件开预览)
     Files,
     /// 终端(交互式 shell 会话,长驻至关闭标签;features::terminal)
-    Terminal,
+    Terminal(TerminalTabId),
     /// 文档预览(渲染器注册表见 kits::filetype)
     Preview(PreviewTab),
 }
 
 impl PanelTab {
-    /// 全部静态标签(「+」菜单与空态清单共用的视图源;Preview 不列)
+    /// 全部静态标签(「+」菜单与空态清单共用的视图源;Preview 不列;
+    /// Terminal 携 NEW 哨兵)
     pub const ALL: [PanelTab; 4] = [
         PanelTab::Plan,
         PanelTab::Trajectory,
         PanelTab::Files,
-        PanelTab::Terminal,
+        PanelTab::Terminal(TerminalTabId::NEW),
     ];
 
     /// 是否文件树标签(切会话换根门控判据)
@@ -61,14 +72,26 @@ impl PanelTab {
         matches!(self, PanelTab::Files)
     }
 
-    /// 标签标题(Preview = 文件名)
-    pub fn title(&self) -> String {
+    /// 标签标题(Preview = 文件名;Terminal = OSC Title,回落 cwd
+    /// 目录名,再回落通用名)
+    pub fn title(&self, store: &AppStore) -> String {
         use crate::kits::i18n::t;
         match self {
             PanelTab::Plan => t!("shell.plan_tab").to_string(),
             PanelTab::Trajectory => t!("shell.trajectory_tab").to_string(),
             PanelTab::Files => t!("shell.files_tab").to_string(),
-            PanelTab::Terminal => t!("shell.terminal_tab").to_string(),
+            PanelTab::Terminal(id) => store
+                .terminal
+                .tab(*id)
+                .and_then(|tab| {
+                    tab.title.clone().or_else(|| {
+                        tab.session
+                            .as_ref()
+                            .and_then(|s| s.cwd.file_name())
+                            .map(|n| n.to_string_lossy().into_owned())
+                    })
+                })
+                .unwrap_or_else(|| t!("shell.terminal_tab").to_string()),
             PanelTab::Preview(p) => p
                 .path
                 .file_name()
@@ -83,7 +106,7 @@ impl PanelTab {
             PanelTab::Plan => fixed(LiumaIcon::ListChecks, size),
             PanelTab::Trajectory => fixed(LiumaIcon::Trajectory, size),
             PanelTab::Files => fixed(LiumaIcon::FolderTree, size),
-            PanelTab::Terminal => fixed(IconName::SquareTerminal, size),
+            PanelTab::Terminal(_) => fixed(IconName::SquareTerminal, size),
             PanelTab::Preview(p) => {
                 let name = p
                     .path
@@ -97,13 +120,14 @@ impl PanelTab {
         }
     }
 
-    /// 稳定 id / debug selector 片段(Preview 带路径哈希防同域撞名)
+    /// 稳定 id / debug selector 片段(Preview 带路径哈希、Terminal 带
+    /// 标签 id,防同域撞名)
     fn key(&self) -> String {
         match self {
             PanelTab::Plan => "plan".to_string(),
             PanelTab::Trajectory => "trajectory".to_string(),
             PanelTab::Files => "files".to_string(),
-            PanelTab::Terminal => "terminal".to_string(),
+            PanelTab::Terminal(id) => format!("terminal-{}", id.0),
             PanelTab::Preview(p) => {
                 use std::hash::{Hash, Hasher};
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -363,7 +387,7 @@ fn panel_tab_pill(
         .hover(|s| s.bg(theme::layer(cx)))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(tab.icon(14.))
-        .child(div().text_size(px(13.)).child(tab.title()))
+        .child(div().text_size(px(13.)).child(tab.title(store.read(cx))))
         .child(
             div()
                 .id(SharedString::from(format!("panel-tab-close-{key}")))
@@ -443,12 +467,12 @@ fn tab_body(
             .min_w(px(0.))
             .child(crate::features::files::render(store, window, cx))
             .into_any_element(),
-        PanelTab::Terminal => div()
+        PanelTab::Terminal(id) => div()
             .debug_selector(|| "panel-terminal-view".to_string())
             .flex_1()
             .min_h(px(0.))
             .min_w(px(0.))
-            .child(crate::features::terminal::render(store, window, cx))
+            .child(crate::features::terminal::render(store, id, window, cx))
             .into_any_element(),
         PanelTab::Preview(preview) => div()
             .debug_selector(|| format!("panel-preview-view-{}", preview.path.display()))
@@ -494,7 +518,7 @@ fn empty_menu(store: &Entity<AppStore>, shortcut: &str, cx: &App) -> gpui_kit::A
                     div()
                         .text_size(px(13.))
                         .text_color(theme::label(cx))
-                        .child(tab.title()),
+                        .child(tab.title(store.read(cx))),
                 )
                 .child(div().flex_1())
                 .child(
@@ -563,7 +587,7 @@ fn plus_menu_card(
                 .text_color(theme::label_2(cx))
                 .hover(|st| st.bg(theme::dock(cx)))
                 .child(tab.icon(13.))
-                .child(div().text_size(px(12.)).child(tab.title()))
+                .child(div().text_size(px(12.)).child(tab.title(store.read(cx))))
                 .child(div().flex_1())
                 .child(
                     div()

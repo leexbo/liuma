@@ -18,7 +18,7 @@ use crate::features::subagents::SubagentsStore;
 use crate::features::trajectory::TrajectoryStore;
 use crate::kits::theme;
 use crate::shell::host::HostBridge;
-use crate::shell::panel::PanelTab;
+use crate::shell::panel::{PanelTab, TerminalTabId};
 use crate::shell::reducer::{self, Effect, StoreState};
 
 /// 会话级配置缓存(打开会话时拉取,设置成功后回写)
@@ -118,11 +118,9 @@ pub struct AppStore {
     pub preview: crate::features::preview::PreviewStore,
     /// 预览变更轮询任务(1s stat;仅存在预览 tab 时活,自退)
     pub preview_poll: Option<gpui_kit::Task<()>>,
-    /// 终端功能切片状态(右栏「终端」标签:PTY 会话/网格尺寸/焦点;
+    /// 终端功能切片状态(右栏「终端」标签:多路 shell 会话/网格尺寸;
     /// 域与行为见 features::terminal)
     pub terminal: crate::features::terminal::store::TerminalStore,
-    /// 终端输出泵任务(PTY 增量块 → VT 状态机;kill 换代后自退)
-    pub(crate) terminal_pump: Option<gpui_kit::Task<()>>,
     /// 状态边沿刷新的延迟任务(重触发即替换;见 Effect::StatusRefresh)
     pub(crate) status_refresh: Option<gpui_kit::Task<()>>,
     /// 状态边沿刷新代次(替换任务时 +1,过期任务到期自弃)
@@ -273,8 +271,7 @@ impl AppStore {
             files: crate::features::files::FilesStore::mount(cx),
             preview: crate::features::preview::PreviewStore::default(),
             preview_poll: None,
-            terminal: crate::features::terminal::store::TerminalStore::new(cx.focus_handle()),
-            terminal_pump: None,
+            terminal: crate::features::terminal::store::TerminalStore::new(),
             status_refresh: None,
             status_refresh_gen: 0,
             local_notice_seq: 0,
@@ -1281,6 +1278,13 @@ impl AppStore {
     /// 无条件刷新;同会话重拉保留选中/折叠态(原主区切入轨迹语义)
     pub fn open_panel_tab(&mut self, tab: PanelTab, cx: &mut Context<Self>) {
         self.panel_open = true;
+        // 终端 NEW 哨兵兑换真实 id:菜单每次点 = 新开一路 shell
+        let tab = match tab {
+            PanelTab::Terminal(id) if id == TerminalTabId::NEW => {
+                PanelTab::Terminal(self.terminal.alloc_id())
+            }
+            other => other,
+        };
         if !self.panel_tabs.contains(&tab) {
             self.panel_tabs.push(tab.clone());
         }
@@ -1295,8 +1299,8 @@ impl AppStore {
         {
             self.files_ensure(cx);
         }
-        if matches!(self.panel_active_tab, Some(PanelTab::Terminal)) {
-            self.terminal_ensure(cx);
+        if let Some(PanelTab::Terminal(id)) = self.panel_active_tab {
+            self.terminal_ensure(id, cx);
         }
         cx.notify();
     }
@@ -1308,8 +1312,8 @@ impl AppStore {
         if let PanelTab::Preview(p) = &tab {
             self.preview_forget(&p.path);
         }
-        if matches!(tab, PanelTab::Terminal) {
-            self.terminal_kill(cx);
+        if let PanelTab::Terminal(id) = tab {
+            self.terminal_remove(id, cx);
         }
         self.panel_tabs.retain(|t| *t != tab);
         if self.panel_active_tab == Some(tab) {
@@ -1338,8 +1342,8 @@ impl AppStore {
                 let target = (p.path.clone(), p.line);
                 self.preview_ensure_bucket(&target.0, target.1, cx);
             }
-            if matches!(self.panel_active_tab, Some(PanelTab::Terminal)) {
-                self.terminal_ensure(cx);
+            if let Some(PanelTab::Terminal(id)) = self.panel_active_tab {
+                self.terminal_ensure(id, cx);
             }
             cx.notify();
         }

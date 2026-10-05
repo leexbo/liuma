@@ -14057,9 +14057,10 @@ fn archived_long_list_scrolls_internally(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 /// 终端面板:空态清单有终端行;开标签 → 视图在场,真 shell 装配(PTY
-/// 面用例,同 pty.rs 单测的 unix 前提);同工作区重复激活不重启(长驻
-/// 语义);关闭标签即杀会话(VS Code 心智)。跑法:单测并行偶发仲裁
-/// 惯例 —— 失败先 `-- --test-threads=1` 单跑复判归属
+/// 面用例,同 pty.rs 单测的 unix 前提);OSC 标题 → 标签文案;同工作区
+/// 重复激活不重启(长驻语义);多 tab 各自装配,关一留一;关闭标签即
+/// 杀会话(VS Code 心智)。跑法:单测并行偶发仲裁惯例 —— 失败先
+/// `-- --test-threads=1` 单跑复判归属
 #[gpui_kit::test]
 fn panel_terminal_lifecycle(cx: &mut TestAppContext) {
     // PTY 面用例前提:至少一个登录 shell 可用;环境早退必须带断言防假绿
@@ -14078,19 +14079,19 @@ fn panel_terminal_lifecycle(cx: &mut TestAppContext) {
     });
     redraw(cx, &mut wcx);
     assert!(
-        wcx.debug_bounds("panel-empty-row-terminal").is_some(),
+        wcx.debug_bounds("panel-empty-row-terminal-0").is_some(),
         "空态清单应有终端行"
     );
-    // 开终端标签:标签与视图在场;shell 装配跨执行器(blocking 池 →
-    // oneshot → gpui 任务),deadline 轮询到会话就位
+    // 开终端标签(NEW 哨兵兑换 id=1):标签与视图在场;shell 装配跨
+    // 执行器(blocking 池 → oneshot → gpui 任务),deadline 轮询到会话就位
     cx.update(|app| {
         store.update(app, |st, cx| {
-            st.open_panel_tab(panel::PanelTab::Terminal, cx)
+            st.open_panel_tab(panel::PanelTab::Terminal(panel::TerminalTabId::NEW), cx)
         });
     });
     redraw(cx, &mut wcx);
     assert!(
-        wcx.debug_bounds("panel-tab-terminal").is_some(),
+        wcx.debug_bounds("panel-tab-terminal-1").is_some(),
         "标签条应有终端标签"
     );
     assert!(
@@ -14103,41 +14104,125 @@ fn panel_terminal_lifecycle(cx: &mut TestAppContext) {
         cx.run_until_parked();
         let state = cx.update(|app| {
             store.update(app, |st, _| {
+                let id = st.terminal_active_id();
                 (
-                    st.terminal.session.as_ref().map(|s| s.cwd.clone()),
-                    st.terminal.generation,
-                    st.terminal.spawning,
+                    id,
+                    st.terminal_active_session().map(|s| s.cwd.clone()),
+                    id.and_then(|id| st.terminal.tab(id)).map(|t| t.generation),
+                    id.and_then(|id| st.terminal.tab(id))
+                        .is_some_and(|t| t.spawning),
                 )
             })
         });
-        if let (Some(cwd), generation, spawning) = state
-            && !spawning
-        {
+        if let (Some(_id), Some(cwd), Some(generation), false) = state {
             assembled = Some((cwd, generation));
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    let (cwd, generation) = assembled.expect("真 shell 应在时限内装配完成");
+    let (id, (cwd, generation)) = (
+        cx.update(|app| store.update(app, |st, _| st.terminal_active_id()))
+            .expect("终端标签应已激活"),
+        assembled.expect("真 shell 应在时限内装配完成"),
+    );
     // 会话归属工作区:cwd = 工作区根(harness 的 ws 目录)
     assert!(cwd.ends_with("ws"), "终端 cwd 应为工作区根;got {cwd:?}");
+    // OSC 标题 → 标签文案:printf 转义序列,泵排空后落标签记录
+    // (开标签已消费 wants_focus,键盘直达 PTY)
+    wcx.simulate_input(r"printf '\033]0;mytab\007'");
+    wcx.simulate_keystrokes("enter");
+    let mut titled = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        cx.run_until_parked();
+        titled = cx.update(|app| {
+            store.update(app, |st, _| {
+                st.terminal.tab(id).map(|t| t.title.as_deref()) == Some(Some("mytab"))
+            })
+        });
+        if titled {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(titled, "OSC 标题应落到标签记录(mytab)");
     // 同工作区重复激活:不重启(代次不变 = 长驻语义)
     cx.update(|app| {
         store.update(app, |st, cx| {
-            st.activate_panel_tab(panel::PanelTab::Terminal, cx)
+            st.activate_panel_tab(panel::PanelTab::Terminal(id), cx)
         });
     });
     cx.run_until_parked();
-    let generation_after = cx.update(|app| store.update(app, |st, _| st.terminal.generation));
-    assert_eq!(generation, generation_after, "同工作区激活不应重启会话");
-    // 关闭标签即杀会话(VS Code 心智);重开代次前移
+    let generation_after =
+        cx.update(|app| store.update(app, |st, _| st.terminal.tab(id).map(|t| t.generation)));
+    assert_eq!(
+        Some(generation),
+        generation_after,
+        "同工作区激活不应重启会话"
+    );
+    // 多 tab:再开一路(哨兵 → id=2),两路并存且各自装配
     cx.update(|app| {
         store.update(app, |st, cx| {
-            st.close_panel_tab(panel::PanelTab::Terminal, cx)
+            st.open_panel_tab(panel::PanelTab::Terminal(panel::TerminalTabId::NEW), cx)
         });
     });
-    let alive = cx.update(|app| store.update(app, |st, _| st.terminal.session.is_some()));
-    assert!(!alive, "关闭标签应杀会话");
+    let id2 = cx.update(|app| store.update(app, |st, _| st.terminal_active_id()));
+    assert_eq!(
+        id2,
+        Some(panel::TerminalTabId(2)),
+        "第二路应分配 id=2 并激活"
+    );
+    let mut both = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        cx.run_until_parked();
+        both = cx.update(|app| {
+            store.update(app, |st, _| {
+                [id, panel::TerminalTabId(2)].iter().all(|t| {
+                    st.terminal
+                        .tab(*t)
+                        .and_then(|tab| tab.session.as_ref())
+                        .is_some_and(|s| !s.exited)
+                        && !st.terminal.tab(*t).is_some_and(|tab| tab.spawning)
+                })
+            })
+        });
+        if both {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(both, "两路终端应在时限内并存装配");
+    // 关一留一:关第一路,其会话死、第二路会话保留
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.close_panel_tab(panel::PanelTab::Terminal(id), cx)
+        });
+    });
+    let (first_alive, second_alive) = cx.update(|app| {
+        store.update(app, |st, _| {
+            (
+                st.terminal
+                    .tab(id)
+                    .and_then(|t| t.session.as_ref())
+                    .is_some(),
+                st.terminal
+                    .tab(panel::TerminalTabId(2))
+                    .and_then(|t| t.session.as_ref())
+                    .is_some(),
+            )
+        })
+    });
+    assert!(!first_alive, "关闭标签应杀对应会话");
+    assert!(second_alive, "另一路终端不应被牵连");
+    // 关闭剩余标签:会话清空(VS Code 心智)
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.close_panel_tab(panel::PanelTab::Terminal(panel::TerminalTabId(2)), cx)
+        });
+    });
+    let remaining = cx.update(|app| store.update(app, |st, _| st.terminal.tabs.len()));
+    assert_eq!(remaining, 0, "全部关闭后标签记录应撤空");
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -14165,9 +14250,7 @@ fn panel_terminal_focus_input_scroll(cx: &mut TestAppContext) {
             cx.run_until_parked();
             let text = wcx.update(|_window, app| {
                 let st = store.read(app);
-                st.terminal
-                    .session
-                    .as_ref()
+                st.terminal_active_session()
                     .map(|s| s.visible_text().join("\n"))
                     .unwrap_or_default()
             });
@@ -14182,7 +14265,7 @@ fn panel_terminal_focus_input_scroll(cx: &mut TestAppContext) {
     cx.update(|app| {
         store.update(app, |st, cx| {
             st.toggle_panel(cx);
-            st.open_panel_tab(panel::PanelTab::Terminal, cx);
+            st.open_panel_tab(panel::PanelTab::Terminal(panel::TerminalTabId::NEW), cx);
         });
     });
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -14190,7 +14273,11 @@ fn panel_terminal_focus_input_scroll(cx: &mut TestAppContext) {
         cx.run_until_parked();
         let ready = cx.update(|app| {
             store.update(app, |st, _| {
-                st.terminal.session.is_some() && !st.terminal.spawning
+                let id = st.terminal_active_id();
+                st.terminal_active_session().is_some()
+                    && !id
+                        .and_then(|id| st.terminal.tab(id))
+                        .is_some_and(|t| t.spawning)
             })
         });
         if ready {
@@ -14198,12 +14285,21 @@ fn panel_terminal_focus_input_scroll(cx: &mut TestAppContext) {
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    let assembled = cx.update(|app| store.update(app, |st, _| st.terminal.session.is_some()));
+    let id = cx
+        .update(|app| store.update(app, |st, _| st.terminal_active_id()))
+        .expect("终端标签应已激活");
+    let assembled =
+        cx.update(|app| store.update(app, |st, _| st.terminal_active_session().is_some()));
     assert!(assembled, "真 shell 应在时限内装配完成");
     redraw(cx, &mut wcx);
     // 1) 开标签即聚焦(wants_focus 渲染期消费)
     let focused = wcx.update(|window, app| {
-        let handle = store.read(app).terminal.focus.clone();
+        let handle = store
+            .read(app)
+            .terminal
+            .tab(id)
+            .map(|t| t.focus.clone())
+            .expect("标签在");
         handle.is_focused(window)
     });
     assert!(focused, "开标签后终端应持有焦点");
@@ -14223,7 +14319,12 @@ fn panel_terminal_focus_input_scroll(cx: &mut TestAppContext) {
     );
     cx.run_until_parked();
     let focused_after_click = wcx.update(|window, app| {
-        let handle = store.read(app).terminal.focus.clone();
+        let handle = store
+            .read(app)
+            .terminal
+            .tab(id)
+            .map(|t| t.focus.clone())
+            .expect("标签在");
         handle.is_focused(window)
     });
     assert!(focused_after_click, "点击终端区应聚焦");
@@ -14245,24 +14346,20 @@ fn panel_terminal_focus_input_scroll(cx: &mut TestAppContext) {
     );
     let bottom_sees_top = wcx.update(|_window, app| {
         let st = store.read(app);
-        st.terminal
-            .session
-            .as_ref()
+        st.terminal_active_session()
             .map(|s| s.visible_text().join("\n"))
             .unwrap_or_default()
             .contains("L1\n")
     });
     assert!(!bottom_sees_top, "视口在底部时最早行不应可见");
     cx.update(|app| {
-        store.update(app, |st, cx| st.terminal_scroll(10_000, cx));
+        store.update(app, |st, cx| st.terminal_scroll(id, 10_000, cx));
     });
     cx.run_until_parked();
     let (offset, rows, top_text) = wcx.update(|_window, app| {
         use alacritty_terminal::grid::Dimensions as _;
         let st = store.read(app);
-        st.terminal
-            .session
-            .as_ref()
+        st.terminal_active_session()
             .map(|s| {
                 (
                     s.term.renderable_content().display_offset,

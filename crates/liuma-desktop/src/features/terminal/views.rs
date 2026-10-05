@@ -3,13 +3,15 @@
 //! 渲染面:`renderable_content()` 逐行 → `StyledText` 高亮段(palette
 //! 纯逻辑),行高 18px(同聊天终端卡 Menlo 12px/1.5)。容器不滚动——
 //! 滚回由 Term 的 `display_offset` 承担(滚轮 → `scroll_display`)。
-//! 焦点:仓库首个焦点路径视图(`track_focus` + `key_context`),tab
+//! 焦点:仓库首个焦点路径视图(`track_focus` + `key_context`),标签
 //! 激活经 `wants_focus` 在渲染期消费;按键 capture 阶段编码直写 PTY。
 //! 尺寸:canvas 回调记 bounds(线程局部,同轨迹时间线),下一渲染帧
 //! 变化检测后同步 `term.resize` + PTY ioctl(SIGWINCH 由内核送)。
 //!
-//! 网格读侧全程持 `store.read` 守卫(`&Cell` 引用不可跨守卫),行文本
-//! 与高亮段在此作用域内物化为 owned(`String` + `HighlightStyle`)。
+//! 视图按标签 id 参数化:只有激活终端标签进渲染(tab_body 分发),
+//! 后台标签会话保留。网格读侧全程持 `store.read` 守卫(`&Cell` 引用
+//! 不可跨守卫),行文本与高亮段在此作用域内物化为 owned(`String` +
+//! `HighlightStyle`)。
 
 use std::cell::Cell as StdCell;
 use std::rc::Rc;
@@ -23,6 +25,7 @@ use gpui_kit::{
 
 use crate::features::terminal::palette::row_runs;
 use crate::kits::theme;
+use crate::shell::panel::TerminalTabId;
 use crate::shell::store::AppStore;
 
 /// 单元格字号/行高(对齐聊天终端卡:Menlo 12px,行高 1.5× = 18px)
@@ -71,9 +74,10 @@ fn grid_dims(width: f32, height: f32, cell: (f32, f32)) -> (usize, usize) {
     (cols, rows)
 }
 
-/// 终端面板正文(面板 tab_body 分发臂;根 size_full 填满)
+/// 终端标签正文(面板 tab_body 分发臂;根 size_full 填满)
 pub(crate) fn render(
     store: &Entity<AppStore>,
+    id: TerminalTabId,
     window: &mut Window,
     cx: &mut App,
 ) -> gpui_kit::AnyElement {
@@ -105,25 +109,33 @@ pub(crate) fn render(
             store.update(cx, |s, cx| s.terminal_apply_size(cols, rows, cx));
         }
     }
-    // tab 激活置位的焦点消费:请求聚焦,成功(焦点确实落在终端句柄)
+    // 标签激活置位的焦点消费:请求聚焦,成功(焦点确实落在终端句柄)
     // 才清旗标——失败(窗口焦点系统未就绪/他者抢走)保留待下帧重试,
     // 避免首帧请求被静默吞掉后永远拿不到键盘
-    if store.read(cx).terminal.wants_focus {
-        let handle = store.read(cx).terminal.focus.clone();
+    let wants_focus = store
+        .read(cx)
+        .terminal
+        .tab(id)
+        .is_some_and(|t| t.wants_focus);
+    if wants_focus && let Some(handle) = store.read(cx).terminal.tab(id).map(|t| t.focus.clone()) {
         window.focus(&handle, cx);
         if handle.is_focused(window) {
-            store.update(cx, |s, _| s.terminal.wants_focus = false);
+            store.update(cx, |s, _| {
+                if let Some(tab) = s.terminal.tab_mut(id) {
+                    tab.wants_focus = false;
+                }
+            });
         }
     }
 
     // —— 网格读侧:守卫内快照 + 行物化 ——
     let s = store.read(cx);
-    let focus = s.terminal.focus.clone();
-    let exited = s
-        .terminal
-        .session
-        .as_ref()
-        .is_some_and(|session| session.exited);
+    let Some(tab) = s.terminal.tab(id) else {
+        // 标签已撤(理论不可达:tab_body 分发自面板标签表):空视图
+        return div().into_any_element();
+    };
+    let focus = tab.focus.clone();
+    let exited = tab.session.as_ref().is_some_and(|session| session.exited);
 
     let mut root = div()
         .debug_selector(|| "panel-terminal-view".to_string())
@@ -144,8 +156,9 @@ pub(crate) fn render(
         .on_mouse_down(MouseButton::Left, {
             let s = store.clone();
             move |_: &MouseDownEvent, window, cx| {
-                let handle = s.read(cx).terminal.focus.clone();
-                window.focus(&handle, cx);
+                if let Some(handle) = s.read(cx).terminal.tab(id).map(|t| t.focus.clone()) {
+                    window.focus(&handle, cx);
+                }
             }
         })
         // 滚轮:行增量为历史方向(alt-screen 时 Term 自理);Pixels 态
@@ -161,7 +174,7 @@ pub(crate) fn render(
                     }
                 };
                 if lines != 0 {
-                    s.update(cx, |st, cx| st.terminal_scroll(lines, cx));
+                    s.update(cx, |st, cx| st.terminal_scroll(id, lines, cx));
                 }
             }
         })
@@ -170,7 +183,12 @@ pub(crate) fn render(
         .capture_key_down({
             let s = store.clone();
             move |ev: &KeyDownEvent, window: &mut Window, cx: &mut App| {
-                if !s.read(cx).terminal.focus.is_focused(window) {
+                let focused = s
+                    .read(cx)
+                    .terminal
+                    .tab(id)
+                    .is_some_and(|t| t.focus.is_focused(window));
+                if !focused {
                     return;
                 }
                 // ⌘V 粘贴(bracketed paste 按 PTY 模式包装)
@@ -180,11 +198,11 @@ pub(crate) fn render(
                     && let Some(text) = item.text()
                 {
                     cx.stop_propagation();
-                    s.update(cx, |st, cx| st.terminal_write_paste(&text, cx));
+                    s.update(cx, |st, cx| st.terminal_write_paste(id, &text, cx));
                     return;
                 }
                 let keystroke = ev.keystroke.clone();
-                if s.update(cx, |st, cx| st.terminal_write_key(&keystroke, cx)) {
+                if s.update(cx, |st, cx| st.terminal_write_key(id, &keystroke, cx)) {
                     cx.stop_propagation();
                 }
             }
@@ -205,20 +223,23 @@ pub(crate) fn render(
         .size_full(),
     );
 
-    let Some(session) = s.terminal.session.as_ref() else {
-        // 未装配(spawning 在途)/无会话:占位,避免空白抖动
-        root = root.child(
-            div()
-                .flex_1()
-                .items_center()
-                .justify_center()
-                .text_color(theme::caption(cx))
-                .child(crate::kits::i18n::t!("terminal.starting").to_string()),
-        );
-        if exited {
-            root = root.child(exited_strip(store.clone(), cx));
+    let session = match tab.session.as_ref() {
+        Some(session) => session,
+        None => {
+            // 未装配(spawning 在途)/无会话:占位,避免空白抖动
+            root = root.child(
+                div()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .text_color(theme::caption(cx))
+                    .child(crate::kits::i18n::t!("terminal.starting").to_string()),
+            );
+            if exited {
+                root = root.child(exited_strip(store.clone(), id, cx));
+            }
+            return root.into_any_element();
         }
-        return root.into_any_element();
     };
 
     let content = session.term.renderable_content();
@@ -253,13 +274,13 @@ pub(crate) fn render(
         );
     }
     if exited {
-        root = root.child(exited_strip(store.clone(), cx));
+        root = root.child(exited_strip(store.clone(), id, cx));
     }
     root.into_any_element()
 }
 
 /// 退出态条:提示 + 重开入口(点击 = 杀旧会话并重 spawn)
-fn exited_strip(store: Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
+fn exited_strip(store: Entity<AppStore>, id: TerminalTabId, cx: &App) -> gpui_kit::AnyElement {
     div()
         .flex_shrink_0()
         .h(px(28.))
@@ -283,8 +304,8 @@ fn exited_strip(store: Entity<AppStore>, cx: &App) -> gpui_kit::AnyElement {
                 .child(crate::kits::i18n::t!("terminal.restart").to_string())
                 .on_click(move |_, _, cx| {
                     store.update(cx, |st, cx| {
-                        st.terminal_kill(cx);
-                        st.terminal_spawn(cx);
+                        st.terminal_kill(id, cx);
+                        st.terminal_spawn(id, cx);
                     });
                 }),
         )
