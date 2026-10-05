@@ -18,14 +18,20 @@ use std::rc::Rc;
 
 use alacritty_terminal::index::Side;
 use gpui_kit::component::StyledExt as _;
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::native_menu::NativeMenu;
+use gpui_kit::component::{IconName, Sizable};
 use gpui_kit::{
     App, Bounds, Entity, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, ScrollDelta,
-    ScrollWheelEvent, StatefulInteractiveElement as _, Styled as _, StyledText, Window, div, px,
+    ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _, StyledText,
+    Window, div, px,
 };
 
-use crate::features::terminal::palette::{row_runs, selection_row_ranges};
+use crate::features::terminal::palette::{
+    CellMark, match_row_range, row_runs, selection_row_ranges,
+};
+use crate::kits::icons::fixed;
 use crate::kits::theme;
 use crate::shell::panel::TerminalTabId;
 use crate::shell::store::AppStore;
@@ -38,6 +44,8 @@ const FONT_FAMILY: &str = "Menlo";
 /// 净区计算,末列/末行不裁进 padding
 pub(crate) const PAD_X: f32 = 10.;
 pub(crate) const PAD_Y: f32 = 6.;
+/// 搜索条高(在流内占位:网格可用高要扣掉它)
+const SEARCH_BAR_H: f32 = 30.;
 
 /// 渲染期 bounds 记录(线程局部跨帧共享,同轨迹 `track_bounds_cell`)
 fn bounds_cell() -> Rc<StdCell<Option<Bounds<Pixels>>>> {
@@ -118,14 +126,21 @@ pub(crate) fn render(
         });
     }
     // 尺寸自适应:上一帧 canvas bounds 算行列,变化才落 store(bounds
-    // 由本帧 prepaint 记录,下一帧生效——拖宽/窗口缩放的稳态零开销)
+    // 由本帧 prepaint 记录,下一帧生效——拖宽/窗口缩放的稳态零开销;
+    // 搜索条在流内占位,网格可用高按开合扣减)
+    let search_open = store
+        .read(cx)
+        .terminal
+        .tab(id)
+        .is_some_and(|t| t.search.is_some());
     let bounds = bounds_cell();
     if let Some(b) = bounds.take()
         && let Some(cell) = store.read(cx).terminal.cell
     {
+        let bar_h = if search_open { SEARCH_BAR_H } else { 0. };
         let (cols, rows) = grid_dims(
             f32::from(b.size.width) - 2. * PAD_X,
-            f32::from(b.size.height) - 2. * PAD_Y,
+            f32::from(b.size.height) - 2. * PAD_Y - bar_h,
             cell,
         );
         let unchanged = {
@@ -176,6 +191,8 @@ pub(crate) fn render(
         .line_height(gpui_kit::relative(LINE_HEIGHT / FONT_SIZE))
         .bg(theme::code(cx))
         .text_color(theme::label(cx))
+        // 网格区鼠标 = 文字输入 I 形(子件按需覆盖:按钮 cursor_pointer)
+        .cursor(gpui_kit::CursorStyle::IBeam)
         .overflow_hidden()
         // 焦点路径:仓库首例 track_focus 视图;点击聚焦 + 拖选/取词/取行
         // (坐标换算在 cell_at:canvas bounds 线程局部,渲染帧已备)
@@ -253,6 +270,17 @@ pub(crate) fn render(
                     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
                     return;
                 }
+                // ⌘F 搜索条(control/alt 挡住:Windows/Linux ctrl+f
+                // 是 shell 前向字符,必须照旧落 PTY)
+                if ev.keystroke.modifiers.platform
+                    && !ev.keystroke.modifiers.control
+                    && !ev.keystroke.modifiers.alt
+                    && ev.keystroke.key == "f"
+                {
+                    cx.stop_propagation();
+                    s.update(cx, |st, cx| st.terminal_search_open(id, window, cx));
+                    return;
+                }
                 // ⌘V 粘贴(bracketed paste 按 PTY 模式包装)
                 if ev.keystroke.modifiers.platform
                     && ev.keystroke.key == "v"
@@ -313,6 +341,11 @@ pub(crate) fn render(
         );
     }
 
+    // 搜索条(在流内,压网格顶;canvas 为绝对锚定不占流高)
+    if search_open && let Some(input) = s.terminal.search_input.clone() {
+        root = root.child(search_bar(store, id, &input, cx));
+    }
+
     let session = match tab.session.as_ref() {
         Some(session) => session,
         None => {
@@ -348,26 +381,69 @@ pub(crate) fn render(
     let term_fg = gpui_kit::Hsla::from(theme::label(cx));
     let term_bg = gpui_kit::Hsla::from(theme::code(cx));
     let selection_bg = gpui_kit::Hsla::from(theme::brand(cx)).opacity(0.35);
+    let match_bg = gpui_kit::Hsla::from(theme::brand(cx)).opacity(0.22);
+    let current_bg = gpui_kit::Hsla::from(theme::brand(cx)).opacity(0.5);
     // 选区:网格 SelectionRange → 每视口行含端点列区间
     let selection_ranges = content
         .selection
         .as_ref()
         .map(|range| selection_row_ranges(range, offset, s.terminal.rows));
+    // 搜索命中(全部弱染 + 当前命中强染);行内标记顺序 = 普通命中
+    // < 选区 < 当前命中(后位覆盖前位)
+    let search_state = tab.search.as_ref();
     for (row_ix, cells) in lines.iter().enumerate() {
         let cursor_here = cursor_cell
             .filter(|(line, _)| *line == row_ix)
             .map(|(_, col)| col);
-        let selection = selection_ranges
+        let line = row_ix as i32 - offset;
+        let mut row_marks: Vec<CellMark> = Vec::new();
+        if let Some(search) = search_state {
+            for m in &search.matches {
+                if search.current == Some(*m.start()) {
+                    continue;
+                }
+                if let Some((start, end)) = match_row_range(m, line) {
+                    row_marks.push(CellMark {
+                        start,
+                        end,
+                        color: match_bg,
+                    });
+                }
+            }
+        }
+        if let Some((start, end)) = selection_ranges
             .as_ref()
-            .and_then(|ranges| ranges.get(row_ix).copied().flatten());
+            .and_then(|ranges| ranges.get(row_ix).copied().flatten())
+        {
+            row_marks.push(CellMark {
+                start,
+                end,
+                color: selection_bg,
+            });
+        }
+        if let Some(search) = search_state
+            && let Some(current) = search.current
+        {
+            for m in &search.matches {
+                if m.start() != &current {
+                    continue;
+                }
+                if let Some((start, end)) = match_row_range(m, line) {
+                    row_marks.push(CellMark {
+                        start,
+                        end,
+                        color: current_bg,
+                    });
+                }
+            }
+        }
         let (text, runs) = row_runs(
             cells,
             content.colors,
             term_fg,
             term_bg,
             cursor_here,
-            selection,
-            selection_bg,
+            &row_marks,
         );
         if text.is_empty() {
             root = root.child(div().h(px(LINE_HEIGHT)).flex_shrink_0());
@@ -384,6 +460,129 @@ pub(crate) fn render(
         root = root.child(exited_strip(store.clone(), id, cx));
     }
     root.into_any_element()
+}
+
+/// 终端内搜索条:输入 + 上/下导航 + 计数 + 关闭。整条左键按下截停
+/// (不触发终端选区/聚焦);✕ 关闭并把焦点还给终端;Enter/Shift-Enter
+/// 导航在输入订阅里(terminal_search_open)
+fn search_bar(
+    store: &Entity<AppStore>,
+    id: TerminalTabId,
+    input: &Entity<InputState>,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    let count = store
+        .read(cx)
+        .terminal
+        .tab(id)
+        .and_then(|t| t.search.as_ref())
+        .map(|search| {
+            let at = search
+                .current
+                .and_then(|p| search.matches.iter().position(|m| m.start() == &p));
+            match (at, search.matches.len()) {
+                (Some(i), n) => {
+                    crate::kits::i18n::t!("terminal.search_count", cur = i + 1, total = n)
+                        .to_string()
+                }
+                _ => crate::kits::i18n::t!("terminal.search_none").to_string(),
+            }
+        });
+    let s_prev = store.clone();
+    let s_next = store.clone();
+    let s_close = store.clone();
+    div()
+        .flex_shrink_0()
+        .h(px(SEARCH_BAR_H))
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .mb(px(4.))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .h(px(SEARCH_BAR_H))
+                .flex()
+                .items_center()
+                .rounded(px(8.))
+                .border_1()
+                .border_color(theme::border_2(cx))
+                .bg(theme::card(cx))
+                .pl(px(6.))
+                .pr(px(4.))
+                .child(
+                    // XSmall = text_xs 12px,与终端网格字号一致(small 14px
+                    // 相形偏大)
+                    Input::new(input).xsmall().appearance(false),
+                ),
+        )
+        .child(search_nav_btn(&s_prev, id, true, cx))
+        .child(search_nav_btn(&s_next, id, false, cx))
+        .child(
+            div()
+                .flex_shrink_0()
+                .min_w(px(48.))
+                .text_size(px(11.))
+                .text_color(theme::caption(cx))
+                .child(count.unwrap_or_default()),
+        )
+        .child(
+            div()
+                .id("term-search-close")
+                .flex()
+                .size(px(22.))
+                .flex_shrink_0()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.))
+                .cursor_pointer()
+                .text_color(theme::caption(cx))
+                .hover(|st| st.bg(theme::dock(cx)).text_color(theme::label(cx)))
+                .child(fixed(IconName::Close, 12.))
+                .on_click(move |_, window, cx| {
+                    s_close.update(cx, |st, cx| st.terminal_search_close(id, window, cx));
+                }),
+        )
+        .into_any_element()
+}
+
+/// 搜索导航钮(↑ 上一个 / ↓ 下一个)
+fn search_nav_btn(
+    store: &Entity<AppStore>,
+    id: TerminalTabId,
+    up: bool,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    let (icon, aid) = if up {
+        (IconName::ChevronUp, "term-search-prev")
+    } else {
+        (IconName::ChevronDown, "term-search-next")
+    };
+    let s = store.clone();
+    div()
+        .id(SharedString::from(aid))
+        .flex()
+        .size(px(22.))
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.))
+        .cursor_pointer()
+        .text_color(theme::label_2(cx))
+        .hover(|st| st.bg(theme::dock(cx)).text_color(theme::label(cx)))
+        .child(fixed(icon, 13.))
+        .on_click(move |_, _, cx| {
+            s.update(cx, |st, cx| {
+                if up {
+                    st.terminal_search_prev(id, cx);
+                } else {
+                    st.terminal_search_next(id, cx);
+                }
+            });
+        })
+        .into_any_element()
 }
 
 /// 退出态条:提示 + 重开入口(点击 = 杀旧会话并重 spawn)

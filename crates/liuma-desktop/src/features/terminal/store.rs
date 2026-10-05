@@ -15,16 +15,19 @@
 //! 期,切到其他标签状态保留(泵照喂,仅不触发重绘)。
 
 use std::cell::RefCell;
+use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::index::{Column, Direction, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
+use alacritty_terminal::term::search::{RegexIter, RegexSearch};
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
-use gpui_kit::{Context, Entity, FocusHandle};
+use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::{AppContext as _, Context, Entity, FocusHandle};
 
 use crate::shell::panel::TerminalTabId;
 use crate::shell::store::AppStore;
@@ -133,6 +136,15 @@ impl TerminalSession {
     }
 }
 
+/// 终端内搜索态(按标签隔离):查询串 + 全部命中(网格坐标)+ 当前
+/// 命中(以其起点定位,重扫后仍可对上)。命中在导航/改词时全量重扫,
+/// 输出增长导致的漂移随之自愈
+pub(crate) struct TerminalSearch {
+    pub query: String,
+    pub matches: Vec<RangeInclusive<Point>>,
+    pub current: Option<Point>,
+}
+
 /// 一路终端标签:面板 `PanelTab::Terminal(id)` 的状态载体。焦点/泵/
 /// 代次随标签走(会话重建复用焦点句柄),标题为 `None` 时回落 cwd 目录名
 pub(crate) struct TerminalTab {
@@ -152,6 +164,8 @@ pub(crate) struct TerminalTab {
     pub title: Option<String>,
     /// 左键拖选进行中(窗口级 move/up 消费;单击起拖、抬起结算)
     pub drag: bool,
+    /// 终端内搜索态(None = 搜索条关闭)
+    pub search: Option<TerminalSearch>,
     /// 上次左键按下((时刻, 列, 行, 连击序);双击取词/三击取行判定)
     pub last_click: Option<(std::time::Instant, usize, i32, u8)>,
     /// 输出泵任务句柄(存住才在跑:Task drop = 取消)
@@ -172,6 +186,8 @@ pub(crate) struct TerminalStore {
     /// 右键「复制」暂存(菜单弹出时抓取,App 级动作消费——分发期
     /// 无 window 回读实时选区,同聊天选区手法)
     pub pending_copy: Option<String>,
+    /// 搜索条输入(全局一只,重开保留上次查询;订阅 Change/Enter)
+    pub search_input: Option<Entity<InputState>>,
 }
 
 impl TerminalStore {
@@ -183,6 +199,7 @@ impl TerminalStore {
             rows: DEFAULT_ROWS,
             cell: None,
             pending_copy: None,
+            search_input: None,
         }
     }
 
@@ -213,6 +230,7 @@ impl TerminalStore {
                 generation: 0,
                 title: None,
                 drag: false,
+                search: None,
                 last_click: None,
                 pump: None,
             });
@@ -638,6 +656,182 @@ impl AppStore {
         }
         cx.notify();
     }
+
+    /// 打开搜索条(cmd-f):懒建输入(全局一只,重开保留查询)并聚焦,
+    /// 标签搜索态就位(有查询则立即重扫)
+    pub(crate) fn terminal_search_open(
+        &mut self,
+        id: TerminalTabId,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.terminal.search_input.is_none() {
+            let input = cx.new(|cx| {
+                InputState::new(window, cx).placeholder(crate::kits::i18n::t!("terminal.search_ph"))
+            });
+            cx.subscribe(&input, |this, _i, event: &InputEvent, cx| {
+                let Some(id) = this.terminal_active_id() else {
+                    return;
+                };
+                match event {
+                    InputEvent::Change => {
+                        let query = this
+                            .terminal
+                            .search_input
+                            .as_ref()
+                            .map(|i| i.read(cx).value().to_string())
+                            .unwrap_or_default();
+                        this.terminal_search_query(id, &query, cx);
+                    }
+                    InputEvent::PressEnter { shift, .. } => {
+                        if *shift {
+                            this.terminal_search_prev(id, cx);
+                        } else {
+                            this.terminal_search_next(id, cx);
+                        }
+                    }
+                    _ => {}
+                }
+            })
+            .detach();
+            self.terminal.search_input = Some(input);
+        }
+        if let Some(input) = &self.terminal.search_input {
+            input.update(cx, |i, cx| i.focus(window, cx));
+        }
+        // 标签态就位:沿用输入框现值(重开 = 上次查询立即重扫)
+        let query = self
+            .terminal
+            .search_input
+            .as_ref()
+            .map(|i| i.read(cx).value().to_string())
+            .unwrap_or_default();
+        self.terminal.ensure_record(id, cx);
+        if let Some(tab) = self.terminal.tab_mut(id) {
+            let changed = tab
+                .search
+                .as_ref()
+                .is_none_or(|search| search.query != query);
+            let search = tab.search.get_or_insert(TerminalSearch {
+                query: String::new(),
+                matches: Vec::new(),
+                current: None,
+            });
+            search.query = query.clone();
+            if changed && !query.is_empty() {
+                self.terminal_search_scan(id, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// 关闭搜索条(✕):清标签搜索态,焦点还给终端
+    pub(crate) fn terminal_search_close(
+        &mut self,
+        id: TerminalTabId,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(tab) = self.terminal.tab_mut(id) {
+            tab.search = None;
+        }
+        if let Some(handle) = self.terminal.tab(id).map(|t| t.focus.clone()) {
+            window.focus(&handle, cx);
+        }
+        cx.notify();
+    }
+
+    /// 查询词更新(输入 Change;空词清命中)
+    pub(crate) fn terminal_search_query(
+        &mut self,
+        id: TerminalTabId,
+        query: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.terminal.tab_mut(id) else {
+            return;
+        };
+        let Some(search) = tab.search.as_mut() else {
+            return;
+        };
+        search.query = query.to_string();
+        self.terminal_search_scan(id, cx);
+    }
+
+    /// 下一个命中(Enter;无当前 = 首个,尾部回卷)
+    pub(crate) fn terminal_search_next(&mut self, id: TerminalTabId, cx: &mut Context<Self>) {
+        self.terminal_search_step(id, 1, cx);
+    }
+
+    /// 上一个命中(Shift-Enter;无当前 = 末个,头部回卷)
+    pub(crate) fn terminal_search_prev(&mut self, id: TerminalTabId, cx: &mut Context<Self>) {
+        self.terminal_search_step(id, -1, cx);
+    }
+
+    /// 命中导航步进:全量重扫(输出增长漂移自愈),按方向取相邻命中,
+    /// 滚动定位并渲染
+    fn terminal_search_step(&mut self, id: TerminalTabId, dir: i32, cx: &mut Context<Self>) {
+        self.terminal_search_scan(id, cx);
+        let Some(tab) = self.terminal.tab_mut(id) else {
+            return;
+        };
+        let Some(search) = tab.search.as_mut() else {
+            return;
+        };
+        if search.matches.is_empty() {
+            return;
+        }
+        let at = search
+            .current
+            .and_then(|point| search.matches.iter().position(|m| m.start() == &point));
+        let len = search.matches.len() as i32;
+        let next = match at {
+            Some(i) => (i as i32 + dir).rem_euclid(len) as usize,
+            None if dir > 0 => 0,
+            None => len as usize - 1,
+        };
+        let point = *search.matches[next].start();
+        search.current = Some(point);
+        if let Some(session) = tab.session.as_mut() {
+            session.term.scroll_to_point(point);
+        }
+        cx.notify();
+    }
+
+    /// 全量重扫当前查询(命中表 + 当前命中定位滚动)。会话/搜索态缺失
+    /// 或空词时只清命中
+    fn terminal_search_scan(&mut self, id: TerminalTabId, cx: &mut Context<Self>) {
+        let Some(tab) = self.terminal.tab_mut(id) else {
+            return;
+        };
+        let Some(search) = tab.search.as_mut() else {
+            return;
+        };
+        let query = search.query.clone();
+        let current = search.current;
+        let Some(session) = tab.session.as_ref() else {
+            return;
+        };
+        let matches = if query.is_empty() {
+            Vec::new()
+        } else {
+            scan_matches(&session.term, &query)
+        };
+        let Some(search) = tab.search.as_mut() else {
+            return;
+        };
+        search.matches = matches;
+        // 当前命中若仍在新命中表里则保持,否则落首命中
+        if !search.matches.iter().any(|m| Some(*m.start()) == current) {
+            search.current = search.matches.first().map(|m| *m.start());
+        }
+        if let Some(point) = search.current
+            && let Some(session) = tab.session.as_mut()
+        {
+            session.term.scroll_to_point(point);
+        }
+        cx.notify();
+    }
 }
 
 /// 输出泵:PTY 增量块 → VT 状态机,合帧触发重绘;EOF = 子进程退出。
@@ -706,4 +900,33 @@ async fn s_terminal_pump(
             cx.notify();
         }
     });
+}
+
+/// 查询词 → 正则模式:按字面处理(元字符转义)+ 忽略大小写
+fn search_pattern(query: &str) -> String {
+    let mut pattern = String::with_capacity(query.len() * 2 + 4);
+    pattern.push_str("(?i)");
+    for ch in query.chars() {
+        if "\\.+*?()|[]{}^$#&-~".contains(ch) {
+            pattern.push('\\');
+        }
+        pattern.push(ch);
+    }
+    pattern
+}
+
+/// 全网格命中扫描(含滚回;网格坐标 0 = 屏顶,滚回为**负行**)。
+/// 正则 DFA,DFA 尺寸上限内的查询毫秒级
+fn scan_matches(term: &Term<PtyEventProxy>, query: &str) -> Vec<RangeInclusive<Point>> {
+    let Ok(mut regex) = RegexSearch::new(&search_pattern(query)) else {
+        return Vec::new();
+    };
+    let screen_lines = term.screen_lines() as i32;
+    let history = term.total_lines() as i32 - screen_lines;
+    let start = Point::new(Line(-history), Column(0));
+    let end = Point::new(
+        Line(screen_lines - 1),
+        Column(term.columns().saturating_sub(1)),
+    );
+    RegexIter::new(start, end, Direction::Right, term, &mut regex).collect()
 }

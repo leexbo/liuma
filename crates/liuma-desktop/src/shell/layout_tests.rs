@@ -14534,6 +14534,165 @@ fn panel_terminal_selection_copy(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 终端内搜索:开条(输入聚焦)+ 查询命中(计数、滚动定位、当前命中)
+/// + next/prev 步进与回卷 + 关闭清态。PTY 面用例,前提与仲裁惯例同
+/// panel_terminal_lifecycle
+#[gpui_kit::test]
+fn panel_terminal_search(cx: &mut TestAppContext) {
+    let zsh = std::path::Path::new("/bin/zsh").exists();
+    let bash = std::path::Path::new("/bin/bash").exists();
+    assert!(zsh || bash, "测试环境应至少有 /bin/zsh 或 /bin/bash");
+    let (store, mut wcx, root) = menu_harness(cx, "terminal-search");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut App| {});
+        cx.run_until_parked();
+    };
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.toggle_panel(cx);
+            st.open_panel_tab(panel::PanelTab::Terminal(panel::TerminalTabId::NEW), cx);
+        });
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        cx.run_until_parked();
+        let ready = cx.update(|app| {
+            store.update(app, |st, _| {
+                let id = st.terminal_active_id();
+                st.terminal_active_session().is_some()
+                    && !id
+                        .and_then(|id| st.terminal.tab(id))
+                        .is_some_and(|t| t.spawning)
+            })
+        });
+        if ready {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let id = cx
+        .update(|app| store.update(app, |st, _| st.terminal_active_id()))
+        .expect("终端标签应已激活");
+    redraw(cx, &mut wcx);
+    // 300 行输出(远超任何测试视口):needle-2 的命中远在滚回里
+    wcx.simulate_input("for i in $(seq 1 300); do echo needle-$i; done");
+    wcx.simulate_keystrokes("enter");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        cx.run_until_parked();
+        let hit = cx.update(|app| {
+            store.update(app, |st, _| {
+                st.terminal_active_session()
+                    .map(|s| s.visible_text().iter().any(|l| l.contains("needle-300")))
+                    .unwrap_or(false)
+            })
+        });
+        if hit || std::time::Instant::now() > deadline {
+            assert!(hit, "300 行输出应在时限内进网格");
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    redraw(cx, &mut wcx);
+    // 开搜索条 + 查询:needle-2 命中 11 条(自身与 20..=29)
+    wcx.update(|window, app| {
+        store.update(app, |st, cx| st.terminal_search_open(id, window, cx));
+    });
+    cx.run_until_parked();
+    cx.update(|app| {
+        store.update(app, |st, cx| st.terminal_search_query(id, "needle-2", cx));
+    });
+    cx.run_until_parked();
+    let (count, current) = cx.update(|app| {
+        store.update(app, |st, _| {
+            st.terminal
+                .tab(id)
+                .and_then(|t| t.search.as_ref())
+                .map(|s| (s.matches.len(), s.current))
+                .unwrap_or((0, None))
+        })
+    });
+    assert_eq!(
+        count, 111,
+        "needle-2 应命中自身、20..=29 与 200..=299 共 111 行"
+    );
+    let first = cx.update(|app| {
+        store.update(app, |st, _| {
+            st.terminal
+                .tab(id)
+                .and_then(|t| t.search.as_ref())
+                .and_then(|s| s.matches.first().map(|m| *m.start()))
+        })
+    });
+    assert_eq!(current, Some(first.expect("命中非空")), "开查应定位首命中");
+    // 首命中远在视口上方:定位后必进滚回(offset > 0)
+    let offset = cx.update(|app| {
+        store.update(app, |st, _| {
+            st.terminal_active_session()
+                .map(|s| s.term.renderable_content().display_offset)
+                .unwrap_or(0)
+        })
+    });
+    assert!(offset > 0, "搜索定位应滚向首命中;offset={offset}");
+    // next 前进 → prev 回退 → 11 次 next 回卷回首
+    cx.update(|app| store.update(app, |st, cx| st.terminal_search_next(id, cx)));
+    let second = cx.update(|app| {
+        store.update(app, |st, _| {
+            st.terminal
+                .tab(id)
+                .and_then(|t| t.search.as_ref())
+                .and_then(|s| s.matches.get(1).map(|m| *m.start()))
+        })
+    });
+    let moved = cx.update(|app| {
+        store.update(app, |st, _| {
+            st.terminal
+                .tab(id)
+                .and_then(|t| t.search.as_ref())
+                .and_then(|s| s.current)
+        })
+    });
+    assert_eq!(moved, second, "next 应前进到第二命中");
+    cx.update(|app| store.update(app, |st, cx| st.terminal_search_prev(id, cx)));
+    let back = cx.update(|app| {
+        store.update(app, |st, _| {
+            st.terminal
+                .tab(id)
+                .and_then(|t| t.search.as_ref())
+                .and_then(|s| s.current)
+        })
+    });
+    assert_eq!(back, Some(first.expect("命中非空")), "prev 应回退到首命中");
+    for _ in 0..111 {
+        cx.update(|app| store.update(app, |st, cx| st.terminal_search_next(id, cx)));
+    }
+    let wrapped = cx.update(|app| {
+        store.update(app, |st, _| {
+            st.terminal
+                .tab(id)
+                .and_then(|t| t.search.as_ref())
+                .and_then(|s| s.current)
+        })
+    });
+    assert_eq!(
+        wrapped,
+        Some(first.expect("命中非空")),
+        "111 次 next 应回卷回首命中"
+    );
+    // 关闭:搜索态清空,焦点还给终端
+    wcx.update(|window, app| {
+        store.update(app, |st, cx| st.terminal_search_close(id, window, cx));
+    });
+    let closed = cx.update(|app| {
+        store.update(app, |st, _| {
+            st.terminal.tab(id).is_some_and(|t| t.search.is_none())
+        })
+    });
+    assert!(closed, "关闭后搜索态应清空");
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 用户主题热装载 → 设置页主题下拉即时重建(sync_theme_selects 的
 /// 签名判据)。回归锁:此前两个下拉实体挂窗时只建一次,用户主题装进
 /// registry 后下拉永不出现新选项(真机验证发现)

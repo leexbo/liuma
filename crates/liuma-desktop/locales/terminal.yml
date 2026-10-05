@@ -19,3 +19,15 @@ terminal:
   copy_menu:
     zh-CN: "复制"
     en: "Copy"
+
+  search_ph:
+    zh-CN: "搜索"
+    en: "Search"
+
+  search_count:
+    zh-CN: "%{cur}/%{total}"
+    en: "%{cur} of %{total}"
+
+  search_none:
+    zh-CN: "无结果"
+    en: "No results"
