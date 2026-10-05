@@ -5202,7 +5202,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "liuma"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -5220,7 +5220,7 @@ dependencies = [
 
 [[package]]
 name = "liuma-agent-loop"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "liuma-attachment",
  "liuma-compaction",
@@ -5234,7 +5234,7 @@ dependencies = [
 
 [[package]]
 name = "liuma-app"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "liuma-agent-loop",
@@ -5257,7 +5257,7 @@ dependencies = [
 
 [[package]]
 name = "liuma-attachment"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hex",
  "image",
@@ -5269,7 +5269,7 @@ dependencies = [
 
 [[package]]
 name = "liuma-compaction"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "liuma-session",
  "serde_json",
@@ -5277,7 +5277,7 @@ dependencies = [
 
 [[package]]
 name = "liuma-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -5307,7 +5307,7 @@ dependencies = [
 
 [[package]]
 name = "liuma-decision"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hex",
  "liuma-agent-loop",
@@ -5323,7 +5323,7 @@ dependencies = [
 
 [[package]]
 name = "liuma-desktop"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -5357,7 +5357,7 @@ dependencies = [
 
 [[package]]
 name = "liuma-example-tool"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde_json",
  "wit-bindgen 0.62.0",
@@ -5365,7 +5365,7 @@ dependencies = [
 
 [[package]]
 name = "liuma-hooks"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "liuma-agent-loop",
  "liuma-sandbox",
@@ -5379,7 +5379,7 @@ dependencies = [
 
 [[package]]
 name = "liuma-host"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures",
  "hex",
@@ -5404,7 +5404,7 @@ dependencies = [
 
 [[package]]
 name = "liuma-llm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-stream",
  "base64 0.23.1",
@@ -5424,7 +5424,7 @@ dependencies = [
 
 [[package]]
 name = "liuma-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "hex",
@@ -5441,7 +5441,7 @@ dependencies = [
 
 [[package]]
 name = "liuma-plan"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "liuma-agent-loop",
  "liuma-prompt",
@@ -5452,14 +5452,14 @@ dependencies = [
 
 [[package]]
 name = "liuma-prompt"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "liuma-sandbox"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "landlock",
  "libc",
@@ -5472,7 +5472,7 @@ dependencies = [
 
 [[package]]
 name = "liuma-sandbox-winacl"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.20",
@@ -5481,7 +5481,7 @@ dependencies = [
 
 [[package]]
 name = "liuma-session"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5491,7 +5491,7 @@ dependencies = [
 
 [[package]]
 name = "liuma-skill"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hex",
  "liuma-agent-loop",
@@ -5504,7 +5504,7 @@ dependencies = [
 
 [[package]]
 name = "liuma-tools"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "grep-regex",
  "grep-searcher",
@@ -5522,7 +5522,7 @@ dependencies = [
 
 [[package]]
 name = "liuma-wit"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "liuma-host",
  "liuma-session",
