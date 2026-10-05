@@ -1493,7 +1493,8 @@ pub(crate) fn session_menu_card(
         store.clone(),
     );
     let (p_arch, p_fork, p_pin, p_rename) = (pop.clone(), pop.clone(), pop.clone(), pop.clone());
-    div()
+    let s_enter = store.clone();
+    let main = div()
         .id("session-menu-card")
         .debug_selector(|| "session-menu-card".to_string())
         .v_flex()
@@ -1570,68 +1571,76 @@ pub(crate) fn session_menu_card(
             cx,
         ))
         .child(menu_divider(cx))
-        .child(export_group(store, &export_store, pop.clone(), cx))
+        // 导出入口行(右缘箭头 = 有级联子卡;同 composer 模型选择行)
+        .child(
+            div()
+                .id("menu-export")
+                .debug_selector(|| "menu-export".to_string())
+                .flex()
+                .h(px(26.))
+                .items_center()
+                .gap(px(6.))
+                .px(px(8.))
+                .rounded(px(6.))
+                .cursor_pointer()
+                .hover(|st| st.bg(theme::dock(cx)))
+                .text_size(px(12.))
+                .text_color(theme::label_2(cx))
+                .on_click(move |_, _, cx| {
+                    s_enter.update(cx, |st, cx| {
+                        st.sessions.export_menu_open = true;
+                        cx.notify();
+                    });
+                })
+                .child(fixed(LiumaIcon::Download, 13.))
+                .child(t!("sessions.export"))
+                .child(div().flex_1())
+                .child(fixed(IconName::ChevronRight, 12.).text_color(theme::caption(cx))),
+        );
+    // ── 级联子卡(导出;并排主卡左侧)──
+    //
+    // 同 composer 模型子卡约束:库 popover 内容根带 occlude() +
+    // on_mouse_down_out,子卡悬到内容盒外会被判成外点 → dismiss 卸载
+    // 整棵子树。并排进盒内 = 根级渲染 + 锚定计算 + 遮蔽打断同时成立。
+    // 层级态受控(`sessions.export_menu_open`,菜单开/收时复位)
+    let sub = store.read(cx).sessions.export_menu_open;
+    if sub {
+        div()
+            .flex()
+            .items_end()
+            .gap(px(8.))
+            .child(export_submenu_card(&export_store, pop.clone(), cx))
+            .child(main)
+            .into_any_element()
+    } else {
+        main.into_any_element()
+    }
 }
 
-/// 菜单组分隔线
-fn menu_divider(cx: &App) -> gpui_kit::AnyElement {
-    div()
-        .h(px(1.))
-        .mx(px(8.))
-        .my(px(3.))
-        .bg(theme::border(cx))
-        .into_any_element()
-}
-
-/// 「导出」二级菜单组:父项点击展开(不收菜单),子项执行后随菜单
-/// 一并收起。展开态受控(`sessions.export_menu_open`,菜单开/收时复位)
-fn export_group(
-    store: &Entity<AppStore>,
+/// 导出级联子卡:标题行 + ZIP / Markdown 两项;选中即执行并随菜单收起
+fn export_submenu_card(
     s_export: &Entity<AppStore>,
     pop: Entity<PopoverState>,
     cx: &App,
 ) -> gpui_kit::AnyElement {
-    let open = store.read(cx).sessions.export_menu_open;
-    let s_toggle = store.clone();
-    let mut col = div().v_flex().gap(px(2.)).child(
-        div()
-            .id("menu-export")
-            .debug_selector(|| "menu-export".to_string())
-            .flex()
-            .h(px(26.))
-            .items_center()
-            .gap(px(6.))
-            .px(px(8.))
-            .rounded(px(6.))
-            .cursor_pointer()
-            .hover(|st| st.bg(theme::dock(cx)))
-            .text_size(px(12.))
-            .text_color(theme::label_2(cx))
-            .on_click(move |_, _, cx| {
-                s_toggle.update(cx, |st, cx| {
-                    st.sessions.export_menu_open = !st.sessions.export_menu_open;
-                    cx.notify();
-                });
-            })
-            // 图标 + 文字 + 右缘展开指示(展开态旋转)
-            .child(fixed(LiumaIcon::Download, 13.))
-            .child(t!("sessions.export"))
-            .child(
-                fixed(IconName::ChevronRight, 12.)
-                    .text_color(theme::caption(cx))
-                    .rotate(if open {
-                        gpui_kit::Percentage(0.25)
-                    } else {
-                        gpui_kit::Percentage(0.)
-                    }),
-            ),
-    );
-    if open {
-        let (s_zip, s_md, p_zip, p_md) =
-            (s_export.clone(), s_export.clone(), pop.clone(), pop.clone());
-        col = col
-            .child(
-                menu_item(
+    let (s_zip, s_md, p_zip, p_md) = (s_export.clone(), s_export.clone(), pop.clone(), pop.clone());
+    div()
+        .id("export-submenu")
+        .debug_selector(|| "export-submenu".to_string())
+        .flex_shrink_0()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            div()
+                .min_w(px(132.))
+                .v_flex()
+                .gap(px(2.))
+                .rounded(px(10.))
+                .border_1()
+                .border_color(theme::border(cx))
+                .bg(theme::layer(cx))
+                .p(px(4.))
+                .shadow_md()
+                .child(menu_item(
                     "menu-export-log",
                     t!("sessions.export_log"),
                     fixed(LiumaIcon::FileArchive, 13.),
@@ -1646,11 +1655,8 @@ fn export_group(
                         });
                     },
                     cx,
-                )
-                .pl(px(20.)),
-            )
-            .child(
-                menu_item(
+                ))
+                .child(menu_item(
                     "menu-export-markdown",
                     t!("sessions.export_markdown"),
                     fixed(IconName::FileText, 13.),
@@ -1665,11 +1671,19 @@ fn export_group(
                         });
                     },
                     cx,
-                )
-                .pl(px(20.)),
-            );
-    }
-    col.into_any_element()
+                )),
+        )
+        .into_any_element()
+}
+
+/// 菜单组分隔线
+fn menu_divider(cx: &App) -> gpui_kit::AnyElement {
+    div()
+        .h(px(1.))
+        .mx(px(8.))
+        .my(px(3.))
+        .bg(theme::border(cx))
+        .into_any_element()
 }
 
 /// 菜单项(图标 + 文字)
