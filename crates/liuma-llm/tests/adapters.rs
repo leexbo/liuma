@@ -251,6 +251,20 @@ fn openai_default_body_error_nested_shape() {
 // Anthropic Messages
 // ============================================================
 
+/// anthropic 面 max_tokens:默认给满(DEFAULT_MAX_TOKENS);厂商参数
+/// 上限更低的按模型覆写(glm → 其文档上限)
+#[test]
+fn anthropic_max_tokens_default_and_overrides() {
+    use liuma_llm::adapters::DEFAULT_MAX_TOKENS;
+    use liuma_llm::adapters::ProviderAdapter as _;
+    use liuma_llm::providers::anthropic::AnthropicMessagesAdapter;
+    let a = AnthropicMessagesAdapter::default();
+    assert_eq!(a.max_tokens("glm-5.3-flashx"), 128_000);
+    assert_eq!(a.max_tokens("deepseek-flash"), 256_000);
+    assert_eq!(a.max_tokens("qwen3.8-max"), DEFAULT_MAX_TOKENS);
+    assert_eq!(DEFAULT_MAX_TOKENS, 256_000);
+}
+
 /// anthropic 全量 wire 锁:system 顶层、max_tokens、扁平 tools、
 /// assistant → tool_use 块、tool → tool_result 块、鉴权头与端点
 #[tokio::test]
@@ -279,7 +293,7 @@ async fn anthropic_request_shape_and_auth() {
         body["system"].is_array() || body["system"].is_string(),
         "{body}"
     );
-    assert!(body["max_tokens"].as_u64() == Some(4096), "{body}");
+    assert!(body["max_tokens"].as_u64() == Some(256_000), "{body}");
     assert_eq!(body["tools"][0]["name"], "bash");
     assert!(body["tools"][0].get("input_schema").is_some(), "{body}");
     let msgs = body["messages"].as_array().unwrap();

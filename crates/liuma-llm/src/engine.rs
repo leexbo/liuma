@@ -258,7 +258,7 @@ pub(crate) async fn stream(
             }
         }
         RigFamily::Anthropic => {
-            request.max_tokens = Some(u64::from(adapter.max_tokens()));
+            request.max_tokens = Some(u64::from(adapter.max_tokens(&header.model)));
             let mut cfg = AnthropicConfig::new(config.api_key.clone());
             cfg.base_url = config.base_url.trim_end_matches('/').to_string();
             let provider = cfg.connect(bridge);

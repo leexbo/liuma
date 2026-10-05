@@ -19,6 +19,15 @@ pub struct AnthropicMessagesAdapter {
     pub behaviors: ProviderBehaviors,
 }
 
+/// 按厂商的 max_tokens 覆写(模型名小写子串,首条命中;厂商参数
+/// 上限低于 [`DEFAULT_MAX_TOKENS`] 时发超限值会被参数校验拒绝。
+/// 值贴着厂商上限留出余量,不顶格)
+pub const MAX_TOKENS_OVERRIDES: &[(&str, u32)] = &[
+    ("glm", 128_000),
+    // 与默认同值,显式声明厂商口径
+    ("deepseek", 256_000),
+];
+
 impl ProviderAdapter for AnthropicMessagesAdapter {
     fn name(&self) -> &'static str {
         "anthropic-messages"
@@ -28,6 +37,14 @@ impl ProviderAdapter for AnthropicMessagesAdapter {
     }
     fn behaviors(&self) -> &ProviderBehaviors {
         &self.behaviors
+    }
+    fn max_tokens(&self, model: &str) -> u32 {
+        let m = model.to_ascii_lowercase();
+        MAX_TOKENS_OVERRIDES
+            .iter()
+            .find(|(needle, _)| m.contains(needle))
+            .map(|(_, cap)| *cap)
+            .unwrap_or(crate::adapters::DEFAULT_MAX_TOKENS)
     }
 }
 

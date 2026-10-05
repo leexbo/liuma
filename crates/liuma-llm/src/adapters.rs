@@ -47,6 +47,10 @@ pub enum RigFamily {
     Anthropic,
 }
 
+/// anthropic 面 max_tokens 默认上限:预算须覆盖「推理 + 长输出」,
+/// 过小会被推理流整段吃掉、最终消息文本为零
+pub const DEFAULT_MAX_TOKENS: u32 = 256_000;
+
 /// provider 方言差异声明(连接语义之外的全部差异)。
 ///
 /// 方法实现只读方言持有的 [`ProviderBehaviors`] 数据——新增差异种类
@@ -69,8 +73,12 @@ pub trait ProviderAdapter: Send + Sync {
         .image
     }
     /// anthropic 形态的必填 max_tokens(其余家族不发该键)
-    fn max_tokens(&self) -> u32 {
-        4096
+    /// anthropic 面 wire 必填项(官方契约;`/anthropic` 兼容端点同形)。
+    /// 预算须覆盖「推理 + 长输出」——默认给满(源口径 256k),厂商
+    /// 参数上限更低时按模型覆写
+    fn max_tokens(&self, model: &str) -> u32 {
+        let _ = model;
+        DEFAULT_MAX_TOKENS
     }
     /// 200 + 非 SSE 的 JSON 错误体归类(None = 非错误体,按空响应处理)
     fn body_error(&self, body: &str) -> Option<TransportError> {
