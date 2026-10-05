@@ -1330,6 +1330,11 @@ impl AppStore {
     /// 发送(queue 模式;命令类 `/plan` 不做乐观 running——宿主短路
     /// 无 turn 结束帧复位,乐观会永久卡「停止」)
     pub fn send(&mut self, text: &str, cx: &mut Context<Self>) {
+        // 子会话只读门(与 composer UI 门同防线):subagent 会话的槽位
+        // driver 不认领队列(单写者归驻留循环),输入只会永挂假死
+        if self.current_is_subagent() {
+            return;
+        }
         let mut text_owned = text.to_string();
         // 命令行态:命令 + 参数拼接为 /name args,走既有文本路径(命令
         // 短路、命令拒图片、命令不乐观 running 等语义全在下游)。先于

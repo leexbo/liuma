@@ -4692,10 +4692,14 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 .set_durability_sink(durability_sink(backend.clone()));
             log
         };
-        // 冷加载修夏:此刻 pump/driver 未 spawn,单写者;OnceLock 保证每
+        // 冷加载修复:此刻 pump/driver 未 spawn,单写者;OnceLock 保证每
         // 会话每进程只跑一次。悬挂 tool/call(重启遗留)在此收口成
-        // isError result + turn/end,桌面投影/轨迹/模型三层自然一致
-        repair_dangling_calls(&log);
+        // isError result + turn/end,桌面投影/轨迹/模型三层自然一致。
+        // 修复门:驻留活着(live_children 已认领)的子会话跳过——文件
+        // 只归驻留引擎写,attach 侧合成 = 双写(seq 冲突,装载治愈丢事件)
+        if !self.live_children.lock_recover().contains(id) {
+            repair_dangling_calls(&log);
+        }
         let cancel = CancelToken::new();
         // 决策模型运行面(设置文件 decision 区启用才有;唯一配置面):
         // decide 工具挂载 + 哨兵/守卫/评审员场景共用一份端口与配置
@@ -4834,6 +4838,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 Some(Arc::new(PlanReviewPortImpl(self_arc.clone()))),
                 Some(Arc::new(SessionFactoryImpl(self_arc.clone()))),
                 Some(Arc::new(SettlementNoticeImpl(self_arc.clone()))),
+                Some(Arc::new(AddressingPortImpl(self_arc.clone()))),
                 Some(id),
                 Some(Arc::new(liuma_tools::subagent::SubagentBridge {
                     jobs: {
@@ -4885,12 +4890,44 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         };
         let steer_buf = Arc::new(Mutex::new(steer_items));
         session.set_steer_buf(Arc::clone(&steer_buf));
+        // 离线收件箱转存(仅主会话;subagent-origin 的收件箱由驻留循环
+        // 冲账,且受 driver 认领门挡):未消费 pending 逐条转 steer,
+        // source 补 inboxId——turn 收尾时据此落 consumed(输入落档后
+        // 紧跟;崩溃窗口 = 重投一次,at-least-once)
+        let mut inbox_replayed = 0usize;
+        if !subagent_session {
+            let inbox: Vec<(String, String, Option<Value>)> = {
+                let Ok(l) = session_log.lock() else {
+                    return Err(RpcError::internal("log 锁中毒"));
+                };
+                liuma_tools::subagent::extract_inbox_pending(&l)
+            };
+            for (pid, text, source) in inbox {
+                let mut src = source
+                    .filter(|v| v.is_object())
+                    .unwrap_or_else(|| json!({}));
+                src["inboxId"] = json!(pid);
+                steer_buf.lock_recover().push_back(SteerInput {
+                    id: format!("steer-{pid}"),
+                    text,
+                    images: Vec::new(),
+                    files: Vec::new(),
+                    source: Some(src),
+                });
+                inbox_replayed += 1;
+            }
+        }
         let qs = Arc::new(Mutex::new(QueueState {
             pending,
             steer: steer_buf,
             running: false,
         }));
         let wake = Arc::new(Notify::new());
+        // 收件箱转存条目需要显式唤醒(driver 在 wake/driver_cmd 上等待,
+        // 装配期无其他触发源)
+        if inbox_replayed > 0 {
+            wake.notify_one();
+        }
         let (queue_tx, queue_rx) = mpsc::unbounded_channel::<Job>();
         let (driver_cmd, driver_rx) = mpsc::unbounded_channel::<DriverCmd>();
         let inner = SlotInner {
@@ -4952,6 +4989,29 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
     /// 多词 = OR(turso MATCH 语义);单字/前缀语法不命中(ngram 限制,
     /// 见 liuma-host search 模块头)
     pub async fn search_sessions(
+        &self,
+        query: &str,
+        limit: usize,
+        session: Option<&str>,
+    ) -> Result<Value, RpcError> {
+        // 旧版 turso 的 FTS 索引格式不被当前版本识别(CREATE INDEX IF
+        // NOT EXISTS 跳过校验,首次写入/查询才炸):索引是纯派生物
+        //(事实源 = 各会话 JSONL),删库重建一次再检索
+        match self.search_sessions_inner(query, limit, session).await {
+            Ok(v) => Ok(v),
+            Err(e) if e.message.contains("older version of Turso") => {
+                *self.search.lock().await = None;
+                let path = self.sessions_root.join("search.db");
+                for suffix in ["", "-wal", "-shm"] {
+                    let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+                }
+                self.search_sessions_inner(query, limit, session).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn search_sessions_inner(
         &self,
         query: &str,
         limit: usize,
@@ -6346,19 +6406,243 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             .and_then(|slot| slot.inner.get().map(|inner| inner.cancel.clone()))
     }
 
-    /// 子代理结算通知入队:投 Job::Notice 到父会话泵通道(泵走
-    /// steer 落档 + 唤醒——父空闲=驱动弹出作 turn 输入,忙碌=引擎 step
-    /// 边界认领,followup/steer 双语义)。父会话未附着/已终结 →
-    /// 静默丢弃(父不再存活不是错误,子会话自身即持久记录)。
+    /// 子代理结算通知入队:投递阶梯内层的薄包装(结算 = 固定文本的
+    /// 送达,计划 peer-agent-messaging §1.1)。**不过代理间权限**:
+    /// 通知回投是宿主内部通路(子代理结算 → 父 / shell job → 发起
+    /// 会话自己),血缘由通路自身保证;父未附着时经第 4 步落 pending
+    /// (回归锁:不再静默丢)。
     pub fn notify_subagent_settled(&self, parent_session: &str, text: String, source: Value) {
-        let Some(slot) = self.get_slot(parent_session) else {
-            return;
+        let sender = source["senderSessionId"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let _ = self.deliver_ladder(&sender, parent_session, &text, source);
+    }
+
+    /// 对等消息投递阶梯(计划 §1.1):
+    /// ① 权限:归属链三跳(父/同父兄弟/直属子);
+    /// ② 驻留活体:全库 jobs 源扫描——running = steer(step 边界认领)、
+    ///    idle = 续话开新 turn(source 随 ChildMsg 染色);
+    /// ③ 装配态主会话(非 subagent-origin):Job::Notice 入泵通道;
+    /// ④ 离线:目标日志落 `agent/inbox/pending`,活体回归时冲账
+    ///    (attach 转存 steer / 驻留循环前置输入)。
+    /// 失败 = 结构化错误文本(调用方 isError 呈现 = 发送方审计)。
+    pub fn send_agent_message(
+        &self,
+        sender: &str,
+        target: &str,
+        text: &str,
+        source: Value,
+    ) -> Result<liuma_tools::DeliveryKind, String> {
+        // ① 权限(归属链)
+        self.assert_addressable(sender, target)?;
+        self.deliver_ladder(sender, target, text, source)
+    }
+
+    /// 阶梯内层(②③④,免权限):代理间消息经 send_agent_message 过①后
+    /// 进入;通知回投(子代理结算 → 父 / shell job → 发起会话自己)直接
+    /// 进入——血缘由通路自身保证,不重复校验。
+    fn deliver_ladder(
+        &self,
+        sender: &str,
+        target: &str,
+        text: &str,
+        source: Value,
+    ) -> Result<liuma_tools::DeliveryKind, String> {
+        // ② 驻留活体:全库 jobs 源(查找域 = 全库,非本注册表)。
+        // 先在锁内收集强引用再投递:deliver 的观察回调会重入
+        // jobs_snapshot → jobs_sources 锁,持锁调用 = 死锁
+        let registries: Vec<_> = {
+            let sources = self.jobs_sources.lock_recover();
+            sources.values().filter_map(|w| w.upgrade()).collect()
         };
-        let Some(inner) = slot.inner.get() else {
-            return;
+        for registry in &registries {
+            match liuma_tools::subagent::deliver_to_registry_record(
+                registry,
+                target,
+                text,
+                source.clone(),
+            ) {
+                Ok(kind) => return Ok(kind),
+                Err(e) if e.ends_with("not found") => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        // ③ 装配态主会话(subagent-origin 会话的驱动权专属驻留循环,
+        // 不入槽位队列——一律落 ④)
+        let target_is_subagent = {
+            let dir = self
+                .slot_path(target)
+                .parent()
+                .unwrap_or(&self.slot_path(target))
+                .to_path_buf();
+            read_session_header(&dir).1.as_deref() == Some("subagent")
         };
-        let id = Uuid::now_v7().to_string();
-        let _ = inner.queue_tx.send(Job::Notice { id, text, source });
+        if !target_is_subagent
+            && let Some(slot) = self.get_slot(target)
+            && let Some(inner) = slot.inner.get()
+        {
+            let id = Uuid::now_v7().to_string();
+            let _ = inner.queue_tx.send(Job::Notice {
+                id,
+                text: text.to_string(),
+                source,
+            });
+            return Ok(liuma_tools::DeliveryKind::Noticed);
+        }
+        // ④ 离线收件箱
+        self.append_inbox_pending(target, sender, text, source)?;
+        Ok(liuma_tools::DeliveryKind::Queued)
+    }
+
+    /// sender 的可发清单(list_agents 数据背书):直属子(活体 + 持久
+    /// 血缘)、同父兄弟、直接父。状态:running/idle(活体)或 offline。
+    pub fn agent_roster(&self, sender: &str) -> Vec<liuma_tools::RosterEntry> {
+        let mut out: Vec<liuma_tools::RosterEntry> = Vec::new();
+        let mut seen: std::collections::HashSet<String> =
+            std::iter::once(sender.to_string()).collect();
+        let sender_dir = self
+            .slot_path(sender)
+            .parent()
+            .unwrap_or(&self.slot_path(sender))
+            .to_path_buf();
+        let (sender_parent, _) = read_session_header(&sender_dir);
+        // 全库驻留记录索引(session_id → (label, status)):同父代理群
+        // 共用同一注册表,兄弟/子的显示名与活体状态都从这里取——
+        // list_agents 是发现面,名字不可缺席
+        let mut live: HashMap<String, (String, String)> = HashMap::new();
+        for weak in self.jobs_sources.lock_recover().values() {
+            let Some(reg) = weak.upgrade() else {
+                continue;
+            };
+            for rec in reg.background_records() {
+                let status = if rec.status == "running" {
+                    "running"
+                } else {
+                    "idle"
+                };
+                live.insert(rec.session_id, (rec.task, status.to_string()));
+            }
+        }
+        // 血缘补全:直属子 + 同父兄弟(驻留在场 → 名字与 running/idle,
+        // 否则 offline;list_sessions 有清单缓存)
+        for s in self.list_sessions() {
+            if s.origin.as_deref() != Some("subagent") || seen.contains(&s.session_id) {
+                continue;
+            }
+            let is_child = s.parent_session_id.as_deref() == Some(sender);
+            let is_sibling = sender_parent.is_some()
+                && s.parent_session_id == sender_parent
+                && s.session_id != sender;
+            if !is_child && !is_sibling {
+                continue;
+            }
+            seen.insert(s.session_id.clone());
+            let (label, status) = live
+                .get(&s.session_id)
+                .cloned()
+                .unwrap_or_else(|| (String::new(), "offline".into()));
+            out.push(liuma_tools::RosterEntry {
+                session_id: s.session_id,
+                label,
+                relation: if is_child { "child" } else { "sibling" }.into(),
+                status,
+            });
+        }
+        // 直接父(主会话;装配态给出 running/idle)
+        if let Some(parent) = sender_parent {
+            let status = match self.get_slot(&parent) {
+                Some(slot) if slot.running.load(std::sync::atomic::Ordering::Relaxed) => "running",
+                Some(slot) if slot.inner.get().is_some() => "idle",
+                _ => "offline",
+            };
+            out.push(liuma_tools::RosterEntry {
+                session_id: parent,
+                label: String::new(),
+                relation: "parent".into(),
+                status: status.into(),
+            });
+        }
+        out
+    }
+
+    /// 归属链三跳权限:直接父 + 同父兄弟 + 直属子(主会话范围 =
+    /// 直属子);跨树/祖辈/表亲/自身一律拒。
+    fn assert_addressable(&self, sender: &str, target: &str) -> Result<(), String> {
+        if sender == target {
+            return Err("cannot send a message to yourself".into());
+        }
+        let dir_of = |id: &str| {
+            let p = self.slot_path(id);
+            p.parent().unwrap_or(&p).to_path_buf()
+        };
+        let (sender_parent, sender_origin) = read_session_header(&dir_of(sender));
+        let (target_parent, target_origin) = read_session_header(&dir_of(target));
+        let both_subagents = sender_origin.as_deref() == Some("subagent")
+            && target_origin.as_deref() == Some("subagent");
+        let ok = (both_subagents && sender_parent.is_some() && sender_parent == target_parent) // 兄弟
+            || target_parent.as_deref() == Some(sender) // 子
+            || sender_parent.as_deref() == Some(target); // 父
+        if !ok {
+            return Err(format!(
+                "agent {target} is outside your addressable range (direct parent, siblings, direct children)"
+            ));
+        }
+        // terminated(terminate_agent 落的 settled)不可寻址:发消息拒
+        if self.last_settled_reason(target).as_deref() == Some("terminated") {
+            return Err(format!("agent {target} is terminated"));
+        }
+        Ok(())
+    }
+
+    /// 目标日志末次 `subagent/settled` 的 stopReason(terminated 判定;
+    /// 全量 load 只为末事件,冷路径频次低——与 goal_commit 尾读同权衡)
+    fn last_settled_reason(&self, target: &str) -> Option<String> {
+        let path = self.slot_path(target);
+        if !path.exists() {
+            return None;
+        }
+        let events = liuma_host::persistence::jsonl::load_jsonl(&path).ok()?;
+        events
+            .iter()
+            .rev()
+            .find(|e| e.r#type == "subagent/settled")
+            .and_then(|e| e.data["stopReason"].as_str())
+            .map(str::to_string)
+    }
+
+    /// 离线收件箱落档(阶梯第 4 步):append lock + 冷写
+    /// `agent/inbox/pending {sender, text, id, source}`(ignorable,
+    /// 照守卫约定)。seq = 文件尾 + 1(与 goal_commit 冷追加同纪律)。
+    fn append_inbox_pending(
+        &self,
+        target: &str,
+        sender: &str,
+        text: &str,
+        source: Value,
+    ) -> Result<(), String> {
+        let path = self.slot_path(target);
+        if !path.exists() {
+            return Err(format!("agent {target} has no session log"));
+        }
+        let mut data = json!({ "sender": sender, "text": text, "id": Uuid::now_v7().to_string() });
+        data["source"] = source;
+        let mut ev = EventEnvelope::new_ignorable("agent/inbox/pending", now_ms() as i64, data);
+        let append_lock = self.append_locks.lock_for(target);
+        let _guard = append_lock.lock_recover();
+        let backend = liuma_app::open_backend(&path.display().to_string())
+            .map_err(|e| format!("inbox append failed: {e}"))?;
+        let last_seq = liuma_app::load_log(&path.display().to_string())
+            .map_err(|e| format!("inbox append failed: {e}"))?
+            .iter()
+            .next_back()
+            .map(|e| e.seq)
+            .unwrap_or(0);
+        ev.seq = last_seq + 1;
+        backend
+            .append(&ev)
+            .map_err(|e| format!("inbox append failed: {e}"))?;
+        Ok(())
     }
 
     /// 认领驻留子代理(防双挂):同 id 只认领一次
@@ -6546,12 +6830,13 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                     alive = true;
                     jobs.extend(registry.background_records().iter().map(|r| {
                         // 状态映射 SessionJob:running/completed/killed/failed;
-                        // RS 驻留 idle = 该轮完成仍可续话 → completed + detail 可继续
                         let (status, detail) = match r.status.as_str() {
                             "running" => ("running", None),
                             "idle" => ("completed", Some("可继续")),
                             "cancelled" => ("killed", None),
                             "failed" => ("failed", None),
+                            // 终止 = killed 族终态:行退场(不进待命集合)
+                            "terminated" => ("killed", None),
                             _ => ("completed", None),
                         };
                         let mut job = json!({
@@ -6569,6 +6854,11 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                         }
                         if !r.prompt.is_empty() {
                             job["prompt"] = json!(r.prompt);
+                        }
+                        // 最近入站消息摘要(对等互发呈现:通知不进转录,
+                        // 任务面板行副行承担可见性)
+                        if let Some(msg) = &r.last_message {
+                            job["lastMessage"] = json!(msg);
                         }
                         job
                     }));
@@ -7660,18 +7950,30 @@ impl liuma_tools::subagent::SessionFactory for SessionFactoryImpl {
                 .last()
                 .map(|e| e.r#type.as_str() != "subagent/settled")
                 .unwrap_or(true);
+            // terminated(terminate_agent 落的 settled)不复活:跳过
+            let terminated = events
+                .last()
+                .map(|e| e.r#type == "subagent/settled" && e.data["stopReason"] == "terminated")
+                .unwrap_or(false);
+            if terminated {
+                continue;
+            }
             if interrupted {
-                // 中断者先冷修夏(与主会话同规则:悬挂 tool/call 补合成 result、
-                // 开 turn 补收口)并持久化,重挂引擎才见一致历史
-                // open(追加)而非 create(截断):修夏是补事件,不得清史
+                // 中断者先冷修复(与主会话同规则:悬挂 tool/call 补合成
+                // result、开 turn 补收口)并持久化,重挂引擎才见一致历史。
+                // open(追加)而非 create(截断):修复是补事件,不得清史。
+                // 持 AppendLocks:冷修复与 attach 装配 / 离线收件箱追加
+                // 同窗读写子日志,纳入同一锁纪律(计划 §1.7)
                 let Ok(backend) = liuma_host::JsonlBackend::open(&path) else {
                     continue;
                 };
                 let log = Arc::new(Mutex::new(EventLog::new()));
-                // 冷修夏(单写者)同样走持久化汇:重放历史 + repair 合成
+                // 冷修复(单写者)同样走持久化汇:重放历史 + repair 合成
                 // 收尾事件统一经汇落盘
                 log.lock_recover()
                     .set_durability_sink(durability_sink(backend.clone()));
+                let append_lock = self.0.append_locks.lock_for(&s.session_id);
+                let _guard = append_lock.lock_recover();
                 {
                     let mut l = log.lock_recover();
                     for ev in &events {
@@ -7701,9 +8003,8 @@ impl liuma_tools::subagent::SessionFactory for SessionFactoryImpl {
     }
 }
 
-/// 子代理结算通知 port 真身:把通知作为 Job::Notice 投入父会话
-/// 泵通道。父会话不存在/已终结 → 静默丢弃(父不再存活不是错误,
-/// 子会话自身即持久记录)。
+/// 子代理结算通知 port 真身:通知经投递阶梯送达(结算 = 固定文本的
+/// send;父未附着时落离线收件箱,不再静默丢弃)。
 struct SettlementNoticeImpl(Arc<AppHost>);
 
 impl liuma_tools::subagent::SettlementNotificationPort for SettlementNoticeImpl {
@@ -7718,6 +8019,27 @@ impl liuma_tools::subagent::SettlementNotificationPort for SettlementNoticeImpl 
         Box::pin(async move {
             host.notify_subagent_settled(&parent, text, source);
         })
+    }
+}
+
+/// 对等寻址 port 真身:投递阶梯 + roster 门面(计划 §1.1/§1.2)。
+/// 父面与子面 AgentMessageTool 的共同背端。
+struct AddressingPortImpl(Arc<AppHost>);
+
+impl liuma_tools::AddressingPort for AddressingPortImpl {
+    fn deliver(
+        &self,
+        sender: &str,
+        target: &str,
+        text: &str,
+        source: Value,
+    ) -> Pin<Box<dyn Future<Output = Result<liuma_tools::DeliveryKind, String>> + Send + '_>> {
+        let out = self.0.send_agent_message(sender, target, text, source);
+        Box::pin(std::future::ready(out))
+    }
+
+    fn roster(&self, sender: &str) -> Vec<liuma_tools::RosterEntry> {
+        self.0.agent_roster(sender)
     }
 }
 
@@ -8385,12 +8707,12 @@ async fn driver_loop(
 
     // skill 目录 + `/name` 手势注入(目录只在 skill 工具在场时发布;
     // 子代理不挂工具即同跳)。digest 幂等在宿主 SkillCatalogState,attach
-    // 时从日志倒序恢复,重开不重发。
-    if read_session_header(slot.path.parent().unwrap_or(&slot.path))
+    // 时从日志倒序恢复,重开不重发。血缘布尔同时供下方认领门共用。
+    let is_subagent_session = read_session_header(slot.path.parent().unwrap_or(&slot.path))
         .1
         .as_deref()
-        != Some("subagent")
-    {
+        == Some("subagent");
+    if !is_subagent_session {
         {
             let log = Arc::clone(&inner.log);
             let ws_root = host0.resolve_session(&session_id).0;
@@ -8525,34 +8847,42 @@ async fn driver_loop(
             )
             .await;
         }
-        // 认领:steer 优先(锁序:qs → steer 各自获取,不交叉持有)
-        let claimed = {
-            let steer = qs.lock_recover().steer.clone();
-            let mut steer_guard = steer.lock_recover();
-            if let Some(s) = steer_guard.pop_front() {
-                Some((
-                    s.id,
-                    s.text,
-                    s.images,
-                    s.files,
-                    "next-step",
-                    Vec::new(),
-                    s.source,
-                ))
-            } else {
-                drop(steer_guard);
-                let mut q = qs.lock_recover();
-                q.pending.pop_front().map(|p| {
-                    (
-                        p.id,
-                        p.text,
-                        p.images,
-                        p.files,
-                        "next-turn",
-                        p.contexts,
-                        None,
-                    )
-                })
+        // 认领门:subagent-origin 会话的 turn 驱动权专属驻留循环
+        // (SubagentTool spawn 的 LoopEngine)——槽位 driver 只服务主会话;
+        // 无驻留的 subagent 会话 = 只读视图,其消息经阶梯投给有驻留的
+        // 活体或落收件箱(计划 §1.4,回归锁:双驱动收口)
+        let claimed = if is_subagent_session {
+            None
+        } else {
+            // 认领:steer 优先(锁序:qs → steer 各自获取,不交叉持有)
+            {
+                let steer = qs.lock_recover().steer.clone();
+                let mut steer_guard = steer.lock_recover();
+                if let Some(s) = steer_guard.pop_front() {
+                    Some((
+                        s.id,
+                        s.text,
+                        s.images,
+                        s.files,
+                        "next-step",
+                        Vec::new(),
+                        s.source,
+                    ))
+                } else {
+                    drop(steer_guard);
+                    let mut q = qs.lock_recover();
+                    q.pending.pop_front().map(|p| {
+                        (
+                            p.id,
+                            p.text,
+                            p.images,
+                            p.files,
+                            "next-turn",
+                            p.contexts,
+                            None,
+                        )
+                    })
+                }
             }
         };
         let Some((id, text, images, files, target, contexts, input_source)) = claimed else {
@@ -8686,7 +9016,12 @@ async fn driver_loop(
             }
         }
         // 来源染色:通知等带 source 的认领条目交引擎,随真实用户
-        // 消息落档;普通条目显式清 None(每次认领必设,无跨 turn 残留)
+        // 消息落档;普通条目显式清 None(每次认领必设,无跨 turn 残留)。
+        // 离线收件箱转存条目的 inboxId 预先取出(turn 收尾落 consumed 用)
+        let inbox_id = input_source
+            .as_ref()
+            .and_then(|s| s["inboxId"].as_str())
+            .map(str::to_string);
         session.set_input_source(input_source);
         // runtime-context 快照注入已移入引擎内 RuntimeContextProjection(每步判断生成,
         // 见 driver_loop 开头 set_context_provider)。此处 injection 仅承载用户主动注入
@@ -8726,6 +9061,21 @@ async fn driver_loop(
                 },
             )
             .await;
+        // 离线收件箱条目收尾:turn 输入(user/message)已落档,紧跟
+        // consumed——顺序不可反(attach 转存注释):先落 consumed 再
+        // 输入的崩溃窗口会丢消息,现顺序 = 重投一次(at-least-once)。
+        // ignorable 直写(未登记类型;session_event 落普通信封会被
+        // 读取方守卫拒整份日志)
+        if let Some(inbox_id) = inbox_id {
+            let ev = EventEnvelope::new_ignorable(
+                "agent/inbox/consumed",
+                now_ms() as i64,
+                json!({ "id": inbox_id }),
+            );
+            if let Ok(mut l) = inner.log.lock() {
+                let _ = l.append(ev);
+            }
+        }
         // 归还跨 turn 复用的统计态(下次认领/压缩取同一份续扫);
         // 翻译器随(turn sink 的可变借用已随 turn_with 结束)
         live.translator = Some(translator);
@@ -14052,7 +14402,7 @@ mod tests {
                 Ok(p)
             })
         };
-        let mut tool = liuma_tools::subagent::SubagentTool::new(
+        let tool = liuma_tools::subagent::SubagentTool::new(
             host.sessions_root.clone(),
             transport,
             "m".into(),
@@ -14060,6 +14410,9 @@ mod tests {
         .with_session_factory(Arc::new(factory))
         .with_parent_id(&parent)
         .with_notify(Arc::new(notify.clone()));
+        // 生产同构接线:注册表登记为父会话的 jobs 源(投递阶梯第 ②
+        // 步的查找面;mount_subagent 装配时经 bridge.jobs 做同一件事)
+        AppHost::bind_jobs(&host, &parent, tool.registry.clone());
         tool.resume_children();
 
         // 两子会话都已重挂为可续话驻留
@@ -14073,10 +14426,15 @@ mod tests {
             "重挂不得向父投任何通知"
         );
 
-        // 续话:send_message 到重挂的中断者 → 新 turn(脚本回复)→ 结算通知
-        let mut control = liuma_tools::subagent::SubagentControlTool::new(tool.registry.clone());
+        // 续话:send_message 经宿主投递阶梯到重挂的中断者 → 新 turn
+        //(脚本回复)→ 结算通知
+        let mut msg_tool = liuma_tools::AgentMessageTool::new(
+            &parent,
+            None,
+            Arc::new(AddressingPortImpl(Arc::clone(&host))),
+        );
         let sent = liuma_agent_loop::ToolPort::execute(
-            &mut control,
+            &mut msg_tool,
             &liuma_agent_loop::ToolCallRequest {
                 name: "send_message".into(),
                 arguments: serde_json::json!({
@@ -14139,87 +14497,240 @@ mod tests {
         panic!("驻留未在预算内就绪");
     }
 
-    /// jobs 帧:接线后后台委派 → 注册表状态变化即广播 session/jobs
-    /// (委派=running,结算=completed);未接线的注册表不广播。
+    /// 对等阶梯权限 + 离线收件箱(计划 §1.1/§1.3/§1.7):
+    /// 子→父/父→子 允许(离线落 pending——回归锁:未装配目标不再
+    /// 静默丢);跨树/无血缘拒(结构化错误文本)。
     #[tokio::test]
-    async fn subagent_jobs_frame_broadcasts_on_status_change() {
-        let host = temp_host("subjobs");
+    async fn peer_ladder_permissions_and_offline_inbox() {
+        let host = temp_host("peerladder");
+        let parent1 = host.create_session(None, None, None);
+        let parent2 = host.create_session(None, None, None);
+        let child1 = host.create_subagent_session(&parent1);
+        let child2 = host.create_subagent_session(&parent2);
+
+        // 父 → 子(子无驻留,subagent-origin 不入槽位队列)→ 收件箱
+        let kind = host
+            .send_agent_message(
+                &parent1,
+                &child1,
+                "work on this",
+                serde_json::json!({
+                    "kind": "subagent-message", "form": "notice",
+                    "senderSessionId": parent1,
+                }),
+            )
+            .expect("父→子在可发范围内");
+        assert_eq!(kind, liuma_tools::DeliveryKind::Queued);
+        let events = liuma_host::persistence::jsonl::load_jsonl(&host.slot_path(&child1)).unwrap();
+        let pending: Vec<_> = events
+            .iter()
+            .filter(|e| e.r#type == "agent/inbox/pending")
+            .collect();
+        assert_eq!(pending.len(), 1, "离线投递落 pending(不静默丢)");
+        assert_eq!(pending[0].data["sender"], parent1.as_str());
+        assert_eq!(pending[0].data["text"], "work on this");
+
+        // 子 → 父(父未附着)→ 主会话离线同案,落 pending
+        let kind = host
+            .send_agent_message(
+                &child1,
+                &parent1,
+                "interim report",
+                serde_json::json!({
+                    "kind": "subagent-message", "form": "notice",
+                    "senderSessionId": child1,
+                }),
+            )
+            .expect("子→父在可发范围内");
+        assert_eq!(kind, liuma_tools::DeliveryKind::Queued);
+        let events = liuma_host::persistence::jsonl::load_jsonl(&host.slot_path(&parent1)).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.r#type == "agent/inbox/pending" && e.data["text"] == "interim report"),
+            "未装配主会话目标同样落收件箱(回归锁:detach 后不静默丢)"
+        );
+
+        // 跨树:child1 → parent2(别人的父)拒
+        let err = host
+            .send_agent_message(&child1, &parent2, "hi", serde_json::json!({}))
+            .expect_err("跨树必须拒绝");
+        assert!(err.contains("outside your addressable range"), "{err}");
+        // 无血缘:parent1 → child2(别人的子)拒
+        let err = host
+            .send_agent_message(&parent1, &child2, "hi", serde_json::json!({}))
+            .expect_err("非直属子必须拒绝");
+        assert!(err.contains("outside your addressable range"), "{err}");
+        // 祖辈(两层树下的前瞻同构):child1 → parent2 已覆盖跨树;
+        // 自身拒绝
+        let err = host
+            .send_agent_message(&child1, &child1, "note to self", serde_json::json!({}))
+            .expect_err("发给自己必须拒绝");
+        assert!(err.contains("yourself"), "{err}");
+
+        // terminated 拒(terminate_agent 落 settled terminated):不可
+        // 寻址;重启不复活(resumable 跳过)
+        seed_child_log(
+            &host,
+            &child2,
+            &[
+                (
+                    "subagent/descriptor",
+                    serde_json::json!({ "label": "T", "parentSessionId": parent2, "prompt": "p", "mode": "continuable" }),
+                ),
+                (
+                    "subagent/settled",
+                    serde_json::json!({ "stopReason": "terminated" }),
+                ),
+            ],
+        );
+        let err = host
+            .send_agent_message(&parent2, &child2, "again", serde_json::json!({}))
+            .expect_err("terminated 必须拒绝");
+        assert!(err.contains("terminated"), "{err}");
+        let factory = SessionFactoryImpl(Arc::clone(&host));
+        assert!(
+            liuma_tools::subagent::SessionFactory::resumable_children(&factory, &parent2)
+                .is_empty(),
+            "terminated 子会话重启不复活"
+        );
+
+        // roster:父的可发清单含直属子(relation=child,离线)
+        let roster = host.agent_roster(&parent1);
+        assert!(
+            roster
+                .iter()
+                .any(|e| e.session_id == child1 && e.relation == "child"),
+            "roster 应列直属子:{roster:?}"
+        );
+        // 子的 roster 含父(relation=parent)
+        let roster = host.agent_roster(&child1);
+        assert!(
+            roster
+                .iter()
+                .any(|e| e.session_id == parent1 && e.relation == "parent"),
+            "roster 应列直接父:{roster:?}"
+        );
+    }
+
+    /// 离线收件箱的消费挂点 = 主会话 attach:pending 转存 steer →
+    /// driver 认领为染色 turn 输入(user/message + source)→ turn
+    /// 收尾落 consumed(输入落档后紧跟)。
+    #[tokio::test]
+    async fn peer_pending_delivered_on_attach() {
+        let host = temp_host("peerattach");
+        host.set_fake_script(vec![vec![LlmEvent::AssistantMessage(
+            serde_json::json!({ "content": "acknowledged" }),
+        )]]);
         let parent = host.create_session(None, None, None);
-        let transport: liuma_tools::subagent::TransportFactory<FakeProvider> = {
-            let script = vec![vec![LlmEvent::AssistantMessage(serde_json::json!({
-                "content": "bg done",
-            }))]];
-            let slot = Arc::new(Mutex::new(script));
-            Arc::new(move || {
-                let group = slot.lock().unwrap().pop();
-                let mut p = FakeProvider::new();
-                if let Some(response) = group {
-                    p.then(response);
-                }
-                Ok(p)
-            })
-        };
-        let notify = ResumeRecordingNotify::default();
-        let mut tool = liuma_tools::subagent::SubagentTool::new(
-            host.sessions_root.clone(),
-            transport,
-            "m".into(),
+        let child = host.create_subagent_session(&parent);
+        // 离线落 pending(父未附着)
+        host.send_agent_message(
+            &child,
+            &parent,
+            "offline hello",
+            serde_json::json!({
+                "kind": "subagent-message", "form": "notice",
+                "summary": "offline hello", "senderSessionId": child,
+            }),
         )
-        .with_parent_id(&parent)
-        .with_notify(Arc::new(notify));
-        AppHost::bind_jobs(&host, &parent, tool.registry.clone());
+        .unwrap();
+
+        // attach:pending 转存 steer,driver 认领跑 turn
         let mut mux = host.mux_subscribe();
-
-        // 后台委派:委派帧(running)即时到达
-        let out = liuma_agent_loop::ToolPort::execute(
-            &mut tool,
-            &liuma_agent_loop::ToolCallRequest {
-                name: "subagent".into(),
-                arguments: serde_json::json!({ "description": "Bg task", "prompt": "work" }),
-            },
-        )
-        .await;
-        assert!(out.success, "{}", out.output);
-        let mut seen_running = false;
+        host.history(&parent, None, 50).await.unwrap();
+        let mut saw_user = false;
         for _ in 0..1000 {
-            match mux.try_recv() {
-                Ok(f) if f.method == "session/jobs" => {
-                    assert_eq!(f.payload["sessionId"], serde_json::json!(parent));
-                    let jobs = f.payload["jobs"].as_array().expect("jobs 数组");
-                    assert_eq!(jobs.len(), 1);
-                    if jobs[0]["status"] == "running" {
-                        assert_eq!(jobs[0]["label"], "Bg task");
-                        assert_eq!(jobs[0]["kind"], "subagent");
-                        assert!(jobs[0]["startedAt"].is_i64(), "startedAt 在场");
-                        seen_running = true;
-                        break;
-                    }
-                }
-                Ok(_) => continue,
-                Err(_) => tokio::time::sleep(Duration::from_millis(5)).await,
+            let events =
+                liuma_host::persistence::jsonl::load_jsonl(&host.slot_path(&parent)).unwrap();
+            saw_user = events.iter().any(|e| {
+                e.r#type == "user/message"
+                    && e.data["content"] == "offline hello"
+                    && e.data["source"]["kind"] == "subagent-message"
+            });
+            if saw_user && events.iter().any(|e| e.r#type == "agent/inbox/consumed") {
+                break;
             }
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        assert!(seen_running, "委派后未收到 running jobs 帧");
+        assert!(saw_user, "pending 必须转存为染色 turn 输入");
+        let events = liuma_host::persistence::jsonl::load_jsonl(&host.slot_path(&parent)).unwrap();
+        assert!(
+            events.iter().any(|e| e.r#type == "agent/inbox/consumed"),
+            "turn 收尾必须落 consumed(输入落档后紧跟)"
+        );
+        // 模型确实回复(fake 脚本)
+        assert!(
+            events
+                .iter()
+                .any(|e| e.r#type == "assistant/message" && e.data["content"] == "acknowledged"),
+            "认领后的 turn 必须真实执行"
+        );
+        let _ = &mut mux;
+    }
 
-        // 结算帧(completed + 可继续 detail + 计时终点)
-        let mut seen_completed = None;
-        for _ in 0..1000 {
-            match mux.try_recv() {
-                Ok(f) if f.method == "session/jobs" => {
-                    let jobs = f.payload["jobs"].as_array().unwrap();
-                    if jobs[0]["status"] == "completed" {
-                        seen_completed = Some(jobs[0].clone());
-                        break;
-                    }
-                }
-                Ok(_) => continue,
-                Err(_) => tokio::time::sleep(Duration::from_millis(5)).await,
-            }
+    /// 驱动面收口(计划 §1.4):活驻留被查看——attach 不触发冷修复
+    /// (单写者不变式),槽位 driver 不认领 subagent 会话的 steer。
+    #[tokio::test]
+    async fn subagent_view_attach_does_not_repair_or_drive() {
+        let host = temp_host("subview");
+        let parent = host.create_session(None, None, None);
+        let child = host.create_subagent_session(&parent);
+        // 中断现场:开着 turn + 悬挂 tool/call(无 settled)——若 attach
+        // 走冷修复会补 tool/result;认领在场则跳过
+        seed_child_log(
+            &host,
+            &child,
+            &[
+                (
+                    "subagent/descriptor",
+                    serde_json::json!({ "label": "L", "parentSessionId": parent, "prompt": "p", "mode": "continuable" }),
+                ),
+                ("turn/start", serde_json::json!({})),
+                ("user/message", serde_json::json!({ "content": "go" })),
+                (
+                    "tool/call",
+                    serde_json::json!({ "name": "bash", "arguments": {} }),
+                ),
+            ],
+        );
+        // 模拟驻留在写(live_children 认领;生产 = resumable_children)
+        host.claim_child(&child);
+
+        host.history(&child, None, 50).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let events = liuma_host::persistence::jsonl::load_jsonl(&host.slot_path(&child)).unwrap();
+        assert!(
+            !events.iter().any(|e| e.r#type == "tool/result"),
+            "活驻留被查看不得触发冷修复(双写收口)"
+        );
+
+        // 手工塞 steer(模拟泵投递)并唤醒:槽位 driver 不得认领
+        if let Some(slot) = host.get_slot(&child)
+            && let Some(inner) = slot.inner.get()
+        {
+            inner
+                .qs
+                .lock_recover()
+                .steer
+                .lock_recover()
+                .push_back(SteerInput {
+                    id: "steer-test".into(),
+                    text: "must not be claimed".into(),
+                    images: Vec::new(),
+                    files: Vec::new(),
+                    source: None,
+                });
+            inner.wake.notify_one();
         }
-        let job = seen_completed.expect("结算后未收到 completed jobs 帧");
-        assert_eq!(job["detail"], "可继续", "驻留 idle 映射 completed+可继续");
-        assert!(job["finishedAt"].is_i64());
-        assert_eq!(job["prompt"], "work");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let events = liuma_host::persistence::jsonl::load_jsonl(&host.slot_path(&child)).unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.r#type == "user/message" && e.data["content"] == "must not be claimed"),
+            "subagent 会话的 steer 只归驻留循环认领(认领门)"
+        );
     }
 
     /// shell job 行并入 session/jobs 帧:bind_shell_jobs 后注册表任何

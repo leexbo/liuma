@@ -831,7 +831,7 @@ async fn subagent_runs_own_session_and_reports_back() {
     // 子代理独立日志 + 能力束窄化 + 报告回主日志。
     // 直接驱动工具面(不经主 engine;主面往返已有其余测试覆盖)
     use liuma_agent_loop::{ToolCallRequest, ToolPort};
-    use liuma_tools::{SubagentControlTool, SubagentTool};
+    use liuma_tools::SubagentTool;
 
     let dir = std::env::temp_dir().join(format!("liuma-sub-e2e-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -908,18 +908,48 @@ async fn subagent_runs_own_session_and_reports_back() {
     );
     assert!(!escape.exists());
 
-    // list 工具可见注册表(list_agents;前台一次性子代理
+    // list 工具可见注册表(list_agents 经寻址面;前台一次性子代理
     // 不列入清单——不可续话,模型永不需要选它)
-    let mut control = SubagentControlTool::new(registry.clone());
+    let mut msg_tool = liuma_tools::AgentMessageTool::new(
+        "",
+        None,
+        Arc::new(RegistryAddressingForE2e { registry }),
+    );
     let list = ToolPort::execute(
-        &mut control,
+        &mut msg_tool,
         &ToolCallRequest {
             name: "list_agents".into(),
             arguments: json!({}),
         },
     )
     .await;
-    assert!(list.output.contains("(no background subagents)"));
+    assert!(list.output.contains("(no addressable agents)"));
+}
+
+/// e2e 用注册表路由寻址 port:与宿主阶梯第 2 步同一实现
+/// (deliver_to_registry_record)+ 注册表行 roster
+struct RegistryAddressingForE2e {
+    registry: liuma_tools::SubagentRegistry,
+}
+
+impl liuma_tools::AddressingPort for RegistryAddressingForE2e {
+    fn deliver(
+        &self,
+        _sender: &str,
+        target: &str,
+        text: &str,
+        source: serde_json::Value,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = Result<liuma_tools::DeliveryKind, String>> + Send + '_>,
+    > {
+        let out =
+            liuma_tools::subagent::deliver_to_registry_record(&self.registry, target, text, source);
+        Box::pin(std::future::ready(out))
+    }
+
+    fn roster(&self, _sender: &str) -> Vec<liuma_tools::RosterEntry> {
+        Vec::new()
+    }
 }
 
 #[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
@@ -1480,4 +1510,211 @@ async fn background_job_settles_with_notice() {
         assert_eq!(source["jobId"], 2);
         assert!(text.contains("was stopped"), "{text}");
     }
+}
+
+/// 对等互发 e2e(计划 peer-agent-messaging §3):同一父的两个驻留子代理,
+/// A 任务中途经寻址面向 B 发消息(idle 续话路径),B 开新 turn 消费并
+/// 回复;A/B 各自结算,通知均回投父。寻址 port = 注册表路由(与宿主
+/// 阶梯第 ② 步同一实现);权限面由 liuma-core L2 覆盖。
+#[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
+#[tokio::test]
+async fn sibling_agents_message_each_other() {
+    use liuma_agent_loop::{ToolCallRequest, ToolPort};
+    use liuma_tools::subagent::{SubagentRegistry, SubagentTool, TransportFactory};
+    use liuma_tools::{AddressingPort, DeliveryKind, RosterEntry};
+
+    /// 注册表路由寻址 port(与宿主阶梯第 ② 步同一实现)
+    struct SiblingAddressing {
+        registry: SubagentRegistry,
+    }
+    impl AddressingPort for SiblingAddressing {
+        fn deliver(
+            &self,
+            _sender: &str,
+            target: &str,
+            text: &str,
+            source: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<DeliveryKind, String>> + Send + '_>>
+        {
+            let out = liuma_tools::subagent::deliver_to_registry_record(
+                &self.registry,
+                target,
+                text,
+                source,
+            );
+            Box::pin(std::future::ready(out))
+        }
+        fn roster(&self, _sender: &str) -> Vec<RosterEntry> {
+            Vec::new()
+        }
+    }
+
+    let dir = std::env::temp_dir().join(format!("liuma-sibling-e2e-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // B 的会话 id 共享槽:A 的脚本在工厂调用时(驻留启动即刻)读取,
+    // 此时 B 已起且 idle(测试控制启动顺序)
+    let b_slot = Arc::new(Mutex::new(None::<String>));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let factory: TransportFactory<FakeProvider> = {
+        let b_slot = b_slot.clone();
+        let calls = calls.clone();
+        Arc::new(move || {
+            use std::sync::atomic::Ordering;
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            let mut p = FakeProvider::new();
+            match n {
+                // B 组:初始 turn 回复;A 的消息到达后(续话)再回复
+                0 => {
+                    p.then(vec![LlmEvent::AssistantMessage(json!({
+                        "content": "b started"
+                    }))]);
+                    p.then(vec![LlmEvent::AssistantMessage(json!({
+                        "content": "b replied to sibling"
+                    }))]);
+                }
+                // A 组:先 send_message 到 B(参数在调用时组装,读 B id 槽),
+                // 再收尾
+                1 => {
+                    let b_id = b_slot.lock().unwrap().clone();
+                    p.then(vec![LlmEvent::AssistantMessage(json!({
+                        "content": "",
+                        "tool_calls": [ {
+                            "name": "send_message",
+                            "arguments": {
+                                "agent_id": b_id.unwrap_or_default(),
+                                "message": "handoff from a"
+                            }
+                        } ]
+                    }))]);
+                    p.then(vec![LlmEvent::AssistantMessage(json!({
+                        "content": "a done"
+                    }))]);
+                }
+                _ => {}
+            }
+            Ok(p)
+        })
+    };
+    // 录制型结算通知(断言回投父)
+    #[derive(Default, Clone)]
+    struct RecNotify {
+        got: Arc<Mutex<Vec<(String, String, serde_json::Value)>>>,
+    }
+    impl liuma_tools::subagent::SettlementNotificationPort for RecNotify {
+        fn notify(
+            &self,
+            parent: &str,
+            text: String,
+            source: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            self.got
+                .lock()
+                .unwrap()
+                .push((parent.to_string(), text, source));
+            Box::pin(std::future::ready(()))
+        }
+    }
+    let notify = RecNotify::default();
+    // 寻址 port 与工具共享同一注册表(兄弟 = 同一父注册表内的记录)
+    let registry = SubagentRegistry::default();
+    let mut tool = SubagentTool::new(&dir, factory, "m".into())
+        .with_notify(Arc::new(notify.clone()))
+        .with_parent_id("parent-e2e")
+        .with_registry(registry.clone())
+        .with_addressing(Arc::new(SiblingAddressing { registry }));
+
+    // 起 B(工厂第 1 次调用),等 idle
+    let out = ToolPort::execute(
+        &mut tool,
+        &ToolCallRequest {
+            name: "subagent".into(),
+            arguments: json!({ "description": "B worker", "prompt": "run b" }),
+        },
+    )
+    .await;
+    assert!(out.success, "{}", out.output);
+    let b_id = out
+        .output
+        .strip_prefix("started subagent ")
+        .unwrap()
+        .to_string();
+    *b_slot.lock().unwrap() = Some(b_id.clone());
+    for _ in 0..1000 {
+        if tool
+            .registry
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.session_id == b_id && r.status == "idle")
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    // 起 A(工厂第 2 次调用;脚本读 B id 槽组装 send_message 参数)
+    let out = ToolPort::execute(
+        &mut tool,
+        &ToolCallRequest {
+            name: "subagent".into(),
+            arguments: json!({ "description": "A worker", "prompt": "run a" }),
+        },
+    )
+    .await;
+    assert!(out.success, "{}", out.output);
+    let a_id = out
+        .output
+        .strip_prefix("started subagent ")
+        .unwrap()
+        .to_string();
+
+    // 等:A 结算 + B 收到消息后回复再结算(共 3 次通知)
+    for _ in 0..2000 {
+        if notify.got.lock().unwrap().len() >= 3 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    {
+        let got = notify.got.lock().unwrap();
+        assert_eq!(got.len(), 3, "A 一次 + B 两次结算,均回投父:{got:#?}");
+        assert!(
+            got.iter().all(|(p, _, _)| p == "parent-e2e"),
+            "通知父会话恒定"
+        );
+        let texts: Vec<&String> = got.iter().map(|(_, t, _)| t).collect();
+        assert!(texts.iter().any(|t| t.contains("a done")), "{texts:?}");
+        assert!(
+            texts.iter().any(|t| t.contains("b replied to sibling")),
+            "{texts:?}"
+        );
+    }
+
+    // B 的子会话日志:来自 A 的消息 = 染色 user/message(sender = A),
+    // 且 B 跑了两个 turn(初始 + 续话)
+    let events = {
+        let path = tool
+            .registry
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.session_id == b_id)
+            .map(|r| r.session_path.clone())
+            .unwrap();
+        liuma_host::persistence::jsonl::load_jsonl(std::path::Path::new(&path)).unwrap()
+    };
+    let inbound = events.iter().find(|e| {
+        e.r#type == "user/message"
+            && e.data["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("handoff from a"))
+    });
+    let inbound = inbound.expect("B 必须收到 A 的消息(染色 user/message)");
+    assert_eq!(inbound.data["source"]["kind"], "subagent-message");
+    assert_eq!(inbound.data["source"]["senderSessionId"], a_id.as_str());
+    assert_eq!(
+        events.iter().filter(|e| e.r#type == "turn/start").count(),
+        2,
+        "B = 初始 turn + 续话 turn"
+    );
 }

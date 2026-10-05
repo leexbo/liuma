@@ -671,6 +671,7 @@ pub fn build_tools(
     plan_review_port: Option<Arc<dyn liuma_plan::PlanReviewPort>>,
     session_factory: Option<Arc<dyn liuma_tools::subagent::SessionFactory>>,
     notify_port: Option<Arc<dyn liuma_tools::subagent::SettlementNotificationPort>>,
+    addressing_port: Option<Arc<dyn liuma_tools::AddressingPort>>,
     current_session: Option<&str>,
     subagent_bridge: Option<Arc<liuma_tools::subagent::SubagentBridge>>,
     // 宿主侧追加工具(MCP server 桥等;与 preset 装配的工具同池,重名 fail-fast)
@@ -691,6 +692,7 @@ pub fn build_tools(
         plan_review_port,
         session_factory,
         notify_port,
+        addressing_port,
         current_session,
         subagent_bridge,
     )?;

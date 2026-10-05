@@ -108,9 +108,20 @@ pub fn settlement_notice(
     (text, source)
 }
 
-/// 子代理回发父消息拼装(kind=subagent-message,桌面独立卡形态)
-fn child_message_notice(self_id: &str, message: &str) -> (String, Value) {
-    let text = format!("Message from subagent {self_id}:\n\n{message}");
+/// 对等代理消息拼装(kind=subagent-message,通知不进转录——7a81ea6 口径,
+/// 可见性 = 任务面板行态摘要 + 目标会话日志染色行)。
+/// sender 泛化:label 在场(子代理)→ `Message from agent <label> (<id>):`,
+/// 缺席(主会话)→ `Message from agent <id>:`
+pub(crate) fn agent_message_notice(
+    sender_id: &str,
+    label: Option<&str>,
+    message: &str,
+) -> (String, Value) {
+    let subject = match label {
+        Some(l) if !l.trim().is_empty() => format!("agent {l} ({sender_id})"),
+        _ => format!("agent {sender_id}"),
+    };
+    let text = format!("Message from {subject}:\n\n{message}");
     let summary: String = message
         .lines()
         .find(|l| !l.trim().is_empty())
@@ -122,7 +133,7 @@ fn child_message_notice(self_id: &str, message: &str) -> (String, Value) {
         "kind": "subagent-message",
         "form": "notice",
         "summary": summary,
-        "senderSessionId": self_id,
+        "senderSessionId": sender_id,
     });
     (text, source)
 }
@@ -135,8 +146,55 @@ pub type TransportFactory<T> = Arc<dyn Fn() -> Result<T, String> + Send + Sync>;
 /// 驻留子代理的续话消息(send_message 投递;逐条一个 turn)
 #[derive(Debug)]
 pub enum ChildMsg {
-    /// 续话 prompt(作为子代理的下一 turn 输入)
-    Prompt(String),
+    /// 续话 prompt(作为子代理的下一 turn 输入;source = 输入染色,
+    /// 阶梯续话分支携带,与 steer 路径同构)
+    Prompt { text: String, source: Option<Value> },
+}
+
+/// 对等代理寻址 port(宿主实现 = 投递阶梯,计划 peer-agent-messaging §1.1):
+/// 路由、权限(归属链/terminated)、离线处置集中实现侧;工具层只做参数
+/// 解析与失败呈递(失败工具结果 = 发送方审计)。
+pub trait AddressingPort: Send + Sync {
+    /// 投递一条消息(sender → target)。text/source 由调用方拼装(含染色),
+    /// 实现侧透传不重组。阶梯:驻留活体(running = steer / idle = 开新
+    /// turn)→ 装配主会话 Notice → 离线挂起收件箱。范围外/terminated =
+    /// Err(结构化错误文本)。
+    fn deliver(
+        &self,
+        sender: &str,
+        target: &str,
+        text: &str,
+        source: Value,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<DeliveryKind, String>> + Send + '_>>;
+
+    /// sender 的可发清单(含 relation/状态/label;list_agents 的数据背书)。
+    fn roster(&self, sender: &str) -> Vec<RosterEntry>;
+}
+
+/// 投递结果阶梯(工具结果文案据此拼)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryKind {
+    /// 目标运行中:消息入 steer 缓冲,step 边界认领(同一 turn)
+    Steered,
+    /// 目标驻留空闲:续话通道开新 turn
+    TurnStarted,
+    /// 目标为装配态主会话:入 Notice 队列
+    Noticed,
+    /// 目标离线:挂起收件箱,活体回归时投递
+    Queued,
+}
+
+/// 对等代理清单项
+#[derive(Debug, Clone)]
+pub struct RosterEntry {
+    /// 会话槽位 id
+    pub session_id: String,
+    /// 显示名(descriptor label / 委派 description)
+    pub label: String,
+    /// 与 sender 的 relation:parent / sibling / child
+    pub relation: String,
+    /// 存活态:running / idle / offline
+    pub status: String,
 }
 
 /// 子代理注册项(进程内记录;子会话日志文件才是持久事实)。
@@ -170,6 +228,9 @@ pub struct SubagentRecord {
     pub started_at: i64,
     /// 终态时刻(ms;None = 仍在驻留)
     pub ended_at: Option<i64>,
+    /// 最近入站消息摘要(任务面板行副行;阶梯驻留投递时更新,
+    /// 非持久——重启后由日志染色行承担内容可见性)
+    pub last_message: Option<String>,
 }
 
 /// 注册表状态变化观察回调(宿主据此广播 jobs 帧;回调内禁止再锁 records)
@@ -319,28 +380,28 @@ impl SettlementNotificationPort for ChildJobNotify {
                 return;
             }
             if let Some(tx) = &rec.tx {
-                let _ = tx.send(ChildMsg::Prompt(text));
+                let _ = tx.send(ChildMsg::Prompt {
+                    text,
+                    source: Some(source),
+                });
             }
         })
     }
 }
 
-/// 子代理 system prompt(公共骨架;驻留形态追加回发父指引)
-fn child_system_prompt(
-    child_root: &std::path::Path,
-    parent_link: Option<&ChildParentLink>,
-) -> String {
+/// 子代理 system prompt(公共骨架;驻留 + 寻址在场时追加可发范围指引)
+fn child_system_prompt(child_root: &std::path::Path, parent_id: Option<&str>) -> String {
     let mut system = format!(
         "You are a liuma subagent executing one task in an isolated workspace ({}). \
 Finish the task and reply with the result only — you cannot ask questions.",
         child_root.display()
     );
-    if let Some(link) = parent_link {
-        // 可续话子代理指引:告知父 id 与 send_message 通路
+    if let Some(parent) = parent_id {
+        // 可续话子代理指引:告知父 id 与寻址范围(直接父/兄弟/直属子)
         system.push_str(&format!(
-            "\n\nYour parent agent id is {}. Send it messages with `send_message` when it must \
-know something before you finish; your final reply is also delivered to it automatically.",
-            link.parent_id
+            "\n\nYour parent agent id is {parent}. With `send_message` you can reach any \
+agent in your addressable range — your direct parent, siblings sharing it, and your own \
+direct children; your final reply is also delivered to your parent automatically."
         ));
     }
     system
@@ -352,7 +413,7 @@ know something before you finish; your final reply is also delivered to it autom
 async fn prepare_child_parts(
     handle: &SubagentSessionHandle,
     model: &str,
-    parent_link: Option<&ChildParentLink>,
+    parent_id: Option<&str>,
 ) -> Result<ChildParts, String> {
     let child_root = handle
         .session_path
@@ -364,7 +425,7 @@ async fn prepare_child_parts(
         .map_err(|e| format!("subagent workspace create failed: {e}"))?;
     let header = RequestHeader {
         model: model.to_string(),
-        system: child_system_prompt(&child_root, parent_link),
+        system: child_system_prompt(&child_root, parent_id),
         temperature: 0.0,
         reasoning_effort: None,
         tools: Vec::new(),
@@ -426,27 +487,23 @@ async fn prepare_child_parts(
     })
 }
 
-/// 子代理回发父的链路(仅驻留子代理装配 send_message 工具时持有)
-#[derive(Clone)]
-pub(crate) struct ChildParentLink {
-    pub(crate) parent_id: String,
-    pub(crate) self_id: String,
-    pub(crate) notify: Arc<dyn SettlementNotificationPort>,
-}
-
 /// 子代理工具面构建上下文(每 turn 重建工具集时的全部权属)
 struct ChildToolContext<'a> {
     turn_token: &'a CancelToken,
     parts: &'a ChildParts,
     query_port: Option<Arc<dyn crate::session_query::SessionQueryPort>>,
     session_id: &'a str,
-    parent_link: Option<ChildParentLink>,
+    /// 对等寻址 port(驻留 + port 在场才装配 AgentMessageTool;
+    /// CLI 无 port 形态 = 子面无寻址工具,与前台同步语义一致)
+    addressing: Option<Arc<dyn AddressingPort>>,
+    /// 本子代理的显示名(descriptor label;notice 文本模板用)
+    self_label: Option<&'a str>,
 }
 
 /// 按 turn 构建子工具集(全量 minus 递归;bash 携带本 turn 取消令牌,
 /// 运行中进程随令牌中断):
 /// bash(+jobs 后台)/ 文件三件 / todo_write / goal / jobs /
-/// session_query(port 在场)/ send_message 回发父(驻留子代理)。
+/// session_query(port 在场)/ send_message 对等寻址(port 在场的驻留形态)。
 /// 排除:subagent/workflow(递归)、ask_user_question(不能向人提问)、
 /// plan(与人的审批契约)、wasm 组件(实例不可克隆)。
 fn build_child_tools(ctx: ChildToolContext) -> Result<liuma_agent_loop::ToolSet, String> {
@@ -471,52 +528,70 @@ fn build_child_tools(ctx: ChildToolContext) -> Result<liuma_agent_loop::ToolSet,
             ctx.session_id,
         )));
     }
-    if let Some(link) = ctx.parent_link {
-        tools.push(Box::new(ChildParentMessageTool::new(link)));
+    if let Some(port) = ctx.addressing {
+        tools.push(Box::new(AgentMessageTool::new(
+            ctx.session_id,
+            ctx.self_label.map(str::to_string),
+            port,
+        )));
     }
     liuma_agent_loop::ToolSet::new(tools).map_err(|e| format!("child toolset assembly failed: {e}"))
 }
 
-/// 子代理回发父消息工具(仅驻留子代理装配):`send_message` 唯一
-/// 可寻址对象 = 直接父(驻留可续话子代理语义)。
-pub struct ChildParentMessageTool {
-    link: ChildParentLink,
+/// 对等代理消息工具(父面与子面同装,仅 sender 身份不同):
+/// `send_message`(范围内任意 agent)/ `list_agents`(roster)。
+/// 失败 = port 错误文本原样透传(isError;发送方日志即审计)。
+pub struct AgentMessageTool {
+    sender_id: String,
+    sender_label: Option<String>,
+    port: Arc<dyn AddressingPort>,
 }
 
-impl ChildParentMessageTool {
-    /// 以父链路构建
-    pub(crate) fn new(link: ChildParentLink) -> Self {
-        Self { link }
+impl AgentMessageTool {
+    /// 以 sender 身份与寻址 port 构建
+    pub fn new(
+        sender_id: &str,
+        sender_label: Option<String>,
+        port: Arc<dyn AddressingPort>,
+    ) -> Self {
+        Self {
+            sender_id: sender_id.to_string(),
+            sender_label,
+            port,
+        }
     }
 }
 
-impl ToolPort for ChildParentMessageTool {
+impl ToolPort for AgentMessageTool {
     fn specs(&self) -> Vec<Value> {
-        vec![json!({
-            "type": "function",
-            "function": {
-                "name": "send_message",
-                "description": "Send a message to your direct parent agent. If the parent is still working, the message steers its nearest step; if it is idle, the message starts a turn. This call returns no answer from the parent — only confirmation that the message was delivered. A failure means the message was NOT delivered.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "agent_id": { "type": "string", "description": "Your direct parent agent id." },
-                        "message": { "type": "string", "description": "The message to deliver to the agent." }
+        vec![
+            json!({
+                "type": "function",
+                "function": {
+                    "name": "send_message",
+                    "description": "Send a message to any agent in your addressable range: your direct parent, a sibling sharing your parent, or one of your direct children. If the target is still working, the message steers its nearest step; if it is idle, the message starts a turn; if it is offline, the message is queued in its inbox and delivered when the agent is back. This call returns no answer from the target — only confirmation that the message was delivered. A failure means the message was NOT delivered.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "agent_id": { "type": "string", "description": "The agent id of the target (see list_agents for your addressable agents)." },
+                            "message": { "type": "string", "description": "The message to deliver to the agent." }
+                        },
+                        "required": ["agent_id", "message"]
                     },
-                    "required": ["agent_id", "message"]
                 },
-            },
-        })]
+            }),
+            json!({
+                "type": "function",
+                "function": {
+                    "name": "list_agents",
+                    "description": "List the agents you can message, by durable id, relation (parent, sibling, child) and live status (running, idle, or offline). Use it to recall who exists, not to poll for completion — you are told when a child finishes. The snapshot is not a delivery promise — `send_message` performs the authoritative check and may still fail.",
+                    "parameters": { "type": "object", "properties": {} },
+                },
+            }),
+        ]
     }
 
     async fn execute(&mut self, call: &ToolCallRequest) -> ToolOutput {
-        if call.name != "send_message" {
-            return ToolOutput {
-                output: format!("unknown tool: {}", call.name),
-                success: false,
-                ..Default::default()
-            };
-        }
         let fail = |msg: String| ToolOutput {
             output: msg,
             success: false,
@@ -527,26 +602,65 @@ impl ToolPort for ChildParentMessageTool {
         } else {
             call.arguments.clone()
         };
-        let (Some(agent_id), Some(message)) = (
-            arguments["agent_id"].as_str(),
-            arguments["message"].as_str(),
-        ) else {
-            return fail(
-                "send_message requires arguments.agent_id and arguments.message (strings)".into(),
-            );
-        };
-        if agent_id != self.link.parent_id {
-            return fail(format!(
-                "only your direct parent ({}) is addressable",
-                self.link.parent_id
-            ));
-        }
-        let (text, source) = child_message_notice(&self.link.self_id, message);
-        self.link.notify.notify(agent_id, text, source).await;
-        ToolOutput {
-            output: format!("message delivered to agent {agent_id}"),
-            success: true,
-            ..Default::default()
+        match call.name.as_str() {
+            "send_message" => {
+                let (Some(agent_id), Some(message)) = (
+                    arguments["agent_id"].as_str(),
+                    arguments["message"].as_str(),
+                ) else {
+                    return fail(
+                        "send_message requires arguments.agent_id and arguments.message (strings)"
+                            .into(),
+                    );
+                };
+                let (text, source) =
+                    agent_message_notice(&self.sender_id, self.sender_label.as_deref(), message);
+                match self
+                    .port
+                    .deliver(&self.sender_id, agent_id, &text, source)
+                    .await
+                {
+                    Ok(kind) => ToolOutput {
+                        output: match kind {
+                            DeliveryKind::Steered => format!(
+                                "message delivered to agent {agent_id} (steered into its current turn)"
+                            ),
+                            DeliveryKind::TurnStarted => format!(
+                                "message delivered to agent {agent_id} (started a new turn)"
+                            ),
+                            DeliveryKind::Noticed => {
+                                format!("message delivered to agent {agent_id}")
+                            }
+                            DeliveryKind::Queued => format!(
+                                "message queued for agent {agent_id}; it will be delivered when the agent is back"
+                            ),
+                        },
+                        success: true,
+                        ..Default::default()
+                    },
+                    Err(e) => fail(e),
+                }
+            }
+            "list_agents" => {
+                let entries = self.port.roster(&self.sender_id);
+                if entries.is_empty() {
+                    return ToolOutput {
+                        output: "(no addressable agents)".into(),
+                        success: true,
+                        ..Default::default()
+                    };
+                }
+                let rows: Vec<String> = entries
+                    .iter()
+                    .map(|e| format!("{} [{}/{}] {}", e.session_id, e.relation, e.status, e.label))
+                    .collect();
+                ToolOutput {
+                    output: rows.join("\n"),
+                    success: true,
+                    ..Default::default()
+                }
+            }
+            _ => fail(format!("unknown tool: {}", call.name)),
         }
     }
 }
@@ -636,6 +750,14 @@ fn set_status(registry: &SubagentRegistry, session_id: &str, status: &str) {
     }
 }
 
+/// 记录已被 terminate_agent 置 terminated(驻留循环的收口判据)
+fn is_terminated(registry: &SubagentRegistry, session_id: &str) -> bool {
+    registry.lock().is_ok_and(|r| {
+        r.iter()
+            .any(|s| s.session_id == session_id && s.status == "terminated")
+    })
+}
+
 /// 子会话标记事件落档(descriptor/settled;重启恢复的判据;落盘经
 /// 日志持久化汇,锁内原子)
 fn commit_child_marker(log: &Arc<Mutex<EventLog>>, ty: &str, data: Value) {
@@ -646,6 +768,42 @@ fn commit_child_marker(log: &Arc<Mutex<EventLog>>, ty: &str, data: Value) {
     }
 }
 
+/// 离线收件箱冲账提取:日志中未消费的 pending(判据 = 有
+/// `agent/inbox/pending` 无对应 `agent/inbox/consumed`,按落档序)。
+/// 消费方把每条作为 turn 输入,**输入落档后**紧跟 consumed——顺序
+/// 不可反(见调用点注释)。返回 (id, text, source 染色)。
+pub fn extract_inbox_pending(log: &EventLog) -> Vec<(String, String, Option<Value>)> {
+    let mut consumed = std::collections::HashSet::new();
+    let mut pending: Vec<(String, String, Option<Value>)> = Vec::new();
+    for ev in log.iter() {
+        match ev.r#type.as_str() {
+            "agent/inbox/pending" => {
+                let Some(id) = ev.data["id"].as_str() else {
+                    continue;
+                };
+                if id.is_empty() {
+                    continue;
+                }
+                pending.push((
+                    id.to_string(),
+                    ev.data["text"].as_str().unwrap_or_default().to_string(),
+                    ev.data.get("source").cloned(),
+                ));
+            }
+            "agent/inbox/consumed" => {
+                if let Some(id) = ev.data["id"].as_str() {
+                    consumed.insert(id.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    pending
+        .into_iter()
+        .filter(|(id, _, _)| !consumed.contains(id))
+        .collect()
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -653,12 +811,14 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// subagent 工具:委派任务 → 嵌套引擎执行(前台等结果 / 后台即返回)
-pub struct SubagentTool<T> {
+/// subagent 共享核:委派执行的全部权属。收拢为 Arc 共享体——工具面
+/// (会话内)与宿主 spawn 入口(桌面创建,经 SubagentBridge 注册的
+/// 闭包)共享同一核,注册表/血缘/通知单点真身。
+pub struct SubagentCore<T> {
     /// 父 workspace(子根 = `.liuma/subagents/<id>/`,能力束窄化)
     pub root: std::path::PathBuf,
     /// 子代理独立传输工厂(每个子代理一份传输;后台并发的前提)
-    transport_factory: TransportFactory<T>,
+    pub transport_factory: TransportFactory<T>,
     /// 模型标识(子 header)
     pub model: String,
     /// 父会话软取消令牌(级联:父取消 → 子静默退出)
@@ -674,7 +834,40 @@ pub struct SubagentTool<T> {
     /// 子会话事件出口(None = 只落盘)
     pub event_sink: Option<SubagentEventSink>,
     /// 会话检索 port(子代理工具面扩装,缺 = 子代理无检索)
-    query_port: Option<Arc<dyn crate::session_query::SessionQueryPort>>,
+    pub query_port: Option<Arc<dyn crate::session_query::SessionQueryPort>>,
+    /// 对等寻址 port(驻留子面 AgentMessageTool 的背端;缺 = 子面无寻址)
+    pub addressing: Option<Arc<dyn AddressingPort>>,
+}
+
+impl<T> Clone for SubagentCore<T> {
+    fn clone(&self) -> Self {
+        Self {
+            root: self.root.clone(),
+            transport_factory: Arc::clone(&self.transport_factory),
+            model: self.model.clone(),
+            cancel: self.cancel.clone(),
+            registry: self.registry.clone(),
+            factory: self.factory.clone(),
+            parent_id: self.parent_id.clone(),
+            notify: self.notify.clone(),
+            event_sink: self.event_sink.clone(),
+            query_port: self.query_port.clone(),
+            addressing: self.addressing.clone(),
+        }
+    }
+}
+
+/// subagent 工具:委派任务 → 嵌套引擎执行(前台等结果 / 后台即返回)
+pub struct SubagentTool<T> {
+    core: Arc<SubagentCore<T>>,
+}
+
+impl<T> std::ops::Deref for SubagentTool<T> {
+    type Target = SubagentCore<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.core
+    }
 }
 
 impl<T> SubagentTool<T>
@@ -689,64 +882,75 @@ where
         model: String,
     ) -> Self {
         Self {
-            root: root.into(),
-            transport_factory,
-            model,
-            cancel: CancelToken::new(),
-            registry: SubagentRegistry::default(),
-            factory: None,
-            parent_id: String::new(),
-            notify: None,
-            event_sink: None,
-            query_port: None,
+            core: Arc::new(SubagentCore {
+                root: root.into(),
+                transport_factory,
+                model,
+                cancel: CancelToken::new(),
+                registry: SubagentRegistry::default(),
+                factory: None,
+                parent_id: String::new(),
+                notify: None,
+                event_sink: None,
+                query_port: None,
+                addressing: None,
+            }),
         }
     }
 
-    /// 注入子会话事件出口(桌面广播实时流)
-    pub fn with_event_sink(mut self, sink: SubagentEventSink) -> Self {
-        self.event_sink = Some(sink);
+    /// 核字段替换式 builder(装配期使用;克隆核重建 Arc)
+    fn with_core(mut self, f: impl FnOnce(&mut SubagentCore<T>)) -> Self {
+        let mut core = (*self.core).clone();
+        f(&mut core);
+        self.core = Arc::new(core);
         self
+    }
+
+    /// 注入子会话事件出口(桌面广播实时流)
+    pub fn with_event_sink(self, sink: SubagentEventSink) -> Self {
+        self.with_core(|c| c.event_sink = Some(sink))
     }
 
     /// 注入子会话工厂(None/未注入 = 回落后建)
-    pub fn with_session_factory(mut self, factory: Arc<dyn SessionFactory>) -> Self {
-        self.factory = Some(factory);
-        self
+    pub fn with_session_factory(self, factory: Arc<dyn SessionFactory>) -> Self {
+        self.with_core(|c| c.factory = Some(factory))
     }
 
     /// 设置父会话 id(血缘 parent;factory 注入时传给 create_subagent)
-    pub fn with_parent_id(mut self, parent: &str) -> Self {
-        self.parent_id = parent.to_string();
-        self
+    pub fn with_parent_id(self, parent: &str) -> Self {
+        self.with_core(|c| c.parent_id = parent.to_string())
     }
 
     /// 设置父取消令牌(与 engine/REPL Ctrl-C 同源,级联到子)
-    pub fn with_cancel(mut self, token: CancelToken) -> Self {
-        self.cancel = token;
-        self
+    pub fn with_cancel(self, token: CancelToken) -> Self {
+        self.with_core(|c| c.cancel = token)
     }
 
     /// 共享注册表(workflow/ralph 编排器与顶层 subagent 工具共用清单)
-    pub fn with_registry(mut self, registry: SubagentRegistry) -> Self {
-        self.registry = registry;
-        self
+    pub fn with_registry(self, registry: SubagentRegistry) -> Self {
+        self.with_core(|c| c.registry = registry)
     }
 
     /// 注入通知 port(注入后模型面切后台默认形态)
-    pub fn with_notify(mut self, notify: Arc<dyn SettlementNotificationPort>) -> Self {
-        self.notify = Some(notify);
-        self
+    pub fn with_notify(self, notify: Arc<dyn SettlementNotificationPort>) -> Self {
+        self.with_core(|c| c.notify = Some(notify))
     }
 
     /// 注入会话检索 port(子代理工具面扩装)
-    pub fn with_query_port(
-        mut self,
-        port: Arc<dyn crate::session_query::SessionQueryPort>,
-    ) -> Self {
-        self.query_port = Some(port);
-        self
+    pub fn with_query_port(self, port: Arc<dyn crate::session_query::SessionQueryPort>) -> Self {
+        self.with_core(|c| c.query_port = Some(port))
     }
 
+    /// 注入对等寻址 port(子面 AgentMessageTool 装配前提)
+    pub fn with_addressing(self, port: Arc<dyn AddressingPort>) -> Self {
+        self.with_core(|c| c.addressing = Some(port))
+    }
+}
+
+impl<T> SubagentCore<T>
+where
+    T: LlmTransport + Summarizer + Send + 'static,
+{
     /// 建子会话:factory 注入 → 带血缘会话(返回槽位 id);未注入 → 回落
     /// 自建 `.liuma/subagents/<id>/`(id 为本地簿记形态)
     fn make_session(&self) -> (u64, SubagentSessionHandle) {
@@ -776,7 +980,7 @@ where
 
     /// 前台执行一次子代理任务:嵌套引擎 + 独立日志 + 窄化工具集,等结果。
     /// workflow/ralph 编排器与 run_in_background=false 同走此入口。
-    pub(crate) async fn run_foreground(&mut self, prompt: &str) -> ToolOutput {
+    pub(crate) async fn run_foreground(&self, prompt: &str) -> ToolOutput {
         let (id, handle) = self.make_session();
         let path_str = handle.session_path.display().to_string();
         let parts = match prepare_child_parts(&handle, &self.model, None).await {
@@ -806,6 +1010,7 @@ where
                 prompt: prompt.to_string(),
                 started_at,
                 ended_at: None,
+                last_message: None,
             });
         self.registry.changed();
 
@@ -830,7 +1035,8 @@ where
             parts: &parts,
             query_port: self.query_port.clone(),
             session_id: &handle.session_id,
-            parent_link: None,
+            addressing: None,
+            self_label: None,
         }) {
             Ok(t) => t,
             Err(msg) => {
@@ -890,7 +1096,8 @@ where
 
     /// 后台委派:注册驻留记录 → spawn 驻留任务 → 立即返回子代理 id。
     /// 驻留任务跑初始 turn → 结算通知 → 转 idle 等 send_message。
-    fn start_background(&mut self, label: &str, prompt: &str) -> ToolOutput {
+    /// (共享核方法:模型面工具与桌面 spawn 入口同一路)
+    pub fn start_background(&self, label: &str, prompt: &str) -> ToolOutput {
         let Some(notify) = self.notify.clone() else {
             // 无通知 port = 接口无后台语义(不可达:specs 不声明后台参数;
             // 兜底拒绝,行为承诺与接口一致)
@@ -922,6 +1129,7 @@ where
                 prompt: prompt.to_string(),
                 started_at: now_ms(),
                 ended_at: None,
+                last_message: None,
             });
         self.registry.changed();
         tokio::spawn(run_resident_child(ResidentChild {
@@ -939,8 +1147,12 @@ where
             steer,
             rx,
             query_port: self.query_port.clone(),
+            addressing: self.addressing.clone(),
             release: Arc::new(|| ()),
-            first: Some(ChildMsg::Prompt(prompt.to_string())),
+            first: Some(ChildMsg::Prompt {
+                text: prompt.to_string(),
+                source: None,
+            }),
             resumed_interrupted: false,
         }));
         ToolOutput {
@@ -951,10 +1163,10 @@ where
     }
 
     /// 重启恢复:扫描父会话下有 descriptor 标记的子会话并重挂为
-    /// 驻留(实现方已认领防双挂;中断者先冷修夏并落「已恢复」settled
+    /// 驻留(实现方已认领防双挂;中断者先冷修复并落「已恢复」settled
     /// 标记,**不投父通知**——通知即 turn 输入,重启不自动续跑)。
     /// 无 factory/notify 或无 tokio runtime(纯装配单测)→ no-op。
-    pub fn resume_children(&mut self) {
+    pub fn resume_children(&self) {
         let Some(factory) = self.factory.clone() else {
             return;
         };
@@ -986,6 +1198,7 @@ where
                     prompt: prompt.clone(),
                     started_at: now_ms(),
                     ended_at: None,
+                    last_message: None,
                 });
             self.registry.changed();
             let release_factory = Arc::clone(&factory);
@@ -1005,6 +1218,7 @@ where
                 steer,
                 rx,
                 query_port: self.query_port.clone(),
+                addressing: self.addressing.clone(),
                 release: Arc::new(move || release_factory.release_child(&release_id)),
                 first: None,
                 resumed_interrupted: interrupted,
@@ -1031,6 +1245,8 @@ struct ResidentChild<T> {
     steer: Arc<Mutex<VecDeque<SteerInput>>>,
     rx: tokio::sync::mpsc::UnboundedReceiver<ChildMsg>,
     query_port: Option<Arc<dyn crate::session_query::SessionQueryPort>>,
+    /// 对等寻址 port(子面 AgentMessageTool 背端;None = 子面无寻址)
+    addressing: Option<Arc<dyn AddressingPort>>,
     /// 驻留退出释放认领(重挂形态必持;新建为 no-op)
     release: Arc<dyn Fn() + Send + Sync>,
     /// 初始 prompt(委派即带;与续话统一走消息循环)
@@ -1073,17 +1289,13 @@ where
         steer,
         mut rx,
         query_port,
+        addressing,
         release: _,
         mut first,
         resumed_interrupted,
     } = child;
-    let parent_link = ChildParentLink {
-        parent_id: parent_id.clone(),
-        self_id: handle.session_id.clone(),
-        notify: Arc::clone(&notify),
-    };
 
-    let mut parts = match prepare_child_parts(&handle, &model, Some(&parent_link)).await {
+    let mut parts = match prepare_child_parts(&handle, &model, Some(&parent_id)).await {
         Ok(parts) => parts,
         Err(_) => {
             // 装配失败:记录 failed 并以失败通知收口(父会话必须知道委派没成)
@@ -1128,10 +1340,24 @@ where
     // 中途插话:引擎 step 边界认领(steer 语义)
     engine.set_steer_buf(Arc::clone(&steer));
 
+    // 离线收件箱冲账:重挂会话的日志里可能有未消费 pending(本子代理
+    // 离线期间经阶梯落档的消息)。按序提取为前置输入(优先于续话通道
+    // 新消息);每条 turn 的 user/message 落档后紧跟 consumed——顺序
+    // 不可反:先落 consumed 再输入的崩溃窗口会丢消息,现顺序的崩溃
+    // 窗口(输入已落档、consumed 未落)= 下次重挂重投一次 =
+    // at-least-once,窄且代理侧幂等消化
+    let mut inbox: VecDeque<(String, Option<Value>, String)> = {
+        let log = parts.log.lock().unwrap_or_else(|p| p.into_inner());
+        extract_inbox_pending(&log)
+            .into_iter()
+            .map(|(id, text, source)| (text, source, id))
+            .collect()
+    };
+
     // 重挂且中断:只落 settled 标记(下次扫描视为已结),**不投父通知**
     // ——通知经 Notice 泵即变父会话 turn 输入,空闲驱动认领 = 无用户
     // 确认就续跑/重跑上次中断的工作(退出时在跑的子代理每次重开必被
-    // 重放)。中断痕迹留在子日志:冷修夏的合成失败结果 + 本标记,父
+    // 重放)。中断痕迹留在子日志:冷修复的合成失败结果 + 本标记,父
     // 模型经 list_agents 可见 idle 态,用户让继续再 send_message
     if resumed_interrupted {
         commit_child_marker(
@@ -1142,21 +1368,36 @@ where
     }
 
     'resident: loop {
-        // 空闲等待:取下一条消息。父取消 → 静默退出(不通知——唤醒已取消
-        // 的父会话只会凭空起 turn;子会话日志即持久记录)
-        let prompt_text = {
+        // 空闲等待:取下一条消息(初始 prompt → 收件箱冲账 → 续话通道)。
+        // 父取消 → 静默退出(不通知——唤醒已取消的父会话只会凭空起
+        // turn;子会话日志即持久记录)
+        let next_msg = {
             let get_next = async {
-                match first.take() {
-                    Some(ChildMsg::Prompt(text)) => Some(text),
-                    None => rx.recv().await.map(|m| match m {
-                        ChildMsg::Prompt(text) => text,
-                    }),
+                if let Some(msg) = first.take() {
+                    return Some((msg, None));
                 }
+                if let Some((text, source, id)) = inbox.pop_front() {
+                    return Some((ChildMsg::Prompt { text, source }, Some(id)));
+                }
+                rx.recv().await.map(|m| (m, None))
             };
             tokio::select! {
                 msg = get_next => match msg {
-                    Some(text) => text,
-                    None => break 'resident, // 注册表已 drop(会话终结)→ 退出
+                    Some(next) => next,
+                    None => {
+                        // 唯一续话 sender 已 drop:注册表摘记录(会话终结)
+                        // 或 terminate_agent(terminated)——后者落
+                        // terminated settled,重启不复活(resumable 判据)
+                        if is_terminated(&registry, &handle.session_id) {
+                            set_status(&registry, &handle.session_id, "terminated");
+                            commit_child_marker(
+                                &parts.log,
+                                "subagent/settled",
+                                json!({ "stopReason": "terminated" }),
+                            );
+                        }
+                        break 'resident;
+                    }
                 },
                 _ = parent_cancel.cancelled() => {
                     set_status(&registry, &handle.session_id, "cancelled");
@@ -1171,9 +1412,10 @@ where
             }
         };
         // 内层:连续执行队列(本条 + 期间经 steer/续话到达的)
-        let mut queue: VecDeque<String> = VecDeque::new();
-        queue.push_back(prompt_text);
-        while let Some(prompt_text) = queue.pop_front() {
+        let mut queue: VecDeque<(ChildMsg, Option<String>)> = VecDeque::new();
+        queue.push_back(next_msg);
+        while let Some((msg, inbox_id)) = queue.pop_front() {
+            let ChildMsg::Prompt { text, source } = msg;
             if parent_cancel.is_cancelled() {
                 set_status(&registry, &handle.session_id, "cancelled");
                 commit_child_marker(
@@ -1184,6 +1426,9 @@ where
                 break 'resident;
             }
             set_status(&registry, &handle.session_id, "running");
+            // 续话通道的输入染色(与 steer 路径同构:引擎在首步真实用户
+            // 消息落档时消费 pending_input_source)
+            engine.set_input_source(source);
 
             // 每 turn 一枚令牌 + 随令牌重建工具集:interrupt 只停当前 turn,
             // 运行中 bash 随令牌中断,子代理保持驻留
@@ -1194,7 +1439,8 @@ where
                 parts: &parts,
                 query_port: query_port.clone(),
                 session_id: &handle.session_id,
-                parent_link: Some(parent_link.clone()),
+                addressing: addressing.clone(),
+                self_label: Some(&label),
             }) {
                 Ok(t) => t,
                 Err(_) => {
@@ -1214,7 +1460,7 @@ where
                 &mut engine,
                 &mut gate,
                 &mut tools,
-                &prompt_text,
+                &text,
                 &turn_token,
                 &parent_cancel,
                 interrupt,
@@ -1230,6 +1476,18 @@ where
                     &parts.log,
                     "subagent/settled",
                     json!({ "stopReason": "aborted" }),
+                );
+                break 'resident;
+            }
+
+            // 终止(terminate_agent):当前 turn 收尾后不再回 idle——落
+            // terminated settled(重启不复活),不投结算通知
+            if is_terminated(&registry, &handle.session_id) {
+                set_status(&registry, &handle.session_id, "terminated");
+                commit_child_marker(
+                    &parts.log,
+                    "subagent/settled",
+                    json!({ "stopReason": "terminated" }),
                 );
                 break 'resident;
             }
@@ -1250,17 +1508,28 @@ where
                 "subagent/settled",
                 json!({ "stopReason": stop_reason }),
             );
+            // 收件箱条目收尾:turn 的 user/message 已落档,紧跟 consumed
+            // 标记(顺序语义见 extract_inbox_pending 文档)
+            if let Some(id) = inbox_id {
+                commit_child_marker(&parts.log, "agent/inbox/consumed", json!({ "id": id }));
+            }
 
             // 排干运行中未及消费的插话(parked messages 依次续跑),
             // 再收续话通道;两者皆空 → 回 idle 等待
             {
                 let mut b = steer.lock().unwrap_or_else(|p| p.into_inner());
                 while let Some(s) = b.pop_front() {
-                    queue.push_back(s.text);
+                    queue.push_back((
+                        ChildMsg::Prompt {
+                            text: s.text,
+                            source: s.source,
+                        },
+                        None,
+                    ));
                 }
             }
-            if let Ok(ChildMsg::Prompt(text)) = rx.try_recv() {
-                queue.push_back(text);
+            if let Ok(msg) = rx.try_recv() {
+                queue.push_back((msg, None));
             }
         }
     }
@@ -1352,9 +1621,90 @@ where
     }
 }
 
-/// 子代理控制工具:
-/// `send_message`(续话/中途插话)/ `interrupt_agent`(打断当前 turn)/
-/// `list_agents`(列驻留子代理)。
+/// 驻留活体投递(投递阶梯第 2 步的单注册表形态;宿主扫全库
+/// jobs_sources 后对命中注册表调用,测试 port 直用):
+/// 目标 `running` → steer 缓冲(引擎 step 边界认领,同一 turn);
+/// `idle` → 续话通道开新 turn(source 随 ChildMsg 染色)。
+/// turn 刚结束的竞态窗口消息落 steer 缓冲,由驻留循环在回 idle 前
+/// 排干,不丢。找不到记录 / 无驻留通道 = Err(调用方继续阶梯后续步)。
+pub fn deliver_to_registry_record(
+    registry: &SubagentRegistry,
+    target: &str,
+    text: &str,
+    source: Value,
+) -> Result<DeliveryKind, String> {
+    let kind = deliver_to_registry_record_inner(registry, target, text, source.clone());
+    if kind.is_ok() {
+        // 最近入站消息摘要(任务面板行副行;非持久)。对等消息的
+        // source 已带 summary(消息内容首行,拼通知时算好)——直接取,
+        // 避免吃进「Message from …:」头行把 80 字预算耗光;无 summary
+        // 的通知(结算)回落文本首行
+        let summary = source
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                text.lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("")
+                    .chars()
+                    .take(80)
+                    .collect()
+            });
+        if !summary.is_empty()
+            && let Ok(mut r) = registry.lock()
+            && let Some(rec) = r.iter_mut().find(|s| s.session_id == target)
+        {
+            rec.last_message = Some(summary);
+        }
+        registry.changed();
+    }
+    kind
+}
+
+fn deliver_to_registry_record_inner(
+    registry: &SubagentRegistry,
+    target: &str,
+    text: &str,
+    source: Value,
+) -> Result<DeliveryKind, String> {
+    let Ok(r) = registry.lock() else {
+        return Err("registry unavailable".into());
+    };
+    let Some(rec) = r.iter().find(|s| s.session_id == target) else {
+        return Err(format!("agent {target} not found"));
+    };
+    if rec.status == "running"
+        && let Some(buf) = &rec.steer
+    {
+        let mut b = buf.lock().unwrap_or_else(|p| p.into_inner());
+        b.push_back(SteerInput {
+            id: format!("steer-{}", uuid::Uuid::now_v7()),
+            text: text.to_string(),
+            images: Vec::new(),
+            files: Vec::new(),
+            source: Some(source),
+        });
+        return Ok(DeliveryKind::Steered);
+    }
+    match &rec.tx {
+        Some(tx)
+            if tx
+                .send(ChildMsg::Prompt {
+                    text: text.to_string(),
+                    source: Some(source),
+                })
+                .is_ok() =>
+        {
+            Ok(DeliveryKind::TurnStarted)
+        }
+        _ => Err(format!("agent {target} is no longer accepting messages")),
+    }
+}
+
+/// 子代理控制工具:`interrupt_agent`(打断当前 turn)/
+/// `terminate_agent`(永久终止,不可逆)。send_message/list_agents 已并入
+/// 对等寻址面(AgentMessageTool,经 AddressingPort 走宿主投递阶梯)。
 pub struct SubagentControlTool {
     /// 注册表(与执行工具共享)
     pub registry: SubagentRegistry,
@@ -1373,21 +1723,6 @@ impl ToolPort for SubagentControlTool {
             json!({
                 "type": "function",
                 "function": {
-                    "name": "send_message",
-                    "description": "Send a message to a direct continuable child by its agent id. If you are a resident continuable child, you may also target your direct parent. If the target is still working, the message steers its nearest step; if it is idle, the message starts a turn. This call returns no answer from the agent — only confirmation that the message was delivered. A failure means the message was NOT delivered.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "agent_id": { "type": "string", "description": "The agent id of your direct continuable child, or your direct parent when you are a resident continuable child." },
-                            "message": { "type": "string", "description": "The message to deliver to the agent." }
-                        },
-                        "required": ["agent_id", "message"]
-                    },
-                },
-            }),
-            json!({
-                "type": "function",
-                "function": {
                     "name": "interrupt_agent",
                     "description": "Request cancellation of a background agent's current turn by its agent id. The target is one of your direct children. Only the current turn stops: messages already queued for the agent stay parked until a later send_message, and the agent itself stays available for follow-ups. This call returns as soon as the stop request is accepted, so the target may keep running briefly; interrupting an agent that already finished is an accepted no-op.",
                     "parameters": {
@@ -1402,9 +1737,15 @@ impl ToolPort for SubagentControlTool {
             json!({
                 "type": "function",
                 "function": {
-                    "name": "list_agents",
-                    "description": "List your continuable background subagents by durable id and label. Use it to recall which ones you started, not to poll for completion — you are told when one finishes. Status comes from the live registry: running means the agent is working right now, idle means it is loaded but between turns, and stopped/failed are endings already reported by a settlement notice. The snapshot is not a delivery promise — `send_message` performs the authoritative check and may still fail.",
-                    "parameters": { "type": "object", "properties": {} },
+                    "name": "terminate_agent",
+                    "description": "Permanently terminate one of your direct background agents by its agent id. This is irreversible: the agent's pending inbox is dropped, it will not resume after a restart, and the only way to rerun its task is to delegate a new subagent. Use interrupt_agent instead when you only want to stop the current turn. Terminating an agent that already ended is an accepted no-op.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "agent_id": { "type": "string", "description": "The agent id of the background agent to terminate." }
+                        },
+                        "required": ["agent_id"]
+                    },
                 },
             }),
         ]
@@ -1422,54 +1763,6 @@ impl ToolPort for SubagentControlTool {
             call.arguments.clone()
         };
         match call.name.as_str() {
-            "send_message" => {
-                let (Some(agent_id), Some(message)) = (
-                    arguments["agent_id"].as_str(),
-                    arguments["message"].as_str(),
-                ) else {
-                    return fail(
-                        "send_message requires arguments.agent_id and arguments.message (strings)"
-                            .into(),
-                    );
-                };
-                let Ok(r) = self.registry.lock() else {
-                    return fail("registry unavailable".into());
-                };
-                let Some(rec) = r.iter().find(|s| s.session_id == agent_id) else {
-                    return fail(format!("agent {agent_id} not found"));
-                };
-                // 路由:运行中 → steer 其最近 step(中途插话);
-                // idle → 开新 turn。turn 刚结束的竞态窗口消息落在 steer 缓冲,
-                // 由驻留循环在回 idle 前排干,不丢。
-                if rec.status == "running"
-                    && let Some(buf) = &rec.steer
-                {
-                    let mut b = buf.lock().unwrap_or_else(|p| p.into_inner());
-                    b.push_back(SteerInput {
-                        id: format!("steer-{}", uuid::Uuid::now_v7()),
-                        text: message.to_string(),
-                        images: Vec::new(),
-                        files: Vec::new(),
-                        source: None,
-                    });
-                    drop(b);
-                    return ToolOutput {
-                        output: format!("message delivered to agent {agent_id}"),
-                        success: true,
-                        ..Default::default()
-                    };
-                }
-                match &rec.tx {
-                    Some(tx) if tx.send(ChildMsg::Prompt(message.to_string())).is_ok() => {
-                        ToolOutput {
-                            output: format!("message delivered to agent {agent_id}"),
-                            success: true,
-                            ..Default::default()
-                        }
-                    }
-                    _ => fail(format!("agent {agent_id} is no longer accepting messages")),
-                }
-            }
             "interrupt_agent" => {
                 let Some(agent_id) = arguments["agent_id"].as_str() else {
                     return fail("interrupt_agent requires arguments.agent_id (string)".into());
@@ -1493,29 +1786,38 @@ impl ToolPort for SubagentControlTool {
                     ..Default::default()
                 }
             }
-            "list_agents" => {
-                let Ok(r) = self.registry.lock() else {
-                    return fail("registry unavailable".into());
+            "terminate_agent" => {
+                let Some(agent_id) = arguments["agent_id"].as_str() else {
+                    return fail("terminate_agent requires arguments.agent_id (string)".into());
                 };
-                // 一次性(前台)子代理不出现在清单——不可续话,模型
-                // 永不需要选它;清单只列后台驻留子代理
-                let rows: Vec<String> = r
-                    .iter()
-                    .filter(|s| s.background)
-                    .map(|s| format!("{} [{}] {}", s.session_id, s.status, s.task))
-                    .collect();
-                if rows.is_empty() {
-                    ToolOutput {
-                        output: "(no background subagents)".into(),
-                        success: true,
-                        ..Default::default()
+                // 置 terminated + drop 唯一续话 sender:驻留循环在 idle
+                // 等待(recv None)或当前 turn 收尾即落 terminated settled
+                // 退出(重启不复活);不可逆,重派 = 重新委派
+                let stop = {
+                    let Ok(mut r) = self.registry.lock() else {
+                        return fail("registry unavailable".into());
+                    };
+                    match r.iter_mut().find(|s| s.session_id == agent_id) {
+                        Some(rec) => {
+                            if rec.status != "terminated" {
+                                rec.status = "terminated".into();
+                                rec.tx = None;
+                                rec.ended_at = Some(now_ms());
+                            }
+                            rec.stop.clone()
+                        }
+                        None => return fail(format!("agent {agent_id} not found")),
                     }
-                } else {
-                    ToolOutput {
-                        output: rows.join("\n"),
-                        success: true,
-                        ..Default::default()
-                    }
+                };
+                // 运行中:打断当前 turn(收尾路径落 terminated settled;
+                // notify_one 许可语义同 interrupt)
+                if let Some(stop) = stop {
+                    stop.notify_one();
+                }
+                ToolOutput {
+                    output: format!("agent {agent_id} terminated (irreversible)"),
+                    success: true,
+                    ..Default::default()
                 }
             }
             _ => fail(format!("unknown tool: {}", call.name)),
@@ -1549,15 +1851,6 @@ mod tests {
                 .map(|(_, t, _)| t.clone())
                 .collect()
         }
-
-        fn kinds(&self) -> Vec<String> {
-            self.calls
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|(_, _, s)| s["kind"].as_str().unwrap_or_default().to_string())
-                .collect()
-        }
     }
 
     impl SettlementNotificationPort for RecordingNotify {
@@ -1572,6 +1865,74 @@ mod tests {
                 .unwrap()
                 .push((parent_session.to_string(), text, source));
             Box::pin(std::future::ready(()))
+        }
+    }
+
+    /// 录制型寻址 port:记录 (sender, target, text, source) 四元组
+    /// (子面 send_message 的行为断言用)
+    #[derive(Default, Clone)]
+    struct RecordingAddressing {
+        #[allow(clippy::type_complexity)]
+        calls: Arc<Mutex<Vec<(String, String, String, Value)>>>,
+    }
+
+    impl AddressingPort for RecordingAddressing {
+        fn deliver(
+            &self,
+            sender: &str,
+            target: &str,
+            text: &str,
+            source: Value,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<DeliveryKind, String>> + Send + '_>>
+        {
+            self.calls.lock().unwrap().push((
+                sender.to_string(),
+                target.to_string(),
+                text.to_string(),
+                source,
+            ));
+            Box::pin(std::future::ready(Ok(DeliveryKind::Noticed)))
+        }
+
+        fn roster(&self, _sender: &str) -> Vec<RosterEntry> {
+            Vec::new()
+        }
+    }
+
+    /// 注册表路由型寻址 port:deliver = 驻留活体投递(与宿主阶梯第 2 步
+    /// 同一实现 deliver_to_registry_record),roster = 注册表行。
+    /// 父面 AgentMessageTool 的行为测试用。
+    #[derive(Clone)]
+    struct RegistryAddressing {
+        registry: SubagentRegistry,
+    }
+
+    impl AddressingPort for RegistryAddressing {
+        fn deliver(
+            &self,
+            _sender: &str,
+            target: &str,
+            text: &str,
+            source: Value,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<DeliveryKind, String>> + Send + '_>>
+        {
+            let out = deliver_to_registry_record(&self.registry, target, text, source);
+            Box::pin(std::future::ready(out))
+        }
+
+        fn roster(&self, _sender: &str) -> Vec<RosterEntry> {
+            self.registry
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r.background)
+                .map(|r| RosterEntry {
+                    session_id: r.session_id.clone(),
+                    label: r.task.clone(),
+                    relation: "child".into(),
+                    status: r.status.clone(),
+                })
+                .collect()
         }
     }
 
@@ -1703,9 +2064,15 @@ mod tests {
         wait_for(|| notify.calls.lock().unwrap().len() == 1).await;
 
         // send_message 立即投递(不阻塞等子代理回复)
-        let mut control = SubagentControlTool::new(tool.registry.clone());
+        let mut msg_tool = AgentMessageTool::new(
+            "",
+            None,
+            Arc::new(RegistryAddressing {
+                registry: tool.registry.clone(),
+            }),
+        );
         let sent = ToolPort::execute(
-            &mut control,
+            &mut msg_tool,
             &ToolCallRequest {
                 name: "send_message".into(),
                 arguments: json!({ "agent_id": session_id, "message": "continue please" }),
@@ -1715,7 +2082,7 @@ mod tests {
         assert!(sent.success, "{}", sent.output);
         assert_eq!(
             sent.output,
-            format!("message delivered to agent {session_id}")
+            format!("message delivered to agent {session_id} (started a new turn)")
         );
 
         // 续话 turn 结算 → 第二次通知
@@ -1795,9 +2162,15 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         // 运行中插话 → steer 路由(立即投递确认)
-        let mut control = SubagentControlTool::new(tool.registry.clone());
+        let mut msg_tool = AgentMessageTool::new(
+            "",
+            None,
+            Arc::new(RegistryAddressing {
+                registry: tool.registry.clone(),
+            }),
+        );
         let sent = ToolPort::execute(
-            &mut control,
+            &mut msg_tool,
             &ToolCallRequest {
                 name: "send_message".into(),
                 arguments: json!({ "agent_id": session_id, "message": "change course now" }),
@@ -1805,6 +2178,10 @@ mod tests {
         )
         .await;
         assert!(sent.success, "{}", sent.output);
+        assert_eq!(
+            sent.output,
+            format!("message delivered to agent {session_id} (steered into its current turn)")
+        );
         std::fs::write(&go_file, b"").unwrap();
 
         // 同一 turn 内消费:bash 放行后 step2 认领插话,最终回复出自脚本第 2 条
@@ -1846,7 +2223,9 @@ mod tests {
     #[tokio::test]
     async fn child_sends_message_to_parent_mid_task() {
         let notify = RecordingNotify::default();
-        // 子代理在任务中途主动回发父(脚本:先 send_message 再收尾)
+        let addressing = RecordingAddressing::default();
+        // 子代理在任务中途主动回发父(脚本:先 send_message 再收尾;
+        // 寻址走 AddressingPort,结算仍走 notify port)
         let mut group = tool_call_group(
             "send_message",
             json!({ "agent_id": "parent-1", "message": "interim finding" }),
@@ -1867,6 +2246,7 @@ mod tests {
         };
         let mut tool = SubagentTool::new(dir("childmsg"), factory, "m".into())
             .with_notify(Arc::new(notify.clone()))
+            .with_addressing(Arc::new(addressing.clone()))
             .with_parent_id("parent-1");
         let out = ToolPort::execute(&mut tool, &subagent_call("Report home", "work")).await;
         let session_id = out
@@ -1875,23 +2255,18 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // 通知序:先中途消息(subagent-message)后结算(settled)
-        wait_for(|| notify.calls.lock().unwrap().len() == 2).await;
-        assert_eq!(
-            notify.kinds(),
-            vec![
-                "subagent-message".to_string(),
-                "subagent-settled".to_string()
-            ],
-            "中途消息先于结算通知"
-        );
-        let (parent, text, source) = notify.calls.lock().unwrap()[0].clone();
-        assert_eq!(parent, "parent-1");
-        assert!(text.contains("Message from subagent"), "{text}");
+        // 中途消息经寻址 port:sender/target/文本模板/染色
+        wait_for(|| addressing.calls.lock().unwrap().len() == 1).await;
+        let (sender, target, text, source) = addressing.calls.lock().unwrap()[0].clone();
+        assert_eq!(sender, session_id);
+        assert_eq!(target, "parent-1");
+        assert!(text.contains("Message from agent"), "{text}");
         assert!(text.contains("interim finding"), "{text}");
         assert_eq!(source["kind"], "subagent-message");
         assert_eq!(source["senderSessionId"], session_id);
-        let (_, text, _) = notify.calls.lock().unwrap()[1].clone();
+        // 结算通知仍走 notify port
+        wait_for(|| notify.calls.lock().unwrap().len() == 1).await;
+        let (_, text, _) = notify.calls.lock().unwrap()[0].clone();
         assert!(text.contains("final report"), "{text}");
     }
 
@@ -2018,8 +2393,15 @@ mod tests {
         .await;
 
         // 打断后续话仍可用(新 turn,新令牌)
+        let mut msg_tool = AgentMessageTool::new(
+            "",
+            None,
+            Arc::new(RegistryAddressing {
+                registry: tool.registry.clone(),
+            }),
+        );
         let sent = ToolPort::execute(
-            &mut control,
+            &mut msg_tool,
             &ToolCallRequest {
                 name: "send_message".into(),
                 arguments: json!({ "agent_id": session_id, "message": "wrap up" }),
@@ -2112,9 +2494,15 @@ mod tests {
         assert!(fg.output.contains("fg result"), "前台等结果");
 
         wait_for(|| notify.calls.lock().unwrap().len() == 1).await;
-        let mut control = SubagentControlTool::new(tool.registry.clone());
+        let mut msg_tool = AgentMessageTool::new(
+            "",
+            None,
+            Arc::new(RegistryAddressing {
+                registry: tool.registry.clone(),
+            }),
+        );
         let list = ToolPort::execute(
-            &mut control,
+            &mut msg_tool,
             &ToolCallRequest {
                 name: "list_agents".into(),
                 arguments: json!({}),
@@ -2122,7 +2510,11 @@ mod tests {
         )
         .await;
         assert!(list.output.contains(&bg_id), "{}", list.output);
-        assert!(list.output.contains("[idle] Bg task"), "{}", list.output);
+        assert!(
+            list.output.contains("[child/idle] Bg task"),
+            "{}",
+            list.output
+        );
         assert!(
             !list.output.contains("Fg task"),
             "前台一次性不列入清单:{}",
@@ -2165,16 +2557,35 @@ mod tests {
                 .unwrap()
                 .contains("runs in the background by default")
         );
-        // send_message 描述须含中途 steer 与父寻址句
-        let control = SubagentControlTool::new(SubagentRegistry::default());
-        let cspec = ToolPort::specs(&control)
-            .into_iter()
-            .into_iter()
+        // 对等寻址面:send_message 描述须含中途 steer 与可发范围句
+        // (父/兄弟/子),list_agents 描述含 relation 句
+        let msg_tool = AgentMessageTool::new(
+            "",
+            None,
+            Arc::new(RegistryAddressing {
+                registry: SubagentRegistry::default(),
+            }),
+        );
+        let specs = ToolPort::specs(&msg_tool);
+        let send_spec = specs
+            .iter()
             .find(|s| s["function"]["name"] == "send_message")
             .unwrap();
-        let desc = cspec["function"]["description"].as_str().unwrap();
+        let desc = send_spec["function"]["description"].as_str().unwrap();
         assert!(desc.contains("steers its nearest step"), "{desc}");
         assert!(desc.contains("your direct parent"), "{desc}");
+        assert!(desc.contains("sibling"), "{desc}");
+        assert!(desc.contains("queued in its inbox"), "{desc}");
+        let list_spec = specs
+            .iter()
+            .find(|s| s["function"]["name"] == "list_agents")
+            .unwrap();
+        assert!(
+            list_spec["function"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("relation (parent, sibling, child)")
+        );
     }
 
     #[test]
@@ -2194,6 +2605,306 @@ mod tests {
         assert!(
             text.contains("It left no closing message."),
             "空白 closing 视同无"
+        );
+    }
+
+    /// 离线收件箱冲账:重挂会话从日志提取未消费 pending(有 pending 无
+    /// consumed)作为前置 turn 输入;输入落档后紧跟 consumed。
+    /// 已消费条目(a)不重投,未消费条目(b)恰好投一次。
+    #[tokio::test]
+    async fn inbox_pending_replayed_on_resume_and_consumed() {
+        let notify = RecordingNotify::default();
+        // 手工 seed 子会话日志:descriptor + pending(a) + pending(b) +
+        // consumed(a)——期望重挂后只重投 b
+        let root = dir("inbox");
+        let child_dir = root.join(".liuma/subagents/seed-1");
+        std::fs::create_dir_all(&child_dir).unwrap();
+        let child_path = child_dir.join("session.jsonl");
+        let mut events: Vec<EventEnvelope> = Vec::new();
+        let mut seed = |ty: &str, data: Value| {
+            let mut ev = EventEnvelope::new_ignorable(ty, now_ms(), data);
+            ev.seq = events.len() as u64 + 1;
+            events.push(ev);
+        };
+        seed(
+            "subagent/descriptor",
+            json!({ "parentSessionId": "parent-1", "label": "Seeded", "prompt": "seed prompt", "mode": "continuable" }),
+        );
+        seed(
+            "agent/inbox/pending",
+            json!({ "sender": "peer-x", "text": "already eaten", "id": "a", "source": null }),
+        );
+        seed(
+            "agent/inbox/pending",
+            json!({ "sender": "peer-x", "text": "offline message", "id": "b", "source": null }),
+        );
+        seed("agent/inbox/consumed", json!({ "id": "a" }));
+        {
+            use std::io::Write as _;
+            let mut f = std::fs::File::create(&child_path).unwrap();
+            for ev in &events {
+                serde_json::to_writer(&mut f, ev).unwrap();
+                f.write_all(b"\n").unwrap();
+            }
+        }
+        let handle = SubagentSessionHandle {
+            session_id: "seed-1".into(),
+            session_path: child_path.clone(),
+        };
+        struct SeededFactory {
+            handle: SubagentSessionHandle,
+        }
+        impl SessionFactory for SeededFactory {
+            fn create_subagent(&self, _parent: &str) -> SubagentSessionHandle {
+                self.handle.clone()
+            }
+            fn resumable_children(
+                &self,
+                _parent: &str,
+            ) -> Vec<(SubagentSessionHandle, bool, String, String)> {
+                vec![(
+                    self.handle.clone(),
+                    false,
+                    "Seeded".into(),
+                    "seed prompt".into(),
+                )]
+            }
+        }
+        let (factory, _built) = scripted_factory(&[&["replied after offline"]]);
+        let tool = SubagentTool::new(root.clone(), factory, "m".into())
+            .with_notify(Arc::new(notify.clone()))
+            .with_session_factory(Arc::new(SeededFactory { handle }))
+            .with_parent_id("parent-1");
+        tool.resume_children();
+        // 驻留起 → 冲账消费 pending(b) → turn 收尾落 consumed(b)
+        wait_for(|| {
+            child_events(&child_path.display().to_string())
+                .iter()
+                .any(|e| e.r#type == "agent/inbox/consumed" && e.data["id"] == "b")
+        })
+        .await;
+        let events = child_events(&child_path.display().to_string());
+        // b 作为 turn 输入落档(user/message);a 不重投
+        assert!(
+            events.iter().any(|e| e.r#type == "user/message"
+                && e.data["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("offline message")),
+            "未消费 pending 必须作为 turn 输入落档:{:?}",
+            events.iter().map(|e| e.r#type.as_str()).collect::<Vec<_>>()
+        );
+        assert!(
+            !events.iter().any(|e| e.r#type == "user/message"
+                && e.data["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("already eaten")),
+            "已消费 pending 不得重投"
+        );
+        // consumed(b) 恰一条(幂等)
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.r#type == "agent/inbox/consumed" && e.data["id"] == "b")
+                .count(),
+            1
+        );
+        // 结算通知仍投父(冲账 turn 也是 turn)
+        wait_for(|| notify.calls.lock().unwrap().len() == 1).await;
+    }
+
+    /// terminate_agent(idle 态):置 terminated + drop 续话通道 → 驻留
+    /// 循环 recv None 退出,落 settled terminated(重启不复活判据),
+    /// **不投结算通知**(idle 终止无回合可结算)。
+    #[tokio::test]
+    async fn terminate_agent_idle_persists_terminated_marker() {
+        let notify = RecordingNotify::default();
+        let (factory, _built) = scripted_factory(&[&["b ready"]]);
+        let mut tool = SubagentTool::new(dir("term-idle"), factory, "m".into())
+            .with_notify(Arc::new(notify.clone()));
+        let out = ToolPort::execute(&mut tool, &subagent_call("Term me", "run")).await;
+        let session_id = out
+            .output
+            .strip_prefix("started subagent ")
+            .unwrap()
+            .to_string();
+        wait_for(|| {
+            tool.registry
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.session_id == session_id && r.status == "idle")
+        })
+        .await;
+
+        let mut control = SubagentControlTool::new(tool.registry.clone());
+        let ack = ToolPort::execute(
+            &mut control,
+            &ToolCallRequest {
+                name: "terminate_agent".into(),
+                arguments: json!({ "agent_id": session_id }),
+            },
+        )
+        .await;
+        assert!(ack.success, "{}", ack.output);
+        // marker 由驻留循环异步落盘:直接轮询日志(状态置位是同步的,
+        // 等状态会早于落盘读日志)
+        let path = tool
+            .registry
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.session_id == session_id)
+            .map(|r| r.session_path.clone())
+            .unwrap();
+        wait_for(|| {
+            child_events(&path)
+                .iter()
+                .any(|e| e.r#type == "subagent/settled" && e.data["stopReason"] == "terminated")
+        })
+        .await;
+        // 子日志落 terminated settled(重启不复活判据)
+        let events = child_events(&path);
+        assert!(
+            events
+                .iter()
+                .any(|e| e.r#type == "subagent/settled" && e.data["stopReason"] == "terminated"),
+            "终止必须落 settled terminated:{:?}",
+            events.iter().map(|e| e.r#type.as_str()).collect::<Vec<_>>()
+        );
+        // idle 终止无回合可结算:不再追加通知
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert_eq!(
+            notify.calls.lock().unwrap().len(),
+            1,
+            "idle 终止不投结算通知"
+        );
+        // 终止后续话通道已 drop:再投递 = 错误
+        let mut msg_tool = AgentMessageTool::new(
+            "",
+            None,
+            Arc::new(RegistryAddressing {
+                registry: tool.registry.clone(),
+            }),
+        );
+        let sent = ToolPort::execute(
+            &mut msg_tool,
+            &ToolCallRequest {
+                name: "send_message".into(),
+                arguments: json!({ "agent_id": session_id, "message": "anyone?" }),
+            },
+        )
+        .await;
+        assert!(!sent.success, "终止后不可再投递:{}", sent.output);
+    }
+
+    /// terminate_agent(running 态):打断当前 turn → 收尾落 terminated
+    /// settled,不投结算通知(终止不是一次可续话的结算)。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminate_agent_running_lands_terminated_marker() {
+        let notify = RecordingNotify::default();
+        let go_file = dir("term-run").join("go");
+        let group: Vec<Vec<LlmEvent>> = vec![
+            tool_call_group(
+                "bash",
+                json!({
+                    "command": format!(
+                        "until [ -f \"{}\" ]; do sleep 0.05; done; echo released",
+                        go_file.display()
+                    ),
+                    "description": "Gate on test signal",
+                }),
+            )
+            .remove(0),
+            vec![LlmEvent::AssistantMessage(
+                json!({ "content": "never reached" }),
+            )],
+        ];
+        let factory: TransportFactory<FakeProvider> = {
+            let slot = Arc::new(Mutex::new(Some(group)));
+            Arc::new(move || {
+                let g = slot.lock().unwrap().take().unwrap_or_default();
+                let mut p = FakeProvider::new();
+                for response in g {
+                    p.then(response);
+                }
+                Ok(p)
+            })
+        };
+        let mut tool = SubagentTool::new(dir("term-run2"), factory, "m".into())
+            .with_notify(Arc::new(notify.clone()));
+        let out = ToolPort::execute(
+            &mut tool,
+            &ToolCallRequest {
+                name: "subagent".into(),
+                arguments: json!({ "description": "Term running", "prompt": "run long" }),
+            },
+        )
+        .await;
+        let session_id = out
+            .output
+            .strip_prefix("started subagent ")
+            .unwrap()
+            .to_string();
+        wait_for(|| {
+            tool.registry
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.session_id == session_id && r.status == "running")
+        })
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        let mut control = SubagentControlTool::new(tool.registry.clone());
+        let ack = ToolPort::execute(
+            &mut control,
+            &ToolCallRequest {
+                name: "terminate_agent".into(),
+                arguments: json!({ "agent_id": session_id }),
+            },
+        )
+        .await;
+        assert!(ack.success, "{}", ack.output);
+        std::fs::write(&go_file, b"").unwrap();
+        let path = tool
+            .registry
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.session_id == session_id)
+            .map(|r| r.session_path.clone())
+            .unwrap();
+        // marker 由收尾路径异步落盘:轮询日志
+        wait_for(|| {
+            child_events(&path)
+                .iter()
+                .any(|e| e.r#type == "subagent/settled" && e.data["stopReason"] == "terminated")
+        })
+        .await;
+        let events = child_events(&path);
+        assert!(
+            events
+                .iter()
+                .any(|e| e.r#type == "subagent/settled" && e.data["stopReason"] == "terminated"),
+            "运行中终止收尾落 terminated settled"
+        );
+        assert!(
+            !events.iter().any(|e| {
+                e.r#type == "assistant/message"
+                    && e.data["content"]
+                        .as_str()
+                        .is_some_and(|c| c.contains("never reached"))
+            }),
+            "终止后不得再跑后续 step"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert_eq!(
+            notify.calls.lock().unwrap().len(),
+            0,
+            "运行中终止不投结算通知"
         );
     }
 }

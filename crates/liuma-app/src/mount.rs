@@ -66,6 +66,9 @@ pub struct MountContext<'a> {
     pub session_factory: Option<Arc<dyn liuma_tools::subagent::SessionFactory>>,
     /// 子代理结算通知 port(缺 = subagent 同步语义)
     pub notify_port: Option<Arc<dyn liuma_tools::subagent::SettlementNotificationPort>>,
+    /// 对等寻址 port(缺 = 无寻址面:子面不装 AgentMessageTool、父面
+    /// 不装——CLI None 形态,与前台同步委派语义一致)
+    pub addressing_port: Option<Arc<dyn liuma_tools::AddressingPort>>,
     /// 归属会话槽位 id(复合形态;ask 问答卡会话门控用)
     pub current_session: Option<&'a str>,
     /// 子代理宿主桥(jobs 帧 + 子会话事件实时流;缺 = CLI)
@@ -406,13 +409,18 @@ fn make_subagent(
     if let Some(port) = &ctx.query_port {
         t = t.with_query_port(port.clone());
     }
+    // 对等寻址 port:驻留子面 AgentMessageTool 背端(前台路径
+    // build_child_tools 不消费,注入无副作用)
+    if let Some(port) = &ctx.addressing_port {
+        t = t.with_addressing(Arc::clone(port));
+    }
     Ok(t)
 }
 
-/// subagent:子代理工具 + 控制对(共享 registry;注册表统一,全可见)。
-/// 装配即做重启恢复扫描:父会话下中断的驻留子代理冷修夏后重挂为
-/// idle(不投父通知——通知即 turn 输入,重启不自动续跑),已结算的
-/// 重挂为可续话。
+/// subagent:子代理工具 + 控制对 + 对等寻址面(共享 registry;注册表
+/// 统一,全可见)。装配即做重启恢复扫描:父会话下中断的驻留子代理冷
+/// 修复后重挂为 idle(不投父通知——通知即 turn 输入,重启不自动续跑),
+/// 已结算的重挂为可续话。
 fn mount_subagent(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPortObj>>> {
     let mut subagent = make_subagent(ctx, true)?;
     subagent.resume_children();
@@ -422,10 +430,19 @@ fn mount_subagent(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPo
         (bridge.jobs)(session_id, registry.clone());
         subagent = subagent.with_event_sink(bridge.events.clone());
     }
-    Ok(vec![
+    let mut tools: Vec<Box<dyn ToolPortObj>> = vec![
         Box::new(subagent),
         Box::new(liuma_tools::SubagentControlTool::new(registry)),
-    ])
+    ];
+    // 对等寻址面(父面):send_message/list_agents 经投递阶梯
+    if let Some(port) = ctx.addressing_port.clone() {
+        tools.push(Box::new(liuma_tools::AgentMessageTool::new(
+            ctx.current_session.unwrap_or_default(),
+            None,
+            port,
+        )));
+    }
+    Ok(tools)
 }
 
 /// jobs:后台任务工具(与 bash 共享注册表)
@@ -535,6 +552,7 @@ pub fn assemble(
     plan_review_port: Option<Arc<dyn liuma_plan::PlanReviewPort>>,
     session_factory: Option<Arc<dyn liuma_tools::subagent::SessionFactory>>,
     notify_port: Option<Arc<dyn liuma_tools::subagent::SettlementNotificationPort>>,
+    addressing_port: Option<Arc<dyn liuma_tools::AddressingPort>>,
     current_session: Option<&str>,
     subagent_bridge: Option<Arc<liuma_tools::subagent::SubagentBridge>>,
 ) -> Result<Vec<Box<dyn ToolPortObj>>> {
@@ -560,6 +578,7 @@ pub fn assemble(
         plan_review_port,
         session_factory,
         notify_port,
+        addressing_port,
         current_session,
         subagent_bridge,
         present,
@@ -625,7 +644,7 @@ mod tests {
         let cancel = CancelToken::new();
         let tools = assemble(
             resolved, "key", &log, &cancel, false, permission, None, None, None, None, None, None,
-            None, None, None, None,
+            None, None, None, None, None,
         )
         .unwrap();
         tools
@@ -644,10 +663,12 @@ mod tests {
             ..resolved_with("")
         };
         let names = sources(&resolved, "workspace-write");
-        // 与旧 build_tools 等价:bash + files 三件 + todo/plan/goal + subagent 对
-        // (subagent/list_agents/send_message/interrupt_agent)+ jobs + workflow 对
-        // (workflow/ralph);session_query/ask_user_question 无宿主 port 跳过。
-        // 控制工具三件:list_agents + send_message + interrupt_agent
+        // bash + files 三件 + todo/plan/goal + subagent 对(subagent/
+        // interrupt_agent)+ jobs + workflow 对(workflow/ralph);
+        // session_query/ask_user_question 无宿主 port 跳过。寻址面
+        // (send_message/list_agents,AgentMessageTool)需 AddressingPort
+        // 在场——CLI 全 None 形态无寻址面(与前台同步委派语义一致),
+        // 桌面/宿主形态由 registry 测试覆盖。
         // shell 工具名随平台方言走(`bash` / `pwsh`),其余工具名恒定
         for expect in [
             liuma_sandbox::shell::tool_name(),
@@ -658,9 +679,8 @@ mod tests {
             "exit_plan_mode",
             "goal",
             "subagent",
-            "list_agents",
-            "send_message",
             "interrupt_agent",
+            "terminate_agent",
             "jobs",
             "workflow",
             "ralph",
@@ -670,10 +690,14 @@ mod tests {
                 "{expect} 缺席:{names:?}"
             );
         }
-        assert_eq!(names.len(), 14, "standard 装载 14 工具声明:{names:?}");
+        assert_eq!(names.len(), 13, "standard 装载 13 工具声明:{names:?}");
         assert!(
             !names.iter().any(|n| n == "session_query"),
             "无 port 应跳过"
+        );
+        assert!(
+            !names.iter().any(|n| n == "send_message"),
+            "无寻址 port 不装寻址面"
         );
     }
 
@@ -743,6 +767,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         assert!(tools.is_empty(), "port 缺 = 组件跳过");
@@ -765,6 +790,7 @@ mod tests {
                 port,
                 model: "jev-latest".into(),
             }),
+            None,
             None,
             None,
             None,
@@ -870,6 +896,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         ) else {
             panic!("未知组件源应拒绝");
         };
@@ -887,6 +914,7 @@ mod tests {
             &CancelToken::new(),
             false,
             "workspace-write",
+            None,
             None,
             None,
             None,

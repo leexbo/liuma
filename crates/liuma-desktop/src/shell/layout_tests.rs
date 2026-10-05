@@ -11787,7 +11787,8 @@ fn task_bar_switches_between_main_and_subagent(cx: &mut TestAppContext) {
         "子会话视图应有主线 chip"
     );
 
-    // 点主线 → 切回;子代理结束后条退场
+    // 点主线 → 切回;子代理转入驻留待命后条**不退场**(对等寻址面:
+    // 待命 = 仍可收消息,行驻留面板,头行摘要转「待命」计数)
     click_sel(&mut wcx, "task-chip-main");
     cx.run_until_parked();
     let current = cx.update(|app| store.read(app).state.current_id.clone());
@@ -11809,7 +11810,28 @@ fn task_bar_switches_between_main_and_subagent(cx: &mut TestAppContext) {
     wcx.refresh().expect("刷新失败");
     cx.update(|_: &mut App| {});
     cx.run_until_parked();
-    assert!(wcx.debug_bounds("task-bar").is_none(), "全部结束后条应退场");
+    assert!(
+        wcx.debug_bounds("task-bar").is_some(),
+        "驻留待命行应驻留面板(待命仍可寻址)"
+    );
+    // 终态(killed)才退场:无可续话行 = 面板回归运行监控语义
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            st.state.jobs_by_id.insert(
+                parent.clone(),
+                vec![serde_json::json!({
+                    "id": child, "kind": "subagent", "label": "统计仓库 TODO 注释",
+                    "status": "killed",
+                    "startedAt": 1_000, "finishedAt": 29_000,
+                })],
+            );
+        });
+    });
+    cx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut App| {});
+    cx.run_until_parked();
+    assert!(wcx.debug_bounds("task-bar").is_none(), "终态后条应退场");
     let _ = std::fs::remove_dir_all(root);
 }
 

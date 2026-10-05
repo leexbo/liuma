@@ -4,6 +4,7 @@
 //! 自侧栏行 ⋯ 菜单迁入此处 ⋯ 菜单(行尾仅留 hover 归档)。
 
 use gpui_kit::component::IconName;
+use gpui_kit::component::StyledExt as _;
 use gpui_kit::component::popover::Popover;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -73,6 +74,11 @@ pub fn title_bar_row(store: &Entity<AppStore>, window: &mut Window, cx: &App) ->
         .child(sidebar_fold_button(store, cx))
         .child(workspace_trigger(store, cx))
         .children(branch.map(|b| branch_badge(b, cx)))
+        // 页头家族切换器(仅子会话视图;主线视图不出现——任务面板
+        // 已承担目录职责,D48f 口径)
+        .when(st.current_is_subagent(), |el| {
+            el.child(family_switcher(store, cx))
+        })
         // 弹性占位:面板开关推到标题栏右缘(仅关态渲染;面板开着时
         // 同款钮挪入面板头右缘)
         .child(div().flex_1())
@@ -277,6 +283,114 @@ fn panel_toggle_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
 /// 会话管理菜单钮(右侧面板开关左侧;⋯ 形。菜单 = 重命名/归档/
 /// 分叉/导出日志,作用于当前会话;组件库 Popover 托管开态/外点关闭,
 /// 菜单内容见 sessions::session_menu_card)
+/// 页头家族切换器(仅子会话视图):「家族」pill 点击弹下拉,行 =
+/// 主线 / 兄弟(同父子代理,当前高亮)/ 子(前瞻:两层树下恒空)。
+/// 点击跳转;受控开态(拖拽区 popover 同 session_menu_button)
+fn family_switcher(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
+    let st = store.read(cx);
+    let open = st.subagents.family_menu_open;
+    let s_toggle = store.clone();
+    let s_content = store.clone();
+    Popover::new("family-switch-pop")
+        .appearance(false)
+        .anchor(Anchor::BottomLeft)
+        .open(open)
+        .on_open_change({
+            let s_open = store.clone();
+            move |open, _, cx| {
+                s_open.update(cx, |st, _| st.subagents.family_menu_open = *open);
+            }
+        })
+        .trigger(PopTrigger(
+            div()
+                .id("family-switch-btn")
+                .debug_selector(|| "family-switch-btn".to_string())
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .h(px(22.))
+                .px(px(8.))
+                .rounded(px(10.))
+                .border_1()
+                .border_color(theme::border_2(cx))
+                .cursor_pointer()
+                .hover(|st| st.bg(theme::layer(cx)))
+                // 拖拽区豁免,见 sidebar_fold_button 的说明
+                .occlude()
+                .text_size(px(11.))
+                .text_color(theme::label_2(cx))
+                .child(fixed(LiumaIcon::Workflow, 11.))
+                .child(crate::kits::i18n::t!("misc.family"))
+                .on_click(move |_, _, cx| {
+                    s_toggle.update(cx, |st, cx| {
+                        st.set_family_menu_open(!st.subagents.family_menu_open, cx);
+                    });
+                }),
+        ))
+        .content(move |_, _, cx| {
+            let st = s_content.read(cx);
+            let current = st.state.current_id.clone().unwrap_or_default();
+            let anchor = st.subagent_anchor_of(&current);
+            let mut rows: Vec<(String, String, bool)> = vec![(
+                anchor.clone(),
+                crate::kits::i18n::t!("misc.mainline").into(),
+                false,
+            )];
+            for sibling in st.subagent_children_of(&anchor) {
+                let is_current = sibling.session_id == current;
+                let label = st.title_for(&sibling.session_id);
+                rows.push((sibling.session_id, label, is_current));
+            }
+            let mut list = div()
+                .id("family-switch-card")
+                .debug_selector(|| "family-switch-card".to_string())
+                .v_flex()
+                .gap(px(2.))
+                .p(px(6.))
+                .min_w(px(180.))
+                .max_h(px(260.))
+                .overflow_y_scroll()
+                .rounded(px(10.))
+                .border_1()
+                .border_color(theme::border(cx))
+                .bg(theme::layer(cx));
+            for (id, label, is_current) in rows {
+                let s_go = s_content.clone();
+                list = list.child(
+                    div()
+                        .id(gpui_kit::SharedString::from(format!("family-row-{id}")))
+                        .debug_selector(|| "family-row".to_string())
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .rounded(px(6.))
+                        .px(px(8.))
+                        .h(px(24.))
+                        .cursor_pointer()
+                        .hover(|st| st.bg(theme::dock(cx)))
+                        .text_size(px(12.))
+                        .text_color(if is_current {
+                            theme::label(cx)
+                        } else {
+                            theme::label_2(cx)
+                        })
+                        .when(is_current, |el| {
+                            el.child(fixed(IconName::Check, 11.).text_color(theme::brand(cx)))
+                        })
+                        .child(div().min_w(px(0.)).flex_1().truncate().child(label))
+                        .on_click(move |_, _, cx| {
+                            let id = id.clone();
+                            s_go.update(cx, |st, cx| {
+                                st.subagents.family_menu_open = false;
+                                st.open_session(&id, cx);
+                            });
+                        }),
+                );
+            }
+            list.into_any_element()
+        })
+}
+
 fn session_menu_button(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
     let s_card = store.clone();
     let s_toggle = store.clone();

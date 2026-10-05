@@ -12,12 +12,16 @@ use crate::shell::store::AppStore;
 pub(crate) struct SubagentsStore {
     /// 任务条列表展开态(默认展开——运行中子代理直观可见)
     pub task_bar_open: bool,
+    /// 页头家族切换器开态(受控;标题栏拖拽区上 popover 须受控,
+    /// 见 session_menu_button 同款说明)
+    pub family_menu_open: bool,
 }
 
 impl Default for SubagentsStore {
     fn default() -> Self {
         Self {
             task_bar_open: true,
+            family_menu_open: false,
         }
     }
 }
@@ -39,6 +43,8 @@ pub(crate) struct LineageRow {
     pub started_at: Option<i64>,
     /// 终态时刻(ms)
     pub finished_at: Option<i64>,
+    /// 最近入站消息摘要(对等互发呈现:通知不进转录,行副行承担可见性)
+    pub last_message: Option<String>,
 }
 
 impl AppStore {
@@ -79,7 +85,7 @@ impl AppStore {
             .unwrap_or(0)
     }
 
-    /// 血缘行合并视图:jobs 帧权威(实时状态/计时/prompt),
+    /// 血缘行合并视图:jobs 帧权威(实时状态/计时/prompt/消息摘要),
     /// 子会话清单补位(无 jobs 帧的旧态/他端子代理 → 仅标题可跳转)
     pub fn lineage_rows(&self, session_id: &str) -> Vec<LineageRow> {
         let mut rows: Vec<LineageRow> = Vec::new();
@@ -99,6 +105,7 @@ impl AppStore {
                     }),
                     started_at: j["startedAt"].as_i64(),
                     finished_at: j["finishedAt"].as_i64(),
+                    last_message: j["lastMessage"].as_str().map(str::to_string),
                 });
             }
         }
@@ -115,6 +122,7 @@ impl AppStore {
                 dot: None,
                 started_at: None,
                 finished_at: None,
+                last_message: None,
             });
         }
         rows
@@ -133,8 +141,7 @@ impl AppStore {
             .collect()
     }
 
-    /// 血缘:当前会话是否为 subagent(页头切换器用;切换器本期未做,预留)
-    #[allow(dead_code)]
+    /// 血缘:当前会话是否为 subagent(页头家族切换器用)
     pub fn current_is_subagent(&self) -> bool {
         self.state
             .current_id
@@ -147,5 +154,11 @@ impl AppStore {
                     .map(|s| s.origin.as_deref() == Some("subagent"))
             })
             .unwrap_or(false)
+    }
+
+    /// 页头家族切换器开合
+    pub fn set_family_menu_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.subagents.family_menu_open = open;
+        cx.notify();
     }
 }

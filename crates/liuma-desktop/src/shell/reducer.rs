@@ -393,6 +393,28 @@ mod tests {
         assert!(st.jobs_by_id["s-p"].is_empty());
     }
 
+    /// jobs 帧透传新字段:对等互发的 lastMessage 摘要(行副行可见性;
+    /// 整帧透传,零改逻辑)
+    #[test]
+    fn jobs_frame_carries_last_message() {
+        let mut st = state();
+        let f = frame(
+            "session/jobs",
+            serde_json::json!({
+                "sessionId": "s-p",
+                "jobs": [
+                    { "id": "s-c1", "kind": "subagent", "label": "互发中的代理",
+                      "status": "running", "startedAt": 1_000,
+                      "lastMessage": "Message from agent Worker A: handoff" },
+                ],
+            }),
+        );
+        apply_frame(&mut st, f);
+        let j = &st.jobs_by_id["s-p"][0];
+        assert_eq!(j["status"], "running");
+        assert_eq!(j["lastMessage"], "Message from agent Worker A: handoff");
+    }
+
     fn state() -> StoreState {
         StoreState {
             sessions: vec![],

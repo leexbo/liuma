@@ -32,6 +32,10 @@ misc:
     zh-CN: "%{n} 个运行中"
     en: "%{n} running"
 
+  standby_n:
+    zh-CN: "%{n} 个待命"
+    en: "%{n} standby"
+
   ended:
     zh-CN: "已结束"
     en: "Ended"
@@ -43,6 +47,10 @@ misc:
   interrupt:
     zh-CN: "打断"
     en: "Interrupt"
+
+  family:
+    zh-CN: "家族"
+    en: "Family"
 
   feedback_ph:
     zh-CN: "这条回答哪里好，或哪里有问题？（可选）"

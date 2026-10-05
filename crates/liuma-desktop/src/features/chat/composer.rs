@@ -24,12 +24,42 @@ use crate::shell::store::AppStore;
 /// 输入卡整体
 pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> impl IntoElement {
     let st = store.read(cx);
+    // 子会话只读门(计划 §1.4:无驻留的 subagent 会话 = 只读视图):
+    // 槽位 driver 不认领 subagent 会话的队列,输入只会永挂——输入卡
+    // 退化为提示行,不渲染输入与发送面
+    if st.current_is_subagent() {
+        return div()
+            .w_full()
+            .debug_selector(|| "composer-card".to_string())
+            .v_flex()
+            .rounded(px(22.))
+            .border_1()
+            .border_color(theme::border(cx))
+            .bg(theme::composer(cx))
+            .px(px(16.))
+            .py(px(12.))
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .text_color(theme::caption(cx))
+                    .child(t!("chat.child_readonly")),
+            );
+    }
     let running = st
         .state
         .current_id
         .as_deref()
         .map(|id| st.is_running(id))
         .unwrap_or(false);
+    // 按钮态随草稿切换:有输入(文本或附件)= 发送(运行中输入走
+    // 队列/插话,与发送钮点击路径同款判定),空 = 停止。运行态钉死
+    // 停止会让人边跑边追加消息时点不了发送
+    let has_draft = st
+        .chat
+        .composer_input
+        .as_ref()
+        .is_some_and(|e| !e.read(cx).value().trim().is_empty())
+        || !st.attachments.drafts.is_empty();
     let has_at = st.chat.at_completion.is_some();
     div()
         .w_full()
@@ -105,7 +135,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 .child(input);
             input
         }))
-        .child(bottom_row(store, running, window, cx))
+        .child(bottom_row(store, running && !has_draft, window, cx))
         // @ 引用补全菜单(锚在输入卡上缘;后绘制在上层)
         .children(has_at.then(|| at_completion_anchor(store, cx)))
         // @ 补全键盘导航:capture 阶段拦截 ↑↓/Enter/Esc(有补全时),

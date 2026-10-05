@@ -102,7 +102,10 @@ pub use jobs::{
     JobKiller, JobRecord, JobTool, JobsRegistry, WeakJobsRegistry, job_settlement_notice,
     max_disk_job_id, next_job_id,
 };
-pub use subagent::{SubagentControlTool, SubagentRecord, SubagentRegistry, SubagentTool};
+pub use subagent::{
+    AddressingPort, AgentMessageTool, DeliveryKind, RosterEntry, SubagentControlTool, SubagentCore,
+    SubagentRecord, SubagentRegistry, SubagentTool,
+};
 pub use todo::TodoWriteTool;
 pub use workflow::{RALPH_DONE, RalphTool, WorkflowTool};
 

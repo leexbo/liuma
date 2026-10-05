@@ -140,6 +140,10 @@ chat:
     zh-CN: "深入探索中…"
     en: "Digging deeper…"
 
+  child_readonly:
+    zh-CN: "子会话为只读回放:消息请回主线发送,或由代理间 send_message 互发。"
+    en: "Child sessions are read-only: send from the main session, or between agents via send_message."
+
   think_label:
     zh-CN: "思考"
     en: "Think"

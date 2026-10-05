@@ -8,6 +8,7 @@
 //! 头行几何 / 面板内边距)见 [`crate::kits::collapse_strip`];展开态
 //! 受控,真相源是 `subagents.task_bar_open`。
 
+use gpui_kit::component::StyledExt as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
@@ -82,8 +83,14 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
     let anchor = st.subagent_anchor_of(&current);
     let viewing_child = anchor != current;
     let rows = st.lineage_rows(&anchor);
-    // 集合:运行中全部;当前查看的子会话(已结束)补位高亮
-    let mut chips: Vec<LineageRow> = rows.iter().filter(|r| r.running).cloned().collect();
+    // 集合:运行中全部 + 驻留待命(idle 可继续;对等寻址面:待命代理
+    // 仍可收消息,行副行摘要的价值恰在空闲期)+ 当前查看的子会话补位
+    // 高亮。shell job 无续话语义,维持仅运行中(D48d 原语义)
+    let mut chips: Vec<LineageRow> = rows
+        .iter()
+        .filter(|r| r.running || (r.kind != "shell" && r.dot == Some("completed")))
+        .cloned()
+        .collect();
     if viewing_child
         && !chips.iter().any(|r| r.session_id == current)
         && let Some(row) = rows.iter().find(|r| r.session_id == current)
@@ -94,6 +101,10 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
         return None;
     }
     let running_n = chips.iter().filter(|r| r.running).count();
+    let standby_n = chips
+        .iter()
+        .filter(|r| !r.running && r.kind != "shell")
+        .count();
     let open = st.subagents.task_bar_open;
     let s = store.clone();
     // 头行随内容组成分流:纯子代理 = 「子代理」,纯 shell job = 「后台
@@ -132,6 +143,8 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                 .text_color(theme::caption(cx))
                 .child(if running_n > 0 {
                     t!("misc.running_n", n = running_n).into_owned()
+                } else if standby_n > 0 {
+                    t!("misc.standby_n", n = standby_n).into_owned()
                 } else {
                     t!("misc.ended").to_string()
                 }),
@@ -174,6 +187,7 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
             let running = chip.running;
             let viewing = chip.session_id == current;
             let timing = duration_text(&chip);
+            let last_message = chip.last_message.clone();
             div()
                 .id(gpui_kit::SharedString::from(format!(
                     "task-row-{}",
@@ -205,18 +219,36 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                 .when(chip.kind == "shell", |el| {
                     el.child(fixed(LiumaIcon::Briefcase, 12.).text_color(theme::label_2(cx)))
                 })
+                // 主列两行:任务名 + 最近入站消息摘要(对等互发呈现,
+                // 通知不进转录——行副行承担可见性)
                 .child(
                     div()
                         .min_w(px(0.))
                         .flex_1()
-                        .text_size(px(12.))
-                        .text_color(if viewing {
-                            theme::label(cx)
-                        } else {
-                            theme::label_2(cx)
+                        .v_flex()
+                        .when_some(last_message, |el, msg| {
+                            el.child(
+                                div()
+                                    .id("task-chip-lastmsg")
+                                    .min_w(px(0.))
+                                    .text_size(px(10.))
+                                    .text_color(theme::caption(cx))
+                                    .truncate()
+                                    .child(msg),
+                            )
                         })
-                        .truncate()
-                        .child(chip.label.clone()),
+                        .child(
+                            div()
+                                .min_w(px(0.))
+                                .text_size(px(12.))
+                                .text_color(if viewing {
+                                    theme::label(cx)
+                                } else {
+                                    theme::label_2(cx)
+                                })
+                                .truncate()
+                                .child(chip.label.clone()),
+                        ),
                 )
                 .when(!timing.is_empty(), |el| {
                     el.child(
@@ -233,8 +265,8 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                             .text_color(theme::brand(cx)),
                     )
                 })
-                // 运行中行尾打断钮(自绘方块与 composer 停止钮同款
-                // 视觉);豁免冒泡——点击打断不触发行切换
+                // 运行中行尾打断钮(豁免冒泡——点击不触发行切换;
+                // 打断 = 只停当前 turn,子代理保持可续话)
                 .when(running, |el| {
                     let s_stop = store.clone();
                     let stop_id = chip.session_id.clone();

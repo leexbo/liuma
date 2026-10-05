@@ -230,6 +230,9 @@ async fn chat(message: Option<String>, common: CommonOpts) -> anyhow::Result<()>
             Some(review.clone()),
             None,
             None,
+            // 对等寻址面 = 桌面/多会话宿主能力:CLI 无 notify port → 无
+            // 驻留子代理,寻址面显式缺省(前台同步委派语义不变)
+            None,
             None,
             None,
             Vec::new(),
@@ -791,6 +794,8 @@ async fn serve(common: CommonOpts) -> anyhow::Result<()> {
         }),
         Some(Arc::new(plan_review.clone()) as Arc<dyn liuma_plan::PlanReviewPort>),
         None,
+        None,
+        // 寻址面 = 宿主能力,网关形态显式缺省(见 REPL 形态注释)
         None,
         None,
         None,
