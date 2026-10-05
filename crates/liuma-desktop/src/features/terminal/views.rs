@@ -16,14 +16,16 @@
 use std::cell::Cell as StdCell;
 use std::rc::Rc;
 
+use alacritty_terminal::index::Side;
 use gpui_kit::component::StyledExt as _;
+use gpui_kit::component::native_menu::NativeMenu;
 use gpui_kit::{
     App, Bounds, Entity, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, ParentElement as _, Pixels, ScrollDelta, ScrollWheelEvent,
-    StatefulInteractiveElement as _, Styled as _, StyledText, Window, div, px,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, ScrollDelta,
+    ScrollWheelEvent, StatefulInteractiveElement as _, Styled as _, StyledText, Window, div, px,
 };
 
-use crate::features::terminal::palette::row_runs;
+use crate::features::terminal::palette::{row_runs, selection_row_ranges};
 use crate::kits::theme;
 use crate::shell::panel::TerminalTabId;
 use crate::shell::store::AppStore;
@@ -34,8 +36,8 @@ const LINE_HEIGHT: f32 = 18.;
 const FONT_FAMILY: &str = "Menlo";
 /// 视图内边距(文本不贴边;背景仍全 bleed)。cols/rows 按扣边后的
 /// 净区计算,末列/末行不裁进 padding
-const PAD_X: f32 = 10.;
-const PAD_Y: f32 = 6.;
+pub(crate) const PAD_X: f32 = 10.;
+pub(crate) const PAD_Y: f32 = 6.;
 
 /// 渲染期 bounds 记录(线程局部跨帧共享,同轨迹 `track_bounds_cell`)
 fn bounds_cell() -> Rc<StdCell<Option<Bounds<Pixels>>>> {
@@ -72,6 +74,31 @@ fn grid_dims(width: f32, height: f32, cell: (f32, f32)) -> (usize, usize) {
     let cols = ((width / cell.0).floor() as usize).max(1);
     let rows = ((height / cell.1).floor() as usize).max(1);
     (cols, rows)
+}
+
+/// 窗口坐标 → 视口格坐标 + 半格侧(光标在格内右半 → Right)。bounds
+/// 取上一渲染帧 canvas 记录(含 padding 区);终端区外/尺寸未测 = None
+fn cell_at(
+    store: &Entity<AppStore>,
+    cx: &App,
+    position: gpui_kit::Point<Pixels>,
+) -> Option<(usize, usize, Side)> {
+    let bounds = bounds_cell().get()?;
+    let cell = store.read(cx).terminal.cell?;
+    let fx = (position.x.as_f32() - f32::from(bounds.origin.x) - PAD_X) / cell.0;
+    let fy = (position.y.as_f32() - f32::from(bounds.origin.y) - PAD_Y) / cell.1;
+    if fx < 0. || fy < 0. {
+        return None;
+    }
+    let st = store.read(cx);
+    let col = (fx.floor() as usize).min(st.terminal.cols.saturating_sub(1));
+    let row = (fy.floor() as usize).min(st.terminal.rows.saturating_sub(1));
+    let side = if fx - fx.floor() > 0.5 {
+        Side::Right
+    } else {
+        Side::Left
+    };
+    Some((col, row, side))
 }
 
 /// 终端标签正文(面板 tab_body 分发臂;根 size_full 填满)
@@ -150,15 +177,38 @@ pub(crate) fn render(
         .bg(theme::code(cx))
         .text_color(theme::label(cx))
         .overflow_hidden()
-        // 焦点路径:仓库首例 track_focus 视图;点击终端区聚焦
+        // 焦点路径:仓库首例 track_focus 视图;点击聚焦 + 拖选/取词/取行
+        // (坐标换算在 cell_at:canvas bounds 线程局部,渲染帧已备)
         .track_focus(&focus)
         .key_context("Terminal")
         .on_mouse_down(MouseButton::Left, {
             let s = store.clone();
-            move |_: &MouseDownEvent, window, cx| {
+            move |ev: &MouseDownEvent, window, cx| {
                 if let Some(handle) = s.read(cx).terminal.tab(id).map(|t| t.focus.clone()) {
                     window.focus(&handle, cx);
                 }
+                if let Some((col, row, side)) = cell_at(&s, cx, ev.position) {
+                    s.update(cx, |st, cx| {
+                        st.terminal_pointer_down(id, col, row, side, cx)
+                    });
+                }
+            }
+        })
+        // 右键:有选区 → 原生菜单「复制」(文本在此抓取进暂存,动作经
+        // App 级 on_action 消费——分发期无 window 回读实时选区,同聊天)
+        .on_mouse_down(MouseButton::Right, {
+            let s = store.clone();
+            move |ev: &MouseDownEvent, window, cx| {
+                let Some(text) = s.read(cx).terminal_selection_text(id) else {
+                    return;
+                };
+                s.update(cx, |st, _| st.terminal.pending_copy = Some(text));
+                NativeMenu::new()
+                    .menu(
+                        crate::kits::i18n::t!("terminal.copy_menu").to_string(),
+                        Box::new(super::CopyTerminalSelection),
+                    )
+                    .show(ev.position, window, cx);
             }
         })
         // 滚轮:行增量为历史方向(alt-screen 时 Term 自理);Pixels 态
@@ -189,6 +239,18 @@ pub(crate) fn render(
                     .tab(id)
                     .is_some_and(|t| t.focus.is_focused(window));
                 if !focused {
+                    return;
+                }
+                // ⌘C 复制选区。control/alt 修饰挡住:Windows/Linux 上
+                // platform 即 ctrl,ctrl+c 是 SIGINT 必须照旧落 PTY
+                if ev.keystroke.modifiers.platform
+                    && !ev.keystroke.modifiers.control
+                    && !ev.keystroke.modifiers.alt
+                    && ev.keystroke.key == "c"
+                    && let Some(text) = s.read(cx).terminal_selection_text(id)
+                {
+                    cx.stop_propagation();
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
                     return;
                 }
                 // ⌘V 粘贴(bracketed paste 按 PTY 模式包装)
@@ -222,6 +284,34 @@ pub(crate) fn render(
         .left_0()
         .size_full(),
     );
+
+    // 拖选进行中:窗口级 move/up 注册(同面板拖宽手法——move 更新
+    // 选区,up 独立注册保证抬起必收尾)
+    if s.terminal.tab(id).is_some_and(|t| t.drag) {
+        let s_move = store.clone();
+        let s_up = store.clone();
+        root = root.child(
+            gpui_kit::canvas(
+                |_, _, _| (),
+                move |_, _, window, _cx| {
+                    window.on_mouse_event(move |ev: &MouseMoveEvent, _, _, cx| {
+                        if let Some((col, row, side)) = cell_at(&s_move, cx, ev.position) {
+                            s_move.update(cx, |st, cx| {
+                                st.terminal_pointer_drag(id, col, row, side, cx)
+                            });
+                        }
+                    });
+                    window.on_mouse_event(move |_: &MouseUpEvent, _, _, cx| {
+                        s_up.update(cx, |st, cx| st.terminal_pointer_up(id, cx));
+                    });
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
+        );
+    }
 
     let session = match tab.session.as_ref() {
         Some(session) => session,
@@ -257,11 +347,28 @@ pub(crate) fn render(
         .map(|line| (line, content.cursor.point.column.0));
     let term_fg = gpui_kit::Hsla::from(theme::label(cx));
     let term_bg = gpui_kit::Hsla::from(theme::code(cx));
+    let selection_bg = gpui_kit::Hsla::from(theme::brand(cx)).opacity(0.35);
+    // 选区:网格 SelectionRange → 每视口行含端点列区间
+    let selection_ranges = content
+        .selection
+        .as_ref()
+        .map(|range| selection_row_ranges(range, offset, s.terminal.rows));
     for (row_ix, cells) in lines.iter().enumerate() {
         let cursor_here = cursor_cell
             .filter(|(line, _)| *line == row_ix)
             .map(|(_, col)| col);
-        let (text, runs) = row_runs(cells, content.colors, term_fg, term_bg, cursor_here);
+        let selection = selection_ranges
+            .as_ref()
+            .and_then(|ranges| ranges.get(row_ix).copied().flatten());
+        let (text, runs) = row_runs(
+            cells,
+            content.colors,
+            term_fg,
+            term_bg,
+            cursor_here,
+            selection,
+            selection_bg,
+        );
         if text.is_empty() {
             root = root.child(div().h(px(LINE_HEIGHT)).flex_shrink_0());
             continue;

@@ -112,6 +112,7 @@ struct RunKey {
     underline: u8,
     strike: bool,
     dim: bool,
+    selected: bool,
 }
 
 impl RunKey {
@@ -167,15 +168,55 @@ pub fn bucket_lines<'a>(
     lines
 }
 
+/// 选区行区间:网格坐标的 `SelectionRange` → 每视口行的**含端点**列区间
+/// `(起列, 末列)`;整行覆盖记 `usize::MAX`(行尾裁剪处按 cells 长度收口)。
+/// 非 block:首行自 `start.column` 起到行尾,末行到 `end.column` 止,
+/// 中间行整行;block:全部行取 `start.column..=end.column`
+pub fn selection_row_ranges(
+    range: &alacritty_terminal::selection::SelectionRange,
+    offset: i32,
+    rows: usize,
+) -> Vec<Option<(usize, usize)>> {
+    let mut ranges: Vec<Option<(usize, usize)>> = vec![None; rows];
+    for (row, slot) in ranges.iter_mut().enumerate() {
+        let line = row as i32 - offset;
+        if line < range.start.line.0 || line > range.end.line.0 {
+            continue;
+        }
+        let cols = match range.is_block {
+            true => (range.start.column.0, range.end.column.0),
+            false => {
+                let start = if line == range.start.line.0 {
+                    range.start.column.0
+                } else {
+                    0
+                };
+                let end = if line == range.end.line.0 {
+                    range.end.column.0
+                } else {
+                    usize::MAX
+                };
+                (start, end)
+            }
+        };
+        *slot = Some(cols);
+    }
+    ranges
+}
+
 /// 一行网格单元 → (行文本, 高亮段)。`cursor_col` = 光标所在列(块状
-/// 光标:该单元背景反转为光标色)。行尾连续默认单元(空格 + 默认底)
-/// 不产段,由容器底色承担。`HIDDEN` 单元按空格落位保列对齐
+/// 光标:该单元背景反转为光标色,压过选区底色)。`selection` = 该行
+/// 含端点选区列区间(选中格背景换 `selection_bg`)。行尾连续默认单元
+/// (空格 + 默认底、不在选区内)不产段,由容器底色承担。`HIDDEN`
+/// 单元按空格落位保列对齐
 pub fn row_runs(
     cells: &[&alacritty_terminal::term::cell::Cell],
     colors: &Colors,
     term_fg: Hsla,
     term_bg: Hsla,
     cursor_col: Option<usize>,
+    selection: Option<(usize, usize)>,
+    selection_bg: Hsla,
 ) -> (String, Vec<(std::ops::Range<usize>, HighlightStyle)>) {
     let mut text = String::with_capacity(cells.len());
     let mut runs: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
@@ -196,7 +237,8 @@ pub fn row_runs(
             && !cell
                 .flags
                 .intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT);
-        if !is_default || cursor_col == Some(ix) {
+        let selected = selection.is_some_and(|(s, e)| ix >= s && ix <= e);
+        if !is_default || cursor_col == Some(ix) || selected {
             visible = ix + 1;
         }
     }
@@ -219,6 +261,10 @@ pub fn row_runs(
         // 背景语义色(默认底)不落 run 背景,避免打断默认底容器
         if bg == default_bg {
             bg = gpui_kit::transparent_black();
+        }
+        let selected = selection.is_some_and(|(s, e)| ix >= s && ix <= e);
+        if selected {
+            bg = selection_bg;
         }
         let cursor_here = cursor_col == Some(ix);
         if cursor_here {
@@ -244,6 +290,7 @@ pub fn row_runs(
             },
             strike: cell.flags.contains(Flags::STRIKEOUT),
             dim: cell.flags.contains(Flags::DIM),
+            selected,
         };
         let ch = if cell.flags.contains(Flags::HIDDEN) {
             ' '
@@ -344,7 +391,7 @@ mod tests {
             ),
         ];
         let colors = Colors::default();
-        let (text, runs) = row_runs(&view(&cells), &colors, FG, BG, None);
+        let (text, runs) = row_runs(&view(&cells), &colors, FG, BG, None, None, FG);
         assert_eq!(text, "re");
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].0, 0..2);
@@ -363,7 +410,7 @@ mod tests {
             Color::Named(NamedColor::Background),
             Flags::INVERSE,
         )];
-        let (text, runs) = row_runs(&view(&cells), &Colors::default(), FG, BG, None);
+        let (text, runs) = row_runs(&view(&cells), &Colors::default(), FG, BG, None, None, FG);
         assert_eq!(text, "x");
         // INVERSE:fg 变背景(默认底),bg 变红
         assert_eq!(
@@ -371,7 +418,7 @@ mod tests {
             resolve_color(Color::Named(NamedColor::Red), &Colors::default(), FG, BG)
         );
         // 光标列:前景/背景互换(块状光标)
-        let (_, runs) = row_runs(&view(&cells), &Colors::default(), FG, BG, Some(0));
+        let (_, runs) = row_runs(&view(&cells), &Colors::default(), FG, BG, Some(0), None, FG);
         assert_eq!(runs[0].1.color, Some(BG));
     }
 
@@ -392,7 +439,7 @@ mod tests {
             ),
             cell('a'),
         ];
-        let (text, _) = row_runs(&view(&cells), &Colors::default(), FG, BG, None);
+        let (text, _) = row_runs(&view(&cells), &Colors::default(), FG, BG, None, None, FG);
         assert_eq!(text, "汉a");
     }
 
@@ -400,7 +447,7 @@ mod tests {
     fn cursor_block_renders_on_blank_row() {
         // 整行只有光标(空提示行):光标列必须产出可视块
         let cells: Vec<Cell> = (0..4).map(|_| cell(' ')).collect();
-        let (text, runs) = row_runs(&view(&cells), &Colors::default(), FG, BG, Some(0));
+        let (text, runs) = row_runs(&view(&cells), &Colors::default(), FG, BG, Some(0), None, FG);
         assert_eq!(text, " ");
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].1.color, Some(BG));
@@ -445,5 +492,67 @@ mod tests {
             BG,
         );
         assert_eq!(spec, Some(u32_to_hsla(0xaabbcc)));
+    }
+
+    #[test]
+    fn selection_ranges_map_lines_and_columns() {
+        use alacritty_terminal::index::{Column, Line, Point};
+        use alacritty_terminal::selection::SelectionRange;
+        // 视口 4 行,offset=1:视口行 r ↔ 网格行 r-1
+        let point = |line: i32, col: usize| Point::new(Line(line), Column(col));
+        // 单行选区:网格行 1(视口行 2),列 2..=4
+        let range = SelectionRange::new(point(1, 2), point(1, 4), false);
+        let ranges = selection_row_ranges(&range, 1, 4);
+        assert_eq!(ranges, vec![None, None, Some((2, 4)), None]);
+        // 跨行选区:网格行 0..=2 → 视口行 1..=3,首行 3 列起、中间整行、
+        // 末行到列 5
+        let range = SelectionRange::new(point(0, 3), point(2, 5), false);
+        let ranges = selection_row_ranges(&range, 1, 4);
+        assert_eq!(
+            ranges,
+            vec![
+                None,
+                Some((3, usize::MAX)),
+                Some((0, usize::MAX)),
+                Some((0, 5))
+            ]
+        );
+        // block:各行同列区间
+        let range = SelectionRange::new(point(0, 3), point(2, 5), true);
+        let ranges = selection_row_ranges(&range, 1, 4);
+        assert_eq!(ranges, vec![None, Some((3, 5)), Some((3, 5)), Some((3, 5))]);
+    }
+
+    #[test]
+    fn selected_cells_take_selection_background() {
+        let cells = vec![cell('a'), cell('b'), cell('c')];
+        let sel = u32_to_hsla(0x3355ff);
+        let (text, runs) = row_runs(
+            &view(&cells),
+            &Colors::default(),
+            FG,
+            BG,
+            None,
+            Some((0, 1)),
+            sel,
+        );
+        assert_eq!(text, "abc");
+        assert_eq!(runs.len(), 2, "选区边界应切开 run");
+        assert_eq!(runs[0].1.background_color, Some(sel));
+        assert_eq!(
+            runs[1].1.background_color,
+            Some(gpui_kit::transparent_black())
+        );
+        // 光标压过选区:光标列前景/背景互换
+        let (_, runs) = row_runs(
+            &view(&cells),
+            &Colors::default(),
+            FG,
+            BG,
+            Some(0),
+            Some((0, 1)),
+            sel,
+        );
+        assert_eq!(runs[0].1.color, Some(BG));
     }
 }

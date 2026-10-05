@@ -15,3 +15,7 @@ terminal:
   restart:
     zh-CN: "重新打开"
     en: "Restart"
+
+  copy_menu:
+    zh-CN: "复制"
+    en: "Copy"

@@ -14382,6 +14382,158 @@ fn panel_terminal_focus_input_scroll(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 终端选区链路:回显行上拖选 → Term.selection 命中文本;双击取词
+/// (语义边界);空白单击清选区。指针坐标从视图 debug bounds + 实测
+/// cell 尺寸反推(覆盖 cell_at 换算;move 链走 store 直调,up 走事件)。
+/// PTY 面用例,前提与仲裁惯例同 panel_terminal_lifecycle
+#[gpui_kit::test]
+fn panel_terminal_selection_copy(cx: &mut TestAppContext) {
+    let zsh = std::path::Path::new("/bin/zsh").exists();
+    let bash = std::path::Path::new("/bin/bash").exists();
+    assert!(zsh || bash, "测试环境应至少有 /bin/zsh 或 /bin/bash");
+    let (store, mut wcx, root) = menu_harness(cx, "terminal-select");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut App| {});
+        cx.run_until_parked();
+    };
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.toggle_panel(cx);
+            st.open_panel_tab(panel::PanelTab::Terminal(panel::TerminalTabId::NEW), cx);
+        });
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        cx.run_until_parked();
+        let ready = cx.update(|app| {
+            store.update(app, |st, _| {
+                let id = st.terminal_active_id();
+                st.terminal_active_session().is_some()
+                    && !id
+                        .and_then(|id| st.terminal.tab(id))
+                        .is_some_and(|t| t.spawning)
+            })
+        });
+        if ready {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let id = cx
+        .update(|app| store.update(app, |st, _| st.terminal_active_id()))
+        .expect("终端标签应已激活");
+    redraw(cx, &mut wcx);
+    wcx.simulate_input("echo 0123456789-selectme");
+    wcx.simulate_keystrokes("enter");
+    // 等回显行进网格,记下其视口行号
+    let out_row = {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut hit = None;
+        while std::time::Instant::now() < deadline {
+            cx.run_until_parked();
+            hit = cx.update(|app| {
+                store.update(app, |st, _| {
+                    st.terminal_active_session().and_then(|s| {
+                        s.visible_text()
+                            .iter()
+                            .position(|l| l.starts_with("0123456789-selectme"))
+                    })
+                })
+            });
+            if hit.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        hit.expect("echo 输出应在视口")
+    };
+    redraw(cx, &mut wcx);
+    let view = wcx
+        .debug_bounds("panel-terminal-view")
+        .expect("终端视图在场");
+    let (cw, ch) = cx
+        .update(|app| store.update(app, |st, _| st.terminal.cell))
+        .expect("cell 尺寸应已实测");
+    use crate::features::terminal::views::{PAD_X, PAD_Y};
+    let cell_pt = |col: f32, row: f32| {
+        gpui_kit::point(
+            view.origin.x + px(PAD_X + col * cw),
+            view.origin.y + px(PAD_Y + row * ch),
+        )
+    };
+    // 1) 拖选 `0123456789`(行内 0..=9 列):按下经事件(测 cell_at),
+    //    move 经 store 直调,抬起经窗口级事件
+    wcx.simulate_mouse_down(
+        cell_pt(0.5, out_row as f32 + 0.5),
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::none(),
+    );
+    redraw(cx, &mut wcx);
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            use alacritty_terminal::index::Side;
+            st.terminal_pointer_drag(id, 9, out_row, Side::Right, cx)
+        })
+    });
+    wcx.simulate_mouse_up(
+        cell_pt(9.7, out_row as f32 + 0.5),
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    let selected = cx.update(|app| store.update(app, |st, _| st.terminal_selection_text(id)));
+    assert_eq!(selected.as_deref(), Some("0123456789"), "拖选应命中数字串");
+    // 2) 双击取词:数字格连点两次(与上次拖选起点相距 >1 格,连击判定
+    //    先重置);alacritty 默认词边界不含 `-`,整串一词
+    let word_pt = cell_pt(4.5, out_row as f32 + 0.5);
+    wcx.simulate_mouse_down(
+        word_pt,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::none(),
+    );
+    wcx.simulate_mouse_up(
+        word_pt,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::none(),
+    );
+    wcx.simulate_mouse_down(
+        word_pt,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::none(),
+    );
+    wcx.simulate_mouse_up(
+        word_pt,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    let word = cx.update(|app| store.update(app, |st, _| st.terminal_selection_text(id)));
+    assert_eq!(
+        word.as_deref(),
+        Some("0123456789-selectme"),
+        "双击应取语义词(默认边界连字符归词内)"
+    );
+    // 3) 空白单击:选区清除
+    let cols = cx.update(|app| store.update(app, |st, _| st.terminal.cols)) as f32;
+    let blank_pt = cell_pt(cols - 2.0, out_row as f32 + 0.5);
+    wcx.simulate_mouse_down(
+        blank_pt,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::none(),
+    );
+    wcx.simulate_mouse_up(
+        blank_pt,
+        gpui_kit::MouseButton::Left,
+        gpui_kit::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    let cleared =
+        cx.update(|app| store.update(app, |st, _| st.terminal_selection_text(id).is_none()));
+    assert!(cleared, "空白单击应清选区");
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 用户主题热装载 → 设置页主题下拉即时重建(sync_theme_selects 的
 /// 签名判据)。回归锁:此前两个下拉实体挂窗时只建一次,用户主题装进
 /// registry 后下拉永不出现新选项(真机验证发现)

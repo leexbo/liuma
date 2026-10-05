@@ -20,6 +20,8 @@ use std::rc::Rc;
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 use gpui_kit::{Context, Entity, FocusHandle};
@@ -30,6 +32,9 @@ use crate::shell::store::AppStore;
 /// 滚回上限(行)。网格按 `rows + SCROLLBACK` 预分配(Cell ≈ 24B):
 /// 1000 行 × 100 列 ≈ 2.4MB/会话,v1 取 VS Code 默认档
 const SCROLLBACK: usize = 1000;
+
+/// 连击判定窗口(双击取词/三击取行)
+const CLICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// 默认行列(首帧 bounds 未测得时的 spawn 尺寸;后续由 resize 校正)
 const DEFAULT_COLS: usize = 80;
@@ -145,6 +150,10 @@ pub(crate) struct TerminalTab {
     pub generation: u64,
     /// OSC Title 文本(None = 回落 cwd 目录名;ResetTitle 清回 None)
     pub title: Option<String>,
+    /// 左键拖选进行中(窗口级 move/up 消费;单击起拖、抬起结算)
+    pub drag: bool,
+    /// 上次左键按下((时刻, 列, 行, 连击序);双击取词/三击取行判定)
+    pub last_click: Option<(std::time::Instant, usize, i32, u8)>,
     /// 输出泵任务句柄(存住才在跑:Task drop = 取消)
     pub pump: Option<gpui_kit::Task<()>>,
 }
@@ -160,6 +169,9 @@ pub(crate) struct TerminalStore {
     pub rows: usize,
     /// 实测单元格尺寸 (宽, 高)(等宽字体一次测得缓存;None = 未测)
     pub cell: Option<(f32, f32)>,
+    /// 右键「复制」暂存(菜单弹出时抓取,App 级动作消费——分发期
+    /// 无 window 回读实时选区,同聊天选区手法)
+    pub pending_copy: Option<String>,
 }
 
 impl TerminalStore {
@@ -170,6 +182,7 @@ impl TerminalStore {
             cols: DEFAULT_COLS,
             rows: DEFAULT_ROWS,
             cell: None,
+            pending_copy: None,
         }
     }
 
@@ -199,6 +212,8 @@ impl TerminalStore {
                 spawning: false,
                 generation: 0,
                 title: None,
+                drag: false,
+                last_click: None,
                 pump: None,
             });
         }
@@ -501,6 +516,127 @@ impl AppStore {
                 .scroll_display(alacritty_terminal::grid::Scroll::Delta(lines));
             cx.notify();
         }
+    }
+
+    /// 选区文本(无选区/空选区 = None;⌘C 与右键复制共用)
+    pub(crate) fn terminal_selection_text(&self, id: TerminalTabId) -> Option<String> {
+        let session = self.terminal.tab(id)?.session.as_ref()?;
+        session
+            .term
+            .selection
+            .as_ref()
+            .filter(|selection| !selection.is_empty())?;
+        session.term.selection_to_string()
+    }
+
+    /// 指针按下(左键):单击起拖选(替代旧选区),双击取词,三击取行。
+    /// 坐标为视口格坐标,`side` = 半格规则(光标在格内右半 → Right)
+    pub(crate) fn terminal_pointer_down(
+        &mut self,
+        id: TerminalTabId,
+        col: usize,
+        row: usize,
+        side: Side,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.terminal.tab_mut(id) else {
+            return;
+        };
+        let Some(session) = tab.session.as_mut() else {
+            return;
+        };
+        if session.exited {
+            return;
+        }
+        let now = std::time::Instant::now();
+        // 连击判定:半格距内 CLICK_INTERVAL 内连点;三击后重置连击
+        let count = match tab.last_click {
+            Some((at, lcol, lrow, n))
+                if now.duration_since(at) < CLICK_INTERVAL
+                    && lcol.abs_diff(col) <= 1
+                    && (lrow - row as i32).abs() <= 1
+                    && n < 3 =>
+            {
+                n + 1
+            }
+            _ => 1,
+        };
+        let offset = session.term.grid().display_offset() as i32;
+        let point = Point::new(Line(row as i32 - offset), Column(col));
+        tab.drag = false;
+        match count {
+            1 => {
+                session.term.selection = Some(Selection::new(SelectionType::Simple, point, side));
+                tab.drag = true;
+            }
+            2 => {
+                // 取词:语义边界(`semantic_escape_chars` 内建词表)
+                let left = session.term.semantic_search_left(point);
+                let right = session.term.semantic_search_right(point);
+                let mut selection = Selection::new(SelectionType::Simple, left, Side::Left);
+                selection.update(right, Side::Right);
+                session.term.selection = Some(selection);
+            }
+            _ => {
+                // 取行:Lines 选区覆盖整行
+                session.term.selection = Some(Selection::new(SelectionType::Lines, point, side));
+            }
+        }
+        tab.last_click = match count {
+            3 => None,
+            n => Some((now, col, row as i32, n)),
+        };
+        cx.notify();
+    }
+
+    /// 拖选移动(窗口级 move 事件;非拖选态静默)
+    pub(crate) fn terminal_pointer_drag(
+        &mut self,
+        id: TerminalTabId,
+        col: usize,
+        row: usize,
+        side: Side,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.terminal.tab_mut(id) else {
+            return;
+        };
+        if !tab.drag {
+            return;
+        }
+        let Some(session) = tab.session.as_mut() else {
+            return;
+        };
+        let offset = session.term.grid().display_offset() as i32;
+        let point = Point::new(Line(row as i32 - offset), Column(col));
+        if let Some(selection) = session.term.selection.as_mut() {
+            selection.update(point, side);
+            cx.notify();
+        }
+    }
+
+    /// 拖选收尾(窗口级 up):单格范围内抬起 = 原单击,清选区
+    pub(crate) fn terminal_pointer_up(&mut self, id: TerminalTabId, cx: &mut Context<Self>) {
+        let Some(tab) = self.terminal.tab_mut(id) else {
+            return;
+        };
+        if !tab.drag {
+            return;
+        }
+        tab.drag = false;
+        let Some(session) = tab.session.as_mut() else {
+            return;
+        };
+        let single = session
+            .term
+            .selection
+            .as_ref()
+            .and_then(|selection| selection.to_range(&session.term))
+            .is_some_and(|range| range.start == range.end);
+        if single {
+            session.term.selection = None;
+        }
+        cx.notify();
     }
 }
 

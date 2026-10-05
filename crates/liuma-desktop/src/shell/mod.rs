@@ -318,6 +318,21 @@ impl WorkspaceView {
                 });
             },
         );
+        // 终端右键「复制」:同上 stash 手法——选中文本在右键弹菜单时
+        // 已抓进 terminal.pending_copy,此处只写剪贴板
+        let term_copy_store = store.clone();
+        App::on_action(
+            cx,
+            move |_: &crate::features::terminal::CopyTerminalSelection, cx: &mut App| {
+                term_copy_store.update(cx, |st, cx| {
+                    if let Some(text) = st.terminal.pending_copy.take()
+                        && !text.trim().is_empty()
+                    {
+                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+                    }
+                });
+            },
+        );
         Self {
             store,
             #[cfg(test)]
