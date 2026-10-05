@@ -5436,32 +5436,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             .map_err(|e| RpcError::internal(format!("zip 写入失败:{e}")))?;
 
         if include_descendants {
-            // fork 后代:递归扫全库 forked 血缘(与 session_trace 同源)
-            let fork_parent = |sid: &str| -> Option<String> {
-                let log = liuma_app::load_log(&self.slot_path(sid).display().to_string()).ok()?;
-                log.iter()
-                    .rev()
-                    .find(|ev| ev.r#type == "session/forked")
-                    .and_then(|ev| ev.data["parent"].as_str().map(String::from))
-            };
-            fn descendants_of(
-                host: &AppHost,
-                fork_parent: &dyn Fn(&str) -> Option<String>,
-                id: &str,
-                out: &mut Vec<String>,
-            ) {
-                for s in host.list_sessions() {
-                    if fork_parent(&s.session_id).as_deref() == Some(id)
-                        && !out.contains(&s.session_id)
-                    {
-                        out.push(s.session_id.clone());
-                        descendants_of(host, fork_parent, &s.session_id, out);
-                    }
-                }
-            }
-            let mut queue = vec![];
-            descendants_of(self, &fork_parent, session_id, &mut queue);
-            for sid in queue {
+            for sid in self.descendant_ids(session_id) {
                 let text = std::fs::read_to_string(self.slot_path(&sid))
                     .map_err(|e| RpcError::internal(format!("后代日志读取失败:{e}")))?;
                 zip.start_file(format!("descendants/{}/session.jsonl", safe(&sid)), options)
@@ -5494,6 +5469,57 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             .map_err(|e| RpcError::internal(format!("zip 收尾失败:{e}")))?
             .into_inner();
         Ok(bytes)
+    }
+
+    /// fork 后代清单(递归扫全库 forked 血缘,与 session_trace 同源;
+    /// 序 = 每层 list_sessions 枚举 + 下钻)
+    fn descendant_ids(&self, root: &str) -> Vec<String> {
+        let fork_parent = |sid: &str| -> Option<String> {
+            let log = liuma_app::load_log(&self.slot_path(sid).display().to_string()).ok()?;
+            log.iter()
+                .rev()
+                .find(|ev| ev.r#type == "session/forked")
+                .and_then(|ev| ev.data["parent"].as_str().map(String::from))
+        };
+        fn walk(
+            host: &AppHost,
+            fork_parent: &dyn Fn(&str) -> Option<String>,
+            id: &str,
+            out: &mut Vec<String>,
+        ) {
+            for s in host.list_sessions() {
+                if fork_parent(&s.session_id).as_deref() == Some(id) && !out.contains(&s.session_id)
+                {
+                    out.push(s.session_id.clone());
+                    walk(host, fork_parent, &s.session_id, out);
+                }
+            }
+        }
+        let mut out = vec![];
+        walk(self, &fork_parent, root, &mut out);
+        out
+    }
+
+    /// 会话导出为 markdown(人类可读):消息流 + 工具卡摘要行 +
+    /// 后代会话按血缘序嵌成小节(单文件独立阅读)
+    pub fn export_session_markdown(
+        &self,
+        session_id: &str,
+        include_descendants: bool,
+    ) -> Result<String, RpcError> {
+        let root = self.export_session_log(session_id)?;
+        let mut out = format!("# Session {session_id}\n\n");
+        out.push_str(&crate::export::stream_markdown(&root));
+        if include_descendants {
+            for sid in self.descendant_ids(session_id) {
+                let Ok(text) = self.export_session_log(&sid) else {
+                    continue;
+                };
+                out.push_str(&format!("\n---\n\n## Descendant: {sid}\n\n"));
+                out.push_str(&crate::export::stream_markdown(&text));
+            }
+        }
+        Ok(out)
     }
 
     /// 图片准入限制(客户端前置检查与错误文案共用)
@@ -13097,6 +13123,45 @@ mod tests {
         let mut text = String::new();
         std::io::Read::read_to_string(&mut root, &mut text).unwrap();
         assert!(text.contains("根会话"));
+    }
+
+    /// markdown 导出:根消息流 + 后代小节按血缘序嵌成单文件(工具行
+    /// 渲染由 export.rs 单测锁定,此处锁文档结构与血缘序)
+    #[tokio::test]
+    async fn export_markdown_embeds_root_and_descendants() {
+        let host = temp_host("mdexp");
+        host.set_fake_script(script(&["内容"]));
+        let mut mux = host.mux_subscribe();
+        let parent = host.create_session(None, None, None);
+        host.prompt(
+            &parent,
+            &[json!({ "type": "text", "text": "根会话的问题" })],
+            "queue",
+        )
+        .await
+        .unwrap();
+        recv_until(&mut mux, |f| {
+            f.method == "session/event" && f.payload["event"]["type"] == "turn/end"
+        })
+        .await
+        .expect("turn/end");
+        let child = host.fork_session(&parent, None).unwrap();
+
+        // 仅根:文档头 + user 正文在;无后代小节
+        let md = host.export_session_markdown(&parent, false).unwrap();
+        assert!(md.starts_with(&format!("# Session {parent}\n\n")), "{md}");
+        assert!(md.contains("**User**\n\n根会话的问题"), "{md}");
+        assert!(md.contains("**Assistant**\n\n内容"), "{md}");
+        assert!(!md.contains("Descendant"), "仅根不应有后代小节: {md}");
+
+        // 全血缘:后代小节在根之后(血缘序)
+        let md = host.export_session_markdown(&parent, true).unwrap();
+        let root_end = md.find("## Descendant").expect("后代小节应在场");
+        assert!(
+            md.find("**User**\n\n根会话的问题").expect("根 user") < root_end,
+            "根小节应先于后代"
+        );
+        assert!(md.contains(&format!("## Descendant: {child}")), "{md}");
     }
 
     /// goal 六 RPC 全程(create/edit/complete/pause/resume/clear +

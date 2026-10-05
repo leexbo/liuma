@@ -712,7 +712,7 @@ impl ChatState {
                     .unwrap_or_default()
                     .to_string();
                 self.push_node(ChatNode::Tool {
-                    summary: summarize_call(&name, &arguments),
+                    summary: liuma_core::export::summarize_call(&name, &arguments),
                     key: format!("call:{call_id}"),
                     view: ev.data.get("view").filter(|v| !v.is_null()).cloned(),
                     name,
@@ -1334,49 +1334,6 @@ fn file_blocks(content: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// 折叠行摘要:工具名感知的显式键序偏好表
-/// ——修 file_edit 摘要错显 new_text 的旧病(字母序首串恰好是 new_text)。
-/// 未列工具回落「参数首串」;错误态摘要另由渲染层取输出首行
-fn summarize_call(name: &str, arguments: &str) -> String {
-    let Ok(v) = serde_json::from_str::<Value>(arguments) else {
-        return one_line(arguments, 80);
-    };
-    // shell 工具的模型面名字随平台走(`bash` / `pwsh`),按实际取
-    let shell_tool = liuma_sandbox::shell::tool_name();
-    let keys: &[&str] = match name {
-        // shell 工具优先 description(必填参数,给用户看的
-        // 一句意图说明),回退 command
-        n if n == shell_tool => &["description", "command"],
-        "file_read" => &["path"],
-        "file_edit" => &["path"],
-        "file_search" => &["content", "glob", "path"],
-        "subagent" | "ralph" => &["task"],
-        "workflow" => &["steps"],
-        "goal" | "jobs" => &["action"],
-        "exit_plan_mode" => &["plan"],
-        _ => {
-            return first_string(&v)
-                .map(|s| one_line(&s, 80))
-                .unwrap_or_else(|| one_line(arguments, 80));
-        }
-    };
-    for key in keys {
-        match &v[*key] {
-            // workflow.steps:数组首元素(字符串)
-            Value::Array(a) if *key == "steps" => {
-                if let Some(first) = a.iter().find_map(|s| s.as_str()) {
-                    return one_line(first, 80);
-                }
-            }
-            Value::String(s) if !s.is_empty() => return one_line(s, 80),
-            _ => {}
-        }
-    }
-    first_string(&v)
-        .map(|s| one_line(&s, 80))
-        .unwrap_or_default()
-}
-
 /// todo_write 行摘要:解析**该次调用自己的 arguments**,
 /// 非全局当前态 —— 每行反映本次写入的列表。text 可截断,
 /// extra(并行进行中额外数)不可 —— 窄行也不剪掉「还有几条在跑」。
@@ -1436,15 +1393,6 @@ pub(crate) fn relativize(root: Option<&str>, text: &str) -> String {
     text.to_string()
 }
 
-fn first_string(v: &Value) -> Option<String> {
-    match v {
-        Value::String(s) => Some(s.clone()),
-        Value::Array(a) => a.iter().find_map(first_string),
-        Value::Object(o) => o.values().find_map(first_string),
-        _ => None,
-    }
-}
-
 /// 字符级截断(中文安全)
 fn truncate_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
@@ -1457,6 +1405,7 @@ fn truncate_chars(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use liuma_core::export::summarize_call;
 
     /// 视口顶 → 当前轮锚:最近一个行槽 ≤ top 的已加载锚(未加载锚
     /// slot_ix=None 永不命中;钉底跟随态 top=行槽数,命中最后一个)。
