@@ -109,7 +109,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
             st.chat
                 .pending_command
                 .as_ref()
-                .map(|c| command_line(store, &c.name, cx)),
+                .map(|c| command_line(store, &c.name, c.hint.as_deref(), cx)),
         )
         .children(st.chat.composer_input.as_ref().map(|e| {
             let input = div()
@@ -216,7 +216,12 @@ pub(crate) fn image_path_from_clipboard_text(text: &str) -> Option<std::path::Pa
 /// 命令行(输入卡内、输入框上缘):`/name` 品牌色 + 参数 hint 灰字 +
 /// × 移除钮。命令与输入文字的区分载体——命令是结构化前缀不是正文,
 /// 发送时与输入框文本拼接(/name args)走既有文本路径
-fn command_line(store: &Entity<AppStore>, name: &str, cx: &App) -> gpui_kit::AnyElement {
+fn command_line(
+    store: &Entity<AppStore>,
+    name: &str,
+    hint: Option<&str>,
+    cx: &App,
+) -> gpui_kit::AnyElement {
     let s = store.clone();
     let mut row = div()
         .flex()
@@ -237,7 +242,16 @@ fn command_line(store: &Entity<AppStore>, name: &str, cx: &App) -> gpui_kit::Any
                 .font_weight(gpui_kit::FontWeight::MEDIUM)
                 .text_color(theme::brand(cx))
                 .child(format!("/{name}")),
-        );
+        )
+        // 参数提示(宿主 descriptor;带参命令的输入指引——否则选中后
+        // 只有裸命令名,用户无从知道该输什么)
+        .children(hint.map(|h| {
+            div()
+                .flex_shrink_0()
+                .text_size(px(12.))
+                .text_color(theme::caption(cx))
+                .child(h.to_string())
+        }));
     row = row.child(
         div()
             .id("composer-command-clear")
@@ -630,6 +644,9 @@ fn commands_card(
 ) -> gpui_kit::AnyElement {
     let pop_rows = pop.clone();
     let mut rows: Vec<gpui_kit::AnyElement> = vec![];
+    // /goal 暂从 UI 隐藏:goal 域重定位立案(0.3.0,dsh 口径单目标 +
+    // 续轮驱动),命令面去留随定位拍板;host 执行器保留(手输仍生效)
+    let cmds: Vec<_> = cmds.into_iter().filter(|c| c.name != "goal").collect();
     if !cmds.is_empty() {
         rows.push(section_label(t!("chat.section_commands"), cx).into_any_element());
         for cmd in cmds {
@@ -640,6 +657,7 @@ fn commands_card(
             // 命令行呈现(命令与输入文字区分;输入框写任务描述,发送时
             // 拼接 /name + 文本);无参命令 = 保持既有立即执行
             let has_hint = cmd.hint.is_some();
+            let hint = cmd.hint.map(str::to_string);
             let pop = pop_rows.clone();
             rows.push(
                 command_row(
@@ -649,9 +667,10 @@ fn commands_card(
                         let pop = pop.clone();
                         pop.update(cx, |state, cx| state.dismiss(window, cx));
                         let s = s.clone();
+                        let hint = hint.clone();
                         s.update(cx, move |st, cx| {
                             if has_hint {
-                                st.set_pending_command(name_static, cx);
+                                st.set_pending_command(name_static, hint, cx);
                             } else {
                                 st.execute_command(name_static, cx);
                             }
@@ -686,7 +705,7 @@ fn commands_card(
                         s.update(cx, move |st, cx| {
                             // 技能恒走草稿 chip(参数在输入框;不立即执行)——
                             // 发送拼 /name args,host 侧手势识别接管
-                            st.set_pending_command(chip_name, cx);
+                            st.set_pending_command(chip_name, None, cx);
                         });
                     },
                     cx,
@@ -713,7 +732,6 @@ fn command_desc(name: &str, host: &str) -> String {
         "compact" => t!("chat.command_compact"),
         "export" => t!("chat.command_export"),
         "goal" => t!("chat.command_goal"),
-        "model" => t!("chat.command_model"),
         _ => return host.to_string(),
     }
     .to_string()

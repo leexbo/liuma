@@ -257,7 +257,6 @@ mod tests {
             "chat.command_plan",
             "chat.command_export",
             "chat.command_goal",
-            "chat.command_model",
         ] {
             let desc = translate("en", key);
             assert!(

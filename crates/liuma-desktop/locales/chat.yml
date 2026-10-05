@@ -48,10 +48,6 @@ chat:
     zh-CN: "查看或设置长期任务的目标"
     en: "View or set the long-term goal"
 
-  command_model:
-    zh-CN: "查看或切换当前模型"
-    en: "View or switch the current model"
-
   model_label:
     zh-CN: "模型"
     en: "Model"
@@ -538,9 +534,21 @@ chat:
     zh-CN: "已导出"
     en: "Exported"
 
-  current_model:
-    zh-CN: "当前: %{m}"
-    en: "Current: %{m}"
+  goal_none:
+    zh-CN: "暂无目标"
+    en: "No goals"
+
+  goal_list:
+    zh-CN: "目标: %{items}"
+    en: "Goals: %{items}"
+
+  goal_added:
+    zh-CN: "已添加目标 #%{id}"
+    en: "Goal #%{id} added"
+
+  goal_cleared:
+    zh-CN: "已清空全部目标"
+    en: "All goals cleared"
 
   command_failed:
     zh-CN: "命令失败:%{msg}"

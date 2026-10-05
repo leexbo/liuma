@@ -81,6 +81,8 @@ pub struct MermaidCard {
 pub struct PendingCommand {
     /// 命令名(不含 /)
     pub name: String,
+    /// 参数提示(宿主 descriptor;命令行灰字呈现,None = 无参命令)
+    pub hint: Option<String>,
 }
 
 /// `/` 菜单「技能」节条目(session_skills 投影;user-invocable only)
@@ -1538,21 +1540,27 @@ impl AppStore {
                 // 同时落乐观气泡——RPC 回执携带宿主预分配 id,user/message
                 // 事件帧到达后按 id 原位替换(发送回显不等宿主完整往返)
                 Ok(Ok(res)) => {
-                    let pending_id = res["id"].as_str().map(str::to_string);
-                    store.update(cx, |s, cx| {
-                        s.attachments.drafts.clear();
-                        if let Some(pid) = pending_id
-                            && !is_command
-                            && !running_at_send
-                            && let Some(chat) = s.state.chats.get_mut(&sid)
-                        {
-                            chat.pending_user.push(super::projection::PendingUser {
-                                id: pid,
-                                text: sent_text.clone(),
-                            });
-                        }
-                        cx.notify();
-                    });
+                    if is_command {
+                        // 命令短路回执(prompt RPC 直接返回命令结果):
+                        // 经共享呈现(此前整包丢弃,/goal 等全无反应)
+                        store.update(cx, |s, _| s.attachments.drafts.clear());
+                        present_command_reply(store, sid, res, cx).await;
+                    } else {
+                        let pending_id = res["id"].as_str().map(str::to_string);
+                        store.update(cx, |s, cx| {
+                            s.attachments.drafts.clear();
+                            if let Some(pid) = pending_id
+                                && !running_at_send
+                                && let Some(chat) = s.state.chats.get_mut(&sid)
+                            {
+                                chat.pending_user.push(super::projection::PendingUser {
+                                    id: pid,
+                                    text: sent_text.clone(),
+                                });
+                            }
+                            cx.notify();
+                        });
+                    }
                 }
                 Ok(Err(e)) => {
                     // 附件准入被拒(attachment-error)——
@@ -1570,7 +1578,12 @@ impl AppStore {
                             });
                             cx.notify();
                         });
-                    } else if !is_command {
+                    } else if is_command {
+                        // 命令被拒(未知命令/参数校验失败):通知行呈现
+                        store.update(cx, |s, cx| {
+                            s.push_local_notice(t!("chat.command_failed", msg = &e.message), cx);
+                        });
+                    } else {
                         store.update(cx, |s, cx| {
                             s.state.running_by_id.insert(sid.clone(), false);
                             cx.notify();
@@ -1625,10 +1638,17 @@ impl AppStore {
     }
 
     /// composer 下拉开关(互斥;同菜单再点 = 关)
-    /// 设置命令行待发送态(命令菜单点选;composer 渲染命令行)
-    pub fn set_pending_command(&mut self, name: &str, cx: &mut Context<Self>) {
+    /// 设置命令行待发送态(命令菜单点选;composer 渲染命令行 +
+    /// 参数提示)
+    pub fn set_pending_command(
+        &mut self,
+        name: &str,
+        hint: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         self.chat.pending_command = Some(PendingCommand {
             name: name.to_string(),
+            hint,
         });
         cx.notify();
     }
@@ -2220,16 +2240,15 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 执行 slash 命令(host 直接执行,非发模型)。
-    /// `/export` 结果含 ZIP base64 → 落 ~/Downloads;其余命令把结果文本
-    /// 呈现为本地通知行。
+    /// 执行 slash 命令(host 直接执行,非发模型)。回执经
+    /// [`present_command_reply`] 呈现;失败落命令失败通知行。
     pub fn execute_command(&mut self, line: &str, cx: &mut Context<Self>) {
         let Some(id) = self.state.current_id.clone() else {
             return;
         };
         let host = self.bridge.host().clone();
         let sid = id.clone();
-        let sid_cmd = sid.clone(); // 闭包内 execute;sid 供 export 分支
+        let sid_cmd = sid.clone(); // 闭包内 execute;sid 供呈现分支
         let line_o = line.to_string();
         let rx = self
             .bridge
@@ -2238,100 +2257,7 @@ impl AppStore {
         cx.spawn(async move |_this, cx| {
             let rpc = rx.await;
             match rpc {
-                Ok(Ok(v)) => {
-                    if v["kind"].as_str() == Some("export") {
-                        // ZIP base64 → 保存对话框选路径(不代选)→ 通知
-                        use base64::Engine as _;
-                        use gpui_kit::component::WindowExt as _;
-                        use gpui_kit::component::notification::Notification;
-                        let Some(wh) = cx.update(|app| app.active_window()) else {
-                            return Ok(()); // 窗口已关:静默
-                        };
-                        let Some(bytes) = v["data"]
-                            .as_str()
-                            .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
-                        else {
-                            let _ = wh.update(cx, |_, window, cx| {
-                                window.push_notification(
-                                    Notification::error(t!("chat.export_decode_failed"))
-                                        .title(t!("sessions.export_failed")),
-                                    cx,
-                                );
-                            });
-                            return Ok(());
-                        };
-                        let safe = sid.replace('/', "-");
-                        let name = format!("liuma-session-{safe}.zip");
-                        let rx = cx.update(|app| {
-                            app.prompt_for_new_path(
-                                &crate::features::sessions::store::downloads_dir(),
-                                Some(name.as_str()),
-                            )
-                        });
-                        let chosen = match rx.await {
-                            Ok(Ok(Some(path))) => path,
-                            Ok(Ok(None)) => return Ok(()), // 用户取消:静默
-                            Ok(Err(e)) => {
-                                let _ = wh.update(cx, |_, window, cx| {
-                                    window.push_notification(
-                                        Notification::error(t!(
-                                            "sessions.save_dialog_failed",
-                                            e = &e
-                                        ))
-                                        .title(t!("sessions.export_failed")),
-                                        cx,
-                                    );
-                                });
-                                return Ok(());
-                            }
-                            Err(_) => return Ok(()),
-                        };
-                        if let Err(e) = std::fs::write(&chosen, bytes) {
-                            let _ = wh.update(cx, |_, window, cx| {
-                                window.push_notification(
-                                    Notification::error(t!("sessions.write_failed", e = &e))
-                                        .title(t!("sessions.export_failed")),
-                                    cx,
-                                );
-                            });
-                            return Ok(());
-                        }
-                        let _ = wh.update(cx, |_, window, cx| {
-                            window.push_notification(
-                                Notification::success(chosen.display().to_string())
-                                    .title(t!("chat.exported")),
-                                cx,
-                            );
-                        });
-                    } else if v["kind"].as_str() == Some("compact") {
-                        // 受理即点亮状态行;回合进行中 = 排队态(驱动仅在
-                        // turn 间隙取压缩任务),turn/end 事件晋升为进行态,
-                        // 终局事件(compaction/summary|error)清位
-                        store.update(cx, |s, cx| {
-                            let turn_running = s.is_running(&sid);
-                            let chat = s.state.chats.entry(sid.clone()).or_default();
-                            if turn_running {
-                                chat.compact_queued = true;
-                            } else {
-                                chat.compact_running = true;
-                            }
-                            s.chat.pinned = true;
-                            s.chat.chat_version += 1;
-                            cx.notify();
-                        });
-                    } else if v.get("mode").is_some() || v.get("accepted").is_some() {
-                        // 模式/开关切换:状态由 chip 与界面体现,不进聊天区
-                    } else {
-                        let text = v
-                            .get("model")
-                            .and_then(|x| x.as_str())
-                            .map(|m| t!("chat.current_model", m = m).into_owned())
-                            .unwrap_or_else(|| "done".to_string());
-                        store.update(cx, |s, cx| {
-                            s.push_local_notice(&text, cx);
-                        });
-                    }
-                }
+                Ok(Ok(v)) => present_command_reply(store, sid, v, cx).await,
                 Ok(Err(e)) => {
                     store.update(cx, |s, cx| {
                         s.push_local_notice(t!("chat.command_failed", msg = &e.message), cx);
@@ -2357,6 +2283,126 @@ impl AppStore {
         self.current_chat()
             .map(|c| c.nodes.as_slice())
             .unwrap_or(&[])
+    }
+}
+
+/// 命令回执呈现(菜单立即执行与发送路径共用):export = 保存对话框,
+/// compact = 状态行,goal 列表/创建/清空 = 通知行,plan 等开关 =
+/// 静默(chip/界面体现)。命令是结构化操作,结果不走聊天转录
+async fn present_command_reply(
+    store: Entity<AppStore>,
+    sid: String,
+    v: serde_json::Value,
+    cx: &mut gpui_kit::AsyncApp,
+) {
+    if v["kind"].as_str() == Some("export") {
+        // ZIP base64 → 保存对话框选路径(不代选)→ 通知
+        use base64::Engine as _;
+        use gpui_kit::component::WindowExt as _;
+        use gpui_kit::component::notification::Notification;
+        let Some(wh) = cx.update(|app| app.active_window()) else {
+            return; // 窗口已关:静默
+        };
+        let Some(bytes) = v["data"]
+            .as_str()
+            .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
+        else {
+            let _ = wh.update(cx, |_, window, cx| {
+                window.push_notification(
+                    Notification::error(t!("chat.export_decode_failed"))
+                        .title(t!("sessions.export_failed")),
+                    cx,
+                );
+            });
+            return;
+        };
+        let safe = sid.replace('/', "-");
+        let name = format!("liuma-session-{safe}.zip");
+        let rx = cx.update(|app| {
+            app.prompt_for_new_path(
+                &crate::features::sessions::store::downloads_dir(),
+                Some(name.as_str()),
+            )
+        });
+        let chosen = match rx.await {
+            Ok(Ok(Some(path))) => path,
+            Ok(Ok(None)) => return, // 用户取消:静默
+            Ok(Err(e)) => {
+                let _ = wh.update(cx, |_, window, cx| {
+                    window.push_notification(
+                        Notification::error(t!("sessions.save_dialog_failed", e = &e))
+                            .title(t!("sessions.export_failed")),
+                        cx,
+                    );
+                });
+                return;
+            }
+            Err(_) => return,
+        };
+        if let Err(e) = std::fs::write(&chosen, bytes) {
+            let _ = wh.update(cx, |_, window, cx| {
+                window.push_notification(
+                    Notification::error(t!("sessions.write_failed", e = &e))
+                        .title(t!("sessions.export_failed")),
+                    cx,
+                );
+            });
+            return;
+        }
+        let _ = wh.update(cx, |_, window, cx| {
+            window.push_notification(
+                Notification::success(chosen.display().to_string()).title(t!("chat.exported")),
+                cx,
+            );
+        });
+    } else if v["kind"].as_str() == Some("compact") {
+        // 受理即点亮状态行;回合进行中 = 排队态(驱动仅在 turn 间隙取
+        // 压缩任务),turn/end 事件晋升为进行态,终局事件
+        // (compaction/summary|error)清位
+        store.update(cx, |s, cx| {
+            let turn_running = s.is_running(&sid);
+            let chat = s.state.chats.entry(sid.clone()).or_default();
+            if turn_running {
+                chat.compact_queued = true;
+            } else {
+                chat.compact_running = true;
+            }
+            s.chat.pinned = true;
+            s.chat.chat_version += 1;
+            cx.notify();
+        });
+    } else if v["goals"].is_array() {
+        // goal 只读面(桌面无独立 goal 面板):通知行列出
+        let empty = Vec::new();
+        let goals = v["goals"].as_array().unwrap_or(&empty);
+        let text = if goals.is_empty() {
+            t!("chat.goal_none").into_owned()
+        } else {
+            let items = goals
+                .iter()
+                .map(|g| {
+                    let mark = if g["done"].as_bool() == Some(true) {
+                        "✓"
+                    } else if g["paused"].as_bool() == Some(true) {
+                        "⏸"
+                    } else {
+                        "·"
+                    };
+                    format!("{mark} {}", g["text"].as_str().unwrap_or_default())
+                })
+                .collect::<Vec<_>>()
+                .join("  ");
+            t!("chat.goal_list", items = items).into_owned()
+        };
+        store.update(cx, |s, cx| s.push_local_notice(text, cx));
+    } else if v["cleared"].as_bool() == Some(true) {
+        store.update(cx, |s, cx| s.push_local_notice(t!("chat.goal_cleared"), cx));
+    } else if v["id"].as_u64().is_some() {
+        // goal 创建(回执 = 新目标 id)
+        let text = t!("chat.goal_added", id = v["id"].as_u64().unwrap_or(0)).into_owned();
+        store.update(cx, |s, cx| s.push_local_notice(text, cx));
+    } else if v.get("mode").is_some() || v.get("accepted").is_some() {
+        // 模式/开关切换:状态由 chip 与界面体现,不进聊天区
     }
 }
 

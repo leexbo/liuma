@@ -7806,12 +7806,13 @@ fn plan_toggle_end_to_end_fake(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn command_line_renders_and_clears(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "cmdline");
-    click_sel(&mut wcx, "composer-cmd");
-    wcx.refresh().expect("刷新失败");
-    cx.update(|_: &mut App| {});
-    cx.run_until_parked();
-    click_sel(&mut wcx, "goal");
-    cx.run_until_parked();
+    // 命令菜单里已无带 hint 的命令(/model 砍、/goal 暂藏),chip 路径
+    // 由技能与 store 直驱;此处直驱设待发命令(带 hint)
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.set_pending_command("goal", Some("[clear | 目标文本]".into()), cx)
+        })
+    });
     wcx.refresh().expect("刷新失败");
     cx.update(|_: &mut App| {});
     cx.run_until_parked();
@@ -7827,17 +7828,12 @@ fn command_line_renders_and_clears(cx: &mut TestAppContext) {
 }
 
 /// 切换会话丢弃命令行:命令行是输入意图不是会话状态——残留会在
-/// 别的会话发送时被拼上 /命令(跨会话污染)。夹具用 goal(plan 已改
-/// 无 hint 即点即执行,不设命令行)
+/// 别的会话发送时被拼上 /命令(跨会话污染)。夹具直驱设待发命令
+/// (命令菜单已无带 hint 项:/model 砍、/goal 暂藏)
 #[gpui_kit::test]
 fn command_line_cleared_on_session_switch(cx: &mut TestAppContext) {
-    let (store, mut wcx, root) = menu_harness(cx, "cmdline-switch");
-    click_sel(&mut wcx, "composer-cmd");
-    wcx.refresh().expect("刷新失败");
-    cx.update(|_: &mut App| {});
-    cx.run_until_parked();
-    click_sel(&mut wcx, "goal");
-    cx.run_until_parked();
+    let (store, _wcx, root) = menu_harness(cx, "cmdline-switch");
+    cx.update(|app| store.update(app, |st, cx| st.set_pending_command("goal", None, cx)));
     let set = cx.update(|app| store.read(app).chat.pending_command.is_some());
     assert!(set, "命令行应已设置");
     let id = cx

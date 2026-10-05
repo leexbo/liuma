@@ -597,12 +597,7 @@ pub fn builtin_commands() -> Vec<CommandDescriptor> {
         CommandDescriptor {
             name: "goal",
             description: "查看或设置长期任务的目标",
-            hint: Some("[object|clear|edit <object>|pause|resume]"),
-        },
-        CommandDescriptor {
-            name: "model",
-            description: "查看或切换当前模型",
-            hint: Some("[model]"),
+            hint: Some("[clear | 目标文本]"),
         },
     ]
 }
@@ -6110,17 +6105,10 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 match verb {
                     "clear" => {
                         self.goal_clear(session_id)?;
-                        Ok(json!({ "accepted": true }))
+                        Ok(json!({ "accepted": true, "cleared": true }))
                     }
                     _ => self.goal_create(session_id, args),
                 }
-            }
-            "model" => {
-                if args.is_empty() {
-                    return Ok(json!({ "kind": "model", "model": self.session_model(session_id) }));
-                }
-                self.set_model(session_id, args)?;
-                Ok(json!({ "accepted": true, "model": args }))
             }
             "compact" => {
                 // 受理即返回:压缩 = 驱动侧分钟级摘要任务(经 Job 通道与
@@ -6338,14 +6326,14 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         };
         let trimmed = text.trim();
         // 命令统一短路(command.execute 语义——命令不走模型面)。
-        // 命令名 plan/compact/goal/model/export;附件带命令 → 全批拒
+        // 命令名 plan/compact/goal/export;附件带命令 → 全批拒
         // (command.imagesUnsupported;文件同规则)。
         let cmd_name = trimmed
             .split_whitespace()
             .next()
             .unwrap_or_default()
             .trim_start_matches('/');
-        if matches!(cmd_name, "plan" | "compact" | "goal" | "model" | "export") {
+        if matches!(cmd_name, "plan" | "compact" | "goal" | "export") {
             if !refs.is_empty() {
                 return Err(RpcError {
                     code: "attachment-error".into(),
@@ -13227,25 +13215,21 @@ mod tests {
         assert!(host.goal_edit(&id, 99, "x").is_err());
     }
 
-    /// 命令目录(host 注册表)+ execute 分派(plan/model/goal/未知)
+    /// 命令目录(host 注册表)+ execute 分派(plan/goal/未知)
     #[tokio::test]
     async fn command_registry_and_execute() {
         let host = temp_host("cmds");
         let id = host.create_session(None, None, None);
 
-        // 目录拉取(含名字/描述/hint)
+        // 目录拉取(含名字/描述/hint);/model 已砍(模型切换唯一入口
+        // = composer 级联菜单,dsh 同款无命令面)
         let cmds = host.command_list();
         let names: Vec<&str> = cmds.iter().map(|c| c.name).collect();
         assert!(names.contains(&"plan"));
         assert!(names.contains(&"compact"));
         assert!(names.contains(&"export"));
         assert!(names.contains(&"goal"));
-        assert!(names.contains(&"model"));
-
-        // /model 空参 → 当前模型
-        let v = host.execute_command(&id, "/model").await.unwrap();
-        assert_eq!(v["kind"], "model");
-        assert!(v["model"].as_str().is_some());
+        assert!(!names.contains(&"model"));
 
         // /plan on → set_mode(plan)
         let v = host.execute_command(&id, "/plan on").await.unwrap();
