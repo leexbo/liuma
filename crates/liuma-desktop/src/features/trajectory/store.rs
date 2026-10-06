@@ -128,6 +128,9 @@ pub(crate) struct TrajectoryStore {
     pub json_expanded: HashSet<String>,
     /// Tools 页展开的工具名(目录卡片折叠态)
     pub expanded_inspector_tools: HashSet<String>,
+    /// 检查器「复制正文」钮的闪烁态(记录 index;1.2s 回落,同聊天
+    /// 复制钮)
+    pub copied_prompt: Option<u64>,
     /// Tools 页展开集版本(检查器正文缓存签名的一份;切换处 +1)
     pub expanded_tools_ver: u64,
     /// 检查器正文派生缓存(签名守卫,单槽 = 当前 target+tab;
@@ -199,6 +202,7 @@ impl Default for TrajectoryStore {
             json_expanded: HashSet::new(),
             expanded_inspector_tools: HashSet::new(),
             expanded_tools_ver: 0,
+            copied_prompt: None,
             inspector_cache: None,
             timeline_selection: None,
             timeline_viewport: None,
@@ -774,6 +778,27 @@ impl AppStore {
         if !self.trajectory.json_expanded.insert(key.to_string()) {
             self.trajectory.json_expanded.remove(key);
         }
+        cx.notify();
+    }
+
+    /// 检查器正文复制(写剪贴板 + 钮标 check 1.2s;正文拖选在
+    /// workspace 环境组合下失效,此钮是系统提示词复制的可靠出路)
+    pub fn copy_inspector_text(&mut self, index: u64, text: &str, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text.to_string()));
+        self.trajectory.copied_prompt = Some(index);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(1200))
+                .await;
+            this.update(cx, |s, cx| {
+                if s.trajectory.copied_prompt == Some(index) {
+                    s.trajectory.copied_prompt = None;
+                    cx.notify();
+                }
+            })?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
         cx.notify();
     }
 }

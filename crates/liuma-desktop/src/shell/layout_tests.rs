@@ -15485,7 +15485,7 @@ fn opener_selection_switch_keeps_button(cx: &mut TestAppContext) {
 /// 渲染在检查器列内
 #[gpui_kit::test]
 fn trajectory_inspector_scrollbar_wired(cx: &mut TestAppContext) {
-    use crate::features::trajectory::{InspectTarget, TrajectoryView};
+    use crate::features::trajectory::TrajectoryView;
     use crate::shell::panel::PanelTab;
     use liuma_core::trajectory::TrajectoryRecord;
 
@@ -15558,7 +15558,7 @@ fn trajectory_inspector_scrollbar_wired(cx: &mut TestAppContext) {
                 loading: false,
                 loading_older: false,
             };
-            s.trajectory.inspector = Some(InspectTarget::Record(1));
+            s.trajectory.inspector = Some(crate::features::trajectory::InspectTarget::Record(1));
             cx.notify();
         });
     });
@@ -15576,5 +15576,147 @@ fn trajectory_inspector_scrollbar_wired(cx: &mut TestAppContext) {
             && overlay.origin.x < inspector.origin.x + inspector.size.width,
         "滚动条不在检查器列内: overlay={overlay:?} inspector={inspector:?}"
     );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 复现锁:单击台账行打开检查器后不得有活动选择(复制模式)。
+/// 走真实鼠标路径(simulate_click),非 store 直调——选择引擎的
+/// 状态取决于事件序
+#[gpui_kit::test]
+fn trajectory_open_inspector_by_click_has_no_selection(cx: &mut TestAppContext) {
+    use crate::features::trajectory::TrajectoryView;
+    use crate::shell::panel::PanelTab;
+    use liuma_core::trajectory::TrajectoryRecord;
+
+    cx.update(|app| {
+        gpui_kit::component::init(app);
+        theme::init(app);
+    });
+    allow_host_parking(cx);
+    let root = std::env::temp_dir().join(format!("liuma-desktop-trajsel-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (bridge, _rx) = HostBridge::new_at(root.join("ws"), true, "", Some(root.join("sessions")))
+        .expect("桥构建失败");
+    let store_cell = std::rc::Rc::new(std::cell::RefCell::new(None::<Entity<AppStore>>));
+    let store_capture = store_cell.clone();
+    let (_view, wcx) = cx.add_window_view(|window, cx| {
+        let store = cx.new(|cx| AppStore::new(bridge, cx));
+        store.update(cx, |s, cx| s.attach_window_state(window, cx));
+        store.update(cx, |s, _| s.temp_root = Some(root.clone()));
+        *store_capture.borrow_mut() = Some(store.clone());
+        let view = cx.new(|cx| WorkspaceView::new(store, cx));
+        gpui_kit::component::Root::new(view, window, cx)
+    });
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    let store = store_cell.borrow().clone().expect("store 未捕获");
+    let mut wcx = wcx.clone();
+
+    let mk = |index: u64, kind: &str, text: &str| TrajectoryRecord {
+        index,
+        seq: index,
+        kind: kind.into(),
+        turn: if index == 1 { None } else { Some(1) },
+        group: "Message".into(),
+        turn_start: index == 2,
+        text: text.into(),
+        result: None,
+        is_error: false,
+        time_seconds: Some(0.),
+        started_at: Some(0),
+        request_number: None,
+        input: None,
+        output: None,
+        think: None,
+        ttft_ms: None,
+        payload: None,
+        output_detail: None,
+        thinking_detail: None,
+        system_prompt: if index == 1 {
+            Some("轨迹面板内的大段正文,足够选中。".repeat(600))
+        } else {
+            None
+        },
+        tools_catalog: None,
+        schema_detail: None,
+        source: None,
+        decision: None,
+        fold: None,
+    };
+    cx.update(|app| {
+        store.update(app, |s, cx| s.open_panel_tab(PanelTab::Trajectory, cx));
+    });
+    wcx.run_until_parked();
+    cx.update(|app| {
+        store.update(app, |s, cx| {
+            s.trajectory.trajectory = TrajectoryView {
+                records: vec![
+                    mk(1, "system", "Initial System Prompt"),
+                    mk(2, "user", "修复 bug"),
+                ],
+                requests: Vec::new(),
+                has_older: false,
+                total: 2,
+                loading: false,
+                loading_older: false,
+            };
+            cx.notify();
+        });
+    });
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+
+    // 单击 SYSTEM 行(台账第一行):打开初始系统提示词检查器。
+    // 行 bounds 的 debug 收集对 list 虚拟子项不生效,从容器顶推算
+    // (行高 30px,无「加载更早」前缀;首行中心 = 顶 + 15px)
+    let scroll = wcx.debug_bounds("trajectory-scroll").expect("台账容器缺失");
+    wcx.simulate_click(
+        gpui_kit::Point {
+            x: scroll.origin.x + px(100.),
+            y: scroll.origin.y + px(15.),
+        },
+        gpui_kit::Modifiers::default(),
+    );
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    let inspector_open = cx.update(|app| store.read(app).trajectory.inspector.is_some());
+    assert!(inspector_open, "单击台账行应打开检查器");
+    wcx.update(|window, cx| {
+        assert!(
+            !gpui_kit::base::TextSelection::has_selection(window, cx),
+            "打开检查器后不得有活动选择(复制模式)"
+        );
+    });
+    // 正文渲染在场:异步大文本也须布局出高度(拖选失效为已知的
+    // workspace 环境组合问题,专项跟进,本测试不锁红)
+    let body = wcx.debug_bounds("traj-sys-body").expect("正文未渲染");
+    assert!(
+        body.size.height > px(100.),
+        "大文本正文应渲染出高度: {body:?}"
+    );
+
+    // 复制钮:点击落剪贴板 + check 闪烁态(拖选失效时的可靠出路)
+    let copy_btn = wcx.debug_bounds("traj-sys-copy").expect("复制钮未渲染");
+    wcx.simulate_click(
+        gpui_kit::Point {
+            x: copy_btn.origin.x + copy_btn.size.width / 2.,
+            y: copy_btn.origin.y + copy_btn.size.height / 2.,
+        },
+        gpui_kit::Modifiers::default(),
+    );
+    wcx.run_until_parked();
+    assert_eq!(
+        cx.update(|app| store.read(app).trajectory.copied_prompt),
+        Some(1),
+        "复制钮点击应置闪烁态"
+    );
+    let clip = wcx.read_from_clipboard();
+    let clipped = clip
+        .and_then(|item| item.text().map(|t| t.chars().take(10).collect::<String>()))
+        .unwrap_or_default();
+    eprintln!("[dbg] 剪贴板前 10 字: {clipped:?}");
+    assert!(!clipped.is_empty(), "剪贴板应写入系统提示词全文");
     let _ = std::fs::remove_dir_all(root);
 }

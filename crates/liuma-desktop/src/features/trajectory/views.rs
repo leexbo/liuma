@@ -2475,6 +2475,7 @@ fn record_row(
     let ix = rec.index;
     div()
         .id(("traj-row", ix as usize))
+        .debug_selector(move || format!("traj-row-{ix}"))
         .relative()
         .flex()
         // 行宽锚定:list 以 layout_as_root 布子项,auto 宽收缩到内容
@@ -2732,7 +2733,7 @@ fn inspector(
             _ => preview_tab_body(r, cx).into_any_element(),
         },
         (Some(r), _, "source") => source_tab_body(r, cached, cx).into_any_element(),
-        (Some(r), _, "system") => system_body(r, cx).into_any_element(),
+        (Some(r), _, "system") => system_body(store, r, cx).into_any_element(),
         (Some(r), _, "tools") => tools_body(store, &s, r, cached, cx).into_any_element(),
         (Some(r), _, "diff") => diff_body(r, cached, cx).into_any_element(),
         (Some(r), _, "schema") => schema_body(store, &s, r, cached, cx).into_any_element(),
@@ -4812,13 +4813,45 @@ fn source_tab_body(r: &TrajectoryRecord, cached: Option<&InspectorBody>, cx: &Ap
 
 // ── SYSTEM 详情(System Prompt / Tools / Diff)与 TOOL Schema ────
 
-/// System Prompt 页:Markdown 渲染(空则缺省文案)
-fn system_body(r: &TrajectoryRecord, cx: &App) -> Div {
+/// System Prompt 页:头部复制钮 + Markdown 渲染(空则缺省文案)。
+/// 复制钮 = 正文拖选在 workspace 环境组合下失效时的可靠出路
+/// (dsh 检查器同款交互)
+fn system_body(store: &Entity<AppStore>, r: &TrajectoryRecord, cx: &App) -> Div {
     let mut col = div().v_flex();
     match &r.system_prompt {
         Some(p) if !p.is_empty() => {
-            let key = format!("traj-sys-{}", r.index);
-            col = col.child(crate::kits::markdown_tv::tv_static(key.clone(), p, cx));
+            let copied = store.read(cx).trajectory.copied_prompt == Some(r.index);
+            let s2 = store.clone();
+            let (ix, text) = (r.index, p.clone());
+            col = col
+                .child(
+                    div().flex().justify_end().pb(px(4.)).child(
+                        div()
+                            .id(("sys-copy", r.index as usize))
+                            .flex()
+                            .size(px(22.))
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .text_color(theme::caption(cx))
+                            .hover(|st| st.bg(theme::layer(cx)).text_color(theme::label_2(cx)))
+                            .child(if copied {
+                                fixed(IconName::Check, 13.)
+                                    .text_color(theme::brand(cx))
+                                    .into_any_element()
+                            } else {
+                                fixed(IconName::Copy, 13.).into_any_element()
+                            })
+                            .debug_selector(move || "traj-sys-copy".to_string())
+                            .on_click(move |_, _, cx| {
+                                s2.update(cx, |st, cx| st.copy_inspector_text(ix, &text, cx));
+                            }),
+                    ),
+                )
+                .child(div().debug_selector(|| "traj-sys-body".to_string()).child(
+                    crate::kits::markdown_tv::tv_static(format!("traj-sys-{}", r.index), p, cx),
+                ));
         }
         _ => col = col.child(empty_text(t!("trajectory.no_system_prompt"), cx)),
     }

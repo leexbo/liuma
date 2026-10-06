@@ -176,3 +176,84 @@ fn tiny_travel_below_threshold_still_collapses(cx: &mut TestAppContext) {
         );
     });
 }
+
+/// 大文本(>4KiB 异步解析)的 TextView 拖选——上游隔离实验:
+/// 复现 = gpui-kit 异步路径 bug(报 issue);不复现 = liuma 装配问题
+#[gpui_kit::test]
+fn large_markdown_textview_drag_selects(cx: &mut TestAppContext) {
+    let big = format!("{}\n", "异步解析的大段正文,足够选中。".repeat(600)); // ~12KB
+    let wcx = mount(cx, &big);
+    for _ in 0..5 {
+        wcx.refresh().expect("刷新失败");
+        wcx.run_until_parked();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    down(wcx, 60., 20.);
+    drag(wcx, 200., 20.);
+    up(wcx, 200., 20.);
+    wcx.run_until_parked();
+    wcx.update(|window, cx| {
+        let has = gpui_kit::base::TextSelection::has_selection(window, cx);
+        let text = gpui_kit::base::TextSelection::selected_text(window, cx);
+        eprintln!(
+            "[dbg-large] has={has} text={:?}",
+            &text[..text.len().min(40)]
+        );
+        assert!(has, "大文本拖选必须产生选择");
+        assert!(!text.trim().is_empty());
+    });
+}
+
+/// 复刻轨迹详情装配:Scrollable(overflow_y_scrollbar) + markdown_tv
+/// keyed TextView + 大文本——锁定「无法复制」的组合因子
+#[gpui_kit::test]
+fn scrollable_tv_static_large_text(cx: &mut TestAppContext) {
+    use gpui_kit::component::scroll::ScrollableElement as _;
+    let big = format!("{}\n", "滚动容器内的大段正文,足够选中。".repeat(600));
+    cx.update(|app| {
+        gpui_kit::component::init(app);
+        theme::init(app);
+    });
+    struct P2;
+    impl Render for P2 {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .relative()
+                .p(px(8.))
+                .child(crate::kits::markdown_tv::tv_static(
+                    "sel-probe-large",
+                    &"多块大文本一行。\n".to_string().repeat(400),
+                    cx,
+                ))
+                .overflow_y_scrollbar()
+                // 复刻右面板的域尾哨兵(绝对铺满 + 注册参与者)
+                .child(div().absolute().size_full().child(SelectionDomainSink::new(
+                    "sel-probe-sink",
+                    crate::kits::selection_order::PANEL_TAIL_ORDER,
+                )))
+                .child(SelectionCollapseGuard)
+        }
+    }
+    let (_v, wcx) = cx.add_window_view(|window, cx| Root::new(cx.new(|_| P2), window, cx));
+    wcx.run_until_parked();
+    let _ = big;
+    for _ in 0..5 {
+        wcx.refresh().expect("刷新失败");
+        wcx.run_until_parked();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    down(wcx, 60., 20.);
+    drag(wcx, 200., 20.);
+    up(wcx, 200., 20.);
+    wcx.run_until_parked();
+    wcx.update(|window, cx| {
+        let has = gpui_kit::base::TextSelection::has_selection(window, cx);
+        let text = gpui_kit::base::TextSelection::selected_text(window, cx);
+        assert!(
+            has,
+            "Scrollable+keyed tv_static+域尾哨兵+多块大文本:孤立组合应可选"
+        );
+        assert!(!text.trim().is_empty(), "孤立组合的复制取值应非空");
+    });
+}
