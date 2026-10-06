@@ -912,7 +912,10 @@ impl TrajectoryFolder {
                             index: 0,
                             seq: ev.seq,
                             kind: "system".into(),
-                            turn: if self.turn == 0 {
+                            // 置顶记录独立于轮(事件时序晚于首条用户消息,
+                            // 但语义上在第一轮之前,不挂角标/分组);
+                            // 更新类记录归属发生轮
+                            turn: if self.turn == 0 || label == "Initial System Prompt" {
                                 None
                             } else {
                                 Some(self.turn)
@@ -1739,6 +1742,7 @@ mod tests {
         assert_eq!(system.text, "Initial System Prompt");
         assert_eq!(system.index, 1, "置顶后重编号");
         assert!(!system.turn_start, "Turn 标签仍归属用户行");
+        assert_eq!(system.turn, None, "置顶记录独立于轮(在第一轮之前)");
         let user = &data.records[1];
         assert_eq!(user.text, "修复 bug");
         assert!(user.turn_start, "user 是本轮首条(Turn 标签)");
@@ -1901,12 +1905,14 @@ mod tests {
         );
         // 快照字段:两条 SYSTEM 各携带当时的全文
         assert_eq!(data.records[0].system_prompt.as_deref(), Some("prompt-a"));
+        assert_eq!(data.records[0].turn, None, "置顶记录独立于轮");
         let updated = data
             .records
             .iter()
             .find(|r| r.text == "System Prompt Updated")
             .unwrap();
         assert_eq!(updated.system_prompt.as_deref(), Some("prompt-b"));
+        assert_eq!(updated.turn, Some(2), "更新类记录归属发生轮");
         let catalog = data.records[0].tools_catalog.as_ref().unwrap();
         assert_eq!(catalog.len(), 1);
         assert_eq!(catalog[0]["function"]["name"], json!("bash"));
@@ -1990,6 +1996,18 @@ mod tests {
             systems,
             vec!["Initial System Prompt", "Tools Updated"],
             "工具目录变更 → Tools Updated;system/model 未变不重复"
+        );
+        assert_eq!(
+            (
+                data.records[0].turn,
+                data.records
+                    .iter()
+                    .find(|r| r.text == "Tools Updated")
+                    .unwrap()
+                    .turn
+            ),
+            (None, Some(1)),
+            "置顶无轮,更新类归属发生轮"
         );
         assert_eq!(data.requests.len(), 2);
         assert_eq!(data.requests[1].number, 2);
