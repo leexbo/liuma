@@ -812,9 +812,7 @@ impl Render for WorkspaceView {
                             .left(px(left))
                             .top(px(top))
                             .occlude()
-                            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-                                cx.stop_propagation()
-                            })
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_hover({
                                 let store = store.clone();
                                 move |hovering: &bool, _, cx| {

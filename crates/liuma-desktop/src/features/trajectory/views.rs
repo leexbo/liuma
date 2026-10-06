@@ -836,6 +836,11 @@ pub(crate) fn refresh_view_cache(st: &mut AppStore, cx: &App) {
 
 // ── 检查器正文派生缓存 ─────────────────────────────────────────
 
+/// 单行 JSON 分色 token(pretty JSON 的行级切分)
+type JsonTokens = Vec<(JKind, String)>;
+/// Diff 行(操作 + 文本)
+type DiffLine = (DiffOp, String);
+
 /// Tools 页单工具行(目录卡数据;参数 pretty/token 只在展开过才建)
 struct ToolRow {
     name: String,
@@ -843,7 +848,7 @@ struct ToolRow {
     /// parameters 字段在场(object/array 形态才出 JSON 块)
     has_params: bool,
     /// pretty 文本的逐行 token(展开过才建一次;渲染只建 div,不再分词)
-    params_tokens: Option<Rc<Vec<Vec<(JKind, String)>>>>,
+    params_tokens: Option<Rc<Vec<JsonTokens>>>,
 }
 
 /// 检查器正文派生数据(单槽 = 当前 target+tab)。**只存纯数据**:
@@ -853,8 +858,8 @@ enum InspectorBody {
     Tools(Vec<ToolRow>),
     /// Diff 页行 diff(None = 该节无变化;两节皆 None 出缺省占位)
     Diff {
-        system: Option<Vec<(DiffOp, String)>>,
-        tools: Option<Vec<(DiffOp, String)>>,
+        system: Option<Vec<DiffLine>>,
+        tools: Option<Vec<DiffLine>>,
     },
     /// Schema 页:解析后的 spec + 头部字段(免每帧 from_str)
     Schema {

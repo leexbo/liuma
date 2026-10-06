@@ -1508,18 +1508,14 @@ fn mermaid_viewer_drag_panning(cx: &mut TestAppContext) {
         x: canvas.origin.x + canvas.size.width / 2.,
         y: canvas.origin.y + canvas.size.height / 2.,
     };
-    wcx.simulate_mouse_down(
-        center,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::default(),
-    );
+    wcx.simulate_mouse_down(center, MouseButton::Left, gpui_kit::Modifiers::default());
     cx.run_until_parked();
     wcx.simulate_mouse_move(
         gpui_kit::Point {
             x: center.x - px(120.),
             y: center.y,
         },
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     cx.run_until_parked();
@@ -1553,7 +1549,7 @@ fn mermaid_viewer_drag_panning(cx: &mut TestAppContext) {
             x: px(2.),
             y: px(2.),
         }, // 环外遮罩位置 = 画布外
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     cx.run_until_parked();
@@ -2708,7 +2704,7 @@ fn chat_body_text_is_drag_selectable(cx: &mut TestAppContext) {
             x: b.origin.x + px(4.),
             y,
         },
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     cx.run_until_parked();
@@ -2717,7 +2713,7 @@ fn chat_body_text_is_drag_selectable(cx: &mut TestAppContext) {
             x: b.origin.x + b.size.width - px(4.),
             y,
         },
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     cx.run_until_parked();
@@ -2726,7 +2722,7 @@ fn chat_body_text_is_drag_selectable(cx: &mut TestAppContext) {
             x: b.origin.x + b.size.width - px(4.),
             y,
         },
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     cx.run_until_parked();
@@ -2825,7 +2821,7 @@ fn mermaid_code_view_is_drag_selectable(cx: &mut TestAppContext) {
             x: b.origin.x + px(20.),
             y,
         },
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     cx.run_until_parked();
@@ -2834,7 +2830,7 @@ fn mermaid_code_view_is_drag_selectable(cx: &mut TestAppContext) {
             x: b.right() - px(20.),
             y,
         },
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     cx.run_until_parked();
@@ -2884,7 +2880,7 @@ fn user_bubble_text_is_drag_selectable(cx: &mut TestAppContext) {
             x: b.origin.x + px(22.),
             y,
         },
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     cx.run_until_parked();
@@ -2893,7 +2889,7 @@ fn user_bubble_text_is_drag_selectable(cx: &mut TestAppContext) {
             x: b.right() - px(22.),
             y,
         },
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     cx.run_until_parked();
@@ -2902,7 +2898,7 @@ fn user_bubble_text_is_drag_selectable(cx: &mut TestAppContext) {
             x: b.right() - px(22.),
             y,
         },
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     cx.run_until_parked();
@@ -4808,7 +4804,7 @@ fn sidebar_manual_drag_reorders_flat_list(cx: &mut TestAppContext) {
     // 激活与 drag_move 分事件走
     wcx.simulate_mouse_down(
         center(d_row),
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     wcx.simulate_mouse_move(
@@ -4816,7 +4812,7 @@ fn sidebar_manual_drag_reorders_flat_list(cx: &mut TestAppContext) {
             x: center(d_row).x,
             y: center(d_row).y + px(10.),
         },
-        Some(gpui_kit::MouseButton::Left),
+        Some(MouseButton::Left),
         gpui_kit::Modifiers::default(),
     );
     cx.run_until_parked();
@@ -4831,15 +4827,11 @@ fn sidebar_manual_drag_reorders_flat_list(cx: &mut TestAppContext) {
     };
     wcx.simulate_mouse_move(
         drop_at,
-        Some(gpui_kit::MouseButton::Left),
+        Some(MouseButton::Left),
         gpui_kit::Modifiers::default(),
     );
     cx.run_until_parked();
-    wcx.simulate_mouse_up(
-        drop_at,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::default(),
-    );
+    wcx.simulate_mouse_up(drop_at, MouseButton::Left, gpui_kit::Modifiers::default());
     redraw(cx, &mut wcx);
 
     // 全序快照:D 排到 U 前(渲染序翻转)
@@ -4869,7 +4861,7 @@ fn sidebar_manual_drag_reorders_flat_list(cx: &mut TestAppContext) {
     // 当前空会话不可拖(自动置顶守卫):提交被拒,顺序原样
     wcx.simulate_mouse_down(
         center(row_cur),
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     wcx.simulate_mouse_move(
@@ -4877,7 +4869,7 @@ fn sidebar_manual_drag_reorders_flat_list(cx: &mut TestAppContext) {
             x: center(row_cur).x,
             y: center(row_cur).y + px(10.),
         },
-        Some(gpui_kit::MouseButton::Left),
+        Some(MouseButton::Left),
         gpui_kit::Modifiers::default(),
     );
     cx.run_until_parked();
@@ -4886,7 +4878,7 @@ fn sidebar_manual_drag_reorders_flat_list(cx: &mut TestAppContext) {
             x: center(row_cur).x,
             y: center(row_cur).y + px(10.),
         },
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     redraw(cx, &mut wcx);
@@ -4936,17 +4928,13 @@ fn sidebar_drag_suppresses_click(cx: &mut TestAppContext) {
         y: row.origin.y + row.size.height / 2.,
     };
     // 拖拽释放(20px 位移):不得打开会话
-    wcx.simulate_mouse_down(
-        at,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::default(),
-    );
+    wcx.simulate_mouse_down(at, MouseButton::Left, gpui_kit::Modifiers::default());
     wcx.simulate_mouse_move(
         gpui_kit::Point {
             x: at.x,
             y: at.y + px(20.),
         },
-        Some(gpui_kit::MouseButton::Left),
+        Some(MouseButton::Left),
         gpui_kit::Modifiers::default(),
     );
     cx.run_until_parked();
@@ -4955,7 +4943,7 @@ fn sidebar_drag_suppresses_click(cx: &mut TestAppContext) {
             x: at.x,
             y: at.y + px(20.),
         },
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     redraw(cx, &mut wcx);
@@ -5047,21 +5035,9 @@ fn sidebar_resize_drag(cx: &mut TestAppContext) {
         x: start.x + px(60.),
         y: start.y,
     };
-    wcx.simulate_mouse_down(
-        start,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::default(),
-    );
-    wcx.simulate_mouse_move(
-        end,
-        Some(gpui_kit::MouseButton::Left),
-        gpui_kit::Modifiers::default(),
-    );
-    wcx.simulate_mouse_up(
-        end,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::default(),
-    );
+    wcx.simulate_mouse_down(start, MouseButton::Left, gpui_kit::Modifiers::default());
+    wcx.simulate_mouse_move(end, Some(MouseButton::Left), gpui_kit::Modifiers::default());
+    wcx.simulate_mouse_up(end, MouseButton::Left, gpui_kit::Modifiers::default());
     redraw(cx, &mut wcx);
 
     let after_w = cx.update(|app| store.read(app).sidebar_px);
@@ -5343,17 +5319,13 @@ fn panel_drag_widens_via_mouse_and_negotiates(cx: &mut TestAppContext) {
 
     // 面板默认 = 下限 540。按下 → 左移 100(want 640 > 展开态上限 572)
     // → 自动收左栏,面板 640(≤ 收起态上限 796)
-    wcx.simulate_mouse_down(
-        start,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::default(),
-    );
+    wcx.simulate_mouse_down(start, MouseButton::Left, gpui_kit::Modifiers::default());
     wcx.run_until_parked();
     wcx.refresh().expect("按下后刷新失败");
     wcx.run_until_parked();
     wcx.simulate_mouse_move(
         gpui_kit::point(start.x - px(100.), start.y),
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     wcx.run_until_parked();
@@ -5368,7 +5340,7 @@ fn panel_drag_widens_via_mouse_and_negotiates(cx: &mut TestAppContext) {
     // 不占宽,可再宽 56)
     wcx.simulate_mouse_move(
         gpui_kit::point(start.x - px(300.), start.y),
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     wcx.run_until_parked();
@@ -5389,7 +5361,7 @@ fn panel_drag_widens_via_mouse_and_negotiates(cx: &mut TestAppContext) {
     // 抬起 → 拖拽态收尾(锚点清位)
     wcx.simulate_mouse_up(
         gpui_kit::point(start.x - px(300.), start.y),
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     wcx.run_until_parked();
@@ -7941,7 +7913,7 @@ fn plan_toggle_end_to_end_fake(cx: &mut TestAppContext) {
             x: chip.origin.x + chip.size.width / 2.,
             y: chip.origin.y + chip.size.height / 2.,
         },
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     cx.run_until_parked();
@@ -8386,7 +8358,7 @@ fn ws_info_card_opens_on_row_spacer_hover(cx: &mut TestAppContext) {
             x: px(600.),
             y: px(400.),
         },
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     wcx.refresh().expect("刷新失败");
@@ -8395,11 +8367,7 @@ fn ws_info_card_opens_on_row_spacer_hover(cx: &mut TestAppContext) {
         x: head.origin.x + head.size.width - px(60.),
         y: head.origin.y + head.size.height / 2.,
     };
-    wcx.simulate_mouse_move(
-        pos,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::default(),
-    );
+    wcx.simulate_mouse_move(pos, MouseButton::Left, gpui_kit::Modifiers::default());
     cx.update(|_: &mut App| {});
     cx.run_until_parked();
     // 卡应同帧在场(锚在事件分发期捕获,无渲染期捕获的一帧延迟)
@@ -8415,11 +8383,7 @@ fn ws_info_card_opens_on_row_spacer_hover(cx: &mut TestAppContext) {
         x: card.origin.x + card.size.width / 2.,
         y: card.origin.y + card.size.height / 2.,
     };
-    wcx.simulate_mouse_move(
-        mid,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::default(),
-    );
+    wcx.simulate_mouse_move(mid, MouseButton::Left, gpui_kit::Modifiers::default());
     cx.update(|_: &mut App| {});
     cx.run_until_parked();
     assert!(
@@ -8432,7 +8396,7 @@ fn ws_info_card_opens_on_row_spacer_hover(cx: &mut TestAppContext) {
             x: px(600.),
             y: px(400.),
         },
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     cx.executor()
@@ -8476,7 +8440,7 @@ fn ws_info_card_opens_from_pinned_row(cx: &mut TestAppContext) {
             x: pin.origin.x + pin.size.width / 2.,
             y: pin.origin.y + px(17.),
         },
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     cx.update(|_: &mut App| {});
@@ -12197,7 +12161,7 @@ fn nav_rail_show_hover_card_and_jump(cx: &mut TestAppContext) {
             x: l0.origin.x + px(2.),
             y: c0,
         },
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     cx.run_until_parked();
@@ -12236,7 +12200,7 @@ fn nav_rail_show_hover_card_and_jump(cx: &mut TestAppContext) {
             x: away_x,
             y: away_y,
         },
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     cx.run_until_parked();
@@ -13548,23 +13512,11 @@ fn cross_domain_drag_selection_stays_in_chat(cx: &mut TestAppContext) {
         x: bubble.origin.x + px(6.),
         y: bubble.origin.y + bubble.size.height / 2.,
     };
-    wcx.simulate_mouse_down(
-        start,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::default(),
-    );
+    wcx.simulate_mouse_down(start, MouseButton::Left, gpui_kit::Modifiers::default());
     cx.run_until_parked();
-    wcx.simulate_mouse_move(
-        end,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::default(),
-    );
+    wcx.simulate_mouse_move(end, MouseButton::Left, gpui_kit::Modifiers::default());
     cx.run_until_parked();
-    wcx.simulate_mouse_up(
-        end,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::default(),
-    );
+    wcx.simulate_mouse_up(end, MouseButton::Left, gpui_kit::Modifiers::default());
     cx.run_until_parked();
     redraw(cx, &mut wcx);
     let selected = wcx.update(gpui_kit::base::TextSelection::selected_text);
@@ -13647,23 +13599,11 @@ fn chat_drag_across_user_bubbles_excludes_textview_body(cx: &mut TestAppContext)
         x: last.origin.x + px(22.),
         y: last.origin.y + last.size.height / 2.,
     };
-    wcx.simulate_mouse_down(
-        start,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::default(),
-    );
+    wcx.simulate_mouse_down(start, MouseButton::Left, gpui_kit::Modifiers::default());
     cx.run_until_parked();
-    wcx.simulate_mouse_move(
-        end,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::default(),
-    );
+    wcx.simulate_mouse_move(end, MouseButton::Left, gpui_kit::Modifiers::default());
     cx.run_until_parked();
-    wcx.simulate_mouse_up(
-        end,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::default(),
-    );
+    wcx.simulate_mouse_up(end, MouseButton::Left, gpui_kit::Modifiers::default());
     cx.run_until_parked();
     redraw(cx, &mut wcx);
     let selected = wcx.update(gpui_kit::base::TextSelection::selected_text);
@@ -14990,12 +14930,12 @@ fn panel_terminal_focus_input_scroll(cx: &mut TestAppContext) {
         .expect("终端视图在场");
     wcx.simulate_mouse_down(
         gpui_kit::point(center.center().x, center.center().y),
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::none(),
     );
     wcx.simulate_mouse_up(
         gpui_kit::point(center.center().x, center.center().y),
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::none(),
     );
     cx.run_until_parked();
@@ -15147,7 +15087,7 @@ fn panel_terminal_selection_copy(cx: &mut TestAppContext) {
     //    move 经 store 直调,抬起经窗口级事件
     wcx.simulate_mouse_down(
         cell_pt(0.5, out_row as f32 + 0.5),
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::none(),
     );
     redraw(cx, &mut wcx);
@@ -15159,7 +15099,7 @@ fn panel_terminal_selection_copy(cx: &mut TestAppContext) {
     });
     wcx.simulate_mouse_up(
         cell_pt(9.7, out_row as f32 + 0.5),
-        gpui_kit::MouseButton::Left,
+        MouseButton::Left,
         gpui_kit::Modifiers::none(),
     );
     cx.run_until_parked();
@@ -15168,26 +15108,10 @@ fn panel_terminal_selection_copy(cx: &mut TestAppContext) {
     // 2) 双击取词:数字格连点两次(与上次拖选起点相距 >1 格,连击判定
     //    先重置);alacritty 默认词边界不含 `-`,整串一词
     let word_pt = cell_pt(4.5, out_row as f32 + 0.5);
-    wcx.simulate_mouse_down(
-        word_pt,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::none(),
-    );
-    wcx.simulate_mouse_up(
-        word_pt,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::none(),
-    );
-    wcx.simulate_mouse_down(
-        word_pt,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::none(),
-    );
-    wcx.simulate_mouse_up(
-        word_pt,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::none(),
-    );
+    wcx.simulate_mouse_down(word_pt, MouseButton::Left, gpui_kit::Modifiers::none());
+    wcx.simulate_mouse_up(word_pt, MouseButton::Left, gpui_kit::Modifiers::none());
+    wcx.simulate_mouse_down(word_pt, MouseButton::Left, gpui_kit::Modifiers::none());
+    wcx.simulate_mouse_up(word_pt, MouseButton::Left, gpui_kit::Modifiers::none());
     cx.run_until_parked();
     let word = cx.update(|app| store.update(app, |st, _| st.terminal_selection_text(id)));
     assert_eq!(
@@ -15198,16 +15122,8 @@ fn panel_terminal_selection_copy(cx: &mut TestAppContext) {
     // 3) 空白单击:选区清除
     let cols = cx.update(|app| store.update(app, |st, _| st.terminal.cols)) as f32;
     let blank_pt = cell_pt(cols - 2.0, out_row as f32 + 0.5);
-    wcx.simulate_mouse_down(
-        blank_pt,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::none(),
-    );
-    wcx.simulate_mouse_up(
-        blank_pt,
-        gpui_kit::MouseButton::Left,
-        gpui_kit::Modifiers::none(),
-    );
+    wcx.simulate_mouse_down(blank_pt, MouseButton::Left, gpui_kit::Modifiers::none());
+    wcx.simulate_mouse_up(blank_pt, MouseButton::Left, gpui_kit::Modifiers::none());
     cx.run_until_parked();
     let cleared =
         cx.update(|app| store.update(app, |st, _| st.terminal_selection_text(id).is_none()));

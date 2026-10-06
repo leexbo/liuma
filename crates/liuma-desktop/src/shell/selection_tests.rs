@@ -11,11 +11,11 @@ use gpui_kit::{
 
 /// 探针视图:大块可选文本 + 折叠守卫(与 WorkspaceView 同挂法)
 struct Probe {
-    state: Option<gpui_kit::Entity<TextViewState>>,
+    state: Option<Entity<TextViewState>>,
 }
 
 impl Render for Probe {
-    fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let text = match &self.state {
             Some(s) => TextView::new(s).into_any_element(),
             None => div().into_any_element(),
@@ -32,7 +32,7 @@ impl Render for Probe {
 fn mount<'a>(cx: &'a mut TestAppContext, body: &str) -> &'a mut VisualTestContext {
     cx.update(|app| {
         gpui_kit::component::init(app);
-        crate::kits::theme::init(app);
+        theme::init(app);
     });
     let (_view, wcx) = cx.add_window_view(|window, cx| {
         let state = cx.new(|cx| TextViewState::markdown(body, cx));
