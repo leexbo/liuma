@@ -27,3 +27,4 @@ pub mod stats;
 pub mod title;
 pub mod trajectory;
 pub mod translate;
+pub mod workspace_snapshot;

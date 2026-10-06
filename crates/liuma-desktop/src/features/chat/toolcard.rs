@@ -20,6 +20,7 @@ use gpui_kit::{
 };
 
 use super::projection::relativize;
+use crate::kits::filetype::{class_icon, file_class};
 use crate::kits::highlight::Span;
 use crate::kits::i18n::t;
 use crate::kits::theme;
@@ -74,12 +75,19 @@ pub(crate) struct DiffCard {
     pub(crate) diffs: Vec<DiffHunk>,
 }
 
+/// present 卡素材(交付宣告)
+pub(crate) struct PresentCard {
+    pub(crate) path: String,
+    pub(crate) description: Option<String>,
+}
+
 /// 窄化后的卡视图(路由用)
 pub(crate) enum CardView {
     Terminal(TerminalDetail),
     Read(ReadCard),
     Search(SearchCard),
     Diff(DiffCard),
+    Present(PresentCard),
 }
 
 /// 非法/未知视图 → None(通用 IN/OUT 卡);逐字段校验,任一不符即拒
@@ -159,8 +167,38 @@ pub(crate) fn narrow(view: &serde_json::Value) -> Option<CardView> {
             }
             Some(CardView::Diff(DiffCard { diffs }))
         }
+        "present" => Some(CardView::Present(PresentCard {
+            path: view["path"].as_str()?.to_string(),
+            description: view["description"].as_str().map(str::to_string),
+        })),
         _ => None,
     }
+}
+
+/// 交付卡文案:(主名, 副标题)。副标题回退链 = 模型宣告描述(交付层
+/// 「是什么」)→ diff 统计 `+N -M`(变更层「改了多少」)→ 大写扩展名
+/// (dsh cardDescription 同款;无扩展名 "FILE")
+pub(crate) fn deliverable_texts(
+    path: &str,
+    description: Option<&str>,
+    stat: Option<(u64, u64)>,
+) -> (String, String) {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_string();
+    let subtitle = match description.map(str::trim).filter(|d| !d.is_empty()) {
+        Some(d) => d.to_string(),
+        None => match stat {
+            Some((added, removed)) => format!("+{added} -{removed}"),
+            None => {
+                let label = liuma_attachment::file_extension_label(&name);
+                if label.is_empty() {
+                    "FILE".to_string()
+                } else {
+                    label
+                }
+            }
+        },
+    };
+    (name, subtitle)
 }
 
 // ── 家族公共件 ────────────────────────────────────────────────
@@ -181,6 +219,74 @@ fn head_tail(total: usize, cap: usize, expanded: bool) -> HeadTail {
         head: cap.div_ceil(2),
         tail: cap - cap.div_ceil(2),
     }
+}
+
+// ── present 卡 ────────────────────────────────────────────────
+
+/// present 卡:类型 tile(24px 小形态)+ 相对化路径 + 描述/扩展名
+/// 副标题;整卡点击 = 侧栏预览(与轮尾交付卡同语义)。家族几何
+/// ml(4) / rounded 12 / bg code
+pub(crate) fn render_present(
+    store: &Entity<AppStore>,
+    cx: &App,
+    ix: usize,
+    card: &PresentCard,
+    ws_root: Option<&str>,
+) -> gpui_kit::AnyElement {
+    let (name, subtitle) = deliverable_texts(&card.path, card.description.as_deref(), None);
+    let class = file_class(&name);
+    let tint = theme::deliverable_tile_tint(class);
+    let s = store.clone();
+    let p = card.path.clone();
+    let shown = relativize(ws_root, &card.path);
+    div()
+        .id(("present-card", ix))
+        .debug_selector(move || format!("present-card-{ix}"))
+        .ml(px(4.))
+        .rounded(px(12.))
+        .bg(theme::code(cx))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .px(px(10.))
+        .py(px(8.))
+        .cursor_pointer()
+        .hover(|st| st.bg(theme::dock(cx)))
+        .on_click(move |_, _, cx| {
+            let p = p.clone();
+            s.update(cx, |st, cx| st.open_deliverable(&p, cx));
+        })
+        .child(
+            div()
+                .size(px(24.))
+                .flex_shrink_0()
+                .rounded(px(6.))
+                .bg(gpui_kit::Rgba { a: 0.14, ..tint })
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(class_icon(class, 14.).text_color(tint)),
+        )
+        .child(
+            div()
+                .min_w(px(0.))
+                .flex_1()
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(theme::label(cx))
+                        .truncate()
+                        .child(shown),
+                )
+                .child(
+                    div()
+                        .text_size(px(10.))
+                        .text_color(theme::label_3(cx))
+                        .truncate()
+                        .child(subtitle),
+                ),
+        )
+        .into_any_element()
 }
 
 // ── read 卡 ───────────────────────────────────────────────────
@@ -1260,6 +1366,16 @@ mod tests {
             .unwrap(),
             CardView::Diff(_)
         ));
+        // present:合法(description 缺席 = None)
+        match narrow(&serde_json::json!({ "card": "present", "path": "a.svg" }))
+            .expect("合法 present")
+        {
+            CardView::Present(pc) => {
+                assert_eq!(pc.path, "a.svg");
+                assert_eq!(pc.description, None);
+            }
+            _ => panic!(),
+        }
     }
 
     /// 非法/未知视图 → None(线界健壮性:字段缺失、类型错、未知 card)
@@ -1274,6 +1390,8 @@ mod tests {
             serde_json::json!({ "card": "search", "shape": "weird",
                 "truncated": false, "total": 0 }), // 未知 shape
             serde_json::json!({ "card": "diff", "diffs": [] }), // 空 diffs
+            serde_json::json!({ "card": "present" }), // 缺 path
+            serde_json::json!({ "card": "present", "path": 3 }), // 类型错
         ] {
             assert!(narrow(&bad).is_none(), "应拒绝: {bad}");
         }

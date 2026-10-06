@@ -294,10 +294,6 @@ chat:
     zh-CN: "首 token 用时（TTFT）"
     en: "Time to first token (TTFT)"
 
-  artifacts:
-    zh-CN: "产物"
-    en: "Artifacts"
-
   more_files:
     zh-CN: "+ %{n} 个文件"
     en: "+%{n} files"
@@ -365,6 +361,26 @@ chat:
   tool_edit:
     zh-CN: "编辑"
     en: "Edit"
+
+  tool_present:
+    zh-CN: "宣告"
+    en: "Present"
+
+  deliverable_preview_hint:
+    zh-CN: "在侧边栏预览"
+    en: "Preview in sidebar"
+
+  changes_edited:
+    zh-CN: "已编辑 %{n} 个文件"
+    en: "Edited %{n} files"
+
+  route_unavailable:
+    zh-CN: "路由不可用"
+    en: "Route unavailable"
+
+  changes_all:
+    zh-CN: "全部 %{n} 个文件"
+    en: "All %{n} files"
 
   tool_grep:
     zh-CN: "Grep"

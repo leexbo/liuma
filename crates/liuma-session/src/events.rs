@@ -145,6 +145,60 @@ pub struct ApprovalPolicy {
     pub source: Option<String>,
 }
 
+/// route/selection 载荷:会话路由选择(provider+model 成对)。
+///
+/// dsh ModelSelection 意图层同位:校验成对、写入成对、恢复成对——
+/// 结构上不允许 provider 与 model 劈开。非 surface,不进模型
+/// transcript;读侧 fold 最后一条得会话路由(session_provider/
+/// session_model),缺席 = 工作区默认。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RouteSelection {
+    /// provider id(设置注册表域名)
+    pub provider: String,
+    /// provider 所属模型 id
+    pub model: String,
+}
+
+/// title/set 载荷:会话标题落档(三源 latest-wins)。
+///
+/// dsh session/title 同位:同一事件承载确定性回退/LLM 生成/手动
+/// rename 三源,findLast 折叠;`user` 源钉住(后续自动生成停摆)。
+/// 非 surface,不进模型 transcript。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TitleSet {
+    /// 标题文本(已规范化)
+    pub title: String,
+    /// 来源(三源判定与钉住语义)
+    pub source: TitleSource,
+}
+
+/// 标题来源(fallback = 首条消息确定性回退;provider = LLM 生成;
+/// user = 手动 rename,钉住)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TitleSource {
+    /// 来源种类:fallback / provider / user
+    pub kind: String,
+}
+
+/// title/llm_request 载荷:标题辅助 LLM 请求的派发前审计。
+///
+/// dsh session/title-llm-request 同位:标题调用从此在会话日志可见
+/// (路由/消息/token 上限),log-only 不进模型 transcript。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TitleLlmRequest {
+    /// 请求路由 `{provider, model}`(会话路由事实)
+    pub route: serde_json::Value,
+    /// 消息面(system + user,数据面)
+    pub messages: Vec<serde_json::Value>,
+    /// 输出 token 上限
+    #[serde(rename = "maxTokens")]
+    pub max_tokens: u32,
+}
+
 /// approval/asked 载荷:工具请求沙箱升级,审批闸门已向用户发起问询。
 ///
 /// 与 approval/decided 以 id 配对成审计对;log-only,不进模型 transcript;
@@ -461,6 +515,15 @@ pub enum SessionEventData {
     /// 重试退避结束、重发开始(非 surface)
     #[serde(rename = "llm/retry-started", rename_all = "camelCase")]
     LlmRetryStarted(LlmRetryStarted),
+    /// 会话路由选择(provider+model 成对;非 surface,读侧 fold)
+    #[serde(rename = "route/selection", rename_all = "camelCase")]
+    RouteSelection(RouteSelection),
+    /// 会话标题落档(三源 latest-wins;非 surface)
+    #[serde(rename = "title/set", rename_all = "camelCase")]
+    TitleSet(TitleSet),
+    /// 标题辅助请求审计(非 surface)
+    #[serde(rename = "title/llm_request", rename_all = "camelCase")]
+    TitleLlmRequest(TitleLlmRequest),
     /// 未登记类型(ignorable 守卫已过,原样保留)
     #[serde(untagged)]
     Other(serde_json::Value),
@@ -525,6 +588,13 @@ pub const KNOWN_EVENT_TYPES: &[&str] = &[
     // 安全——旧日志无此类型,守卫只拒「未登记且非 ignorable」)
     "llm/retry",
     "llm/retry-started",
+    // 会话路由选择(dsh ModelSelection 意图层;log-only、非 surface;
+    // 新增类型对旧日志安全。漏登记会导致含路由选择的会话日志整体拒读)
+    "route/selection",
+    // 会话标题(三源 latest-wins)+ 标题辅助请求审计(log-only、
+    // 非 surface;新增类型对旧日志安全,漏登记会整体拒读)
+    "title/set",
+    "title/llm_request",
 ];
 
 /// surface 事件类型(携带 surfaceOp 的类别:用户面三件 + 注入上下文)
@@ -576,6 +646,9 @@ impl SessionEventData {
             Self::GoalState(_) => "goal/state",
             Self::LlmRetry(_) => "llm/retry",
             Self::LlmRetryStarted(_) => "llm/retry-started",
+            Self::RouteSelection(_) => "route/selection",
+            Self::TitleSet(_) => "title/set",
+            Self::TitleLlmRequest(_) => "title/llm_request",
             Self::Other(_) => "",
         }
     }

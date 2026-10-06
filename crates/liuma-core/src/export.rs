@@ -22,6 +22,7 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
         n if n == shell_tool => &["description", "command"],
         "file_read" => &["path"],
         "file_edit" => &["path"],
+        "present" => &["path"],
         "file_search" => &["content", "glob", "path"],
         "subagent" | "ralph" => &["task"],
         "workflow" => &["steps"],

@@ -17,6 +17,21 @@ pub(crate) enum LaunchKind {
     Xed,
     /// `open -a Terminal <dir>`
     Terminal,
+    /// `open -R <file>`:访达定位(reveal);非清单条目 kind,只由
+    /// [`LaunchKind::for_file`] 与 reveal 菜单行产生
+    Reveal,
+}
+
+impl LaunchKind {
+    /// 文件目标的启动语义分化:访达目录开目录、文件 reveal;
+    /// 其余原样(`open -a <app> <file>`、`xed <file>`、
+    /// `open -a Terminal <file>` 均合法)
+    pub(crate) fn for_file(self) -> Self {
+        match self {
+            Self::Finder => Self::Reveal,
+            k => k,
+        }
+    }
 }
 
 /// 编译期清单条目。菜单顺序 = 数组顺序(访达 → 编辑器/IDE → Git GUI
@@ -123,21 +138,22 @@ pub(crate) fn resolve_bundle(
     candidates.iter().find(|p| exists(p)).cloned()
 }
 
-/// 启动 argv:kind → (程序, 参数),目录恒置尾
+/// 启动 argv:kind → (程序, 参数),目标(目录或文件)恒置尾
 pub(crate) fn launch_argv(
     kind: LaunchKind,
     bundle: &Path,
-    dir: &Path,
+    target: &Path,
 ) -> (OsString, Vec<OsString>) {
-    let dir = dir.as_os_str().to_os_string();
+    let target = target.as_os_str().to_os_string();
     match kind {
-        LaunchKind::Finder => ("open".into(), vec![dir]),
+        LaunchKind::Finder => ("open".into(), vec![target]),
         LaunchKind::OpenApp => (
             "open".into(),
-            vec!["-a".into(), bundle.as_os_str().to_os_string(), dir],
+            vec!["-a".into(), bundle.as_os_str().to_os_string(), target],
         ),
-        LaunchKind::Xed => ("xed".into(), vec![dir]),
-        LaunchKind::Terminal => ("open".into(), vec!["-a".into(), "Terminal".into(), dir]),
+        LaunchKind::Xed => ("xed".into(), vec![target]),
+        LaunchKind::Terminal => ("open".into(), vec!["-a".into(), "Terminal".into(), target]),
+        LaunchKind::Reveal => ("open".into(), vec!["-R".into(), target]),
     }
 }
 
@@ -162,7 +178,7 @@ mod tests {
     }
 
     /// 清单完整性:id 唯一、访达首位、终端末位、OpenApp 条目 bundle
-    /// 名全部 .app 结尾、fixed 条目带图标源
+    /// 名全部 .app 结尾、fixed 条目带图标源、Reveal 非清单 kind
     #[test]
     fn catalog_shape() {
         let mut seen = std::collections::HashSet::new();
@@ -177,6 +193,7 @@ mod tests {
                     assert!(!e.bundles.is_empty());
                     assert!(e.bundles.iter().all(|n| n.ends_with(".app")));
                 }
+                LaunchKind::Reveal => panic!("Reveal is not a catalog kind"),
             }
         }
         assert_eq!(CATALOG.first().unwrap().id, "finder");
@@ -212,20 +229,34 @@ mod tests {
 
     #[test]
     fn argv_per_kind() {
-        let dir = Path::new("/tmp/ws");
+        let target = Path::new("/tmp/ws");
         let bundle = Path::new("/Applications/Zed.app");
-        let (p, a) = launch_argv(LaunchKind::Finder, bundle, dir);
+        let (p, a) = launch_argv(LaunchKind::Finder, bundle, target);
         assert_eq!(p, "open");
-        assert_eq!(a, [dir.as_os_str()]);
-        let (p, a) = launch_argv(LaunchKind::OpenApp, bundle, dir);
+        assert_eq!(a, [target.as_os_str()]);
+        let (p, a) = launch_argv(LaunchKind::OpenApp, bundle, target);
         assert_eq!(p, "open");
         assert_eq!(a, ["-a", "/Applications/Zed.app", "/tmp/ws"]);
-        let (p, a) = launch_argv(LaunchKind::Xed, bundle, dir);
+        let (p, a) = launch_argv(LaunchKind::Xed, bundle, target);
         assert_eq!(p, "xed");
-        assert_eq!(a, [dir.as_os_str()]);
-        let (p, a) = launch_argv(LaunchKind::Terminal, bundle, dir);
+        assert_eq!(a, [target.as_os_str()]);
+        let (p, a) = launch_argv(LaunchKind::Terminal, bundle, target);
         assert_eq!(p, "open");
         assert_eq!(a, ["-a", "Terminal", "/tmp/ws"]);
+        let file = Path::new("/tmp/ws/out.svg");
+        let (p, a) = launch_argv(LaunchKind::Reveal, bundle, file);
+        assert_eq!(p, "open");
+        assert_eq!(a, ["-R", "/tmp/ws/out.svg"]);
+    }
+
+    /// 文件语义分化:仅访达变 reveal,其余 kind 原样
+    #[test]
+    fn for_file_splits_finder_only() {
+        assert_eq!(LaunchKind::Finder.for_file(), LaunchKind::Reveal);
+        assert_eq!(LaunchKind::OpenApp.for_file(), LaunchKind::OpenApp);
+        assert_eq!(LaunchKind::Xed.for_file(), LaunchKind::Xed);
+        assert_eq!(LaunchKind::Terminal.for_file(), LaunchKind::Terminal);
+        assert_eq!(LaunchKind::Reveal.for_file(), LaunchKind::Reveal);
     }
 
     #[test]

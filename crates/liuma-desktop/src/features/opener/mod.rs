@@ -10,4 +10,6 @@ pub(crate) mod store;
 mod views;
 
 pub(crate) use store::OpenerStore;
-pub(crate) use views::{launch_error_toast, open_with_split, split_button_visible};
+pub(crate) use views::{
+    deliverable_split_button, launch_error_toast, open_with_split, split_button_visible,
+};

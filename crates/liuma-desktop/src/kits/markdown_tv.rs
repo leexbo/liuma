@@ -58,6 +58,43 @@ fn view_style(cx: &App) -> TextViewStyle {
 }
 
 /// 静态 markdown 挂载(keyed 便捷构造;id 需调用点稳定)
+/// 正文文件链接判别:`http(s)` 交系统浏览器;其它(工作区相对/绝对
+/// 路径,含 `#L24` 行锚)剥锚后作为文件路径 → 侧栏预览。返回
+/// `None` = 交系统默认处理
+pub(crate) fn file_link_path(url: &str) -> Option<String> {
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        return None;
+    }
+    // 显式 scheme(mailto: 等)不当中文会话里的文件路径
+    if let Some(idx) = url.find(':')
+        && url.as_bytes()[idx + 1..].starts_with(b"//")
+    {
+        return None;
+    }
+    let path = url.split('#').next().unwrap_or(url);
+    (!path.is_empty()).then(|| path.to_string())
+}
+
+/// 正文链接点击拦截(挂 TextView;文件路径 → 侧栏预览,http(s) →
+/// 系统浏览器)。配合提示词的「文件提及链接化」指引使用
+pub(crate) fn link_intercept(
+    store: &Entity<crate::shell::store::AppStore>,
+) -> impl Fn(&SharedString, &gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut App) + Send + Sync + 'static
+{
+    let store = store.clone();
+    move |url, _, _, cx| {
+        if url.starts_with("http://") || url.starts_with("https://") {
+            cx.open_url(url);
+            return;
+        }
+        let Some(path) = file_link_path(url) else {
+            return;
+        };
+        store.update(cx, |st, cx| st.open_deliverable(&path, cx));
+    }
+}
+
 pub(crate) fn tv_static(
     id: impl Into<gpui_kit::ElementId>,
     text: &str,

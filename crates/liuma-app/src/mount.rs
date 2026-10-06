@@ -199,7 +199,7 @@ fn component_prompt(name: &str) -> &'static str {
         // glob+grep→file_search;file_edit 无 replace_all 参数故无对应句;
         // file_search 无 hidden/mtime 行为细节)
         "files" => {
-            "Use the file_read tool — not shell commands like cat — to inspect text files. Results include line numbers. Use offset and limit to continue reading large files.\n\nUse the file_edit tool for targeted changes to existing UTF-8 text files. It replaces literal old_text with new_text; by default old_text must appear exactly once. If old_text appears multiple times, provide a more specific old_text. Read the file first (the default fs-observation-policy requires it), unless you just created or edited it in this session.\n\nUse the file_search tool — not shell find or grep — to discover files by path pattern or to search file contents. Use file_read on a matched file when you need surrounding context."
+            "Use the file_read tool — not shell commands like cat — to inspect text files. Results include line numbers. Use offset and limit to continue reading large files.\n\nUse the file_edit tool for targeted changes to existing UTF-8 text files. It replaces literal old_text with new_text; by default old_text must appear exactly once. If old_text appears multiple times, provide a more specific old_text. Read the file first (the default fs-observation-policy requires it), unless you just created or edited it in this session.\n\nUse the file_search tool — not shell find or grep — to discover files by path pattern or to search file contents. Use file_read on a matched file when you need surrounding context.\n\nEach file announced with the present tool adds a card below the reply, with preview and native-open actions. Use present when a separate file card helps the user open the complete deliverable — images, documents, spreadsheets, and slide decks. Do not call present just to list edited source files, and do not present intermediate scratch files. Outside commands and code blocks, link every mention of an existing file, including repeats and tables, to its path relative to the working directory; use the filename as the label and keep full paths out of labels."
         }
         // jobs 静态节 = 无通知形态的轮询指引;通知口在场时由
         // JOBS_NOTIFY_SECTION 替换(见 [`tool_prompt_sections_with`])
@@ -675,6 +675,7 @@ mod tests {
             "file_read",
             "file_edit",
             "file_search",
+            "present",
             "todo_write",
             "exit_plan_mode",
             "goal",
@@ -690,7 +691,7 @@ mod tests {
                 "{expect} 缺席:{names:?}"
             );
         }
-        assert_eq!(names.len(), 13, "standard 装载 13 工具声明:{names:?}");
+        assert_eq!(names.len(), 14, "standard 装载 14 工具声明:{names:?}");
         assert!(
             !names.iter().any(|n| n == "session_query"),
             "无 port 应跳过"
@@ -716,8 +717,9 @@ mod tests {
                 "file_read".to_string(),
                 "file_edit".to_string(),
                 "file_search".to_string(),
+                "present".to_string(),
             ],
-            "minimal = shell + files 三件"
+            "minimal = shell + files 四件"
         );
     }
 

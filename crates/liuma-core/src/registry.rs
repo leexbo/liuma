@@ -103,6 +103,20 @@ impl AnySession {
         }
     }
 
+    fn set_turn_tail_snapshot(&mut self, port: Arc<dyn liuma_agent_loop::TurnTailSnapshotObj>) {
+        match self {
+            AnySession::Real(s) => s.set_turn_tail_snapshot(port),
+            AnySession::Fake(s) => s.set_turn_tail_snapshot(port),
+        }
+    }
+
+    fn set_turn_route(&mut self, route: Option<Value>) {
+        match self {
+            AnySession::Real(s) => s.set_turn_route(route),
+            AnySession::Fake(s) => s.set_turn_route(route),
+        }
+    }
+
     /// 折叠价值裁定器热替换(None = 卸载;保存决策设置即生效)
     fn set_value_judge_opt(
         &mut self,
@@ -247,8 +261,27 @@ enum Job {
     SetMode(String),
     /// 沙箱访问模式切换(经驱动通道落档 sandbox/mode;与 turn 串行)
     SetPermission(String),
+    /// 会话路由切换(经驱动通道落档 route/selection + 注入事实层;
+    /// reply = 驱动落档回执,调用方收到后才 detach 重装配)
+    SetRoute {
+        provider: String,
+        model: String,
+        reply: oneshot::Sender<Result<(), RpcError>>,
+    },
     /// 审批策略切换(经驱动通道落档 approval/policy;与 turn 串行)
     SetApproval(String),
+    /// 标题落档(title/set;source = fallback/provider/user,user 钉住)
+    SetTitle {
+        title: String,
+        source: String,
+        reply: oneshot::Sender<Result<(), RpcError>>,
+    },
+    /// 标题辅助请求审计(title/llm_request;派发前落档)
+    TitleLlmRequest {
+        route: Value,
+        messages: Vec<Value>,
+        reply: oneshot::Sender<Result<(), RpcError>>,
+    },
     /// 手动压缩(/compact;经驱动通道执行,与 turn 串行——turn 中受理
     /// 即排队,turn 结束后压)
     Compact,
@@ -261,8 +294,26 @@ enum DriverCmd {
     SetMode(String),
     /// 沙箱访问模式切换(sandbox/mode 落档 + 广播)
     SetPermission(String),
+    /// 会话路由切换(route/selection 落档 + 广播 + 事实层注入)
+    SetRoute {
+        provider: String,
+        model: String,
+        reply: oneshot::Sender<Result<(), RpcError>>,
+    },
     /// 审批策略切换(approval/policy 落档 + 广播)
     SetApproval(String),
+    /// 标题落档(title/set 落档 + 广播 + title 投影帧)
+    SetTitle {
+        title: String,
+        source: String,
+        reply: oneshot::Sender<Result<(), RpcError>>,
+    },
+    /// 标题辅助请求审计(title/llm_request 落档)
+    TitleLlmRequest {
+        route: Value,
+        messages: Vec<Value>,
+        reply: oneshot::Sender<Result<(), RpcError>>,
+    },
     /// hooks 桥热替换(保存配置即生效,turn 边界换装;None = 卸载)
     SetHooks(Option<Arc<dyn liuma_agent_loop::hooks::HookPortObj>>),
     /// 折叠价值裁定器热替换(决策场景开关;None = 卸载)
@@ -805,21 +856,10 @@ fn mermaid_demo_segment() -> Vec<LlmEvent> {
     events
 }
 
-/// 重命名标题持久化文件(workspace `.liuma/` 内,JSON 对象)
+/// 重命名标题持久化文件(workspace `.liuma/` 内,JSON 对象)。
+/// **只读遗留**:标题写路径已退役(title/set 事件落会话日志),本文件
+/// 仅为存量会话的回落显示层保留
 const TITLES_FILE: &str = ".liuma/titles.json";
-
-/// 标题落盘(`.liuma/` 子目录缺席则先建——首个标题写入时该目录尚不存在)。
-/// 临时文件 + rename 原子顶替:直写会在崩溃/断电时留下半截 JSON,而
-/// 加载侧解析失败即整表丢弃(unwrap_or_default),半截文件 = 全部标题丢失
-fn write_titles_file(workspace: &Path, text: &str) -> Result<(), std::io::Error> {
-    let path = workspace.join(TITLES_FILE);
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = workspace.join(format!("{TITLES_FILE}.tmp"));
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, &path)
-}
 
 /// 添加工作区持久化文件(默认工作区顶层;路径数组)
 const WORKSPACES_FILE: &str = ".dsh-workspaces.json";
@@ -913,18 +953,36 @@ struct ListFacts {
     mtime: SystemTime,
     blank: bool,
     log_title: Option<String>,
+    /// 日志内最后一条 `title/set` 的标题(标题事件真值;None = 无)
+    set_title: Option<String>,
 }
 
-/// 单次全文读取派生 blank/标题(仅缓存 miss 与 stat 失败旁路走此路径)
-fn derive_list_facts(log: &Path) -> (bool, Option<String>) {
+/// 单次全文读取派生 blank/标题(仅缓存 miss 与 stat 失败旁路走此路径)。
+/// log_title = 首条 user/message 原文(派生回退);set_title = 最后一条
+/// title/set(三源真值,单遍扫描取末条)
+fn derive_list_facts(log: &Path) -> (bool, Option<String>, Option<String>) {
     let text = std::fs::read_to_string(log).unwrap_or_default();
-    let blank = !text.contains("\"turn/start\"");
-    let log_title = text
-        .lines()
-        .find(|l| l.contains("\"user/message\""))
-        .and_then(|l| serde_json::from_str::<Value>(l).ok())
-        .and_then(|v| v["data"]["content"].as_str().map(str::to_owned));
-    (blank, log_title)
+    let mut blank = true;
+    let mut log_title = None;
+    let mut set_title = None;
+    for line in text.lines() {
+        if blank && line.contains("\"turn/start\"") {
+            blank = false;
+        }
+        if log_title.is_none()
+            && line.contains("\"user/message\"")
+            && let Ok(v) = serde_json::from_str::<Value>(line)
+        {
+            log_title = v["data"]["content"].as_str().map(str::to_owned);
+        }
+        if line.contains("\"title/set\"")
+            && let Ok(v) = serde_json::from_str::<Value>(line)
+            && let Some(t) = v["data"]["title"].as_str().map(str::to_owned)
+        {
+            set_title = Some(t);
+        }
+    }
+    (blank, log_title, set_title)
 }
 
 /// 权限 fold 数据源:驻留日志优先(锁内借用,零克隆零读盘——切回已驻留
@@ -1576,8 +1634,7 @@ impl AppHost {
     fn detach_idle_sessions_using(&self, provider_id: &str) {
         let ids: Vec<String> = self.sessions.read_recover().keys().cloned().collect();
         for id in ids {
-            let (ws, _) = self.resolve_session(&id);
-            if self.provider_for(&ws).id == provider_id
+            if self.session_provider(&id).id == provider_id
                 && let Err(_e) = self.detach_if_idle(&id)
             {
                 // 运行中:保持现装配,不拦正在跑的 turn
@@ -2361,7 +2418,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
     /// 冷读(打开会话/丢帧自愈)走此路径,直播增量见 driver_loop。
     /// 锁内借用 fold,不克隆日志快照(原 session_log 路径深克隆全档)。
     pub fn session_stats(&self, id: &str) -> Result<Value, RpcError> {
-        let provider_label = self.provider_for(&self.resolve_session(id).0).id.clone();
+        let provider_label = self.session_provider(id).id.clone();
         let ctx_window = self.session_context_window(id);
         self.with_session_log(id, |log| {
             let mut agg = stats::StatsAgg::with_retained_turns();
@@ -2409,14 +2466,65 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
     }
 
     /// 会话当前模型(会话覆盖 > 工作区 liuma.toml > 设置工作区默认 > 默认模型)
-    pub fn session_model(&self, id: &str) -> String {
-        self.load_session_overrides(id);
-        if let Some(m) = self.model_overrides.read_recover().get(id) {
-            return m.clone();
+    /// 会话路由事件 fold(最后一条 `route/selection`;驻留日志优先/
+    /// 冷读盘)。None = 无选择(回落工作区默认)
+    fn session_route(&self, id: &str) -> Option<(String, String)> {
+        with_session_events(self, id, |log| {
+            log.last_matching("route/selection", |_| true)
+                .and_then(|ev| {
+                    Some((
+                        ev.data["provider"].as_str()?.to_string(),
+                        ev.data["model"].as_str()?.to_string(),
+                    ))
+                })
+        })
+        .flatten()
+    }
+
+    /// 会话生效 provider(dsh ModelSelection 的 provider 域):路由事件
+    /// 命中且条目在册 → 返回;条目已被移除(悬空)→ 装配无路可走,
+    /// 回落工作区默认 + 诊断(UI 据清单把该选择标为不可用,选择本身
+    /// 不改写——dsh 准入语义);无路由事件 → 工作区默认
+    pub fn session_provider(&self, id: &str) -> ProviderEntry {
+        if let Some((pid, _)) = self.session_route(id) {
+            let entry = self.settings.read().provider(Some(&pid));
+            if entry.id == pid {
+                return entry;
+            }
+            eprintln!(
+                "[liuma-core] session {id} 路由 provider {pid} 已不在注册表,装配回落工作区默认"
+            );
         }
         let (ws_root, _) = self.resolve_session(id);
-        if let Some(m) = self.ws_config(&ws_root).model {
+        self.provider_for(&ws_root)
+    }
+
+    /// 会话生效模型(dsh ModelSelection 的 model 域):路由事件命中 →
+    /// 该选择(准入不改写,清单漂移不换轨);否则遗留侧车覆盖回落
+    /// (按工作区清单判一次,不合法弃用)→ liuma.toml 钉选 → 设置层
+    /// 工作区默认 → 出厂默认
+    pub fn session_model(&self, id: &str) -> String {
+        self.load_session_overrides(id);
+        // 路由事件模型(准入不改写——dsh 语义:已存选择照常执行,
+        // 清单漂移不换轨,错误明面呈现)
+        if let Some((_, m)) = self.session_route(id) {
             return m;
+        }
+        let (ws_root, _) = self.resolve_session(id);
+        // 遗留侧车 model 覆盖回落:旧不对称语义的产物(无配对 provider),
+        // 按当前工作区 provider 清单判一次,不合法弃用(迁移行为,非
+        // 运行时守卫;新写入经 set_route 永远成对且不落侧车)
+        if let Some(m) = self.model_overrides.read_recover().get(id).cloned() {
+            let list = self.models_for(&self.provider_for(&ws_root).id);
+            if list.is_empty() || list.iter().any(|x| x == &m) {
+                return m;
+            }
+            eprintln!(
+                "[liuma-core] session {id} 遗留覆盖模型 {m} 不在当前 provider 清单,弃用(迁移)"
+            );
+        }
+        if let Some(m) = self.ws_config(&ws_root).model {
+            return m; // liuma.toml 显式钉选:文件级意图
         }
         let key = project_key(&ws_root.display().to_string());
         if let Some(m) = self.settings.read().workspace(&key).model {
@@ -2439,7 +2547,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         if let Some(w) = self.ws_config(&ws_root).context_window.filter(|w| *w > 0) {
             return w;
         }
-        self.provider_for(&ws_root)
+        self.session_provider(id)
             .context_window_for(&self.session_model(id))
             .unwrap_or(liuma_compaction::DEFAULT_CONTEXT_WINDOW)
     }
@@ -2653,21 +2761,70 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         Ok(())
     }
 
-    /// 切换会话模型:空闲时 detach + 记覆盖,下次 prompt 以新模型装配;
-    /// 运行中拒绝(竞态下旧 turn 语义不明)。同时落盘工作区默认
-    /// (重启后冷会话沿用)。校验按会话所属工作区的 provider 模型清单
-    pub fn set_model(&self, id: &str, model: &str) -> Result<(), RpcError> {
-        let (ws_root, _) = self.resolve_session(id);
-        let provider = self.provider_for(&ws_root);
-        if !self.models_for(&provider.id).iter().any(|m| m == model) {
-            return Err(RpcError::bad_request("未知模型"));
+    /// 切换会话路由(provider + model 成对;dsh selectModel 同语义)。
+    /// 校验:provider 注册在案 + model 在该 provider 清单(不过 =
+    /// bad-request,对应 dsh session/model-unavailable)。通过:落
+    /// `route/selection` 事件(意图层)+ 注入引擎事实层(下回合
+    /// turn/start.route + 通告对比目标)+ 顺带写工作区默认(dsh
+    /// agentDefaultModel 跟随:新会话从新路由起步,已存路由的会话不受
+    /// 影响)+ detach 空闲会话(驻留装配的传输面还是旧 provider 的,
+    /// 下次 prompt 重装配;运行中拒绝)
+    pub async fn set_route(
+        self: &Arc<Self>,
+        id: &str,
+        provider_id: &str,
+        model: &str,
+    ) -> Result<(), RpcError> {
+        let known = self
+            .settings
+            .read()
+            .providers
+            .iter()
+            .any(|p| p.id == provider_id);
+        if !known {
+            return Err(RpcError::bad_request("未知 provider"));
         }
+        if !self.models_for(provider_id).iter().any(|m| m == model) {
+            return Err(RpcError::bad_request(format!(
+                "模型 {model} 不在 provider {provider_id} 清单"
+            )));
+        }
+        // 运行中拒绝(先于任何写侧:默认跟随与事件落档都不得发生在拒绝
+        // 之后;空闲附着会话就地 detach)
         self.detach_if_idle(id)?;
-        self.load_session_overrides(id);
-        self.model_overrides
-            .write_recover()
-            .insert(id.into(), model.into());
-        self.persist_session_override(id, "model", model)
+        let (ws_root, _) = self.resolve_session(id);
+        let key = project_key(&ws_root.display().to_string());
+        self.settings
+            .update(|s| {
+                let d = s.workspaces.entry(key).or_default();
+                d.provider = Some(provider_id.to_string());
+                d.model = Some(model.to_string());
+            })
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))?;
+        let slot = self.attach(id)?;
+        let inner = slot.inner()?;
+        let (tx, rx) = oneshot::channel();
+        inner
+            .queue_tx
+            .send(Job::SetRoute {
+                provider: provider_id.to_string(),
+                model: model.to_string(),
+                reply: tx,
+            })
+            .map_err(|_| RpcError::internal("session worker 已退出"))?;
+        rx.await
+            .map_err(|_| RpcError::internal("session worker 已退出"))??;
+        // 落档后再度 detach:驻留装配的传输面(base_url/dialect/凭据)
+        // 还是旧 provider 的,下次 prompt 重装配
+        self.detach_if_idle(id)
+    }
+
+    /// 切换会话模型(单拨;dsh 三元组的 model 域):路由保持,仅换
+    /// model——校验基准 = 会话当前 provider(路由事件命中其清单)。
+    /// 运行中拒绝,语义同 [`Self::set_route`]
+    pub async fn set_model(self: &Arc<Self>, id: &str, model: &str) -> Result<(), RpcError> {
+        let provider = self.session_provider(id);
+        self.set_route(id, &provider.id, model).await
     }
 
     /// 切换访问模式(经驱动通道落档 sandbox/mode;工具执行时动态 fold
@@ -3745,6 +3902,49 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         self.set_workspace_default(ws_name, |d| d.model = Some(model.into()))
     }
 
+    /// 工作区默认路由成对落盘(hero 态;与 [`Self::set_route`] 同一校验
+    /// 口径,provider+model 一次成对写——新会话冷装配读同一键)
+    pub fn set_workspace_route(
+        &self,
+        ws_name: &str,
+        provider_id: &str,
+        model: &str,
+    ) -> Result<(), RpcError> {
+        let ws = self
+            .workspace_of(ws_name)
+            .ok_or_else(|| RpcError::bad_request("未知工作区"))?;
+        let known = self
+            .settings
+            .read()
+            .providers
+            .iter()
+            .any(|p| p.id == provider_id);
+        if !known {
+            return Err(RpcError::bad_request("未知 provider"));
+        }
+        if !self.models_for(provider_id).iter().any(|m| m == model) {
+            return Err(RpcError::bad_request(format!(
+                "模型 {model} 不在 provider {provider_id} 清单"
+            )));
+        }
+        let key = project_key(&ws.display().to_string());
+        self.settings
+            .update(|s| {
+                let d = s.workspaces.entry(key).or_default();
+                d.provider = Some(provider_id.to_string());
+                d.model = Some(model.to_string());
+            })
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))?;
+        // 生效默认变了:该工作区的空闲附着会话 detach,下次 prompt 重装配
+        let ids: Vec<String> = self.sessions.read_recover().keys().cloned().collect();
+        for id in ids {
+            if self.resolve_session(&id).0 == ws {
+                let _ = self.detach_if_idle(&id);
+            }
+        }
+        Ok(())
+    }
+
     /// 工作区默认推理等级落盘(hero 态选型面;语义同 [`Self::set_effort`])
     pub fn set_workspace_effort(&self, ws_name: &str, effort: &str) -> Result<(), RpcError> {
         if !self.efforts().iter().any(|e| e == effort) {
@@ -3791,22 +3991,81 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         provider.id == provider_id && self.resolve_provider_key(&provider).is_some()
     }
 
-    /// 重命名(标题覆盖;持久化 + 清单/历史投影可见)
-    pub fn rename(&self, id: &str, title: &str) -> Result<(), RpcError> {
+    /// 重命名(标题覆盖;title/set 事件落档,source=user 钉住——
+    /// 折叠序天然成立,后续自动生成停摆)
+    pub async fn rename(self: &Arc<Self>, id: &str, title: &str) -> Result<(), RpcError> {
         let title = title.trim().chars().take(120).collect::<String>();
         if title.is_empty() {
             return Err(RpcError::bad_request("标题不可为空"));
         }
-        let mut titles = self.titles.write_recover();
-        titles.insert(id.into(), title.clone());
-        let text = serde_json::to_string_pretty(&*titles).unwrap_or_default();
-        write_titles_file(&self.default_workspace(), &text)
-            .map_err(|e| RpcError::internal(format!("标题持久化失败:{e}")))?;
-        Ok(())
+        self.append_title_event(id, &title, "user").await
     }
 
-    /// 会话标题(重命名 > 首条 user 投影)
+    /// 标题事件追加(驱动通道收口;title/set 落档 + 广播 + title 投影
+    /// 帧下发——live 列表行即时更新,与旧 apply 路径的客户端面一致)
+    async fn append_title_event(
+        self: &Arc<Self>,
+        id: &str,
+        title: &str,
+        source: &str,
+    ) -> Result<(), RpcError> {
+        let slot = self.attach(id)?;
+        let inner = slot.inner()?;
+        let (tx, rx) = oneshot::channel();
+        inner
+            .queue_tx
+            .send(Job::SetTitle {
+                title: title.to_string(),
+                source: source.to_string(),
+                reply: tx,
+            })
+            .map_err(|_| RpcError::internal("session worker 已退出"))?;
+        rx.await
+            .map_err(|_| RpcError::internal("session worker 已退出"))?
+    }
+
+    /// 标题辅助请求审计事件追加(派发前落档,fire-and-receive;失败不阻
+    /// 断生成主流程——审计缺一行好过标题不生成)
+    async fn append_title_llm_request(
+        self: &Arc<Self>,
+        id: &str,
+        route: Value,
+        messages: &[Value],
+    ) {
+        let Ok(slot) = self.attach(id) else {
+            return;
+        };
+        let Ok(inner) = slot.inner() else {
+            return;
+        };
+        let (tx, rx) = oneshot::channel::<Result<(), RpcError>>();
+        if inner
+            .queue_tx
+            .send(Job::TitleLlmRequest {
+                route,
+                messages: messages.to_vec(),
+                reply: tx,
+            })
+            .is_err()
+        {
+            return;
+        }
+        let _ = rx.await;
+    }
+
+    /// 会话标题(三源 latest-wins 读面):title/set 事件 > 遗留
+    /// titles.json > None。派生回退(首条 user 投影)由消费侧 title_of
+    /// 叠加。dsh session/title 同位;user 源钉住 = 事件序天然成立,
+    /// 折叠不辨来源
     pub fn session_title(&self, id: &str) -> Option<String> {
+        if let Some(t) = with_session_events(self, id, |log| {
+            log.last_of("title/set")
+                .and_then(|ev| ev.data["title"].as_str().map(str::to_string))
+        })
+        .flatten()
+        {
+            return Some(t);
+        }
         self.titles.read_recover().get(id).cloned()
     }
 
@@ -3849,7 +4108,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 return Ok(());
             }
             let (ws_root, _) = host.resolve_session(&id_owned);
-            let provider = host.provider_for(&ws_root);
+            let provider = host.session_provider(&id_owned);
             let cfg = host.ws_config(&ws_root);
             let resolved = Resolved::resolve(
                 liuma_app::ResolveArgs {
@@ -3881,7 +4140,9 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 if title.is_empty() {
                     return Ok(()); // 未注入:跳过,回退标题生效
                 }
-                host.apply_generated_title(&id_owned, &title)?;
+                host.accept_generated_title(&id_owned, &title)
+                    .await
+                    .map_err(|e| e.message)?;
                 return Ok(());
             }
             let key = host
@@ -3893,6 +4154,16 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 Some(Arc::new(host.attachments.clone())),
             )
             .map_err(|e| format!("title transport 构建失败:{e}"))?;
+            // 派发前审计(title/llm_request;dsh session/title-llm-request
+            // 同位——标题调用从此在会话日志可见)。失败不阻生成主流程
+            let route = json!({
+                "provider": provider.id,
+                "model": host.session_model(&id_owned),
+            });
+            host.append_title_llm_request(&id_owned, route, std::slice::from_ref(&messages))
+                .await;
+            // 60s 超时:部署旋钮非机制(dsh 部署样例 5s;国内端点首字
+            // 延迟现实,liuma 保持宽窗)
             let events = tokio::time::timeout(
                 Duration::from_secs(60),
                 transport.stream(&header, &messages),
@@ -3905,7 +4176,9 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             if title.is_empty() {
                 return Err("title 模型未产出文本".to_string());
             }
-            host.apply_generated_title(&id_owned, &title)?;
+            host.accept_generated_title(&id_owned, &title)
+                .await
+                .map_err(|e| e.message)?;
             Ok(())
         }
         .await;
@@ -3920,33 +4193,29 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         result
     }
 
-    /// 4b:接受一处生成的标题(写入 titles 映射 + 持久化 + `session/projection` 广播)。
-    fn apply_generated_title(&self, id: &str, title: &str) -> Result<(), String> {
-        {
-            let mut titles = self
-                .titles
-                .write()
-                .map_err(|_| "titles 锁中毒".to_string())?;
-            // 写入前再次确认无人工覆盖(并发 rename 竞态)
-            titles
-                .entry(id.to_string())
-                .or_insert_with(|| title.to_string());
-            let text = serde_json::to_string_pretty(&*titles).map_err(|e| e.to_string())?;
-            write_titles_file(&self.default_workspace(), &text)
-                .map_err(|e| format!("标题持久化失败:{e}"))?;
+    /// 接受生成的标题(title/set 事件追加,source=provider;追加前复查
+    /// user 钉住——堵「生成期间 rename」竞态,与旧 apply 的 or_insert
+    /// 语义同向)。广播由驱动侧落档路径统一完成
+    async fn accept_generated_title(
+        self: &Arc<Self>,
+        id: &str,
+        title: &str,
+    ) -> Result<(), RpcError> {
+        if self.title_pinned(id) {
+            return Ok(()); // 用户已钉,生成结果弃用
         }
-        // 广播 title 投影(客户端 state.titles 增量更新;history/list 全量兜底)
-        let _ = self.mux.send(frame(
-            "session/projection",
-            serde_json::to_value(ProjectionFrame {
-                session_id: id.to_string(),
-                key: "title".into(),
-                value: serde_json::json!(title),
-                seq: 0,
-            })
-            .unwrap_or(Value::Null),
-        ));
-        Ok(())
+        self.append_title_event(id, title, "provider").await
+    }
+
+    /// 会话标题是否被用户钉住(任一 title/set 的 source=user;dsh pin
+    /// 语义:自动生成在钉住后停摆)
+    fn title_pinned(&self, id: &str) -> bool {
+        with_session_events(self, id, |log| {
+            log.collect_of_types(&["title/set"])
+                .iter()
+                .any(|ev| ev.data["source"]["kind"].as_str() == Some("user"))
+        })
+        .unwrap_or(false)
     }
 
     /// fake 模式注入脚本(每段对应一次 stream 调用;测试用)
@@ -4027,7 +4296,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
 
     /// 清单派生事实(blank/日志侧标题)读取:stat 指纹未变直接命中缓存。
     /// list_sessions 与归档清单共用(归档日志路径作键天然成立)
-    fn cached_list_facts(&self, log: &Path) -> (bool, Option<String>) {
+    fn cached_list_facts(&self, log: &Path) -> (bool, Option<String>, Option<String>) {
         let text_meta = log.metadata().ok().and_then(|m| {
             let len = m.len();
             let mtime = m.modified().ok()?;
@@ -4037,11 +4306,13 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             Some((len, mtime)) => {
                 let mut cache = self.list_cache.lock_recover();
                 match cache.get(log) {
-                    Some(facts) if facts.len == len && facts.mtime == mtime => {
-                        (facts.blank, facts.log_title.clone())
-                    }
+                    Some(facts) if facts.len == len && facts.mtime == mtime => (
+                        facts.blank,
+                        facts.log_title.clone(),
+                        facts.set_title.clone(),
+                    ),
                     _ => {
-                        let (blank, log_title) = derive_list_facts(log);
+                        let (blank, log_title, set_title) = derive_list_facts(log);
                         cache.insert(
                             log.to_path_buf(),
                             ListFacts {
@@ -4049,9 +4320,10 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                                 mtime,
                                 blank,
                                 log_title: log_title.clone(),
+                                set_title: set_title.clone(),
                             },
                         );
-                        (blank, log_title)
+                        (blank, log_title, set_title)
                     }
                 }
             }
@@ -4112,11 +4384,14 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
                 // 派生事实(blank/日志侧标题)经 stat 缓存:全文读仅为
-                // 「contains turn/start + 首条 user/message 标题」,清单
-                // 高频重拉下是主要读放大;stat 未变直接复用
-                let (blank, log_title) = self.cached_list_facts(&log);
-                // title 投影:重命名 > 首条 user/message 内容(60 字)
-                let title = self.session_title(&id).or(log_title);
+                // 「contains turn/start + 首条 user/message + title/set 末条」,
+                // 清单高频重拉下是主要读放大;stat 未变直接复用
+                let (blank, log_title, set_title) = self.cached_list_facts(&log);
+                // title 投影:title/set 事件(新真值)> 遗留 titles.json >
+                // 首条 user/message 内容(60 字)
+                let title = set_title
+                    .or_else(|| self.titles.read_recover().get(&id).cloned())
+                    .or(log_title);
                 let projections = title.map(|t| Projections {
                     // 清单场景不统计 seq(0 = 未统计,客户端只读 values.title)
                     as_of_seq: 0,
@@ -4545,11 +4820,13 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                     .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
-                let (blank, log_title) = self.cached_list_facts(&log);
+                let (blank, log_title, set_title) = self.cached_list_facts(&log);
                 // 血缘在遗留原目录(archive 只移走了日志)
                 let (parent_id, origin) = read_session_header(&pkey_path.join(stem));
                 let orig_id = format!("{prefix}{stem}");
-                let title = self.session_title(&orig_id).or(log_title);
+                let title = set_title
+                    .or_else(|| self.titles.read_recover().get(&orig_id).cloned())
+                    .or(log_title);
                 let projections = title.map(|t| Projections {
                     as_of_seq: 0,
                     values: serde_json::json!({ "title": t }),
@@ -4711,7 +4988,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
 
         // 装配(同步;与 liuma chat 同配方;工作区/模型/preset/推理等级覆盖优先)
         let (ws_root, _) = self.resolve_session(id);
-        let provider = self.provider_for(&ws_root);
+        let provider = self.session_provider(id);
         eprintln!(
             "[liuma-core] attach {} provider={} model={} effort={:?}",
             id,
@@ -5431,6 +5708,10 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
     ) -> Result<HistoryValue, RpcError> {
         let slot = self.attach(session_id)?;
         let inner = slot.inner()?;
+        // 模型/标题解析先于日志锁:二者现走日志 fold(session_route/
+        // title/set),临界区内再入同锁 = 自锁( Mutex 不可重入)
+        let model = self.session_model(session_id);
+        let event_title = self.session_title(session_id);
         // 锁内零物化:边界定位走打包日志原生 page_cut(O(记录数) 零展开),
         // 窗口翻译走 for_each 借用单遍(prime 前缀 + 译窗口)——此前
         // 「整表 owned 展开 + 切片窗口」在 46 万事件会话上是每次请求
@@ -5439,7 +5720,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         let cut = l.page_cut(before_seq, max_messages);
         let provider = ProviderInfo {
             provider: self.base.dialect.clone(),
-            model: self.session_model(session_id),
+            model,
         };
         let events: Vec<HistoryEntry> =
             crate::translate::translate_window_log(&provider, &l, cut, before_seq)
@@ -5448,11 +5729,10 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 .collect();
         let high_water = l.high_water();
         // title 仅真实存在时下发(None = 无标题,客户端回落占位):
-        // 重命名 > 日志侧首条投影(首条 user/message 恒在头部,取有界
-        // 前缀避免无用户消息会话的全表扫)
-        let title = self
-            .session_title(session_id)
-            .or_else(|| title_of(&l.iter().take(16).collect::<Vec<EventEnvelope>>()));
+        // title/set 事件/遗留 rename > 日志侧首条投影(首条 user/message
+        // 恒在头部,取有界前缀避免无用户消息会话的全表扫)
+        let title =
+            event_title.or_else(|| title_of(&l.iter().take(16).collect::<Vec<EventEnvelope>>()));
         Ok(HistoryValue {
             has_more: cut > 0,
             cut,
@@ -8573,8 +8853,41 @@ async fn pump_loop(
             Job::SetPermission(mode) => {
                 let _ = driver_cmd.send(DriverCmd::SetPermission(mode));
             }
+            Job::SetRoute {
+                provider,
+                model,
+                reply,
+            } => {
+                let _ = driver_cmd.send(DriverCmd::SetRoute {
+                    provider,
+                    model,
+                    reply,
+                });
+            }
             Job::SetApproval(policy) => {
                 let _ = driver_cmd.send(DriverCmd::SetApproval(policy));
+            }
+            Job::SetTitle {
+                title,
+                source,
+                reply,
+            } => {
+                let _ = driver_cmd.send(DriverCmd::SetTitle {
+                    title,
+                    source,
+                    reply,
+                });
+            }
+            Job::TitleLlmRequest {
+                route,
+                messages,
+                reply,
+            } => {
+                let _ = driver_cmd.send(DriverCmd::TitleLlmRequest {
+                    route,
+                    messages,
+                    reply,
+                });
             }
             Job::Compact => {
                 let _ = driver_cmd.send(DriverCmd::Compact);
@@ -8604,10 +8917,73 @@ async fn handle_driver_cmd(
                 broadcast_event(provider_info, &inner.log, session_id, mux, Some(seq));
             }
         }
+        DriverCmd::SetRoute {
+            provider,
+            model,
+            reply,
+        } => {
+            // 意图落档(route/selection)+ 引擎事实层注入(下回合
+            // turn/start.route + [model changed] 通告对比目标)
+            let outcome = session
+                .session_event(
+                    "route/selection",
+                    json!({ "provider": provider, "model": model }),
+                )
+                .map(|seq| {
+                    broadcast_event(provider_info, &inner.log, session_id, mux, Some(seq));
+                    session.set_turn_route(Some(json!({
+                        "provider": provider, "model": model,
+                    })));
+                })
+                .map_err(|e| RpcError::internal(format!("路由落档失败:{e:#}")));
+            let _ = reply.send(outcome);
+        }
         DriverCmd::SetApproval(policy) => {
             if let Ok(seq) = session.session_event("approval/policy", json!({ "policy": policy })) {
                 broadcast_event(provider_info, &inner.log, session_id, mux, Some(seq));
             }
+        }
+        DriverCmd::SetTitle {
+            title,
+            source,
+            reply,
+        } => {
+            let outcome = session
+                .session_event(
+                    "title/set",
+                    json!({ "title": title, "source": { "kind": source } }),
+                )
+                .map(|seq| {
+                    broadcast_event(provider_info, &inner.log, session_id, mux, Some(seq));
+                    // title 投影帧(客户端 state.titles 增量;live 列表行
+                    // 即时更新,与旧 apply 路径的客户端面一致)
+                    let _ = mux.send(frame(
+                        "session/projection",
+                        serde_json::to_value(ProjectionFrame {
+                            session_id: session_id.to_string(),
+                            key: "title".into(),
+                            value: json!(title),
+                            seq: 0,
+                        })
+                        .unwrap_or(Value::Null),
+                    ));
+                })
+                .map_err(|e| RpcError::internal(format!("标题落档失败:{e:#}")));
+            let _ = reply.send(outcome);
+        }
+        DriverCmd::TitleLlmRequest {
+            route,
+            messages,
+            reply,
+        } => {
+            let outcome = session
+                .session_event(
+                    "title/llm_request",
+                    json!({ "route": route, "messages": messages, "maxTokens": 32 }),
+                )
+                .map(|seq| broadcast_event(provider_info, &inner.log, session_id, mux, Some(seq)))
+                .map_err(|e| RpcError::internal(format!("标题审计落档失败:{e:#}")));
+            let _ = reply.send(outcome);
         }
         DriverCmd::SetHooks(port) => {
             // hooks 桥热替换(保存配置即生效;turn 边界换装,不中断运行中
@@ -8756,6 +9132,25 @@ async fn driver_loop(
             if let Some(snap) = snapshot {
                 st.restore_from_log(&snap);
             }
+        }
+        // turn 边界工作区快照(git 状态对比):Start 相记基线、End 相出
+        // 变更载荷 → turn/end data.changes → 桌面交付变更层(bash 创建
+        // 文件的盲区兜底)。非 git 工作区静默(见 workspace_snapshot)
+        session.set_turn_tail_snapshot(Arc::new(crate::workspace_snapshot::GitTurnTail::new(
+            ws_root.clone(),
+        )));
+        // 会话生效路由注入(事实层):路由事件命中 → 该选择(provider
+        // 悬空由 session_provider 回落,事件本身照旧落档);否则解析面
+        // 默认。随 turn/start 落档 + [model changed] 通告对比目标
+        {
+            let route = match host0.session_route(&session_id) {
+                Some((pid, m)) => json!({ "provider": pid, "model": m }),
+                None => json!({
+                    "provider": host0.session_provider(&session_id).id,
+                    "model": host0.session_model(&session_id),
+                }),
+            };
+            session.set_turn_route(Some(route));
         }
         session.set_instructions_provider(Box::new(move |touches| {
             let Ok(mut st) = state.lock() else {
@@ -10860,9 +11255,9 @@ mod tests {
 
         // titles 映射落地(session_title 反映 LLM 标题)
         assert_eq!(host.session_title(&id).as_deref(), Some("Justfile"));
-        // 持久化 .liuma/titles.json 含该会话
-        let file = std::fs::read_to_string(host.workspace().join(".liuma/titles.json")).unwrap();
-        assert!(file.contains("Justfile"), "标题应持久化:{file}");
+        // 持久化:title/set 事件落会话日志(titles.json 写路径已退役)
+        let log_text = std::fs::read_to_string(host.slot_path(&id)).unwrap();
+        assert!(log_text.contains("title/set"), "标题应落事件持久化");
     }
 
     /// 回归锁:Responses/Anthropic 方言纯文本流 = Chunk 直播增量 +
@@ -12571,7 +12966,7 @@ mod tests {
     async fn archived_roundtrip() {
         let host = temp_host("archrt");
         host.create_session(Some("arc-a".into()), None, None);
-        host.rename("arc-a", "归档标题").unwrap();
+        host.rename("arc-a", "归档标题").await.unwrap();
 
         // 归档后:活动清单不可见,归档清单恰一条且字段齐备
         host.archive_session("arc-a").unwrap();
@@ -12720,22 +13115,23 @@ mod tests {
         assert!(host.list_archived_sessions().is_empty());
     }
 
-    /// setter 落盘会话 sidecar,重启(重建宿主)后同会话沿用。
-    /// 权限不走工作区默认(已迁日志 fold),此处只验 model/preset/effort。
+    /// setter 落盘,重启(重建宿主)后同会话沿用。model 与权限一样已迁
+    /// 日志 fold(route/selection 事件);preset/effort 仍走 sidecar。
     #[tokio::test]
     async fn setter_persists_workspace_default_across_reload() {
         let host = temp_host("setpersist");
-        host.ensure_models().await; // fake → demo 清单进缓存(set_model 校验依赖)
-        host.set_model("s1", "deepseek-v4-pro").unwrap();
-        host.set_preset("s1", "minimal").unwrap();
-        host.set_effort("s1", "low").unwrap();
-        // 内存覆盖即时生效
-        assert_eq!(host.session_model("s1"), "deepseek-v4-pro");
-        assert_eq!(host.session_preset("s1"), "minimal");
-        assert_eq!(host.session_effort("s1").as_deref(), Some("low"));
+        host.ensure_models().await; // fake → demo 清单进缓存(set_route 校验依赖)
+        let s1 = host.create_session(None, None, None);
+        host.set_model(&s1, "deepseek-v4-pro").await.unwrap();
+        host.set_preset(&s1, "minimal").unwrap();
+        host.set_effort(&s1, "low").unwrap();
+        // 内存覆盖即时生效(model = 路由事件 fold)
+        assert_eq!(host.session_model(&s1), "deepseek-v4-pro");
+        assert_eq!(host.session_preset(&s1), "minimal");
+        assert_eq!(host.session_effort(&s1).as_deref(), Some("low"));
         assert!(host.workspace.join(".liuma/overrides.json").exists());
 
-        // 模拟重启:同会话根重建宿主——内存覆盖清零,设置层接管
+        // 模拟重启:同会话根重建宿主——内存态清零,日志/侧车接管
         let host2 = AppHost::new_at(
             host.workspace.clone(),
             true,
@@ -12743,27 +13139,28 @@ mod tests {
             host.sessions_root.clone(),
         )
         .unwrap();
-        assert_eq!(host2.session_model("s1"), "deepseek-v4-pro");
-        assert_eq!(host2.session_preset("s1"), "minimal");
-        assert_eq!(host2.session_effort("s1").as_deref(), Some("low"));
+        assert_eq!(host2.session_model(&s1), "deepseek-v4-pro");
+        assert_eq!(host2.session_preset(&s1), "minimal");
+        assert_eq!(host2.session_effort(&s1).as_deref(), Some("low"));
     }
 
-    /// 合并序:会话 sidecar 覆盖(重启保留)> 工作区 liuma.toml 显式值
-    /// > 设置层;无覆盖的会话落 toml
+    /// 合并序:会话路由事件(重启保留)> 工作区 liuma.toml 显式值
+    /// > 设置层;无路由事件的会话落 toml
     #[tokio::test]
     async fn liuma_toml_beats_settings_layer() {
         let host = temp_host("tomlprec");
         host.ensure_models().await;
-        host.set_model("s1", "deepseek-v4-pro").unwrap();
+        let s1 = host.create_session(None, None, None);
+        host.set_model(&s1, "deepseek-v4-pro").await.unwrap();
         std::fs::write(
             host.workspace.join("liuma.toml"),
             "model = \"toml-model\"\n",
         )
         .unwrap();
         assert_eq!(
-            host.session_model("s1"),
+            host.session_model(&s1),
             "deepseek-v4-pro",
-            "会话内存覆盖最高"
+            "会话路由事件最高"
         );
         let host2 = AppHost::new_at(
             host.workspace.clone(),
@@ -12773,15 +13170,214 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            host2.session_model("s1"),
+            host2.session_model(&s1),
             "deepseek-v4-pro",
-            "会话 sidecar 覆盖重启保留,仍高于 liuma.toml"
+            "路由事件重启保留(日志回放),仍高于 liuma.toml"
         );
         assert_eq!(
             host2.session_model("s2"),
             "toml-model",
-            "无覆盖会话:liuma.toml > 设置层"
+            "无路由事件会话:liuma.toml > 设置层"
         );
+    }
+
+    /// 读侧配对守卫:provider 事后切换/移除不回写历史选型,残留的
+    /// 会话覆盖直读会把 A 厂模型名发进 B 厂端点(实测 deepseek 端点
+    /// 收 glm 模型名 = 整回合 400)。清单外覆盖弃选回落默认;清单内
+    /// 照旧生效;清单缺席(无配置无探测)无从校验,放行
+    #[tokio::test]
+    async fn stale_session_override_falls_back_to_provider_default() {
+        let host = temp_host("staleovr");
+        host.ensure_models().await;
+        let valid = host.models_for(&host.default_provider().id);
+        assert!(!valid.is_empty(), "fake 探测清单就绪");
+
+        host.model_overrides
+            .write_recover()
+            .insert("s1".into(), "other-vendor-model".into());
+        let got = host.session_model("s1");
+        assert_ne!(got, "other-vendor-model", "清单外覆盖弃选");
+        assert_eq!(got, host.default_model(), "弃选后回落 provider 默认");
+
+        host.model_overrides
+            .write_recover()
+            .insert("s1".into(), valid[0].clone());
+        assert_eq!(host.session_model("s1"), valid[0], "清单内覆盖不受守卫影响");
+    }
+
+    /// 设置层工作区默认模型原样准入(读侧不改写,dsh 宿主默认同语义;
+    /// 成对校验在 set_workspace_route 写侧)
+    #[tokio::test]
+    async fn workspace_default_model_admitted_as_is() {
+        let host = temp_host("wsdefault");
+        host.ensure_models().await;
+        let key = project_key(&host.default_workspace().display().to_string());
+        host.settings
+            .update(|s| {
+                s.workspaces.entry(key).or_default().model = Some("deepseek-v4-pro".into());
+            })
+            .unwrap();
+        assert_eq!(host.session_model("s1"), "deepseek-v4-pro");
+    }
+
+    /// 测试用第二 provider(内置 builtin 深度克隆改写;models 弱探测面
+    /// 直接以配置清单给出,无需网络)
+    fn glm_provider() -> ProviderEntry {
+        let mut p = crate::settings::builtin_provider();
+        p.id = "glm".into();
+        p.base_url = "https://open.bigmodel.cn/api/anthropic".into();
+        p.dialect = "anthropic-messages".into();
+        p.models = vec!["glm-5.3-flashx".into()];
+        p
+    }
+
+    /// 会话路由三元组(dsh ModelSelection 对齐):成对校验成对落档;
+    /// 默认跟随(工作区默认随选择移动,新会话从新路由起步);重启后
+    /// 日志回放沿用;fork 子会话经日志种子继承;运行中拒绝
+    #[tokio::test]
+    async fn set_route_pairs_writes_and_follows_default() {
+        let host = temp_host("route3");
+        host.ensure_models().await;
+        host.settings
+            .update(|s| s.providers.push(glm_provider()))
+            .unwrap();
+        let s1 = host.create_session(None, None, None);
+
+        // 校验:模型不在该 provider 清单 / provider 未注册
+        assert!(host.set_route(&s1, "glm", "deepseek-v4-pro").await.is_err());
+        assert!(host.set_route(&s1, "nope", "glm-5.3-flashx").await.is_err());
+
+        host.set_route(&s1, "glm", "glm-5.3-flashx").await.unwrap();
+        assert_eq!(host.session_provider(&s1).id, "glm");
+        assert_eq!(host.session_model(&s1), "glm-5.3-flashx");
+        // 默认跟随:工作区默认随选择移动
+        let key = project_key(&host.default_workspace().display().to_string());
+        let ws = host.settings.read().workspace(&key);
+        assert_eq!(ws.provider.as_deref(), Some("glm"));
+        assert_eq!(ws.model.as_deref(), Some("glm-5.3-flashx"));
+        // 新会话(无路由事件)从新默认起步
+        let s2 = host.create_session(None, None, None);
+        assert_eq!(host.session_provider(&s2).id, "glm");
+        assert_eq!(host.session_model(&s2), "glm-5.3-flashx");
+
+        // 单拨模型:校验基准 = 会话 provider(glm),deepseek 模型被拒
+        assert!(host.set_model(&s1, "deepseek-v4-pro").await.is_err());
+        host.settings
+            .update(|s| {
+                s.providers
+                    .iter_mut()
+                    .find(|p| p.id == "glm")
+                    .unwrap()
+                    .models
+                    .push("glm-5.3-flash".into());
+            })
+            .unwrap();
+        host.set_model(&s1, "glm-5.3-flash").await.unwrap();
+        assert_eq!(host.session_model(&s1), "glm-5.3-flash");
+
+        // 重启:路由事件日志回放,选择沿用
+        let host2 = AppHost::new_at(
+            host.workspace.clone(),
+            true,
+            "test-key",
+            host.sessions_root.clone(),
+        )
+        .unwrap();
+        assert_eq!(host2.session_provider(&s1).id, "glm");
+        assert_eq!(host2.session_model(&s1), "glm-5.3-flash");
+
+        // fork:子会话经日志种子继承路由
+        let child = host.fork_session(&s1, None).unwrap();
+        assert_eq!(host.session_provider(&child).id, "glm");
+        assert_eq!(host.session_model(&child), "glm-5.3-flash");
+    }
+
+    /// 路由 provider 悬空(条目被移除):装配面回落工作区默认(诊断),
+    /// 选择本身不改写(model 仍取路由事件——准入语义)
+    #[tokio::test]
+    async fn dangling_route_provider_falls_back() {
+        let host = temp_host("dangling");
+        host.ensure_models().await;
+        host.settings
+            .update(|s| s.providers.push(glm_provider()))
+            .unwrap();
+        let s1 = host.create_session(None, None, None);
+        host.set_route(&s1, "glm", "glm-5.3-flashx").await.unwrap();
+        host.settings
+            .update(|s| s.providers.retain(|p| p.id != "glm"))
+            .unwrap();
+        assert_eq!(
+            host.session_provider(&s1).id,
+            host.default_provider().id,
+            "悬空回落工作区默认"
+        );
+        assert_eq!(
+            host.session_model(&s1),
+            "glm-5.3-flashx",
+            "模型取路由事件,准入不改写"
+        );
+    }
+
+    /// hero 态工作区默认路由:成对校验成对写;错误面与 set_route 同源
+    #[tokio::test]
+    async fn set_workspace_route_pairs_and_validates() {
+        let host = temp_host("wsroute");
+        host.ensure_models().await;
+        host.settings
+            .update(|s| s.providers.push(glm_provider()))
+            .unwrap();
+        let ws = host.default_workspace_name();
+
+        assert!(
+            host.set_workspace_route(&ws, "glm", "deepseek-v4-pro")
+                .is_err()
+        );
+        assert!(
+            host.set_workspace_route(&ws, "nope", "glm-5.3-flashx")
+                .is_err()
+        );
+        host.set_workspace_route(&ws, "glm", "glm-5.3-flashx")
+            .unwrap();
+
+        let key = project_key(&host.default_workspace().display().to_string());
+        let d = host.settings.read().workspace(&key);
+        assert_eq!(d.provider.as_deref(), Some("glm"));
+        assert_eq!(d.model.as_deref(), Some("glm-5.3-flashx"));
+        // 新会话冷装配读同一键
+        let s1 = host.create_session(None, None, None);
+        assert_eq!(host.session_provider(&s1).id, "glm");
+        assert_eq!(host.session_model(&s1), "glm-5.3-flashx");
+    }
+
+    /// 覆盖弃选后顺延到 liuma.toml 钉选(toml 是文件级意图,不过清单)
+    #[tokio::test]
+    async fn discarded_override_yields_to_toml_pin() {
+        let host = temp_host("ovrtoml");
+        host.ensure_models().await;
+        std::fs::write(
+            host.workspace.join("liuma.toml"),
+            "model = \"toml-model\"\n",
+        )
+        .unwrap();
+        host.model_overrides
+            .write_recover()
+            .insert("s1".into(), "other-vendor-model".into());
+        assert_eq!(
+            host.session_model("s1"),
+            "toml-model",
+            "弃选覆盖不吞 toml 钉选"
+        );
+    }
+
+    /// 清单缺席(models_for 空)= 无从校验,覆盖原样放行(不误伤
+    /// 手动配置的 provider)
+    #[tokio::test]
+    async fn override_passes_through_when_list_absent() {
+        let host = temp_host("ovrpass");
+        host.model_overrides
+            .write_recover()
+            .insert("s1".into(), "any-model".into());
+        assert_eq!(host.session_model("s1"), "any-model");
     }
 
     /// 上下文窗口三层解析:liuma.toml `context_window` > provider
@@ -14384,8 +14980,9 @@ mod tests {
         );
     }
 
-    /// 会话级模型/preset/推理等级切换只影响本会话:不写工作区默认
-    /// (没有显式覆盖的兄弟会话不跟随),且经 sidecar 跨重启保留
+    /// 会话路由隔离 + 默认跟随(dsh 语义):切换顺带移动工作区默认
+    /// (无选择会话跟随默认 = dsh agentDefaultModel 跟随);持显式路由
+    /// 的会话不受默认/兄弟切换影响;路由事件与 sidecar 各自跨重启保留
     #[tokio::test]
     async fn session_cfg_switches_are_session_scoped_and_persist() {
         let dir = std::env::temp_dir().join(format!(
@@ -14396,29 +14993,42 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let sroot =
             std::env::temp_dir().join(format!("liuma-cfg-scope-root-{}", Uuid::new_v4().simple()));
-        let host = AppHost::new_at(dir.clone(), true, "test-key", sroot.clone()).unwrap();
+        let host = Arc::new(AppHost::new_at(dir.clone(), true, "test-key", sroot.clone()).unwrap());
         host.ensure_models().await; // fake → demo 清单进缓存(set_model 校验依赖)
         let a = host.create_session(None, None, None);
         let b = host.create_session(None, None, None);
-        let b_model_before = host.session_model(&b);
+        // B 先持显式路由(隔离的前提:选择在会话域)
+        host.set_model(&b, "deepseek-v4-flash").await.unwrap();
 
-        host.set_model(&a, "deepseek-v4-pro").unwrap();
+        host.set_model(&a, "deepseek-v4-pro").await.unwrap();
         host.set_preset(&a, "minimal").unwrap();
         host.set_effort(&a, "low").unwrap();
 
         assert_eq!(host.session_model(&a), "deepseek-v4-pro");
         assert_eq!(host.session_preset(&a), "minimal");
         assert_eq!(host.session_effort(&a).as_deref(), Some("low"));
-        // 兄弟会话不跟随(工作区默认未被单会话切换改写)
-        assert_eq!(host.session_model(&b), b_model_before, "B 模型不得跟随 A");
+        // B 持显式路由:不跟随 A/默认
+        assert_eq!(
+            host.session_model(&b),
+            "deepseek-v4-flash",
+            "B 持路由不得跟随 A"
+        );
+        // 默认跟随:工作区默认已随 A 移动,新会话从新路由起步
+        let c = host.create_session(None, None, None);
+        assert_eq!(
+            host.session_model(&c),
+            "deepseek-v4-pro",
+            "新会话跟随移动后的默认"
+        );
 
-        // 重开宿主(同根):覆盖经 sidecar 保留;工作区默认(出厂值)未动
+        // 重开宿主(同根):路由事件经日志回放保留;sidecar(preset/effort)保留
         let host2 = AppHost::new_at(dir.clone(), true, "test-key", sroot.clone()).unwrap();
         host2.ensure_models().await; // 与 host1 对齐默认模型解析基线
         assert_eq!(host2.session_model(&a), "deepseek-v4-pro");
         assert_eq!(host2.session_preset(&a), "minimal");
         assert_eq!(host2.session_effort(&a).as_deref(), Some("low"));
-        assert_eq!(host2.session_model(&b), b_model_before);
+        assert_eq!(host2.session_model(&b), "deepseek-v4-flash");
+        assert_eq!(host2.session_model(&c), "deepseek-v4-pro");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&sroot);
     }

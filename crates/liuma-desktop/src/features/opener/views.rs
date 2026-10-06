@@ -2,6 +2,8 @@
 //! chevron = 应用菜单)+ 菜单行 + 启动失败 toast。弹层走组件库
 //! Popover + overlay_card 惯例(见 workspace_trigger 同款形态)。
 
+use std::path::{Path, PathBuf};
+
 use gpui_kit::component::IconName;
 use gpui_kit::component::popover::Popover;
 use gpui_kit::{
@@ -9,9 +11,9 @@ use gpui_kit::{
     SharedString, StatefulInteractiveElement as _, Styled as _, div, img, px,
 };
 
-use crate::features::opener::store::OpenerStore;
+use crate::features::opener::store::{OpenerMenuTarget, OpenerStore};
 use crate::kits::i18n::t;
-use crate::kits::icons::fixed;
+use crate::kits::icons::{LiumaIcon, fixed};
 use crate::kits::modals::overlay_card;
 use crate::kits::popup::PopTrigger;
 use crate::kits::theme;
@@ -168,21 +170,26 @@ pub(crate) fn open_with_split(store: &Entity<AppStore>, cx: &App) -> impl IntoEl
                     let s_out = store.clone();
                     move |_, _, cx| {
                         let pop = cx.entity();
-                        overlay_card("open-with-card", 240., app_menu_rows(&s_menu, pop, cx), cx)
-                            // 外点关闭(捕获相):关菜单并留手势标记
-                            .on_mouse_down_out({
-                                let s_out = s_out.clone();
-                                move |_, _, cx| {
-                                    s_out.update(cx, |st, cx| {
-                                        if st.opener.menu_open {
-                                            st.opener.menu_open = false;
-                                            st.opener.gesture_dismissed = true;
-                                            cx.notify();
-                                        }
-                                    });
-                                }
-                            })
-                            .into_any_element()
+                        overlay_card(
+                            "open-with-card",
+                            240.,
+                            app_menu_rows(&s_menu, pop, &OpenerMenuTarget::Workspace, cx),
+                            cx,
+                        )
+                        // 外点关闭(捕获相):关菜单并留手势标记
+                        .on_mouse_down_out({
+                            let s_out = s_out.clone();
+                            move |_, _, cx| {
+                                s_out.update(cx, |st, cx| {
+                                    if st.opener.menu_open {
+                                        st.opener.menu_open = false;
+                                        st.opener.gesture_dismissed = true;
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        })
+                        .into_any_element()
                     }
                 })
         })
@@ -190,13 +197,17 @@ pub(crate) fn open_with_split(store: &Entity<AppStore>, cx: &App) -> impl IntoEl
 
 /// 应用菜单行(照 workspace_menu_rows 语言):32px 行、图标 + 名称、
 /// 选中项带「（默认）」后缀、hover dock 底;点击 = 收起 + 记住 + 打开
+/// (目标由 target 分化:顶栏开工作区目录,交付卡开该文件)。File 模式
+/// 尾部追加「显示文件位置」reveal 行(dsh 同款 footer,不改选中)
 fn app_menu_rows(
     store: &Entity<AppStore>,
     pop: Entity<gpui_kit::component::popover::PopoverState>,
+    target: &OpenerMenuTarget,
     cx: &App,
 ) -> Vec<gpui_kit::AnyElement> {
     let st = store.read(cx);
-    st.opener
+    let mut rows: Vec<gpui_kit::AnyElement> = st
+        .opener
         .apps
         .iter()
         .map(|app| {
@@ -210,6 +221,10 @@ fn app_menu_rows(
             let s = store.clone();
             let pop = pop.clone();
             let id = app.id;
+            let file_path = match target {
+                OpenerMenuTarget::Workspace => None,
+                OpenerMenuTarget::File { path } => Some(path.clone()),
+            };
             let icon = app_icon(&st.opener, Some(id), 16.);
             div()
                 .id(SharedString::from(sel.clone()))
@@ -232,11 +247,186 @@ fn app_menu_rows(
                 .child(div().min_w(px(0.)).flex_1().truncate().child(label))
                 .on_click(move |_, window, cx| {
                     pop.update(cx, |state, cx| state.dismiss(window, cx));
-                    s.update(cx, |st, cx| st.opener_open_app(id, cx));
+                    s.update(cx, |st, cx| match &file_path {
+                        Some(p) => st.opener_open_file(id, p, cx),
+                        None => st.opener_open_app(id, cx),
+                    });
                 })
                 .into_any_element()
         })
-        .collect()
+        .collect();
+    // File 模式:分隔线 + reveal footer(访达定位,不属应用选择)
+    if let OpenerMenuTarget::File { path } = target {
+        let path = path.clone();
+        let s = store.clone();
+        let pop = pop.clone();
+        let sel = "open-with-row-reveal";
+        rows.push(
+            div()
+                .h(px(1.))
+                .my(px(2.))
+                .mx(px(4.))
+                .bg(theme::border(cx))
+                .into_any_element(),
+        );
+        rows.push(
+            div()
+                .id(sel)
+                .debug_selector(|| sel.to_string())
+                .flex()
+                .h(px(32.))
+                .items_center()
+                .gap(px(8.))
+                .rounded(px(6.))
+                .px(px(8.))
+                .cursor_pointer()
+                .hover(|s| s.bg(theme::dock(cx)))
+                .text_size(px(13.))
+                .text_color(theme::label_2(cx))
+                .child(fixed(LiumaIcon::FolderOpen, 16.))
+                .child(t!("opener.reveal_in_finder").to_string())
+                .on_click(move |_, window, cx| {
+                    pop.update(cx, |state, cx| state.dismiss(window, cx));
+                    let p = path.clone();
+                    s.update(cx, |st, cx| st.opener_reveal(&p, cx));
+                })
+                .into_any_element(),
+        );
+    }
+    rows
+}
+
+/// 交付卡右缘分体钮(24px 紧凑形态):主钮 = 选中应用真身图标直开
+/// **文件**(访达分化 reveal),chevron = 非受控 Popover 应用菜单 +
+/// reveal footer。与顶栏分体钮的差异:无 occlude(非标题栏拖拽区)、
+/// 无受控开态/手势标记(库内建开合即可);两半 on_mouse_down 断传播,
+/// 点击不落入外层交付卡的预览 on_click(D9 层叠)。非 macOS 或清单
+/// 未就绪 = None(调用侧不渲染)。
+pub(crate) fn deliverable_split_button(
+    store: &Entity<AppStore>,
+    path: &str,
+    ix: usize,
+    cx: &App,
+) -> Option<gpui_kit::AnyElement> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let st = store.read(cx);
+    if st.opener.apps.is_empty() {
+        return None;
+    }
+    let selected = st
+        .opener
+        .selected
+        .and_then(|id| st.opener.apps.iter().find(|a| a.id == id).map(|a| a.id));
+    let tip = t!(
+        "opener.tip_open_with",
+        app = display_name(selected.unwrap_or("finder"))
+    )
+    .to_string();
+    // 模型面路径按当前工作区根展开(open/reveal 需要绝对路径;
+    // 与 open_deliverable 同款解析)
+    let abs = match st.current_workspace_dir() {
+        Some(root) => {
+            let p = Path::new(path);
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                root.join(p)
+            }
+        }
+        None => PathBuf::from(path),
+    };
+    let s_main = store.clone();
+    let s_menu = store.clone();
+    let sel_main = ("deliv-open-main", ix);
+    let sel_chev = ("deliv-open-chev", ix);
+    Some(
+        div()
+            .flex_shrink_0()
+            .flex()
+            .h(px(24.))
+            .items_center()
+            .rounded(px(7.))
+            .border_1()
+            .border_color(theme::border(cx))
+            .text_color(theme::label_3(cx))
+            .hover(|s| s.bg(theme::layer(cx)))
+            // 主钮半区
+            .child(
+                div()
+                    .id(sel_main)
+                    .debug_selector(move || format!("deliv-open-main-{ix}"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .h_full()
+                    .px(px(5.))
+                    .cursor_pointer()
+                    .tooltip(crate::shell::tip(tip))
+                    .child(app_icon(&st.opener, selected, 14.))
+                    .on_click({
+                        let s = s_main.clone();
+                        let abs = abs.clone();
+                        move |_, _, cx| {
+                            // 断传播:点击不落入外层交付卡的预览 on_click
+                            cx.stop_propagation();
+                            let abs = abs.clone();
+                            s.update(cx, |st, cx| match selected {
+                                Some(id) => st.opener_open_file(id, &abs, cx),
+                                None => st.opener_reveal(&abs, cx),
+                            });
+                        }
+                    }),
+            )
+            // 中缝
+            .child(
+                div()
+                    .w(px(1.))
+                    .h(px(12.))
+                    .flex_shrink_0()
+                    .bg(theme::border(cx)),
+            )
+            // chevron 半区:非受控 Popover(tail_pill 同款)
+            .child({
+                let abs = abs.clone();
+                Popover::new(sel_chev)
+                    .appearance(false)
+                    .anchor(Anchor::BottomRight)
+                    .trigger(PopTrigger(
+                        div()
+                            .id(sel_chev)
+                            .debug_selector(move || format!("deliv-open-chev-{ix}"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .h_full()
+                            .px(px(3.))
+                            .cursor_pointer()
+                            .child(fixed(IconName::ChevronDown, 11.))
+                            // DOWN 不断传播(库的非受控开合挂在祖先链的
+                            // mouse_down);click 相断,挡外层卡预览
+                            .on_click(|_, _, cx| cx.stop_propagation()),
+                    ))
+                    .content(move |_, _, cx| {
+                        let pop = cx.entity();
+                        overlay_card(
+                            "open-with-file-card",
+                            240.,
+                            app_menu_rows(
+                                &s_menu,
+                                pop,
+                                &OpenerMenuTarget::File { path: abs.clone() },
+                                cx,
+                            ),
+                            cx,
+                        )
+                        .into_any_element()
+                    })
+                    .into_any_element()
+            })
+            .into_any_element(),
+    )
 }
 
 /// 启动失败 toast(照 attachment_toast_card 形态:全屏点关层 + 底部

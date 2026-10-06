@@ -987,13 +987,35 @@ fn model_card(
         let models = st.bridge.host().models_for(&pid);
         groups.push((pid.clone(), name, models, pid == default_pid));
     }
-    // 当前 provider 名(模型入口行右侧展示):含当前模型的组,回退默认组
+    // 当前 provider 名(模型入口行右侧展示):会话生效 provider(路由域)
+    // 命中分组优先,回退含当前模型的组,再回退默认组
     let current_provider = groups
         .iter()
-        .find(|(_, _, ms, _)| ms.contains(&current_model))
+        .find(|(pid, ..)| *pid == cfg.provider)
+        .or_else(|| {
+            groups
+                .iter()
+                .find(|(_, _, ms, _)| ms.contains(&current_model))
+        })
         .or_else(|| groups.iter().find(|(_, _, _, d)| *d))
         .map(|(_, n, ..)| n.clone())
         .unwrap_or_default();
+    // 路由可用性(dsh routable):生效 provider 不在注册表,或生效模型
+    // 不在其清单 = 不可用。选择保留不偷换(准入语义);回合若端点拒,
+    // 错误明面呈现
+    let provider_known = snap["providers"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .any(|p| p["id"].as_str() == Some(cfg.provider.as_str()))
+        })
+        .unwrap_or(false);
+    let route_available = provider_known
+        && groups
+            .iter()
+            .find(|(pid, ..)| *pid == cfg.provider)
+            .map(|(_, _, ms, _)| ms.contains(&current_model))
+            .unwrap_or(true);
     let s_model_row = store.clone();
     let pop_sub = pop.clone();
     // ── 一级卡:模型入口行 + 推理强度平铺(不改)──
@@ -1034,6 +1056,16 @@ fn model_card(
                         .truncate()
                         .max_w(px(80.))
                         .child(current_provider.clone()),
+                )
+            })
+            .when(!route_available, |el| {
+                el.child(
+                    div()
+                        .id("route-unavailable")
+                        .debug_selector(|| "route-unavailable".to_string())
+                        .text_size(px(11.))
+                        .text_color(theme::danger(cx))
+                        .child(t!("chat.route_unavailable")),
                 )
             })
             .child(fixed(IconName::ChevronRight, 12.).text_color(theme::caption(cx)))

@@ -904,12 +904,35 @@ impl AppStore {
         let Some(id) = self.sessions.rename_target.clone() else {
             return;
         };
-        if !title.is_empty() && self.bridge.host().rename(&id, &title).is_ok() {
-            self.state.titles.insert(id.clone(), title);
-            self.refresh_list(cx);
-        }
         self.sessions.rename_target = None;
         cx.notify();
+        // rename 走宿主异步通道(title/set 事件落档);成功后本地标题态
+        // 回填 + 清单重拉
+        if !title.is_empty() {
+            let host = self.bridge.host().clone();
+            let rx = self.bridge.call(async move {
+                let r = host.rename(&id, &title).await;
+                (id, title, r)
+            });
+            cx.spawn(async move |this, cx| {
+                let Ok((id, title, r)) = rx.await else {
+                    return;
+                };
+                let _ = this.update(cx, |st, cx| {
+                    match r {
+                        Ok(()) => {
+                            st.state.titles.insert(id, title);
+                            st.refresh_list(cx);
+                        }
+                        Err(e) => {
+                            st.push_local_notice(t!("sessions.rename_failed", msg = &e.message), cx)
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
     }
 
     /// 取消重命名

@@ -1,6 +1,6 @@
 use super::*;
 use crate::features::attachments::DraftAttachment;
-use crate::features::chat::projection::{ChatNode, ChatState, ToolState};
+use crate::features::chat::projection::{ChatNode, ChatState, Deliverable, ToolState};
 use crate::features::opener::probe;
 use crate::shell::host::HostBridge;
 use crate::shell::store::AppStore;
@@ -914,10 +914,37 @@ fn at_completion_rows_truncate_and_cap(cx: &mut TestAppContext) {
             .collect()
     };
     let host = cx.update(|app| store.read(app).bridge.host().clone());
-    for i in 0..25usize {
-        let id = host.create_session(Some(format!("s-at-{i:02}")), None, None);
-        host.rename(&id, &title(i)).expect("rename 失败");
+    // rename 走宿主异步通道(title/set 事件落档);批量提交后轮询完成
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let done2 = done.clone();
+    let ids: Vec<String> = (0..25usize)
+        .map(|i| host.create_session(Some(format!("s-at-{i:02}")), None, None))
+        .collect();
+    let rx = cx.update(|app| {
+        store.update(app, |st, _cx| {
+            st.bridge.call(async move {
+                for (i, id) in ids.iter().enumerate() {
+                    host.rename(id, &title(i)).await.expect("rename 失败");
+                }
+                done2.store(true, std::sync::atomic::Ordering::SeqCst);
+            })
+        })
+    });
+    cx.spawn(async move |_cx| {
+        let _ = rx.await;
+    })
+    .detach();
+    for _ in 0..300 {
+        cx.run_until_parked();
+        if done.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
+    assert!(
+        done.load(std::sync::atomic::Ordering::SeqCst),
+        "批量 rename 未完成"
+    );
     cx.update(|app| store.update(app, |st, cx| st.refresh_list(cx)));
     // 聚焦 composer 输入「@」,触发补全(Change → update_at_completion)
     let bounds = wcx
@@ -2995,13 +3022,123 @@ fn first_message_title_collapses_newlines(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 设置失败落本地通告:非法模型名被宿主模型表确定性拒绝
+/// 会话路由(dsh ModelSelection):选型经 set_route 成对落档
+/// (cfg.provider/model 跟随 + 默认跟随工作区默认);目录漂移后入口行
+/// 标「路由不可用」(准入不偷换,routable: false 语义)
+#[gpui_kit::test]
+fn route_selection_sets_route_and_marks_unavailable(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "route");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut App| {});
+        cx.run_until_parked();
+    };
+    let sid = cx.update(|app| {
+        store.update(app, |st, cx| {
+            let mut glm = liuma_core::settings::builtin_provider();
+            glm.id = "glm".into();
+            glm.models = vec!["glm-5.3-flashx".into()];
+            st.bridge.host().upsert_provider(glm).unwrap();
+            let sid = st.bridge.host().create_session(None, None, None);
+            st.refresh_list(cx);
+            st.open_session(&sid, cx);
+            sid
+        })
+    });
+    redraw(cx, &mut wcx);
+    // 基线:开模型菜单,默认路由不标不可用;看完收起
+    click_sel(&mut wcx, "chip-model");
+    cx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("route-unavailable").is_none(),
+        "初始默认路由不应标不可用"
+    );
+    click_sel(&mut wcx, "chip-model");
+    cx.run_until_parked();
+
+    // 选型:set_route 成对落档(异步桥)→ cfg 跟随 + 默认跟随;
+    // 桥 runtime 真时序,轮询到态
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            st.set_session_provider_model("glm", "glm-5.3-flashx", cx)
+        })
+    });
+    let (pid, model) = {
+        let mut got = (String::new(), String::new());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while got.0 != "glm" && std::time::Instant::now() < deadline {
+            cx.run_until_parked();
+            got = cx.update(|app| {
+                let cfg = store.read(app).current_cfg_or_default();
+                (cfg.provider, cfg.model)
+            });
+            if got.0 == "glm" {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        got
+    };
+    let ws = cx.update(|app| store.read(app).effective_workspace());
+    let ws_provider = cx.update(|app| {
+        store.read(app).settings.settings_snapshot["workspaceProviders"][ws.as_str()]
+            .as_str()
+            .map(str::to_string)
+    });
+    assert_eq!(pid, "glm", "选型后 cfg.provider 应为会话路由");
+    assert_eq!(model, "glm-5.3-flashx");
+    assert_eq!(
+        ws_provider.as_deref(),
+        Some("glm"),
+        "默认跟随:工作区默认随选择移动"
+    );
+
+    // 目录漂移:glm 清单清空 → 入口行标不可用(选择保留不偷换)
+    cx.update(|app| {
+        store.update(app, |st, _cx| {
+            let mut glm = liuma_core::settings::builtin_provider();
+            glm.id = "glm".into();
+            glm.models = Vec::new();
+            st.bridge.host().upsert_provider(glm).unwrap();
+        });
+    });
+    cx.update(|app| {
+        store.update(app, |st, cx| st.refresh_session_cfg(&sid, cx));
+    });
+    redraw(cx, &mut wcx);
+    let (pid2, model2) = cx.update(|app| {
+        let st = store.read(app);
+        let cfg = st.current_cfg_or_default();
+        (cfg.provider, cfg.model)
+    });
+    assert_eq!(
+        (pid2.as_str(), model2.as_str()),
+        ("glm", "glm-5.3-flashx"),
+        "漂移不改写选择(准入语义)"
+    );
+    // 开模型菜单验标记(标记在弹层入口行内)
+    click_sel(&mut wcx, "chip-model");
+    cx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("route-unavailable").is_some(),
+        "清单外选择应标路由不可用"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 设置失败落本地通告:非法模型名被宿主路由校验确定性拒绝
 /// (无需伪造 running;Notice 尾插 + key 幂等)
 #[gpui_kit::test]
 fn setter_error_pushes_notice(cx: &mut TestAppContext) {
     let (store, _wcx, root) = menu_harness(cx, "err");
     cx.update(|app| {
-        store.update(app, |st, cx| st.set_session_model("__no_such_model__", cx));
+        store.update(app, |st, cx| {
+            st.set_session_provider_model("deepseek", "__no_such_model__", cx)
+        });
     });
     cx.run_until_parked();
     let last = cx.update(|app| store.read(app).current_nodes().last().cloned());
@@ -9022,8 +9159,9 @@ fn billing_card_closes_on_outside_click(cx: &mut TestAppContext) {
 /// cx.open_with_system 直开,68a78cc 标称修复但实际只重排了无关签名,
 /// 行为从未落地)。恒走预览:文件事后被删时预览桶立 unsupported 空态,
 /// 不回退系统打开(测试宿主 open_with_system 为 unimplemented panic,
-/// 亦锁死「永不系统打开」语义)。回归锚:chip 点击后 active tab 应为
-/// Preview{path=产物 rel 路径}。
+/// 亦锁死「永不系统打开」语义)。回归锚:open_deliverable 打开后
+/// active tab 应为 Preview{path=产物 rel 路径}(UI 点击面见
+/// deliverable_cards_render_and_open_preview)。
 #[gpui_kit::test]
 fn deliverable_chip_opens_preview_panel(cx: &mut TestAppContext) {
     let (store, _wcx, root) = menu_harness(cx, "deliverable-preview");
@@ -9079,6 +9217,180 @@ fn deliverable_chip_opens_preview_panel(cx: &mut TestAppContext) {
                 if p.path == std::path::Path::new(ghost_rel)
         ),
         "被删产物应激活对应预览 tab(unsupported 空态),实际 {active2:?}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 交付卡片网格(dsh 形态):TurnTail 带交付宣告 → 卡片渲染
+/// (类型 tile + 文件名 + 描述 + 右缘分体钮);>4 折叠(幽灵格展开);
+/// 整卡点击开预览;chevron 菜单在场且不落入卡预览(层叠断言)。
+/// 主钮/菜单行不点击(会真启动应用)
+#[gpui_kit::test]
+fn deliverable_cards_render_and_open_preview(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "deliverable-cards");
+    let ws = root.join("ws");
+    std::fs::create_dir_all(&ws).expect("建 ws");
+    std::fs::write(ws.join("report.md"), "# 报告\n").expect("写产物");
+    std::fs::write(ws.join("out.svg"), "<svg/>").expect("写 svg");
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            st.sessions.ws_paths.insert("w".to_string(), ws.clone());
+        });
+    });
+    // 播放 opener 清单(测试面不走挂窗探测,见 opener_ensure_probed;
+    // 分体钮 apps 空则不渲染)
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            if st.opener.apps.is_empty() {
+                st.opener.apps = probe::detect_apps();
+                st.opener.selected = st.opener.apps.first().map(|a| a.id);
+            }
+            cx.notify();
+        });
+    });
+    // 注入带 6 条交付的 TurnTail(>4 折叠路径)
+    let id = cx
+        .update(|app| store.read(app).state.current_id.clone())
+        .expect("有会话");
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            let chat = st.state.chats.get_mut(&id).expect("chat 在场");
+            chat.nodes.push(ChatNode::TurnTail {
+                key: "turn-end:9".into(),
+                aborted: false,
+                turn: 1,
+                ended_ms: 1_758_000_000_000,
+                run_ms: 30_000,
+                deliverables: vec![
+                    // 宣告卡(交付层,60px)
+                    Deliverable {
+                        path: "report.md".into(),
+                        description: Some("季度汇总".into()),
+                        stat: None,
+                        announced: true,
+                    },
+                    Deliverable {
+                        path: "out.svg".into(),
+                        description: Some("圆形图标".into()),
+                        stat: Some((6, 0)),
+                        announced: true,
+                    },
+                    // 变更行(变更层,紧凑;5 条走折叠路径)
+                    Deliverable {
+                        path: "a.rs".into(),
+                        description: None,
+                        stat: Some((3, 0)),
+                        announced: false,
+                    },
+                    Deliverable {
+                        path: "b.rs".into(),
+                        description: None,
+                        stat: Some((3, 0)),
+                        announced: false,
+                    },
+                    Deliverable {
+                        path: "c.rs".into(),
+                        description: None,
+                        stat: Some((3, 0)),
+                        announced: false,
+                    },
+                    Deliverable {
+                        path: "d.rs".into(),
+                        description: None,
+                        stat: Some((3, 0)),
+                        announced: false,
+                    },
+                    Deliverable {
+                        path: "e.rs".into(),
+                        description: None,
+                        stat: Some((3, 0)),
+                        announced: false,
+                    },
+                ],
+            });
+            st.chat.chat_version += 1;
+            cx.notify();
+        });
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut App| {});
+    cx.run_until_parked();
+
+    // 双组形态:宣告卡 2 张在场(60px);变更行折叠态显 4 条,
+    // 第 5 条不渲染,轻量折叠开关在场
+    assert!(
+        wcx.debug_bounds("deliv-report.md").is_some(),
+        "宣告卡(report)未渲染"
+    );
+    assert!(
+        wcx.debug_bounds("deliv-out.svg").is_some(),
+        "宣告卡(svg)未渲染"
+    );
+    assert!(
+        wcx.debug_bounds("deliv-row-a.rs").is_some(),
+        "变更行(a.rs)未渲染"
+    );
+    assert!(
+        wcx.debug_bounds("deliv-row-e.rs").is_none(),
+        "折叠态不应渲染第 5 条变更行"
+    );
+    assert!(
+        wcx.debug_bounds("deliv-more-turn-end:9").is_some(),
+        "折叠开关未渲染"
+    );
+    // 展开:5 条变更行全现
+    click_sel(&mut wcx, "deliv-more-turn-end:9");
+    wcx.refresh().expect("刷新失败");
+    cx.update(|_: &mut App| {});
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("deliv-row-e.rs").is_some(),
+        "展开后第 5 条变更行应出现"
+    );
+
+    // 层叠:chevron 点击不落入卡预览(active tab 应为 None),
+    // 且应用菜单开出(分体钮结构在场)
+    click_sel(&mut wcx, "deliv-open-chev-1");
+    let mut menu_open = false;
+    for _ in 0..50 {
+        cx.update(|_: &mut App| {});
+        cx.run_until_parked();
+        wcx.refresh().expect("刷新失败");
+        if wcx.debug_bounds("open-with-row-finder").is_some() {
+            menu_open = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(menu_open, "交付卡分体钮菜单未开出");
+    let active = cx.update(|app| store.read(app).panel_active_tab.clone());
+    assert!(
+        active.is_none(),
+        "chevron 点击不得触发卡预览,实际 {active:?}"
+    );
+
+    // 整卡点击(out.svg)→ 预览 tab(chip 预览语义继承)
+    click_sel(&mut wcx, "deliv-out.svg");
+    cx.run_until_parked();
+    let active = cx.update(|app| store.read(app).panel_active_tab.clone());
+    assert!(
+        matches!(active,
+            Some(panel::PanelTab::Preview(ref p))
+                if p.path == std::path::Path::new("out.svg")
+        ),
+        "交付卡点击应打开预览 tab(rel 路径),实际 {active:?}"
+    );
+
+    // 变更紧凑行点击(a.rs)→ 同样开预览
+    click_sel(&mut wcx, "deliv-row-a.rs");
+    cx.run_until_parked();
+    let active = cx.update(|app| store.read(app).panel_active_tab.clone());
+    assert!(
+        matches!(active,
+            Some(panel::PanelTab::Preview(ref p))
+                if p.path == std::path::Path::new("a.rs")
+        ),
+        "变更行点击应打开预览 tab,实际 {active:?}"
     );
     let _ = std::fs::remove_dir_all(root);
 }
@@ -12532,7 +12844,20 @@ fn model_submenu_row_click_switches_model(cx: &mut TestAppContext) {
     // 缺陷形态:按下先被库 popover 判成外点 → 弹层当场收起,而行的
     // on_click(上抬才触发)永不响 = 模型纹丝不动。故这里同时钉住
     // 「换掉了」与「正常收起」两条,先收起后换的旧序会两断言皆挂。
-    let after = cx.update(|app| store.read(app).current_cfg_or_default().model.clone());
+    // 选型经 set_route 异步桥落档,轮询到态(桥 runtime 真时序)
+    let after = {
+        let mut got = String::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while got != target && std::time::Instant::now() < deadline {
+            cx.run_until_parked();
+            got = cx.update(|app| store.read(app).current_cfg_or_default().model.clone());
+            if got == target {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        got
+    };
     assert_eq!(after, target, "点子卡行应换掉会话模型(原 {before})");
     assert!(
         wcx.debug_bounds("composer-model-menu").is_none(),

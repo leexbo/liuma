@@ -41,6 +41,22 @@ pub enum NoticeKind {
     Local { text: String },
 }
 
+/// 本回合交付单元(present 宣告 ∪ diff 写入的并集投影)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deliverable {
+    /// 文件路径(模型面;渲染时按工作区根展开)
+    pub path: String,
+    /// 模型宣告的一句描述(交付层语义「是什么」);None = 副标题
+    /// 依次回退变更统计 / 大写扩展名
+    pub description: Option<String>,
+    /// 变更层统计(最后一次编辑的 +added/-removed;变更层语义
+    /// 「改了多少」,diff 派生与后随编辑更新,宣告不携带)
+    pub stat: Option<(u64, u64)>,
+    /// 是否经模型 present 宣告(渲染分层:宣告 = 60px 交付卡,
+    /// 未宣告变更 = 26px 紧凑行)
+    pub announced: bool,
+}
+
 /// 消息流节点(稳定 key;同 key 增量替换)
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChatNode {
@@ -118,8 +134,8 @@ pub enum ChatNode {
         ended_ms: i64,
         /// 轮墙钟用时(turn/end − turn/start;0 = 起始未知)
         run_ms: i64,
-        /// 本 turn 产出的 diff/edit 路径(产物行;去重保序)
-        deliverables: Vec<String>,
+        /// 本回合交付宣告(present;去重保序,后到覆盖 description)
+        deliverables: Vec<Deliverable>,
     },
     /// 通告行(turn/error 等异常落档的可视化)
     Notice {
@@ -350,8 +366,8 @@ pub struct ChatState {
     /// 刚完成压缩的标记行 key 与时刻(完成闪:标记行入场时条走满 +
     /// SUCCESS 闪,年龄门控——虚拟化重挂不重放)。纯 UI 元数据。
     pub compact_settled: Option<(String, std::time::Instant)>,
-    /// 当前 turn 已产出的 diff/edit 路径(去重保序;turn/end 挂 TurnTail 产物行)
-    pub turn_deliverables: Vec<String>,
+    /// 当前 turn 已收到的交付宣告(去重保序;turn/end 挂 TurnTail 产物网格)
+    pub turn_deliverables: Vec<Deliverable>,
     /// 当前 turn 起始时刻(信封毫秒;turn/end 求轮墙钟用时,瞬态不入相等性)
     turn_started_ms: Option<i64>,
     /// 节点出生时刻(入场动画年龄门控:超龄不包动画,gpui list 虚拟化
@@ -516,6 +532,30 @@ impl ChatState {
                         kind: NoticeKind::TurnError { detail },
                     });
                 } else {
+                    // 工作区快照变更(turn/end 载荷;git 状态对比产出,
+                    // bash 创建文件的盲区兜底):path 已在集合则跳过——
+                    // present/diff 已给出更丰富的描述/统计,git 只补缺席。
+                    // untracked 新文件带行数统计(added/removed)
+                    if let Some(changes) = ev.data["changes"].as_array() {
+                        for c in changes {
+                            let Some(p) = c["path"].as_str() else {
+                                continue;
+                            };
+                            if self.turn_deliverables.iter().any(|d| d.path == p) {
+                                continue;
+                            }
+                            let stat = match (c["added"].as_u64(), c["removed"].as_u64()) {
+                                (Some(a), Some(r)) => Some((a, r)),
+                                _ => None,
+                            };
+                            self.turn_deliverables.push(Deliverable {
+                                path: p.to_string(),
+                                description: None,
+                                stat,
+                                announced: false,
+                            });
+                        }
+                    }
                     let deliverables = std::mem::take(&mut self.turn_deliverables);
                     let run_ms = self.turn_started_ms.map_or(0, |t0| (ev.time - t0).max(0));
                     self.turn_started_ms = None;
@@ -754,16 +794,58 @@ impl ChatState {
                         .get("images")
                         .and_then(|v| v.as_array().cloned())
                         .unwrap_or_default();
-                    // 产物:view 为 diff 卡 → 累积 diffs[].path(去重保序)
-                    if let Some(v) = &*view
-                        && v["card"].as_str() == Some("diff")
-                        && let Some(diffs) = v["diffs"].as_array()
+                    // 交付收集 = present 宣告 ∪ diff 写入的**并集**
+                    // (视图驱动,不 switch 工具名;失败 is_error 不收)。
+                    // 两层语义正交:present 宣告 = 交付层(描述,后到
+                    // 覆盖),diff 写入 = 变更层(+N -M 统计,后到覆盖;
+                    // dsh 改动卡的兜底角色)。字段各自动更新,相遇时
+                    // 互补而非互斥。
+                    if is_error != Some(true)
+                        && let Some(v) = &*view
                     {
-                        for d in diffs {
-                            if let Some(p) = d["path"].as_str()
-                                && !self.turn_deliverables.iter().any(|x| x == p)
-                            {
-                                self.turn_deliverables.push(p.to_string());
+                        if v["card"].as_str() == Some("present")
+                            && let Some(p) = v["path"].as_str()
+                        {
+                            let desc = v["description"].as_str().map(str::to_string);
+                            match self.turn_deliverables.iter_mut().find(|d| d.path == p) {
+                                Some(d) => {
+                                    d.description = desc;
+                                    d.announced = true;
+                                }
+                                None => {
+                                    self.turn_deliverables.push(Deliverable {
+                                        path: p.to_string(),
+                                        description: desc,
+                                        stat: None,
+                                        announced: true,
+                                    });
+                                }
+                            }
+                        } else if v["card"].as_str() == Some("diff")
+                            && let Some(diffs) = v["diffs"].as_array()
+                        {
+                            for d in diffs {
+                                if let Some(p) = d["path"].as_str() {
+                                    // 最后一次编辑的统计(最终态语义);
+                                    // 新建(old 缺席)= +N -0
+                                    let stat = Some((
+                                        d["newText"]
+                                            .as_str()
+                                            .map_or(0, |t| t.lines().count() as u64),
+                                        d["oldText"]
+                                            .as_str()
+                                            .map_or(0, |t| t.lines().count() as u64),
+                                    ));
+                                    match self.turn_deliverables.iter_mut().find(|x| x.path == p) {
+                                        Some(x) => x.stat = stat,
+                                        None => self.turn_deliverables.push(Deliverable {
+                                            path: p.to_string(),
+                                            description: None,
+                                            stat,
+                                            announced: false,
+                                        }),
+                                    }
+                                }
                             }
                         }
                     }
@@ -2194,6 +2276,263 @@ mod tests {
             ChatNode::Tool { state, output, .. } => {
                 assert_eq!(*state, ToolState::Error);
                 assert_eq!(output.as_deref(), Some("boom"));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// present 宣告收集:成功 result 的 present 视图 → TurnTail 交付
+    #[test]
+    fn present_result_collects_deliverable() {
+        let mut st = ChatState::default();
+        st.apply(&ev(
+            "tool/call",
+            1,
+            json!({ "turn": 1, "step": 1, "callId": "c1", "name": "present", "arguments": "{}" }),
+        ));
+        st.apply(&ev("tool/result", 2, json!({
+            "message": { "content": [ { "type": "tool-result", "toolCallId": "c1", "isError": false,
+                "content": [ { "type": "text", "text": "presented a.md" } ] } ] },
+            "view": { "card": "present", "path": "a.md", "description": "季度汇总" },
+        })));
+        st.apply(&ev(
+            "turn/end",
+            3,
+            json!({ "turn": 1, "reason": { "kind": "done" } }),
+        ));
+        match &st.nodes.last() {
+            Some(ChatNode::TurnTail { deliverables, .. }) => {
+                assert_eq!(
+                    deliverables,
+                    &vec![Deliverable {
+                        path: "a.md".into(),
+                        description: Some("季度汇总".into()),
+                        stat: None,
+                        announced: true,
+                    }]
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// 去重:同 path 重复宣告保留首见位置、description 后到覆盖
+    #[test]
+    fn present_dedup_keeps_first_position_last_description() {
+        let mut st = ChatState::default();
+        st.apply(&ev(
+            "tool/call",
+            1,
+            json!({ "turn": 1, "step": 1, "callId": "c1", "name": "present", "arguments": "{}" }),
+        ));
+        st.apply(&ev("tool/result", 2, json!({
+            "message": { "content": [ { "type": "tool-result", "toolCallId": "c1", "isError": false,
+                "content": [ { "type": "text", "text": "ok" } ] } ] },
+            "view": { "card": "present", "path": "a.md", "description": "v1" },
+        })));
+        st.apply(&ev(
+            "tool/call",
+            3,
+            json!({ "turn": 1, "step": 2, "callId": "c2", "name": "present", "arguments": "{}" }),
+        ));
+        st.apply(&ev("tool/result", 4, json!({
+            "message": { "content": [ { "type": "tool-result", "toolCallId": "c2", "isError": false,
+                "content": [ { "type": "text", "text": "ok" } ] } ] },
+            "view": { "card": "present", "path": "b.md", "description": null },
+        })));
+        st.apply(&ev(
+            "tool/call",
+            5,
+            json!({ "turn": 1, "step": 3, "callId": "c3", "name": "present", "arguments": "{}" }),
+        ));
+        st.apply(&ev("tool/result", 6, json!({
+            "message": { "content": [ { "type": "tool-result", "toolCallId": "c3", "isError": false,
+                "content": [ { "type": "text", "text": "ok" } ] } ] },
+            "view": { "card": "present", "path": "a.md", "description": "v2 定稿" },
+        })));
+        st.apply(&ev(
+            "turn/end",
+            7,
+            json!({ "turn": 1, "reason": { "kind": "done" } }),
+        ));
+        match &st.nodes.last() {
+            Some(ChatNode::TurnTail { deliverables, .. }) => {
+                assert_eq!(
+                    deliverables,
+                    &vec![
+                        Deliverable {
+                            path: "a.md".into(),
+                            description: Some("v2 定稿".into()),
+                            stat: None,
+                            announced: true,
+                        },
+                        Deliverable {
+                            path: "b.md".into(),
+                            description: None,
+                            stat: None,
+                            announced: true,
+                        },
+                    ]
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// 失败宣告(文件不存在等)不进产物网格
+    #[test]
+    fn present_error_result_not_collected() {
+        let mut st = ChatState::default();
+        st.apply(&ev(
+            "tool/call",
+            1,
+            json!({ "turn": 1, "step": 1, "callId": "c1", "name": "present", "arguments": "{}" }),
+        ));
+        st.apply(&ev("tool/result", 2, json!({
+            "message": { "content": [ { "type": "tool-result", "toolCallId": "c1", "isError": true,
+                "content": [ { "type": "text", "text": "not accessible" } ] } ] },
+            "view": { "card": "present", "path": "gone.md" },
+        })));
+        st.apply(&ev(
+            "turn/end",
+            3,
+            json!({ "turn": 1, "reason": { "kind": "done" } }),
+        ));
+        match &st.nodes.last() {
+            Some(ChatNode::TurnTail { deliverables, .. }) => {
+                assert!(deliverables.is_empty(), "{deliverables:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// 产物单一来源 = present 宣告:diff 视图不再派生交付(旧分支移除
+    /// 的回归锁,防回潮)
+    #[test]
+    fn diff_falls_back_with_stat() {
+        let mut st = ChatState::default();
+        st.apply(&ev(
+            "tool/call",
+            1,
+            json!({ "turn": 1, "step": 1, "callId": "c1", "name": "file_edit", "arguments": "{}" }),
+        ));
+        st.apply(&ev("tool/result", 2, json!({
+            "message": { "content": [ { "type": "tool-result", "toolCallId": "c1", "isError": false,
+                "content": [ { "type": "text", "text": "ok" } ] } ] },
+            "view": { "card": "diff", "diffs": [ { "path": "a.md", "oldText": null, "newText": "x\ny\nz" } ] },
+        })));
+        st.apply(&ev(
+            "turn/end",
+            3,
+            json!({ "turn": 1, "reason": { "kind": "done" } }),
+        ));
+        match &st.nodes.last() {
+            Some(ChatNode::TurnTail { deliverables, .. }) => {
+                assert_eq!(
+                    deliverables,
+                    &vec![Deliverable {
+                        path: "a.md".into(),
+                        description: None,
+                        stat: Some((3, 0)),
+                        announced: false,
+                    }]
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// 两层互补:present 宣告后再编辑同文件 → 描述保留、统计更新
+    #[test]
+    fn present_and_diff_merge_orthogonally() {
+        let mut st = ChatState::default();
+        st.apply(&ev(
+            "tool/call",
+            1,
+            json!({ "turn": 1, "step": 1, "callId": "c1", "name": "present", "arguments": "{}" }),
+        ));
+        st.apply(&ev("tool/result", 2, json!({
+            "message": { "content": [ { "type": "tool-result", "toolCallId": "c1", "isError": false,
+                "content": [ { "type": "text", "text": "ok" } ] } ] },
+            "view": { "card": "present", "path": "a.md", "description": "季度汇总" },
+        })));
+        st.apply(&ev(
+            "tool/call",
+            3,
+            json!({ "turn": 1, "step": 2, "callId": "c2", "name": "file_edit", "arguments": "{}" }),
+        ));
+        st.apply(&ev("tool/result", 4, json!({
+            "message": { "content": [ { "type": "tool-result", "toolCallId": "c2", "isError": false,
+                "content": [ { "type": "text", "text": "ok" } ] } ] },
+            "view": { "card": "diff", "diffs": [ { "path": "a.md", "oldText": "old line", "newText": "n1\nn2" } ] },
+        })));
+        st.apply(&ev(
+            "turn/end",
+            5,
+            json!({ "turn": 1, "reason": { "kind": "done" } }),
+        ));
+        match &st.nodes.last() {
+            Some(ChatNode::TurnTail { deliverables, .. }) => {
+                assert_eq!(
+                    deliverables,
+                    &vec![Deliverable {
+                        path: "a.md".into(),
+                        description: Some("季度汇总".into()),
+                        stat: Some((2, 1)),
+                        announced: true,
+                    }]
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// git 快照兜底:turn/end 载荷 changes → 变更层(path 已在集合
+    /// 则跳过,present/diff 优先)
+    #[test]
+    fn turn_end_changes_payload_merges() {
+        let mut st = ChatState::default();
+        st.apply(&ev(
+            "tool/call",
+            1,
+            json!({ "turn": 1, "step": 1, "callId": "c1", "name": "present", "arguments": "{}" }),
+        ));
+        st.apply(&ev("tool/result", 2, json!({
+            "message": { "content": [ { "type": "tool-result", "toolCallId": "c1", "isError": false,
+                "content": [ { "type": "text", "text": "ok" } ] } ] },
+            "view": { "card": "present", "path": "a.md", "description": "宣告的" },
+        })));
+        st.apply(&ev(
+            "turn/end",
+            3,
+            json!({
+                "turn": 1, "reason": { "kind": "done" },
+                "changes": [
+                    { "path": "a.md" },
+                    { "path": "bash-made.txt", "added": 2, "removed": 0 },
+                ],
+            }),
+        ));
+        match &st.nodes.last() {
+            Some(ChatNode::TurnTail { deliverables, .. }) => {
+                // a.md 已被宣告(描述优先)不重复;bash-made.txt 兜底进
+                assert_eq!(
+                    deliverables,
+                    &vec![
+                        Deliverable {
+                            path: "a.md".into(),
+                            description: Some("宣告的".into()),
+                            stat: None,
+                            announced: true,
+                        },
+                        Deliverable {
+                            path: "bash-made.txt".into(),
+                            description: None,
+                            stat: Some((2, 0)),
+                            announced: false,
+                        },
+                    ]
+                );
             }
             other => panic!("{other:?}"),
         }

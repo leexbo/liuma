@@ -121,6 +121,10 @@ opener:
     zh-CN: "用 %{app} 打开失败：%{msg}"
     en: "Failed to open with %{app}: %{msg}"
 
+  reveal_in_finder:
+    zh-CN: "显示文件位置"
+    en: "Reveal in Finder"
+
   launch_channel_failed:
     zh-CN: "打开任务通道中断"
     en: "Open task channel dropped"

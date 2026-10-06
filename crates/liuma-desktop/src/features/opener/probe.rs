@@ -38,6 +38,8 @@ pub(crate) fn detect_apps() -> Vec<ResolvedApp> {
 
 fn detect_one(entry: &AppEntry, home: &Path) -> Option<ResolvedApp> {
     let bundle = match entry.kind {
+        // Reveal 非清单条目 kind(仅由 for_file / reveal 行产生)
+        LaunchKind::Reveal => return None,
         // fixed 条目(finder/terminal):系统自带恒在,bundle 即图标源
         LaunchKind::Finder | LaunchKind::Terminal => PathBuf::from(entry.icon_bundle?),
         // Xcode:xcode-select -p 推导 .app;无 .app(仅 CLT)兜底开发
@@ -142,21 +144,28 @@ fn icns_path(bundle: &Path) -> Option<PathBuf> {
     entries.into_iter().next()
 }
 
-/// 启动目录:spawn(stdio 全 null)+ 1s 退出码视窗(dsh 口径:窗口
-/// 内退非零 = 失败,仍在跑 = 已启动且不追杀)。Xcode 主命令 xed 失
-/// 败(不存在/退非零)回退 `open -a <bundle>`。
-pub(crate) fn launch(app: &ResolvedApp, dir: &Path) -> Result<(), String> {
-    let (prog, args) = catalog::launch_argv(app.kind, &app.bundle, dir);
+/// 启动目标(目录或文件):spawn(stdio 全 null)+ 1s 退出码视窗(dsh
+/// 口径:窗口内退非零 = 失败,仍在跑 = 已启动且不追杀)。kind 由调
+/// 用方分化(目录 = app.kind,文件 = app.kind.for_file());Xcode 主
+/// 命令 xed 失败(不存在/退非零)回退 `open -a <bundle>`。
+pub(crate) fn launch(app: &ResolvedApp, kind: LaunchKind, target: &Path) -> Result<(), String> {
+    let (prog, args) = catalog::launch_argv(kind, &app.bundle, target);
     let primary = run_window(&prog, &args);
     match (app.kind, primary) {
         (_, Ok(())) => Ok(()),
         (LaunchKind::Xed, Err(first)) => {
             // 回退 = OpenApp 同款 argv(`open -a <bundle>`)
-            let (prog, args) = catalog::launch_argv(LaunchKind::OpenApp, &app.bundle, dir);
+            let (prog, args) = catalog::launch_argv(LaunchKind::OpenApp, &app.bundle, target);
             run_window(&prog, &args).map_err(|second| format!("{first}; {second}"))
         }
         (_, Err(e)) => Err(e),
     }
+}
+
+/// 访达定位(`open -R <file>`):不需要任何应用真身,bundle 形参占位
+pub(crate) fn reveal(path: &Path) -> Result<(), String> {
+    let (prog, args) = catalog::launch_argv(LaunchKind::Reveal, Path::new(""), path);
+    run_window(&prog, &args)
 }
 
 /// spawn + 轮询 try_wait 至 1s:退 0 = 成功;退非零 = Err;仍在跑 =

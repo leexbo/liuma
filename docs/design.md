@@ -229,7 +229,7 @@ JSONL 日志逐事件重放:信封校验(§7.1)通过即重建 EventLog,`derive_
 
 | 类型 | 分类 | 载荷要点 |
 |---|---|---|
-| session/start · turn/start · turn/end · step/start · step/end | 骨架 | turn/end 可携带 `cancelled` |
+| session/start · turn/start · turn/end · step/start · step/end | 骨架 | turn/start 可携带 `route`（`{provider, model}`，本回合实际路由事实层）；turn/end 可携带 `cancelled`；正常收尾可携带 `changes`（工作区快照对比，turn-tail 端口产出） |
 | user/message | surface | `content` |
 | assistant/message | surface | `content` + 可选 `tool_calls`(扁平 `{id, name, arguments}`) |
 | tool/result | surface | `call`(tool/call 的 seq)、`id`(provider 调用标识)、`output`、`success` |
@@ -247,6 +247,9 @@ JSONL 日志逐事件重放:信封校验(§7.1)通过即重建 EventLog,`derive_
 | approval/asked · approval/decided | 簿记 | 沙箱升级审计对:`id` 配对;asked 带 `toolName`/`reason`,decided 带 `outcome`(allowed-once / rejected / cancelled / unavailable) |
 | decision/asked · decision/answered | 簿记 | 决策模型审计对:`id` 配对;asked 带 `scenario`(guard / stop / context / tool)、`model`、`questions`(id 清单)、`stateDigest`(state **原文不落档**),answered 带 `ok`、`durationMs` 与二者之一的 `answers` / `error` |
 | decision/pruned | 簿记 | 上下文裁判的实际效果(`pruned` 条数清单);仅 enforce 分支落档,shadow 只留 receipt 供观察误裁率 |
+| route/selection | 簿记 | 会话路由选择(dsh ModelSelection 意图层同位):`provider` + `model` 成对,写侧校验成对、读侧 fold 成对——准入不改写;切换路由时下一回合注入 `[model changed]` user 通告(随日志回放) |
+| title/set | 簿记 | 会话标题落档(dsh session/title 同位):`title` + `source.kind`(fallback / provider / user);findLast 折叠 latest-wins,`user` 源钉住自动生成 |
+| title/llm_request | 簿记 | 标题辅助 LLM 请求派发前审计(dsh 同位):`route` + `messages` + `maxTokens`——标题调用在会话日志可见 |
 
 归因集 = surface 三类 + audit/call。
 

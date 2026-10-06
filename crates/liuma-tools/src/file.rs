@@ -250,6 +250,56 @@ impl FileTools {
         }
     }
 
+    /// present:宣告交付物(不落盘、不改文件;纯校验 + 视图)。不做
+    /// readonly 门——宣告型工具,只读会话恰恰最需要交付。
+    /// 与 [`Self::writable_target`] 的差别:① 不放行平台临时区(交付物
+    /// 必须在工作区内);② 要求目标自身存在且是文件。
+    fn present_target(&self, path: &str) -> Result<PathBuf, String> {
+        let target = self.resolve(path)?;
+        let canonical = target
+            .canonicalize()
+            .map_err(|e| format!("path not accessible: {path} ({e})"))?;
+        let root = self
+            .root
+            .canonicalize()
+            .map_err(|e| format!("workspace root not accessible ({e})"))?;
+        if !canonical.starts_with(&root) {
+            return Err(format!(
+                "present outside workspace root denied: {path} (root: {})",
+                self.root.display()
+            ));
+        }
+        let meta = std::fs::metadata(&canonical)
+            .map_err(|e| format!("path not accessible: {path} ({e})"))?;
+        if !meta.is_file() {
+            return Err(format!("present requires a file, not a directory: {path}"));
+        }
+        Ok(canonical)
+    }
+
+    fn present(&self, args: &Value) -> ToolOutput {
+        let fail = |msg: String| ToolOutput {
+            output: msg,
+            success: false,
+            ..Default::default()
+        };
+        let Some(path) = args["path"].as_str() else {
+            return fail("present requires arguments.path (string)".into());
+        };
+        if let Err(e) = self.present_target(path) {
+            return fail(e);
+        }
+        ToolOutput {
+            output: format!("presented {path}"),
+            success: true,
+            view: Some(ToolView::Present {
+                path: path.to_string(),
+                description: args["description"].as_str().map(str::to_string),
+            }),
+            ..Default::default()
+        }
+    }
+
     /// file_search:glob 匹配 + 内容子串检索(ripgrep 引擎:`ignore`
     /// 遍历尊重 .gitignore/隐藏文件,`grep-searcher` 做行搜索),上限截断。
     /// 结构化分组与截断/全量计数在文本扁平化**之前**成形(SearchMatches/
@@ -579,6 +629,21 @@ impl ToolPort for FileTools {
                     },
                 },
             }),
+            json!({
+                "type": "function",
+                "function": {
+                    "name": "present",
+                    "description": "Declare a finished deliverable file for the user. Use it when the user needs a separate file, especially images, documents, spreadsheets, and slide decks; prefer your final response when that suffices. The path must be an existing file inside the workspace root. The optional description is one short sentence shown under the file name.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": { "type": "string", "description": "File path (workspace-relative or absolute), must already exist" },
+                            "description": { "type": "string", "description": "One sentence describing the deliverable for the user" }
+                        },
+                        "required": ["path"],
+                    },
+                },
+            }),
         ]
     }
 
@@ -588,6 +653,7 @@ impl ToolPort for FileTools {
             "file_read" => self.file_read(&arguments).await,
             "file_edit" => self.file_edit(&arguments).await,
             "file_search" => self.file_search(&arguments),
+            "present" => self.present(&arguments),
             _ => ToolOutput {
                 output: format!("unknown tool: {}", call.name),
                 success: false,
@@ -926,6 +992,113 @@ mod tests {
         assert!(out.success, "{}", out.output);
         assert_eq!(std::fs::read_to_string(&scratch).unwrap(), "y");
         let _ = std::fs::remove_dir_all(&scratch_dir);
+    }
+
+    /// present:成功宣告带描述;视图携带模型面 path 原文
+    #[tokio::test]
+    async fn present_success_with_description() {
+        let root = temp_root("present-ok");
+        std::fs::write(root.join("report.md"), "# q\n").unwrap();
+        let tools = FileTools::new(&root);
+        let out = tools.present(&json!({ "path": "report.md", "description": "季度汇总" }));
+        assert!(out.success, "{}", out.output);
+        assert_eq!(out.output, "presented report.md");
+        assert_eq!(
+            out.view,
+            Some(ToolView::Present {
+                path: "report.md".into(),
+                description: Some("季度汇总".into()),
+            })
+        );
+    }
+
+    /// present:description 可选(缺席 = None,卡片回退大写扩展名)
+    #[tokio::test]
+    async fn present_description_optional() {
+        let root = temp_root("present-optional");
+        std::fs::write(root.join("a.md"), "x\n").unwrap();
+        let tools = FileTools::new(&root);
+        let out = tools.present(&json!({ "path": "a.md" }));
+        assert!(out.success, "{}", out.output);
+        assert_eq!(
+            out.view,
+            Some(ToolView::Present {
+                path: "a.md".into(),
+                description: None,
+            })
+        );
+    }
+
+    /// present:文件不存在拒绝且无视图(错误走通用卡)
+    #[tokio::test]
+    async fn present_rejects_missing_file() {
+        let root = temp_root("present-missing");
+        let tools = FileTools::new(&root);
+        let out = tools.present(&json!({ "path": "nope.md" }));
+        assert!(!out.success);
+        assert!(out.output.contains("not accessible"), "{}", out.output);
+        assert!(out.view.is_none());
+    }
+
+    /// present:工作区外的绝对路径拒绝
+    #[tokio::test]
+    async fn present_rejects_outside_root() {
+        let outside_dir = std::env::current_dir().unwrap().join(format!(
+            "target/liuma-present-outside-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        let outside = outside_dir.join("a.txt");
+        std::fs::write(&outside, "x").unwrap();
+        let root = temp_root("present-deny");
+        let tools = FileTools::new(&root);
+        let out = tools.present(&json!({ "path": outside.display().to_string() }));
+        assert!(!out.success);
+        assert!(out.output.contains("denied"), "{}", out.output);
+        assert!(out.view.is_none());
+        let _ = std::fs::remove_dir_all(&outside_dir);
+    }
+
+    /// present:平台临时区**不放行**(与 file_edit 的放行形成对照;
+    /// 交付物必须在工作区内,草稿不是交付)
+    #[tokio::test]
+    async fn present_denies_platform_temp_area() {
+        let root = temp_root("present-tmp-deny");
+        let scratch_dir = std::env::temp_dir().join(format!(
+            "liuma-file-scratch-{}-{}",
+            std::process::id(),
+            root.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::create_dir_all(&scratch_dir).unwrap();
+        let scratch = scratch_dir.join("scratch.txt");
+        std::fs::write(&scratch, "x").unwrap();
+        let tools = FileTools::new(&root);
+        let out = tools.present(&json!({ "path": scratch.display().to_string() }));
+        assert!(!out.success, "{}", out.output);
+        assert!(out.view.is_none());
+        let _ = std::fs::remove_dir_all(&scratch_dir);
+    }
+
+    /// present:目录拒绝(必须是文件)
+    #[tokio::test]
+    async fn present_rejects_directory() {
+        let root = temp_root("present-dir");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let tools = FileTools::new(&root);
+        let out = tools.present(&json!({ "path": "sub" }));
+        assert!(!out.success);
+        assert!(out.output.contains("not a directory"), "{}", out.output);
+    }
+
+    /// present:只读会话可用(D3 实证;宣告型不受 readonly 门)
+    #[tokio::test]
+    async fn present_works_in_readonly_mode() {
+        let root = temp_root("present-readonly");
+        std::fs::write(root.join("a.md"), "x\n").unwrap();
+        let tools = FileTools::new(&root).with_readonly();
+        let out = tools.present(&json!({ "path": "a.md" }));
+        assert!(out.success, "{}", out.output);
+        assert!(out.view.is_some());
     }
 
     #[tokio::test]

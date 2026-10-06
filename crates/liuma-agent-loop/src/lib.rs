@@ -19,6 +19,7 @@ pub mod retry;
 pub mod runtime_context;
 pub mod summarizer;
 pub mod tools;
+pub mod turn_tail;
 pub mod value_judge;
 
 pub use cancel::CancelToken;
@@ -39,6 +40,7 @@ pub use tools::{
     DuplicateToolNameError, NoTools, ToolCallRequest, ToolOutput, ToolPort, ToolPortObj, ToolSet,
 };
 pub use transport::{LlmEvent, LlmTransport, TransportError};
+pub use turn_tail::{TurnTailPhase, TurnTailSnapshotObj};
 pub use value_judge::{FoldAdvice, ValueCandidate, ValueJudge, ValueJudgePolicy};
 
 mod transport;

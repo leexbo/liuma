@@ -119,13 +119,12 @@ impl Translator {
                 } else {
                     json!({ "kind": "completed" })
                 };
-                session_event(
-                    ev,
-                    json!({ "turn": self.turn, "reason": reason }),
-                    None,
-                    None,
-                    None,
-                )
+                let mut data = json!({ "turn": self.turn, "reason": reason });
+                // 工作区变更载荷(turn-tail 端口产出;缺席 = 旧日志/静默)
+                if let Some(changes) = ev.data.get("changes") {
+                    data["changes"] = changes.clone();
+                }
+                session_event(ev, data, None, None, None)
             }
             // turn 异常终止(传输失败/悬挂超时)→ 客方 turn/end 的
             // error 终止形状(web turn-error 节点/重试链据此渲染)

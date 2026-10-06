@@ -143,6 +143,8 @@ pub enum LiumaIcon {
     Hook,
     /// 设置侧栏模型设置项
     Models,
+    /// present 工具 / 交付宣告(包裹;与 Models 共用 box 资产)
+    Box,
     /// 设置侧栏常规项
     General,
 }
@@ -210,6 +212,7 @@ impl IconNamed for LiumaIcon {
             Self::Decision => "decision",
             Self::Hook => "hook",
             Self::Models => "box",
+            Self::Box => "box",
             Self::General => "sliders-horizontal",
         };
         format!("icons/_liuma/{name}.svg").into()
@@ -520,6 +523,7 @@ fn tool_path(name: &str) -> SharedString {
         "goal" => LiumaIcon::Target.path(),
         "jobs" => LiumaIcon::Briefcase.path(),
         "workflow" => LiumaIcon::Workflow.path(),
+        "present" => LiumaIcon::Box.path(),
         "ralph" => LiumaIcon::Infinity.path(),
         "subagent" => IconName::Bot.path(),
         "subagent_list" => IconName::GalleryVerticalEnd.path(),
@@ -567,7 +571,7 @@ mod tests {
     /// 枚举全变体的 path 必须命中 LIUMA_ICONS 静态表(防加枚举忘加 SVG)
     #[test]
     fn liuma_icon_paths_all_embedded() {
-        const ALL: [LiumaIcon; 61] = [
+        const ALL: [LiumaIcon; 62] = [
             LiumaIcon::Sparkles,
             LiumaIcon::Zap,
             LiumaIcon::Brain,
@@ -628,6 +632,7 @@ mod tests {
             LiumaIcon::Decision,
             LiumaIcon::Hook,
             LiumaIcon::Models,
+            LiumaIcon::Box,
             LiumaIcon::General,
         ];
         for icon in ALL {
@@ -667,6 +672,7 @@ mod tests {
             ("jobs", "icons/_liuma/briefcase.svg"),
             ("workflow", "icons/_liuma/workflow.svg"),
             ("ralph", "icons/_liuma/infinity.svg"),
+            ("present", "icons/_liuma/box.svg"),
             ("subagent", "icons/bot.svg"),
             ("subagent_list", "icons/gallery-vertical-end.svg"),
             // 遗留/扩展别名

@@ -25,8 +25,10 @@ use crate::shell::reducer::{self, Effect, StoreState};
 /// 会话级配置缓存(打开会话时拉取,设置成功后回写)
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionCfg {
-    /// 模型(override > 宿主默认)
+    /// 模型(路由事件 > 遗留覆盖 > 宿主默认)
     pub model: String,
+    /// 会话生效 provider id(路由事件 > 工作区默认;与 model 同源解析)
+    pub provider: String,
     /// 权限(read-only / workspace-write / full-access)
     pub permission: String,
     /// 思考等级(low / high / max;宿主恒 Some,默认 high)
@@ -823,6 +825,7 @@ impl AppStore {
         let rx = self.bridge.call(async move {
             let cfg = SessionCfg {
                 model: host.session_model(&sid),
+                provider: host.session_provider(&sid).id,
                 permission: host.session_permission(&sid),
                 effort: host.session_effort(&sid),
                 preset: host.session_preset(&sid),
@@ -855,6 +858,15 @@ impl AppStore {
                     .model
                     .clone()
                     .unwrap_or_else(|| "deepseek-chat".into()),
+                provider: self.settings.settings_snapshot["workspaceProviders"]
+                    [&self.effective_workspace()]
+                    .as_str()
+                    .unwrap_or_else(|| {
+                        self.settings.settings_snapshot["defaultProvider"]
+                            .as_str()
+                            .unwrap_or_default()
+                    })
+                    .to_string(),
                 permission: "workspace-write".into(),
                 effort: Some("high".into()),
                 preset: "standard".into(),
@@ -1032,21 +1044,11 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 切模型(校验宿主模型表;失败落通告)
-    pub fn set_session_model(&mut self, model: &str, cx: &mut Context<Self>) {
-        let v = model.to_string();
-        let w = v.clone();
-        self.mutate_session_cfg(
-            cx,
-            move |host, id| host.set_model(id, &v),
-            move |host, ws| host.set_workspace_model(ws, &w),
-        );
-    }
-
-    /// 模型二级菜单选型:先切工作区默认 provider(跨 provider 时;幂等),
-    /// 再设模型——set_model 校验清单并 detach_if_idle,下一轮即走新
-    /// provider + 模型。生效 provider 真变化时立即拉新账:计费徽标数据源
-    /// 跟切,不等 60s 防抖/5min 节拍
+    /// 模型二级菜单选型(dsh selectModel 对应):set_route 成对切换
+    /// provider+model——校验、route/selection 落档、默认跟随全在宿主
+    /// 完成;hero 态(无会话)走 set_workspace_route 成对写工作区默认。
+    /// 生效 provider 真变化时立即拉新账:计费徽标数据源跟切,不等 60s
+    /// 防抖/5min 节拍
     pub fn set_session_provider_model(
         &mut self,
         provider_id: &str,
@@ -1055,19 +1057,61 @@ impl AppStore {
     ) {
         let host = self.bridge.host().clone();
         let ws = self.effective_workspace();
-        {
-            let prev = self.settings.settings_snapshot["workspaceProviders"][&ws]
-                .as_str()
-                .map(str::to_string);
-            if host.set_workspace_provider(&ws, provider_id).is_ok()
-                && prev.as_deref() != Some(provider_id)
-            {
-                self.settings_refresh(cx);
-                self.settings.billing_auto_last = None;
-                self.auto_refresh_billing(cx);
-            }
-        }
-        self.set_session_model(model, cx);
+        let pid = provider_id.to_string();
+        let m = model.to_string();
+        // provider 真变化判定:会话域取会话 provider,hero 域取快照默认
+        let prev = self
+            .state
+            .current_id
+            .as_deref()
+            .map(|id| host.session_provider(id).id)
+            .unwrap_or_else(|| {
+                self.settings.settings_snapshot["workspaceProviders"][&ws]
+                    .as_str()
+                    .unwrap_or_else(|| {
+                        self.settings.settings_snapshot["defaultProvider"]
+                            .as_str()
+                            .unwrap_or_default()
+                    })
+                    .to_string()
+            });
+        let provider_changed = prev != pid;
+        let session_id = self.state.current_id.clone();
+        let rx = self.bridge.call(async move {
+            let r = match &session_id {
+                Some(id) => host.set_route(id, &pid, &m).await,
+                None => host.set_workspace_route(&ws, &pid, &m),
+            };
+            (session_id, r)
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok((sid, result)) = rx.await else {
+                return;
+            };
+            let _ = this.update(cx, |st, cx| match result {
+                Err(e) => {
+                    st.push_local_notice(
+                        crate::kits::i18n::t!("shell.switch_failed", msg = &e.message),
+                        cx,
+                    );
+                }
+                Ok(()) => {
+                    if let Some(id) = sid {
+                        st.refresh_session_cfg(&id, cx);
+                    } else {
+                        st.settings_refresh(cx);
+                    }
+                    if provider_changed {
+                        // 默认跟随改了工作区默认:快照(workspaceProviders/
+                        // 计费数据源)拉新
+                        st.settings_refresh(cx);
+                        st.settings.billing_auto_last = None;
+                        st.auto_refresh_billing(cx);
+                    }
+                }
+            });
+        })
+        .detach();
     }
 
     /// 模型菜单级联子菜单切换(同子菜单再点 = 收;None = 全收)

@@ -15,12 +15,13 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, Animation, AnimationExt as _, AnyElement, App, Div, Entity, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Rgba, SharedString,
-    StatefulInteractiveElement, Styled, Window, actions, div, px,
+    StatefulInteractiveElement, Styled, Window, actions, div, px, relative,
 };
 
 use super::projection::{
-    ChatNode, CompactProgress, NavAnchor, PlanStatus, RetryState, RowSlot, ToolState,
+    ChatNode, CompactProgress, Deliverable, NavAnchor, PlanStatus, RetryState, RowSlot, ToolState,
 };
+use crate::kits::filetype::class_icon;
 use crate::kits::icons::{self, LiumaIcon, fixed};
 use crate::kits::popup::PopTrigger;
 use crate::kits::theme;
@@ -651,7 +652,7 @@ fn tool_sweep(ix: usize, cx: &App) -> impl IntoElement {
                 // 0..90% 行程(二次缓出),90%..100% 停右留白
                 let f = (delta / 0.9).min(1.0);
                 let f = 1.0 - (1.0 - f) * (1.0 - f);
-                band.left(gpui_kit::relative(f * 1.3 - 0.2))
+                band.left(relative(f * 1.3 - 0.2))
             },
         )
 }
@@ -830,7 +831,7 @@ fn nav_ticks(
                         .overflow_hidden()
                         .text_size(px(13.))
                         .text_color(theme::label_2(cx))
-                        .line_height(gpui_kit::relative(1.5))
+                        .line_height(relative(1.5))
                         .child(body),
                 );
             }
@@ -1051,7 +1052,7 @@ fn context_block(
                 .mt(px(4.))
                 .text_size(px(13.))
                 .text_color(theme::label_3(cx))
-                .line_height(gpui_kit::relative(1.5))
+                .line_height(relative(1.5))
                 .whitespace_normal()
                 .child(content_owned),
         );
@@ -1208,7 +1209,7 @@ fn compact_progress_row(
                 .top_0()
                 .bottom_0()
                 .left_0()
-                .w(gpui_kit::relative(frac))
+                .w(relative(frac))
                 .rounded(px(2.))
                 .bg(fill_color(theme::brand(cx)))
                 .into_any_element(),
@@ -1225,10 +1226,9 @@ fn compact_progress_row(
                     "liuma-compact-fill",
                     Animation::new(std::time::Duration::from_millis(1200)).repeat(),
                     |el, delta| {
-                        let start = gpui_kit::relative(gpui_kit::ease_in_out(
-                            ((delta - 0.5) / 0.5).clamp(0., 1.),
-                        ));
-                        let end = gpui_kit::relative(gpui_kit::ease_in_out(1.0 - delta));
+                        let start =
+                            relative(gpui_kit::ease_in_out(((delta - 0.5) / 0.5).clamp(0., 1.)));
+                        let end = relative(gpui_kit::ease_in_out(1.0 - delta));
                         el.when(delta > 0.5, |el| el.left(start)).right(end)
                     },
                 )
@@ -1979,7 +1979,7 @@ fn user_bubble(
                 // 统一行高 = 1.5(24px @16px 同比例):
                 // 文本 div 不再继承 gpui 默认 phi()(1.618→22.5px),避免
                 // 与胶囊/图标混排时行盒高度不一致造成垂直错位
-                .line_height(gpui_kit::relative(1.5))
+                .line_height(relative(1.5))
                 .v_flex()
                 .items_end()
                 .gap(px(8.))
@@ -2166,7 +2166,7 @@ fn bubble_ref_chip(tok: &super::reference::AtToken, cx: &App) -> impl IntoElemen
         .mx(px(2.))
         .text_color(theme::brand(cx))
         .font_weight(gpui_kit::FontWeight::MEDIUM)
-        .line_height(gpui_kit::relative(1.5))
+        .line_height(relative(1.5))
         .whitespace_nowrap()
         .debug_selector(move || format!("ref-chip-{chip_debug}"))
         .child(icon)
@@ -2269,11 +2269,14 @@ fn assistant_block(
             &key,
             text,
             |v| {
+                // 文件链接拦截(相对路径 → 侧栏预览;http → 浏览器),
+                // 配合提示词「文件提及链接化」指引
                 v.plugin(
                     crate::features::chat::mermaid_plugin::MermaidTextViewPlugin {
                         store: store.clone(),
                     },
                 )
+                .on_link_click(crate::kits::markdown_tv::link_intercept(store))
             },
             cx,
         );
@@ -2527,6 +2530,11 @@ fn tool_expanded_body(
             Some(CardView::Diff(card)) => {
                 toolcard::render_diff(store, cx, ix, key, &card).into_any_element()
             }
+            Some(CardView::Present(card)) => {
+                let ws_root = ws_root_of(store.read(cx));
+                toolcard::render_present(store, cx, ix, &card, ws_root.as_deref())
+                    .into_any_element()
+            }
             // todo_write 展开体 = 该次写入的任务列表(结构化渲染,弃
             // IN/OUT JSON 卡;与 todo_dock 同一视觉语言),失败附错误首行
             _ if name == "todo_write" => {
@@ -2561,7 +2569,7 @@ fn tool_expanded_body(
 }
 
 /// 展开体底部的 Inspect 药丸:点击切到轨迹 tab 并打开该 tool
-/// 调用的检查器。样式对齐 deliverable_chip。
+/// 调用的检查器。
 fn inspect_button(store: &Entity<AppStore>, ix: usize, key: &str, cx: &App) -> AnyElement {
     let s = store.clone();
     let k = key.to_string();
@@ -2707,7 +2715,7 @@ fn io_card(
         .overflow_hidden()
         .font_family("Menlo")
         .text_size(px(12.))
-        .line_height(gpui_kit::relative(1.5))
+        .line_height(relative(1.5))
         .child(io_section(
             "io-in",
             ix,
@@ -2870,7 +2878,7 @@ fn turn_tail(
     turn: u64,
     ended_ms: i64,
     run_ms: i64,
-    deliverables: &[String],
+    deliverables: &[Deliverable],
 ) -> impl IntoElement {
     let st = store.read(cx);
     let session = st.state.current_id.clone().unwrap_or_default();
@@ -3024,9 +3032,16 @@ fn turn_tail(
                     .child(crate::kits::fmt::fmt_clock_md(ended_ms)),
             )
         });
-    // 早轮操作行默认隐没,hover 整行显现(最新轮/中断轮恒显)
-    let tail = if reveal_always {
-        div().v_flex().flex_shrink_0().gap(px(4.)).child(row)
+    // 早轮操作行默认隐没,hover 整行显现(最新轮/中断轮恒显)。
+    // 交付卡片在统计行**上方**(dsh deliverables 同序:卡片网格 → 操作条)
+    let cards = (!deliverables.is_empty()).then(|| deliverables_grid(store, key, deliverables, cx));
+    if reveal_always {
+        div()
+            .v_flex()
+            .flex_shrink_0()
+            .gap(px(4.))
+            .children(cards)
+            .child(row)
     } else {
         let grp_act = format!("tail-act-{key}");
         div().v_flex().flex_shrink_0().gap(px(4.)).child(
@@ -3034,10 +3049,10 @@ fn turn_tail(
                 .group(grp_act.clone())
                 .flex()
                 .flex_col()
+                .children(cards)
                 .child(row.opacity(0.).group_hover(grp_act, |s| s.opacity(1.))),
         )
-    };
-    tail.children((!deliverables.is_empty()).then(|| deliverables_row(store, deliverables, cx)))
+    }
 }
 
 /// 轮尾统计 pill(用量/用时;点击弹对应卡——组件库 Popover 托管开
@@ -3289,61 +3304,456 @@ fn tok_exact_raw(v: u64) -> String {
 }
 
 /// 产物行:basename chip + 完整路径 title,点击系统打开
-fn deliverables_row(
+/// 交付呈现(dsh 双组形态):present 宣告 = 60px 交付卡(交付层,
+/// 带描述,>4 折叠);未宣告变更 = 单张聚合卡(变更层,>4 折叠)。
+/// 两组折叠状态独立(键 = turn 尾 key 与 key+「-ann」)。
+/// 整行/整卡点击 = 侧栏预览;分体钮交互全保留(hover 显现)
+fn deliverables_grid(
     store: &Entity<AppStore>,
-    deliverables: &[String],
+    tail_key: &str,
+    deliverables: &[Deliverable],
     cx: &App,
 ) -> impl IntoElement {
-    // 简化:最多显示 6 个(资源行)
-    let shown = &deliverables[..deliverables.len().min(6)];
-    let more = deliverables.len().saturating_sub(shown.len());
+    type Indexed<'a> = Vec<(usize, &'a Deliverable)>;
+    let (announced, mut changes): (Indexed, Indexed) = deliverables
+        .iter()
+        .enumerate()
+        .partition(|(_, d)| d.announced);
+    // 变更组按文件名排序(git porcelain 输出序不定;宣告组保模型序)
+    changes.sort_by(|a, b| a.1.path.cmp(&b.1.path));
+    // 借用即取即放:展开态读完再进视图构建
+    let (ann_expanded, ch_expanded) = {
+        let st = store.read(cx);
+        (
+            st.chat.card_expanded.contains(&format!("{tail_key}-ann")),
+            st.chat.card_expanded.contains(tail_key),
+        )
+    };
+    const COLLAPSE: usize = 4;
+    let ann_shown = if ann_expanded {
+        announced.len()
+    } else {
+        announced.len().min(COLLAPSE)
+    };
+    let ann_collapsible = announced.len() > COLLAPSE;
+    let ann_hidden = announced.len() - ann_shown;
+    let ch_shown = if ch_expanded {
+        changes.len()
+    } else {
+        changes.len().min(COLLAPSE)
+    };
+    let ch_collapsible = changes.len() > COLLAPSE;
+    let ch_hidden = changes.len() - ch_shown;
     div()
+        .v_flex()
+        .mt(px(4.))
+        .gap(px(8.))
+        // 交付层:宣告卡(60px,带描述与分体钮)
+        .children(
+            announced[..ann_shown]
+                .iter()
+                .map(|(i, d)| deliverable_card(store, *i, d, cx)),
+        )
+        .when(ann_collapsible, |el| {
+            el.child(deliverables_toggle(
+                store,
+                format!("{tail_key}-ann"),
+                format!("deliv-ann-more-{tail_key}"),
+                ann_expanded,
+                ann_hidden,
+                cx,
+            ))
+        })
+        // 变更层:聚合卡
+        .when(!changes.is_empty(), |el| {
+            el.child(changes_card(
+                store,
+                tail_key,
+                &changes,
+                ch_shown,
+                ch_hidden,
+                ch_expanded,
+                ch_collapsible,
+                cx,
+            ))
+        })
+}
+
+/// 折叠开关(与卡语言搭配的浅底圆角条):「+N 个文件」⇄「收起」。
+/// expand_key = 折叠状态的读写键,sel = 元素 id/selector(两者解耦)
+fn deliverables_toggle(
+    store: &Entity<AppStore>,
+    expand_key: String,
+    sel: String,
+    expanded: bool,
+    hidden: usize,
+    cx: &App,
+) -> impl IntoElement {
+    let s = store.clone();
+    let sel_dbg = sel.clone();
+    div()
+        .id(SharedString::from(sel))
+        .debug_selector(move || sel_dbg.clone())
+        .h(px(32.))
+        .w_full()
         .flex()
-        .flex_row()
-        .flex_wrap()
         .items_center()
-        .gap(px(6.))
+        .justify_center()
+        .rounded(px(10.))
+        .border_1()
+        .border_color(theme::border(cx))
+        .bg(theme::dock(cx))
+        .cursor_pointer()
+        .text_size(px(12.))
+        .text_color(theme::label_2(cx))
+        .hover(|s| s.bg(theme::border(cx)))
+        .on_click({
+            let expand_key = expand_key.clone();
+            move |_, _, cx| {
+                let expand_key = expand_key.clone();
+                s.update(cx, |st, cx| st.toggle_card_expanded(&expand_key, cx));
+            }
+        })
+        .child(if expanded {
+            t!("common.collapse").to_string()
+        } else {
+            t!("chat.more_files", n = hidden).to_string()
+        })
+}
+
+/// 变更聚合卡(dsh ChangedFiles 形态):头 = 代码 tile + 「已编辑 N
+/// 个文件」+ 合计统计(绿增红删);卡内文件行 = glyph + basename +
+/// 红绿统计 + 行尾分体钮(hover 显现,直开/reveal 保留);行点击 =
+/// 侧栏预览;卡内 >4 折叠
+#[allow(clippy::too_many_arguments)]
+fn changes_card(
+    store: &Entity<AppStore>,
+    tail_key: &str,
+    changes: &[(usize, &Deliverable)],
+    shown_n: usize,
+    hidden: usize,
+    expanded: bool,
+    collapsible: bool,
+    cx: &App,
+) -> impl IntoElement {
+    let (total_add, total_del) = changes
+        .iter()
+        .filter_map(|(_, d)| d.stat)
+        .fold((0u64, 0u64), |(a, r), (add, del)| (a + add, r + del));
+    let code = crate::kits::filetype::FileClass::Code;
+    let code_tint = theme::deliverable_tile_tint(code);
+    let s_toggle = store.clone();
+    let k = tail_key.to_string();
+    div()
+        .debug_selector(move || format!("changes-card-{tail_key}"))
+        .v_flex()
+        .rounded(px(16.))
+        .border_1()
+        .border_color(theme::border(cx))
+        .bg(theme::deliverable_surface(cx))
+        .overflow_hidden()
+        // 头:tile + 标题 + 合计统计
         .child(
             div()
-                .text_size(px(11.))
-                .text_color(theme::caption(cx))
-                .child(t!("chat.artifacts")),
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(12.))
+                .py(px(10.))
+                .child(
+                    div()
+                        .size(px(36.))
+                        .flex_shrink_0()
+                        .rounded(px(10.))
+                        .bg(Rgba {
+                            a: 0.14,
+                            ..code_tint
+                        })
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(class_icon(code, 18.).text_color(code_tint)),
+                )
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .flex_1()
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(gpui_kit::FontWeight::MEDIUM)
+                                .text_color(theme::label(cx))
+                                .child(t!("chat.changes_edited", n = changes.len()).to_string()),
+                        )
+                        .when(total_add > 0 || total_del > 0, |el| {
+                            el.child(
+                                div()
+                                    .flex()
+                                    .gap(px(6.))
+                                    .text_size(px(10.))
+                                    .font_family("Menlo")
+                                    .when(total_add > 0, |el| {
+                                        el.child(
+                                            div()
+                                                .text_color(theme::success(cx))
+                                                .child(format!("+{total_add}")),
+                                        )
+                                    })
+                                    .when(total_del > 0, |el| {
+                                        el.child(
+                                            div()
+                                                .text_color(theme::danger(cx))
+                                                .child(format!("-{total_del}")),
+                                        )
+                                    }),
+                            )
+                        }),
+                ),
         )
-        .children(shown.iter().map(|p| deliverable_chip(store, p, cx)))
-        .when(more > 0, |el| {
+        // 分隔线
+        .child(div().h(px(1.)).bg(theme::border(cx)))
+        // 文件行(>4 折叠)
+        .child(
+            div().v_flex().py(px(4.)).children(
+                changes[..shown_n]
+                    .iter()
+                    .map(|(i, d)| changes_row(store, *i, d, cx)),
+            ),
+        )
+        // 卡内折叠开关
+        .when(collapsible, |el| {
             el.child(
                 div()
-                    .text_size(px(11.))
+                    .id(SharedString::from(format!("deliv-more-{tail_key}")))
+                    .debug_selector({
+                        let sel = format!("deliv-more-{tail_key}");
+                        move || sel.clone()
+                    })
+                    .h(px(28.))
+                    .flex()
+                    .items_center()
+                    .px(px(12.))
+                    .cursor_pointer()
+                    .text_size(px(12.))
                     .text_color(theme::caption(cx))
-                    .child(t!("chat.more_files", n = more)),
+                    .hover(|s| s.text_color(theme::label_2(cx)))
+                    .on_click({
+                        let k = k.clone();
+                        move |_, _, cx| {
+                            let k = k.clone();
+                            s_toggle.update(cx, |st, cx| st.toggle_card_expanded(&k, cx));
+                        }
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(if expanded {
+                                t!("common.collapse").to_string()
+                            } else {
+                                t!("chat.changes_all", n = hidden).to_string()
+                            })
+                            .child(fixed(
+                                if expanded {
+                                    IconName::ChevronUp
+                                } else {
+                                    IconName::ChevronDown
+                                },
+                                12.,
+                            )),
+                    ),
             )
         })
 }
 
-/// 单个产物 chip(basename 显示,完整路径 title;点击系统打开)
-fn deliverable_chip(store: &Entity<AppStore>, path: &str, cx: &App) -> impl IntoElement {
-    let base = path.rsplit('/').next().unwrap_or(path).to_string();
-    let full = path.to_string();
-    let full_sel = full.clone();
+/// 变更卡内文件行(32px):glyph + basename + 红绿统计 + 行尾分体钮
+/// (hover 显现,直开/reveal 保留)。点击 = 侧栏预览
+fn changes_row(store: &Entity<AppStore>, ix: usize, d: &Deliverable, cx: &App) -> impl IntoElement {
+    let name = d
+        .path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(&d.path)
+        .to_string();
+    let ext_label = {
+        let label = liuma_attachment::file_extension_label(&name);
+        if label.is_empty() {
+            "FILE".to_string()
+        } else {
+            label
+        }
+    };
+    let class = crate::kits::filetype::file_class(&name);
+    let tint = theme::deliverable_tile_tint(class);
+    let grp = format!("changes-row-{ix}-{}", d.path);
     let s = store.clone();
+    let p = d.path.clone();
+    let full_sel = d.path.clone();
     div()
-        .id(SharedString::from(format!("deliv-{full}")))
-        .debug_selector(move || format!("deliv-{full_sel}").to_string())
+        .id(("deliv-row", ix))
+        .debug_selector(move || format!("deliv-row-{}", full_sel))
+        .group(grp.clone())
         .flex()
-        .h(px(24.))
         .items_center()
-        .rounded(px(12.))
-        .px(px(10.))
-        .bg(theme::dock(cx))
+        .gap(px(8.))
+        .h(px(28.))
+        .px(px(12.))
         .cursor_pointer()
-        .hover(|s| s.bg(theme::border(cx)))
-        .text_size(px(12.))
-        .text_color(theme::label_2(cx))
+        .hover(|s| s.bg(theme::dock(cx)))
         .on_click(move |_, _, cx| {
-            let p = full.clone();
+            let p = p.clone();
             s.update(cx, |st, cx| st.open_deliverable(&p, cx));
         })
-        .child(base)
+        .child(class_icon(class, 14.).text_color(tint))
+        .child(
+            div()
+                .min_w(px(0.))
+                .flex_1()
+                .text_size(px(12.))
+                .text_color(theme::label_2(cx))
+                .truncate()
+                .child(name),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_size(px(11.))
+                .font_family("Menlo")
+                .child(match d.stat {
+                    Some((add, del)) => {
+                        let mut row = div().flex().gap(px(5.));
+                        if add > 0 {
+                            row = row.child(
+                                div()
+                                    .text_color(theme::success(cx))
+                                    .child(format!("+{add}")),
+                            );
+                        }
+                        if del > 0 {
+                            row = row.child(
+                                div().text_color(theme::danger(cx)).child(format!("-{del}")),
+                            );
+                        }
+                        row.into_any_element()
+                    }
+                    None => div()
+                        .text_color(theme::caption(cx))
+                        .child(ext_label)
+                        .into_any_element(),
+                }),
+        )
+        // 行尾分体钮(hover 显现;直开/reveal 交互保留)
+        .child(
+            div()
+                .flex_shrink_0()
+                .opacity(0.)
+                .group_hover(grp, |s| s.opacity(1.))
+                .children(crate::features::opener::deliverable_split_button(
+                    store, &d.path, ix, cx,
+                )),
+        )
+}
+
+/// 单张交付卡(dsh 规格:60px / rounded 16 / hairline / 40px 类型
+/// tile / 文件名 13px + 描述 10px 双行 / 右缘 opener 分体钮)。
+/// 整卡点击 = 侧栏预览(open_deliverable,chip 语义继承);分体钮
+/// 两半 mouse_down 断传播,点击不落入卡预览(D9 层叠)
+fn deliverable_card(
+    store: &Entity<AppStore>,
+    ix: usize,
+    d: &Deliverable,
+    cx: &App,
+) -> impl IntoElement {
+    let (name, subtitle) =
+        super::toolcard::deliverable_texts(&d.path, d.description.as_deref(), d.stat);
+    let class = crate::kits::filetype::file_class(&name);
+    let tint = theme::deliverable_tile_tint(class);
+    let grp = format!("deliv-card-{ix}-{}", d.path);
+    let hint = t!("chat.deliverable_preview_hint").to_string();
+    let sub = subtitle.clone();
+    let s = store.clone();
+    let p = d.path.clone();
+    let full_sel = d.path.clone();
+    div()
+        .id(("deliv", ix))
+        .debug_selector(move || format!("deliv-{}", full_sel))
+        .group(grp.clone())
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .h(px(60.))
+        .px(px(10.))
+        .rounded(px(16.))
+        .border_1()
+        .border_color(theme::border(cx))
+        .bg(theme::deliverable_surface(cx))
+        .cursor_pointer()
+        .hover(|s| s.bg(theme::layer(cx)))
+        .on_click(move |_, _, cx| {
+            let p = p.clone();
+            s.update(cx, |st, cx| st.open_deliverable(&p, cx));
+        })
+        // 类型 tile:40×40 / r10 / tint@0.14 底 + 20px 家族 glyph
+        .child(
+            div()
+                .size(px(40.))
+                .flex_shrink_0()
+                .rounded(px(10.))
+                .bg(Rgba { a: 0.14, ..tint })
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(class_icon(class, 20.).text_color(tint)),
+        )
+        // 文本列:文件名 13px;副标题 10px ⇄ hover「在侧边栏预览」
+        // (两层绝对叠置,group_hover 换 opacity;tail 操作行同款)
+        .child(
+            div()
+                .min_w(px(0.))
+                .flex_1()
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(gpui_kit::FontWeight::MEDIUM)
+                        .text_color(theme::label(cx))
+                        .truncate()
+                        .child(name),
+                )
+                .child(
+                    div()
+                        .relative()
+                        .h(px(13.))
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .text_size(px(10.))
+                                .text_color(theme::label_3(cx))
+                                .truncate()
+                                .child(sub)
+                                // hover 时描述隐去(与提示层互换显示,
+                                // 两层同显会文字重叠)
+                                .opacity(1.)
+                                .group_hover(grp.clone(), |s| s.opacity(0.)),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .text_size(px(10.))
+                                .text_color(theme::label_2(cx))
+                                .truncate()
+                                .child(hint)
+                                .opacity(0.)
+                                .group_hover(grp, |s| s.opacity(1.)),
+                        ),
+                ),
+        )
+        // 右缘:opener 文件变体分体钮(非 macOS/清单未就绪不渲染)
+        .children(crate::features::opener::deliverable_split_button(
+            store, &d.path, ix, cx,
+        ))
 }
 
 /// 通告行(回合出错等;错误语义用 DANGER 红,非 WARN 黄)
@@ -3458,7 +3868,7 @@ fn notice(text: &str, cx: &App) -> impl IntoElement {
                 .flex_1()
                 .text_size(px(13.))
                 .text_color(theme::danger(cx))
-                .line_height(gpui_kit::relative(1.5))
+                .line_height(relative(1.5))
                 .child(text.to_string()),
         )
 }
@@ -3495,7 +3905,7 @@ fn notice_error(detail: &str, cx: &App) -> impl IntoElement {
                     div()
                         .text_size(px(13.))
                         .text_color(theme::label_2(cx))
-                        .line_height(gpui_kit::relative(1.5))
+                        .line_height(relative(1.5))
                         .whitespace_normal()
                         .child(detail.to_string()),
                 ),
@@ -3581,7 +3991,7 @@ fn pending_bubble(
                 .py(px(10.))
                 .text_size(px(14.))
                 .text_color(theme::label(cx))
-                .line_height(gpui_kit::relative(1.5))
+                .line_height(relative(1.5))
                 .v_flex()
                 .items_end()
                 .gap(px(8.))
@@ -3645,6 +4055,7 @@ fn tool_display_name(name: &str) -> Option<std::borrow::Cow<'static, str>> {
         "file_read" | "read" => t!("chat.tool_read"),
         "write" => t!("chat.tool_write"),
         "file_edit" | "edit" => t!("chat.tool_edit"),
+        "present" => t!("chat.tool_present"),
         "grep" => t!("chat.tool_grep"),
         "glob" => t!("chat.tool_glob"),
         "file_search" => t!("chat.tool_search"),

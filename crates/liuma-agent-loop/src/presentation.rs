@@ -105,6 +105,14 @@ pub enum ToolView {
         /// 每文件一条,文件序
         diffs: Vec<FileDiff>,
     },
+    /// 交付宣告(present 的 result 态):模型向用户交付一个已完成
+    /// 文件,桌面按回合聚合成交付卡片
+    Present {
+        /// 文件路径(模型面;UI 渲染时工作区相对化)
+        path: String,
+        /// 一句用户面描述;None = 卡片回退大写扩展名
+        description: Option<String>,
+    },
 }
 
 #[cfg(test)]
@@ -154,5 +162,29 @@ mod tests {
         let json = serde_json::to_value(&d).unwrap();
         assert_eq!(json["card"], "diff");
         assert_eq!(json["diffs"][0]["oldText"], serde_json::Value::Null);
+    }
+
+    /// present wire 形状:card 标签 + description 缺席 = null(桌面
+    /// 卡片副标题回退大写扩展名的判据)
+    #[test]
+    fn present_wire_shape() {
+        let v = ToolView::Present {
+            path: "out/report.md".into(),
+            description: None,
+        };
+        let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(json["card"], "present");
+        assert_eq!(json["path"], "out/report.md");
+        assert_eq!(json["description"], serde_json::Value::Null);
+        // 往返无损
+        assert_eq!(serde_json::from_value::<ToolView>(json).unwrap(), v);
+
+        let v = ToolView::Present {
+            path: "out/report.md".into(),
+            description: Some("季度汇总".into()),
+        };
+        let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(json["description"], "季度汇总");
+        assert_eq!(serde_json::from_value::<ToolView>(json).unwrap(), v);
     }
 }

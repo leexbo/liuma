@@ -850,6 +850,17 @@ impl<T: Send, TOOLS> Session<T, TOOLS> {
         self.engine.set_skill_gesture_provider(provider);
     }
 
+    /// 挂 turn 边界工作区快照端口(宿主装配;git 状态对比,变更层兜底)
+    pub fn set_turn_tail_snapshot(&mut self, port: Arc<dyn liuma_agent_loop::TurnTailSnapshotObj>) {
+        self.engine.set_turn_tail_snapshot(port);
+    }
+
+    /// 注入会话生效路由(宿主在 attach/route 切换后调用;turn/start
+    /// 事实层 + [model changed] 通告对比目标)
+    pub fn set_turn_route(&mut self, route: Option<Value>) {
+        self.engine.set_turn_route(route);
+    }
+
     /// 挂 hooks 拦截点(宿主装配;liuma-hooks HookPortImpl;M4.2)。
     pub fn set_hook_port(&mut self, port: Arc<dyn liuma_agent_loop::hooks::HookPortObj>) {
         self.engine.set_hook_port(port);
