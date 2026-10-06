@@ -127,7 +127,7 @@ pub struct HostedToolDecl {
     /// 模型名小写子串(空 = 全模型;如官方 claude 仅 claude 系)
     pub model_match: &'static str,
     /// wire 上的 `type` 值(anthropic 面为版本化串,如
-    /// "web_search_2026_02_09";responses 面为 "web_search")
+    /// "web_search_20260209";responses 面为 "web_search")
     pub wire_type: &'static str,
     /// wire 上是否携带 `name` 字段(anthropic 面要,responses 面不要)
     pub wire_name: Option<&'static str>,
@@ -332,7 +332,7 @@ mod tests {
             HostedToolDecl {
                 kind: "web_search",
                 model_match: "",
-                wire_type: "web_search_2026_02_09",
+                wire_type: "web_search_20260209",
                 wire_name: Some("web_search"),
             },
             HostedToolDecl {
@@ -348,7 +348,7 @@ mod tests {
         let d = resolve_hosted(&table_sorted, "web_search", "deepseek-flash").unwrap();
         assert_eq!(d.wire_type, "web_search_20250305");
         let g = resolve_hosted(&table_sorted, "web_search", "glm-5.3").unwrap();
-        assert_eq!(g.wire_type, "web_search_2026_02_09");
+        assert_eq!(g.wire_type, "web_search_20260209");
         assert!(resolve_hosted(&table_sorted, "file_search", "glm-5.3").is_none());
     }
 

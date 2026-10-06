@@ -200,9 +200,11 @@ pub const ANTHROPIC_FACE_CAPS: &[ModelCap] = &[
 ];
 
 /// anthropic 面 hosted 工具版本表(带模型门控的条目在前):
-/// - deepseek `/anthropic`:`web_search_20250305`;
-/// - GLM(bigmodel/z.ai `/api/anthropic`)与官方 claude:
-///   `web_search_2026_02_09`;
+/// - deepseek `/anthropic` 与官方 claude:`web_search_20250305`(官方
+///   文档唯一版本;GLM 兼容面同样收);
+/// - GLM(bigmodel/z.ai `/api/anthropic`):`web_search_20260209`
+///   (服务端反序列化只认此与 20250305——日期段不带下划线,实测
+///   `web_search_2026_02_09` 被 400 拒);
 /// - 兼容矩阵外模型不声明(fail-fast,不盲发未知 type)。
 pub const ANTHROPIC_FACE_HOSTED: &[HostedToolDecl] = &[
     HostedToolDecl {
@@ -214,13 +216,13 @@ pub const ANTHROPIC_FACE_HOSTED: &[HostedToolDecl] = &[
     HostedToolDecl {
         kind: "web_search",
         model_match: "glm",
-        wire_type: "web_search_2026_02_09",
+        wire_type: "web_search_20260209",
         wire_name: Some("web_search"),
     },
     HostedToolDecl {
         kind: "web_search",
         model_match: "claude",
-        wire_type: "web_search_2026_02_09",
+        wire_type: "web_search_20250305",
         wire_name: Some("web_search"),
     },
 ];

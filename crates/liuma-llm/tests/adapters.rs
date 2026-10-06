@@ -958,8 +958,9 @@ fn model_caps_resolution() {
 // ============================================================
 
 /// anthropic 面 hosted 请求锁:通用 kind → 版本化 wire 形态
-/// (glm = web_search_2026_02_09(ZCode);deepseek = web_search_20250305
-/// (dsh));config 字段透传;function 工具同面共存
+/// (glm = web_search_20260209(ZCode,日期段不带下划线);
+/// deepseek = web_search_20250305(dsh));config 字段透传;
+/// function 工具同面共存
 #[tokio::test]
 async fn anthropic_hosted_web_search_wire() {
     let body = concat!(
@@ -969,7 +970,7 @@ async fn anthropic_hosted_web_search_wire() {
         "data: {\"type\":\"message_stop\"}\n\n",
     );
     for (model, wire_type) in [
-        ("glm-5.3", "web_search_2026_02_09"),
+        ("glm-5.3", "web_search_20260209"),
         ("deepseek-flash", "web_search_20250305"),
     ] {
         let (base_url, captured) = spawn_sse_server(body).await;
