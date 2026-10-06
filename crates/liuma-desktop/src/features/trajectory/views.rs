@@ -10,6 +10,7 @@ use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_kit::component::input::Input;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::toolbar::Toolbar;
 use gpui_kit::component::{Icon, IconName, Sizable as _, StyledExt};
@@ -88,6 +89,48 @@ fn kind_label(kind: &str) -> std::borrow::Cow<'static, str> {
         "message" => t!("trajectory.kind_assistant"),
         "decision" => t!("trajectory.kind_decision"),
         _ => t!("trajectory.kind_tool"),
+    }
+}
+
+/// core 自产 SYSTEM 行哨兵 → 文案键。
+/// 线上/日志原文保持英文(重放 bit-exact);仅展示层词典化,
+/// 调用方须先限定 `kind == "system"`(防用户消息撞哨兵文案)。
+/// 仅用于判定(如 Diff 可用性);文案取值走 record_title 的字面量键。
+fn system_sentinel_key(text: &str) -> Option<&'static str> {
+    match text {
+        "Initial System Prompt" => Some("trajectory.initial_system_prompt"),
+        "System Prompt Updated" => Some("trajectory.system_prompt_updated"),
+        "System Prompt and Tools Updated" => Some("trajectory.system_prompt_and_tools_updated"),
+        "Tools Updated" => Some("trajectory.tools_updated"),
+        _ => None,
+    }
+}
+
+/// 记录标题:SYSTEM 哨兵 → 本地化;其余逐字。
+/// 台账行文本与检查器头标题共用,保证两处一致。
+fn record_title(rec: &TrajectoryRecord) -> std::borrow::Cow<'static, str> {
+    if rec.kind != "system" {
+        return rec.text.clone().into();
+    }
+    match rec.text.as_str() {
+        "Initial System Prompt" => t!("trajectory.initial_system_prompt"),
+        "System Prompt Updated" => t!("trajectory.system_prompt_updated"),
+        "System Prompt and Tools Updated" => t!("trajectory.system_prompt_and_tools_updated"),
+        "Tools Updated" => t!("trajectory.tools_updated"),
+        _ => rec.text.clone().into(),
+    }
+}
+
+/// 检查器头位置槽:SYSTEM 行显示记录标题(初始提示词在第一轮之前,
+/// 无轮次位置可言,dsh 同款「[SYSTEM] 标题」);其余 = 轮次/步位置。
+fn inspector_header_location(r: &TrajectoryRecord) -> std::borrow::Cow<'static, str> {
+    if r.kind == "system" {
+        return record_title(r);
+    }
+    match (&r.turn, r.group.as_str()) {
+        (Some(t), g) if g.starts_with("Step") => t!("trajectory.turn_at", t = t, at = g),
+        (Some(t), _) => t!("trajectory.turn_message", t = t),
+        _ => t!("trajectory.between_turns"),
     }
 }
 
@@ -791,6 +834,220 @@ pub(crate) fn refresh_view_cache(st: &mut AppStore, cx: &App) {
     sync_trajectory_rows(st, anchor_rec_ix);
 }
 
+// ── 检查器正文派生缓存 ─────────────────────────────────────────
+
+/// Tools 页单工具行(目录卡数据;参数 pretty/token 只在展开过才建)
+struct ToolRow {
+    name: String,
+    description: String,
+    /// parameters 字段在场(object/array 形态才出 JSON 块)
+    has_params: bool,
+    /// pretty 文本的逐行 token(展开过才建一次;渲染只建 div,不再分词)
+    params_tokens: Option<Rc<Vec<Vec<(JKind, String)>>>>,
+}
+
+/// 检查器正文派生数据(单槽 = 当前 target+tab)。**只存纯数据**:
+/// 颜色/文案渲染期从 cx 取,主题或语言切换后无需失效
+enum InspectorBody {
+    /// Tools 页目录卡
+    Tools(Vec<ToolRow>),
+    /// Diff 页行 diff(None = 该节无变化;两节皆 None 出缺省占位)
+    Diff {
+        system: Option<Vec<(DiffOp, String)>>,
+        tools: Option<Vec<(DiffOp, String)>>,
+    },
+    /// Schema 页:解析后的 spec + 头部字段(免每帧 from_str)
+    Schema {
+        name: String,
+        description: String,
+        spec: Rc<serde_json::Value>,
+    },
+    /// Source 页:pretty 结果
+    Source(String),
+    /// 无可缓存目标(tab 数据极薄或记录缺位)
+    None,
+}
+
+/// 检查器正文缓存签名(与 LedgerSig 同哲学:版本 + 形状守卫 +
+/// 交互态版本;缓存键由依赖的数据派生)
+#[derive(Clone, PartialEq)]
+struct InspectorSig {
+    version: u64,
+    records: usize,
+    first_index: Option<u64>,
+    last_index: Option<u64>,
+    target: InspectTarget,
+    tab: &'static str,
+    /// Tools 页展开集版本(决定哪些工具建了参数派生)
+    tools_ver: u64,
+    tools_len: usize,
+}
+
+/// 检查器正文缓存(签名守卫)。Tools/Diff/Schema/Source 页的
+/// pretty 序列化、逐行 tokenize、LCS 都是纯函数于记录数据——
+/// 流式增量每帧 notify 时整页重算 = 打开期间卡顿之源
+pub(crate) struct InspectorCache {
+    sig: InspectorSig,
+    body: InspectorBody,
+}
+
+/// 重建检查器正文派生缓存(签名命中即返回)。渲染前调用,须在
+/// refresh_view_cache 之后(index 借 view_cache)
+pub(crate) fn refresh_inspector_cache(st: &mut AppStore) {
+    use crate::features::trajectory::store::InspectTarget;
+    let view = &st.trajectory.trajectory;
+    let index = st.trajectory.view_cache.as_ref().map(|c| &c.index);
+    let Some(target) = st.trajectory.inspector else {
+        if st.trajectory.inspector_cache.is_some() {
+            st.trajectory.inspector_cache = None; // 关检查器即弃
+        }
+        return;
+    };
+    let Some(record) = (match target {
+        InspectTarget::Record(ix) => index.and_then(|i| i.get(&view.records, ix)),
+        InspectTarget::Request(_) => None,
+    }) else {
+        st.trajectory.inspector_cache = None;
+        return;
+    };
+    // tab/diff 判定与 inspector() 一致(显式选择 → 最近访问 → 首 tab)
+    let diff_available = record.kind == "system"
+        && system_sentinel_key(&record.text) != Some("trajectory.initial_system_prompt")
+        && index.is_some_and(|i| i.previous_system_snapshot(&view.records, record).is_some());
+    let tabs = inspector_tabs_for(Some(record), diff_available);
+    let last_tab = st.trajectory.inspector_last_tab;
+    let tab = st
+        .trajectory
+        .inspector_tab
+        .filter(|t| tabs.contains(t))
+        .unwrap_or_else(|| {
+            if tabs.contains(&last_tab) {
+                last_tab
+            } else {
+                tabs.first().copied().unwrap_or("summary")
+            }
+        });
+    let sig = InspectorSig {
+        version: st.trajectory.trajectory_version,
+        records: view.records.len(),
+        first_index: view.records.first().map(|r| r.index),
+        last_index: view.records.last().map(|r| r.index),
+        target,
+        tab,
+        tools_ver: st.trajectory.expanded_tools_ver,
+        tools_len: st.trajectory.expanded_inspector_tools.len(),
+    };
+    if st
+        .trajectory
+        .inspector_cache
+        .as_ref()
+        .is_some_and(|c| c.sig == sig)
+    {
+        return;
+    }
+    let prev = index.and_then(|i| i.previous_system_snapshot(&view.records, record));
+    let body = match tab {
+        "tools" => tools_rows(record, &st.trajectory.expanded_inspector_tools)
+            .map(InspectorBody::Tools)
+            .unwrap_or(InspectorBody::None),
+        "diff" => InspectorBody::Diff {
+            system: diff_lines(
+                prev.and_then(|p| p.system_prompt.as_deref()),
+                record.system_prompt.as_deref(),
+            ),
+            tools: diff_catalogs(
+                prev.and_then(|p| p.tools_catalog.as_deref()),
+                record.tools_catalog.as_deref(),
+            ),
+        },
+        "schema" => record
+            .schema_detail
+            .as_deref()
+            .and_then(|raw| {
+                serde_json::from_str::<serde_json::Value>(raw)
+                    .ok()
+                    .map(|spec| InspectorBody::Schema {
+                        name: spec_name(&spec),
+                        description: spec_field(&spec, "description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        spec: Rc::new(spec),
+                    })
+            })
+            .unwrap_or(InspectorBody::None),
+        "source" => record
+            .source
+            .as_ref()
+            .map(|s| InspectorBody::Source(serde_json::to_string_pretty(s).unwrap_or_default()))
+            .unwrap_or(InspectorBody::None),
+        _ => InspectorBody::None,
+    };
+    st.trajectory.inspector_cache = Some(InspectorCache { sig, body });
+}
+
+/// 目录卡数据集(catalog 缺位/空 = None)。参数 pretty/token 仅对
+/// 展开的工具构建一次——折叠行零参数派生成本
+fn tools_rows(record: &TrajectoryRecord, expanded: &HashSet<String>) -> Option<Vec<ToolRow>> {
+    let catalog = record.tools_catalog.as_ref().filter(|c| !c.is_empty())?;
+    Some(
+        catalog
+            .iter()
+            .map(|t| {
+                let name = spec_name(t);
+                let description = spec_field(t, "description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let params = spec_field(t, "parameters").filter(|v| v.is_object() || v.is_array());
+                let params_tokens = match (expanded.contains(&name), params) {
+                    (true, Some(p)) => Some(Rc::new(
+                        serde_json::to_string_pretty(p)
+                            .unwrap_or_default()
+                            .lines()
+                            .map(json_tokens)
+                            .collect::<Vec<_>>(),
+                    )),
+                    _ => None,
+                };
+                ToolRow {
+                    name,
+                    description,
+                    has_params: params.is_some(),
+                    params_tokens,
+                }
+            })
+            .collect(),
+    )
+}
+
+/// 两文本行级 diff(None = 缺一方或无变化)
+fn diff_lines(a: Option<&str>, b: Option<&str>) -> Option<Vec<(DiffOp, String)>> {
+    let (a, b) = (a?, b?);
+    if a == b {
+        return None;
+    }
+    let la: Vec<&str> = a.lines().collect();
+    let lb: Vec<&str> = b.lines().collect();
+    Some(line_diff(&la, &lb))
+}
+
+/// 两目录 pretty 序列化后行 diff(None = 缺一方或相等)
+fn diff_catalogs(
+    a: Option<&[serde_json::Value]>,
+    b: Option<&[serde_json::Value]>,
+) -> Option<Vec<(DiffOp, String)>> {
+    let (a, b) = (a?, b?);
+    if a == b {
+        return None;
+    }
+    let pa = serde_json::to_string_pretty(a).unwrap_or_default();
+    let pb = serde_json::to_string_pretty(b).unwrap_or_default();
+    let la: Vec<&str> = pa.lines().collect();
+    let lb: Vec<&str> = pb.lines().collect();
+    Some(line_diff(&la, &lb))
+}
+
 /// 行槽对齐 ListState。行高按型定值(记录 30px;摘要行 20px;「加载更早」
 /// 30px),故只按**行型序列**判变化,不做无谓重排:
 /// - 序列同长同型 = 纯内容更新(流式 upsert / 状态翻转),列表零操作;
@@ -893,6 +1150,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
     // ListState 托管(回调只装一次)
     store.update(cx, |st, cx| {
         refresh_view_cache(st, cx);
+        refresh_inspector_cache(st);
         st.install_trajectory_scroll_handler(cx);
     });
     // 小状态一次取净(借用即刻结束):长借 `&AppStore` 会与下方各段所需的
@@ -2098,7 +2356,13 @@ fn record_row(
                                 .truncate()
                                 .text_size(px(12.))
                                 .text_color(result_color)
-                                .child(r),
+                                // "No output" 是 core 占位哨兵,展示层
+                                // 词典化;颜色判定仍用线上原文
+                                .child(if r == "No output" {
+                                    t!("trajectory.no_output").to_string()
+                                } else {
+                                    r
+                                }),
                         ),
                 )
             })
@@ -2197,7 +2461,7 @@ fn record_row(
             .child(match rec.text.as_str() {
                 "(tool call only)" => t!("trajectory.tool_call_only").to_string(),
                 "Context compacted" => t!("trajectory.compact_fallback").to_string(),
-                _ => rec.text.clone(),
+                _ => record_title(rec).into_owned(),
             })
             .into_any_element()
     };
@@ -2350,9 +2614,11 @@ fn inspector(
             .and_then(|n| s.view.requests.iter().find(|q| q.number == n)),
     };
 
+    // 初始提示词无前序快照(置顶首条),不提供 Diff;哨兵判定
+    // 收敛在 system_sentinel_key,字面量不外散
     let diff_available = record.is_some_and(|r| {
         r.kind == "system"
-            && r.text != "Initial System Prompt"
+            && system_sentinel_key(&r.text) != Some("trajectory.initial_system_prompt")
             && s.index
                 .is_some_and(|i| i.previous_system_snapshot(&s.view.records, r).is_some())
     });
@@ -2402,19 +2668,18 @@ fn inspector(
             .into_any_element(),
         (_, Some(r), _) => {
             let (fg, bg) = kind_colors(&r.kind, cx);
-            let location = match (&r.turn, r.group.as_str()) {
-                (Some(t), g) if g.starts_with("Step") => t!("trajectory.turn_at", t = t, at = g),
-                (Some(t), _) => t!("trajectory.turn_message", t = t),
-                _ => t!("trajectory.between_turns"),
-            };
+            // 位置槽对齐 dsh detailsLocation:11px 等宽/三级色,
+            // min_w(0)+truncate 防长标题顶飞关闭钮
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .min_w(px(0.))
+                .gap(px(8.))
                 .child(
                     div()
                         .h(px(19.))
                         .flex()
+                        .flex_shrink_0()
                         .items_center()
                         .rounded(px(4.))
                         .bg(bg)
@@ -2426,10 +2691,13 @@ fn inspector(
                 )
                 .child(
                     div()
+                        .min_w(px(0.))
+                        .flex_1()
+                        .truncate()
                         .font_family("Menlo")
                         .text_size(px(11.))
                         .text_color(theme::caption(cx))
-                        .child(location),
+                        .child(inspector_header_location(r)),
                 )
                 .into_any_element()
         }
@@ -2437,6 +2705,14 @@ fn inspector(
     };
 
     let close_store = store.clone();
+    // 正文派生缓存(refresh_inspector_cache 已在渲染前按签名重建;
+    // 纯数据,渲染期只建 div)
+    let cached = store
+        .read(cx)
+        .trajectory
+        .inspector_cache
+        .as_ref()
+        .map(|c| &c.body);
     let body: gpui_kit::AnyElement = match (record, request, active) {
         // ── 请求 ──
         (None, Some(q), "usage") => usage_body(q, cx).into_any_element(),
@@ -2450,11 +2726,11 @@ fn inspector(
             "message" => assistant_preview_body(store, &s, r, cx).into_any_element(),
             _ => preview_tab_body(r, cx).into_any_element(),
         },
-        (Some(r), _, "source") => source_tab_body(r, cx).into_any_element(),
+        (Some(r), _, "source") => source_tab_body(r, cached, cx).into_any_element(),
         (Some(r), _, "system") => system_body(r, cx).into_any_element(),
-        (Some(r), _, "tools") => tools_body(store, &s, r, cx).into_any_element(),
-        (Some(r), _, "diff") => diff_body(&s, r, cx).into_any_element(),
-        (Some(r), _, "schema") => schema_body(store, &s, r, cx).into_any_element(),
+        (Some(r), _, "tools") => tools_body(store, &s, r, cached, cx).into_any_element(),
+        (Some(r), _, "diff") => diff_body(r, cached, cx).into_any_element(),
+        (Some(r), _, "schema") => schema_body(store, &s, r, cached, cx).into_any_element(),
         (Some(r), _, "decision") => decision_tab_body(r, cx).into_any_element(),
         (Some(r), _, "fold") => fold_tab_body(r, cx).into_any_element(),
         (Some(r), _, "timing") => timing_body(r, cx).into_any_element(),
@@ -2499,13 +2775,16 @@ fn inspector(
                     }),
             )
             .child(
+                // 头行 chrome 对齐 dsh detailsHeader:padding 12/8、
+                // 关闭钮 28px
                 div()
                     .flex()
                     .h(px(42.))
                     .flex_shrink_0()
                     .items_center()
-                    .px(px(12.))
-                    .gap(px(4.))
+                    .pl(px(12.))
+                    .pr(px(8.))
+                    .gap(px(8.))
                     .border_b_1()
                     .border_color(theme::border(cx))
                     .child(header)
@@ -2514,7 +2793,7 @@ fn inspector(
                         div()
                             .id("inspector-close")
                             .flex()
-                            .size(px(24.))
+                            .size(px(28.))
                             .items_center()
                             .justify_center()
                             .rounded(px(6.))
@@ -2567,13 +2846,15 @@ fn inspector(
                     })),
             )
             .child(
+                // 检查器正文:整页滚动 + 滚动条(dsh 同款行为;此前裸
+                // overflow_y_scroll 无条,长内容不知可滚)
                 div()
                     .id("inspector-body")
                     .flex_1()
                     .min_h(px(0.))
-                    .overflow_y_scroll()
                     .p(px(12.))
-                    .child(body),
+                    .child(body)
+                    .overflow_y_scrollbar(),
             ),
     )
 }
@@ -3054,6 +3335,33 @@ fn json_block(id: &'static str, text: &str, cx: &App) -> impl IntoElement {
         }))
 }
 
+/// json_block 的 token 预算版:行 token 由派生缓存传入
+/// (Tools 页参数块每帧重新分词 = 流式期整窗卡顿源)
+fn json_block_tokens(
+    id: &'static str,
+    lines: &[Vec<(JKind, String)>],
+    cx: &App,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .min_w(px(0.))
+        .overflow_hidden()
+        .rounded(px(8.))
+        .bg(theme::code(cx))
+        .p(px(10.))
+        .v_flex()
+        .text_size(px(12.))
+        .font_family("Menlo")
+        .line_height(gpui_kit::relative(1.55))
+        .children(lines.iter().map(|line| {
+            div().flex().min_w(px(0.)).overflow_hidden().children(
+                line.iter()
+                    .map(|(kind, s)| div().text_color(jkind_color(*kind, cx)).child(s.clone()))
+                    .collect::<Vec<_>>(),
+            )
+        }))
+}
+
 /// 代码块选择:内容为 JSON 对象/数组 → 高亮;否则等宽纯文本
 fn code_block(id: &'static str, text: &str, plain_color: Rgba, cx: &App) -> gpui_kit::AnyElement {
     let is_json = serde_json::from_str::<serde_json::Value>(text)
@@ -3402,7 +3710,7 @@ fn preview_block(
     r: &TrajectoryRecord,
     tab: &'static str,
     cx: &App,
-) -> impl IntoElement {
+) -> gpui_kit::AnyElement {
     let missing = match tab {
         "payload" => t!("trajectory.no_payload"),
         "result" => t!("trajectory.no_result"),
@@ -3470,10 +3778,12 @@ fn preview_block(
                     theme::is_dark(cx),
                 ));
             return div()
-                .id(("sec-tree", r.index))
                 .max_h(px(96.))
-                .overflow_y_scroll()
-                .child(col);
+                .overflow_y_scrollbar()
+                // 同 call-site 多实例:wrapper key 须独立,否则滚动位串用
+                .id(("sec-tree-scroll", r.index))
+                .child(col)
+                .into_any_element();
         }
     }
     let shown = if text.is_empty() {
@@ -3485,7 +3795,6 @@ fn preview_block(
     div()
         .id((tab, 1usize))
         .max_h(px(96.))
-        .overflow_y_scroll()
         .rounded(px(8.))
         .bg(theme::code(cx))
         .p(px(10.))
@@ -3497,6 +3806,10 @@ fn preview_block(
         .on_click(move |_, _, cx| {
             s2.update(cx, |st, cx| st.set_inspector_tab(tab, cx));
         })
+        .overflow_y_scrollbar()
+        // wrapper key 按 tab 区分(payload/result/schema 共用本 call-site)
+        .id((tab, 2usize))
+        .into_any_element()
 }
 
 /// Payload tab(JSON 容器 → JsonTree;否则原文等宽)
@@ -4332,7 +4645,7 @@ fn source_block_header(
     jump: Option<u64>,
     cx: &App,
 ) -> gpui_kit::AnyElement {
-    let label = format!("Block #{n} {kind}");
+    let label = t!("trajectory.block_label", n = n, kind = kind).to_string();
     match jump {
         Some(ix) => {
             let s2 = store.clone();
@@ -4462,17 +4775,23 @@ fn context_source_block(r: &TrajectoryRecord, cx: &App) -> Div {
                 .text_size(px(11.))
                 .text_color(theme::caption(cx))
                 .pb(px(4.))
-                .child("Block #1 text"),
+                .child(t!("trajectory.block_1_text").to_string()),
         )
         .child(mono_block("mono-context-raw", text, theme::label(cx), cx));
     col
 }
 
 /// Source tab(染色对象数据:以「Message JSON」标签 + 高亮块呈现)
-fn source_tab_body(r: &TrajectoryRecord, cx: &App) -> Div {
+fn source_tab_body(r: &TrajectoryRecord, cached: Option<&InspectorBody>, cx: &App) -> Div {
     let mut col = div().v_flex();
     let Some(source) = &r.source else {
         return col.child(empty_text(t!("trajectory.source_not_recorded"), cx));
+    };
+    // pretty 已在派生缓存算过;兜底分支仅在缓存未就绪的过渡帧走到
+    let fallback = serde_json::to_string_pretty(source).unwrap_or_default();
+    let pretty = match cached {
+        Some(InspectorBody::Source(p)) => p.as_str(),
+        _ => fallback.as_str(),
     };
     col = col
         .child(
@@ -4482,16 +4801,7 @@ fn source_tab_body(r: &TrajectoryRecord, cx: &App) -> Div {
                 .pb(px(4.))
                 .child(t!("trajectory.message_json")),
         )
-        .child(
-            div().child(
-                json_block(
-                    "mono-context-source",
-                    &serde_json::to_string_pretty(source).unwrap_or_default(),
-                    cx,
-                )
-                .into_any_element(),
-            ),
-        );
+        .child(div().child(json_block("mono-context-source", pretty, cx).into_any_element()));
     col
 }
 
@@ -4522,33 +4832,36 @@ fn spec_field<'a>(t: &'a serde_json::Value, key: &str) -> Option<&'a serde_json:
 
 /// spec 名(目录卡标识 / schema 头)
 fn spec_name(t: &serde_json::Value) -> String {
-    spec_field(t, "name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("(unnamed)")
-        .to_string()
+    spec_field(t, "name").and_then(|v| v.as_str()).map_or_else(
+        || t!("trajectory.unnamed_tool").into_owned(),
+        str::to_string,
+    )
 }
 
 /// Tools 页:工具目录(扁平行 + 底部分隔线;折叠行 =
 /// chevron + 图标 + mono 名称 + 内联灰描述单行截断;展开 = 完整描述 +
-/// 参数 JSON)
-fn tools_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord, cx: &App) -> Div {
+/// 参数 JSON)。行数据(name/description/参数 pretty+token)全部来自
+/// 派生缓存——本函数每帧只建 div,零序列化/分词
+fn tools_body(
+    store: &Entity<AppStore>,
+    s: &Snap<'_>,
+    r: &TrajectoryRecord,
+    cached: Option<&InspectorBody>,
+    cx: &App,
+) -> Div {
     let mut col = div().v_flex();
-    let Some(catalog) = &r.tools_catalog else {
-        return col.child(empty_text(t!("trajectory.no_tools"), cx));
-    };
-    if catalog.is_empty() {
+    if r.tools_catalog.as_ref().is_none_or(|c| c.is_empty()) {
         return col.child(empty_text(t!("trajectory.no_tools"), cx));
     }
-    for (ti, t) in catalog.iter().enumerate() {
-        let name = spec_name(t);
-        let description = spec_field(t, "description")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let parameters = spec_field(t, "parameters").cloned();
-        let open = s.expanded_tools.contains(&name);
+    let rows = match cached {
+        Some(InspectorBody::Tools(rows)) => rows,
+        // 缓存未就绪的过渡帧:按需现场派生(不常态发生)
+        _ => &tools_rows(r, &s.expanded_tools).unwrap_or_default(),
+    };
+    for (ti, tr) in rows.iter().enumerate() {
+        let open = s.expanded_tools.contains(&tr.name);
         let s2 = store.clone();
-        let toggle_name = name.clone();
+        let toggle_name = tr.name.clone();
         // 折叠行:12px chevron 列 + 12px 图标列 + 名称 + 弹性宽描述
         // (单行截断);min-h 30,padding 4/12
         let header = div()
@@ -4567,14 +4880,14 @@ fn tools_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord, cx: 
                 },
                 12.,
             ))
-            .child(crate::kits::icons::tool_icon(&name))
+            .child(crate::kits::icons::tool_icon(&tr.name))
             .child(
                 div()
                     .font_family("Menlo")
                     .text_size(px(12.))
                     .font_weight(gpui_kit::FontWeight::MEDIUM)
                     .text_color(theme::label(cx))
-                    .child(name.clone()),
+                    .child(tr.name.clone()),
             )
             .child(
                 div()
@@ -4583,7 +4896,7 @@ fn tools_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord, cx: 
                     .text_size(px(12.))
                     .text_color(theme::label_3(cx))
                     .truncate()
-                    .child(description.clone()),
+                    .child(tr.description.clone()),
             );
         // 条目:行 + 展开体,底部分隔线;
         // 点击只绑折叠行——展开体内点击不收起
@@ -4603,7 +4916,7 @@ fn tools_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord, cx: 
             );
         // 展开体(左缩进 29px,对齐名称列)
         if open {
-            if !description.is_empty() {
+            if !tr.description.is_empty() {
                 item = item.child(
                     div()
                         .pl(px(29.))
@@ -4613,10 +4926,12 @@ fn tools_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord, cx: 
                         .text_size(px(12.))
                         .text_color(theme::label_2(cx))
                         .line_height(gpui_kit::relative(1.5))
-                        .child(description.clone()),
+                        .child(tr.description.clone()),
                 );
             }
-            if let Some(p) = parameters {
+            if tr.has_params
+                && let Some(tokens) = &tr.params_tokens
+            {
                 item = item.child(
                     div()
                         .v_flex()
@@ -4627,18 +4942,14 @@ fn tools_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord, cx: 
                                 .text_size(px(11.))
                                 .text_color(theme::caption(cx))
                                 .mb(px(4.))
-                                .child(format!("{name} parameters JSON")),
+                                .child(
+                                    t!("trajectory.named_parameters_json", name = tr.name)
+                                        .to_string(),
+                                ),
                         )
-                        .child(
-                            div().pr(px(6.)).child(
-                                json_block(
-                                    "mono-tool-params",
-                                    &serde_json::to_string_pretty(&p).unwrap_or_default(),
-                                    cx,
-                                )
-                                .into_any_element(),
-                            ),
-                        ),
+                        .child(div().pr(px(6.)).child(
+                            json_block_tokens("mono-tool-params", tokens, cx).into_any_element(),
+                        )),
                 );
             }
         }
@@ -4695,20 +5006,20 @@ fn line_diff(a: &[&str], b: &[&str]) -> Vec<(DiffOp, String)> {
 }
 
 /// Diff 页:对照前一 SYSTEM 快照,分 System Prompt / Tools 两节
-/// (行级 LCS diff)
-fn diff_body(s: &Snap<'_>, r: &TrajectoryRecord, cx: &App) -> Div {
-    let prev = s
-        .index
-        .and_then(|i| i.previous_system_snapshot(&s.view.records, r));
+/// (行级 LCS;diff 行已在派生缓存算过,本函数只建 div)
+fn diff_body(r: &TrajectoryRecord, cached: Option<&InspectorBody>, cx: &App) -> Div {
     let mut col = div().v_flex().gap(px(8.));
-    let Some(prev) = prev else {
+    // 无前序快照(初始置顶)直接缺省占位
+    if r.kind != "system" {
         return col.child(empty_text(t!("trajectory.na"), cx));
+    }
+    let (system, tools) = match cached {
+        Some(InspectorBody::Diff { system, tools }) => (system.as_deref(), tools.as_deref()),
+        _ => (None, None),
     };
     let mut has_diff = false;
     // System Prompt 节
-    if let (Some(a), Some(b)) = (prev.system_prompt.as_deref(), r.system_prompt.as_deref())
-        && a != b
-    {
+    if let Some(rows) = system {
         has_diff = true;
         col = col
             .child(section(
@@ -4716,18 +5027,14 @@ fn diff_body(s: &Snap<'_>, r: &TrajectoryRecord, cx: &App) -> Div {
                 t!("trajectory.tab_system_prompt"),
                 cx,
             ))
-            .child(diff_block("diff-system", a, b, cx));
+            .child(diff_block("diff-system", rows, cx));
     }
     // Tools 节(目录 pretty 序列化后行 diff)
-    if let (Some(a), Some(b)) = (&prev.tools_catalog, &r.tools_catalog)
-        && a != b
-    {
+    if let Some(rows) = tools {
         has_diff = true;
-        let pa = serde_json::to_string_pretty(a).unwrap_or_default();
-        let pb = serde_json::to_string_pretty(b).unwrap_or_default();
         col = col
             .child(section("sec-diff-tools", t!("trajectory.tab_tools"), cx))
-            .child(diff_block("diff-tools", &pa, &pb, cx));
+            .child(diff_block("diff-tools", rows, cx));
     }
     if !has_diff {
         col = col.child(empty_text(t!("trajectory.na"), cx));
@@ -4735,14 +5042,10 @@ fn diff_body(s: &Snap<'_>, r: &TrajectoryRecord, cx: &App) -> Div {
     col
 }
 
-/// diff 渲染块(加绿/删红/同灰;等宽 11px)
-fn diff_block(id: &'static str, a: &str, b: &str, cx: &App) -> impl IntoElement {
-    let la: Vec<&str> = a.lines().collect();
-    let lb: Vec<&str> = b.lines().collect();
+/// diff 渲染块(加绿/删红/同灰;等宽 11px;行来自派生缓存)
+fn diff_block(id: &'static str, rows: &[(DiffOp, String)], cx: &App) -> impl IntoElement {
     div()
-        .id(id)
         .max_h(px(360.))
-        .overflow_y_scroll()
         .rounded(px(8.))
         .bg(theme::code(cx))
         .py(px(6.))
@@ -4750,7 +5053,7 @@ fn diff_block(id: &'static str, a: &str, b: &str, cx: &App) -> impl IntoElement 
         .font_family("Menlo")
         .text_size(px(11.))
         .line_height(gpui_kit::relative(1.5))
-        .children(line_diff(&la, &lb).into_iter().map(|(op, line)| {
+        .children(rows.iter().map(|(op, line)| {
             let (prefix, color, bg) = match op {
                 DiffOp::Add => (
                     "+ ",
@@ -4777,26 +5080,60 @@ fn diff_block(id: &'static str, a: &str, b: &str, cx: &App) -> impl IntoElement 
                 .text_color(color)
                 .child(format!("{prefix}{line}"))
         }))
+        .overflow_y_scrollbar()
+        // 同一 call-site 出 system/tools 两实例:wrapper key 沿用
+        // 调用方的块 id 区分,否则滚动位串用
+        .id((id, 1usize))
 }
 
-/// Schema 页(TOOL):name + description + Parameters(高亮)
-fn schema_body(store: &Entity<AppStore>, s: &Snap<'_>, r: &TrajectoryRecord, cx: &App) -> Div {
+/// Schema 页(TOOL):name + description + Parameters(高亮)。
+/// spec 解析/name/description 在派生缓存;树行每帧按展开集构建
+fn schema_body(
+    store: &Entity<AppStore>,
+    s: &Snap<'_>,
+    r: &TrajectoryRecord,
+    cached: Option<&InspectorBody>,
+    cx: &App,
+) -> Div {
     let Some(raw) = &r.schema_detail else {
         return div()
             .v_flex()
             .child(empty_text(t!("trajectory.schema_na"), cx));
     };
-    let Ok(spec) = serde_json::from_str::<serde_json::Value>(raw) else {
-        return div()
-            .v_flex()
-            .child(mono_block("mono-schema", raw, theme::label_3(cx), cx));
+    let (name, description, parameters) = match cached {
+        Some(InspectorBody::Schema {
+            name,
+            description,
+            spec,
+        }) => (
+            Some(name.clone()),
+            Some(description.clone()),
+            spec_field(spec, "parameters").cloned(),
+        ),
+        _ => {
+            // 缓存未就绪的过渡帧(或解析失败):现场解析
+            let Ok(spec) = serde_json::from_str::<serde_json::Value>(raw) else {
+                return div().v_flex().child(mono_block(
+                    "mono-schema",
+                    raw,
+                    theme::label_3(cx),
+                    cx,
+                ));
+            };
+            (
+                Some(spec_name(&spec)),
+                Some(
+                    spec_field(&spec, "description")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                ),
+                spec_field(&spec, "parameters").cloned(),
+            )
+        }
     };
-    let name = spec_name(&spec);
-    let description = spec_field(&spec, "description")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let parameters = spec_field(&spec, "parameters").cloned();
+    let name = name.unwrap_or_default();
+    let description = description.unwrap_or_default();
     let mut col = div().v_flex().gap(px(6.));
     if !name.is_empty() {
         col = col.child(
@@ -5031,6 +5368,108 @@ mod tests {
             all_calls: false,
             calls: HashSet::new(),
         }
+    }
+
+    /// SYSTEM 哨兵标题:词典化(zh 默认档)+ kind 守卫 + Diff 判定键。
+    /// 回归锁:core 哨兵曾逐字直显中文界面
+    #[test]
+    fn system_sentinel_title_and_diff_gate() {
+        let mut r = rec(1, "system", None, "Message");
+        r.text = "Initial System Prompt".into();
+        assert_eq!(&*record_title(&r), "初始系统提示词");
+        r.text = "System Prompt and Tools Updated".into();
+        assert_eq!(&*record_title(&r), "系统提示词和工具已更新");
+        // kind 守卫:同文本的用户消息逐字透传,不误伤
+        let mut u = rec(2, "user", Some(1), "Message");
+        u.text = "Tools Updated".into();
+        assert_eq!(&*record_title(&u), "Tools Updated");
+        // 非哨兵 system 文本逐字
+        let mut s = rec(3, "system", Some(2), "Message");
+        s.text = "custom".into();
+        assert_eq!(&*record_title(&s), "custom");
+        // Diff 判定:初始置顶无前序快照;更新类/未知文本提供
+        assert_eq!(
+            system_sentinel_key("Initial System Prompt"),
+            Some("trajectory.initial_system_prompt")
+        );
+        assert_eq!(
+            system_sentinel_key("Tools Updated"),
+            Some("trajectory.tools_updated")
+        );
+        assert_eq!(system_sentinel_key("anything else"), None);
+    }
+
+    /// Tools 页目录派生:折叠行零参数成本,展开行 token 只建一次
+    /// (回归锁:此前每帧深拷贝 schema + pretty + 逐行分词 = 打开期间
+    /// 流式整窗卡顿)
+    #[test]
+    fn tools_rows_lazy_params_and_tokens() {
+        let mut r = rec(1, "system", None, "Message");
+        r.tools_catalog = Some(vec![
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "bash",
+                    "description": "Run a command",
+                    "parameters": { "type": "object", "properties": {} },
+                }
+            }),
+            serde_json::json!({ "type": "function", "function": { "name": "read" } }),
+        ]);
+        // 全折叠:无任何参数派生
+        let collapsed = tools_rows(&r, &HashSet::new()).expect("目录在场");
+        assert_eq!(collapsed.len(), 2);
+        assert_eq!(collapsed[0].name, "bash");
+        assert_eq!(collapsed[0].description, "Run a command");
+        assert!(collapsed[0].has_params);
+        assert!(collapsed[0].params_tokens.is_none(), "折叠不建 token");
+        assert!(!collapsed[1].has_params, "无 parameters 字段");
+        // 展开 bash:token 行数 = pretty 行数;read 仍零派生
+        let mut expanded = HashSet::new();
+        expanded.insert("bash".to_string());
+        let rows = tools_rows(&r, &expanded).expect("目录在场");
+        let tokens = rows[0].params_tokens.as_ref().expect("展开建 token");
+        let pretty = serde_json::to_string_pretty(
+            &r.tools_catalog.as_ref().unwrap()[0]["function"]["parameters"],
+        )
+        .unwrap_or_default();
+        assert_eq!(tokens.len(), pretty.lines().count());
+        assert!(rows[1].params_tokens.is_none());
+        // 缺目录/空目录 → None(渲染占位)
+        r.tools_catalog = Some(vec![]);
+        assert!(tools_rows(&r, &expanded).is_none());
+        r.tools_catalog = None;
+        assert!(tools_rows(&r, &expanded).is_none());
+    }
+
+    /// Diff 派生:无变化/缺一方 → None;有变化才有行
+    #[test]
+    fn diff_lines_and_catalogs_none_semantics() {
+        assert!(diff_lines(None, Some("a")).is_none());
+        assert!(diff_lines(Some("a"), None).is_none());
+        assert!(diff_lines(Some("a"), Some("a")).is_none(), "相同不出节");
+        let rows = diff_lines(Some("l1\nl2"), Some("l1\nx")).expect("有变化");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].0, DiffOp::Same);
+        let a = vec![serde_json::json!({"k": 1})];
+        let b = vec![serde_json::json!({"k": 2})];
+        assert!(diff_catalogs(None, Some(&a)).is_none());
+        assert!(diff_catalogs(Some(&a), Some(&a)).is_none());
+        assert!(diff_catalogs(Some(&a), Some(&b)).is_some());
+    }
+
+    /// 检查器头位置槽:SYSTEM → 标题;message → 轮步;无轮 → 轮次之间
+    #[test]
+    fn inspector_header_location_dispatches() {
+        let mut r = rec(1, "system", None, "Message");
+        r.text = "Initial System Prompt".into();
+        assert_eq!(&*inspector_header_location(&r), "初始系统提示词");
+        let step = rec(2, "message", Some(3), "Step 2");
+        assert_eq!(&*inspector_header_location(&step), "第 3 轮 · Step 2");
+        let msg = rec(3, "user", Some(1), "Message");
+        assert_eq!(&*inspector_header_location(&msg), "第 1 轮 · 消息");
+        let drift = rec(4, "decision", None, "Message");
+        assert_eq!(&*inspector_header_location(&drift), "轮间");
     }
 
     /// 搜索 AND 分词 + 字段命中

@@ -135,6 +135,10 @@ EXEMPT_TEXT = {
     # 是线上数据,永不进文案文件(见 locale-owned copy 政策)
     "No output",          # trajectory.rs:空工具结果
     "Context compacted",  # trajectory.rs:压缩后请求的 result
+    "Initial System Prompt",  # trajectory.rs:SYSTEM 置顶行哨兵
+    "System Prompt Updated",
+    "System Prompt and Tools Updated",
+    "Tools Updated",
     "English",  # `LOCALES` 的语言原文名(两档同显)
     "PDF", "JSON", "HTTP", "TOML", "Markdown", "Mermaid", "PPT", "IMG", "FILE",
     "OUT", "IN", "HEAD", "HOME", "Downloads", "Skill",
@@ -144,6 +148,9 @@ EXEMPT_TEXT = {
     "General", "Models", "Mcp", "Hooks", "Decision", "ArchivedChats", "About",
     "system-ui, sans-serif", "Helvetica", "Times New Roman", "Menlo",
     "PingFang SC", "Step",
+    # 轨迹搜索 haystack 的轮次 token(拼进小写检索串,匹配用户
+    # 查询 "turn 3";非界面文案。判定用 strip 后文本,勿带尾空格)
+    "turn {t}",
     # registry 主题名(liuma.json 内嵌两盘的标识;官方主题名同属线上
     # 数据,下拉原文名直显,不进文案文件)
     "Liuma Dark", "Liuma Light",
@@ -172,7 +179,10 @@ EXEMPT_SHAPES = [
     re.compile(r"^[a-z]+([A-Z][A-Za-z0-9]*)+$"),          # camelCase wire 键
     re.compile(r"^[A-Za-z0-9._-]+\.[A-Za-z0-9._-]+$"),    # 文件名 / MIME
 ]
-CHROME_SHAPE = re.compile(r"^[A-Za-z][A-Za-z0-9 ,'\-\.\?!:&%]*$")
+# 尾部放行 #(){} :「Block #1 text」一类带序号/占位花括号的 chrome。
+# 已知残留:首字符非字母的文案(如 "(unnamed)")仍不命中,靠 t! 化
+# 消除实例,不做全放开(避免误伤技术标识)。
+CHROME_SHAPE = re.compile(r"^[A-Za-z][A-Za-z0-9 ,'\-\.\?!:&%#(){}]*$")
 
 
 def is_cjk(ch: str) -> bool:
@@ -677,6 +687,10 @@ SELFTEST_FILES = {
     "crates/liuma-desktop/src/placeholders.rs": (
         'fn f() { let _ = t!("a.b", x = 1); }\n'
     ),
+    # 规则 2 正例:带 #(){} 的 chrome(放宽 CHROME_SHAPE 后必须仍被抓住)
+    "crates/liuma-desktop/src/hash_chrome.rs": (
+        'fn f() { div().child("Block #1 text").child("Step 2 (x)"); }\n'
+    ),
     "crates/liuma-desktop/locales/x.yml": (
         "_version: 2\n"
         "a:\n"
@@ -716,6 +730,7 @@ def self_test(tmp_root: Path) -> list:
     expect("规则1 CJK", 'src/cjk.rs:1 代码内联中文文案')
     expect_absent("规则1 不扫测试区", 'chrome.rs:8')
     expect("规则2 英文 chrome", "chrome.rs: 1 处英文 UI 文案")
+    expect("规则2 #(){} chrome", "hash_chrome.rs: 2 处英文 UI 文案")
     expect_absent("规则2 豁免 id/技术标识", 'session-row')
     expect_absent("规则2 豁免 PDF", ':2 英文文案候选: "PDF"')
     expect("规则4 缺键", "locales 缺键 `a.c`")

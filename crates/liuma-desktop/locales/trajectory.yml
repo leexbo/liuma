@@ -60,6 +60,27 @@ trajectory:
     zh-CN: "上下文已压缩"
     en: "Context compacted"
 
+  # core 自产 SYSTEM 行哨兵(渲染层词典化;值对齐 dsh layout.*/record.*)
+  initial_system_prompt:
+    zh-CN: "初始系统提示词"
+    en: "Initial System Prompt"
+
+  system_prompt_updated:
+    zh-CN: "系统提示词已更新"
+    en: "System Prompt Updated"
+
+  system_prompt_and_tools_updated:
+    zh-CN: "系统提示词和工具已更新"
+    en: "System Prompt and Tools Updated"
+
+  tools_updated:
+    zh-CN: "工具已更新"
+    en: "Tools Updated"
+
+  no_output:
+    zh-CN: "无输出"
+    en: "No output"
+
   request_result_compacted:
     zh-CN: "已压缩"
     en: "Compacted"
@@ -531,3 +552,19 @@ trajectory:
   no_tools:
     zh-CN: "本次请求无工具"
     en: "No tools in this request"
+
+  block_label:
+    zh-CN: "块 #%{n} %{kind}"
+    en: "Block #%{n} %{kind}"
+
+  block_1_text:
+    zh-CN: "块 #1 文本"
+    en: "Block #1 text"
+
+  unnamed_tool:
+    zh-CN: "（未命名）"
+    en: "(unnamed)"
+
+  named_parameters_json:
+    zh-CN: "%{name} 参数 JSON"
+    en: "%{name} parameters JSON"

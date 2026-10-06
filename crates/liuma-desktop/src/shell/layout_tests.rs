@@ -15562,3 +15562,103 @@ fn opener_selection_switch_keeps_button(cx: &mut TestAppContext) {
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// 轨迹检查器正文滚动条接线(回归锁:曾为裸 overflow_y_scroll 无条,
+/// 长内容不知可滚)。park 后注入单条带长系统提示词的 SYSTEM 记录并
+/// 打开检查器(避开启动序列的轨迹首拉覆盖),断言滚动条 overlay
+/// 渲染在检查器列内
+#[gpui_kit::test]
+fn trajectory_inspector_scrollbar_wired(cx: &mut TestAppContext) {
+    use crate::features::trajectory::{InspectTarget, TrajectoryView};
+    use crate::shell::panel::PanelTab;
+    use liuma_core::trajectory::TrajectoryRecord;
+
+    cx.update(|app| {
+        gpui_kit::component::init(app);
+        theme::init(app);
+    });
+    allow_host_parking(cx);
+    let root = std::env::temp_dir().join(format!("liuma-desktop-trajsb-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (bridge, _rx) = HostBridge::new_at(root.join("ws"), true, "", Some(root.join("sessions")))
+        .expect("桥构建失败");
+    let store_cell = std::rc::Rc::new(std::cell::RefCell::new(None::<Entity<AppStore>>));
+    let store_capture = store_cell.clone();
+    let (_view, wcx) = cx.add_window_view(|window, cx| {
+        let store = cx.new(|cx| AppStore::new(bridge, cx));
+        store.update(cx, |s, cx| s.attach_window_state(window, cx));
+        store.update(cx, |s, _| s.temp_root = Some(root.clone()));
+        *store_capture.borrow_mut() = Some(store.clone());
+        let view = cx.new(|cx| WorkspaceView::new(store, cx));
+        gpui_kit::component::Root::new(view, window, cx)
+    });
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    let store = store_cell.borrow().clone().expect("store 未捕获");
+    // 克隆解除对 cx 的借用(menu_harness 同款:之后 cx / wcx 可交替)
+    let mut wcx = wcx.clone();
+    // 先开轨迹页并让 open_panel_tab 触发的重拉收敛(fake 会话拉到
+    // 空台账),再注入数据——顺序反了回包会覆盖注入
+    cx.update(|app| {
+        store.update(app, |s, cx| s.open_panel_tab(PanelTab::Trajectory, cx));
+    });
+    wcx.run_until_parked();
+    let prompt = "段落正文,足够长以撑出垂直溢出。".repeat(600);
+    let rec = TrajectoryRecord {
+        index: 1,
+        seq: 1,
+        kind: "system".into(),
+        turn: None,
+        group: "Message".into(),
+        turn_start: false,
+        text: "Initial System Prompt".into(),
+        result: None,
+        is_error: false,
+        time_seconds: Some(0.),
+        started_at: Some(0),
+        request_number: None,
+        input: None,
+        output: None,
+        think: None,
+        ttft_ms: None,
+        payload: None,
+        output_detail: None,
+        thinking_detail: None,
+        system_prompt: Some(prompt),
+        tools_catalog: None,
+        schema_detail: None,
+        source: None,
+        decision: None,
+        fold: None,
+    };
+    cx.update(|app| {
+        store.update(app, |s, cx| {
+            s.trajectory.trajectory = TrajectoryView {
+                records: vec![rec],
+                requests: Vec::new(),
+                has_older: false,
+                total: 1,
+                loading: false,
+                loading_older: false,
+            };
+            s.trajectory.inspector = Some(InspectTarget::Record(1));
+            cx.notify();
+        });
+    });
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+
+    let inspector = wcx
+        .debug_bounds("trajectory-inspector")
+        .expect("检查器未渲染");
+    let overlay = wcx
+        .debug_bounds("scrollbar-overlay")
+        .expect("检查器滚动条 overlay 未渲染");
+    assert!(
+        overlay.origin.x + overlay.size.width > inspector.origin.x
+            && overlay.origin.x < inspector.origin.x + inspector.size.width,
+        "滚动条不在检查器列内: overlay={overlay:?} inspector={inspector:?}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}

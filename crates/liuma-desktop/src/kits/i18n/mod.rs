@@ -235,6 +235,48 @@ mod tests {
         );
     }
 
+    /// SYSTEM 行哨兵文案 zh/en(回归锁:core 自产 "Initial System Prompt"
+    /// 等线上哨兵曾逐字直显在中文台账/检查器头;渲染层经 record_title
+    /// 词典化,值对齐 dsh layout.*/record.*)
+    #[test]
+    fn system_sentinel_copy_dispatch_both_langs() {
+        let pairs = [
+            (
+                "trajectory.initial_system_prompt",
+                "初始系统提示词",
+                "Initial System Prompt",
+            ),
+            (
+                "trajectory.system_prompt_updated",
+                "系统提示词已更新",
+                "System Prompt Updated",
+            ),
+            (
+                "trajectory.system_prompt_and_tools_updated",
+                "系统提示词和工具已更新",
+                "System Prompt and Tools Updated",
+            ),
+            ("trajectory.tools_updated", "工具已更新", "Tools Updated"),
+            ("trajectory.no_output", "无输出", "No output"),
+            (
+                "trajectory.block_label",
+                "块 #%{n} %{kind}",
+                "Block #%{n} %{kind}",
+            ),
+            ("trajectory.block_1_text", "块 #1 文本", "Block #1 text"),
+            ("trajectory.unnamed_tool", "（未命名）", "(unnamed)"),
+            (
+                "trajectory.named_parameters_json",
+                "%{name} 参数 JSON",
+                "%{name} parameters JSON",
+            ),
+        ];
+        for (key, zh, en) in pairs {
+            assert_eq!(translate(DEFAULT, key), zh, "zh 档 {key}");
+            assert_eq!(translate("en", key), en, "en 档 {key}");
+        }
+    }
+
     /// 压缩链路文案 zh/en(回归锁:宿主 compaction/error kind=empty 的
     /// 英文常量曾逐字直显在中文界面;命令描述同理——宿主 builtin_commands
     /// 是中文原文,en 档由文案文件映射)

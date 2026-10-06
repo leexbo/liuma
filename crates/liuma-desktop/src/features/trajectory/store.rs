@@ -128,6 +128,11 @@ pub(crate) struct TrajectoryStore {
     pub json_expanded: HashSet<String>,
     /// Tools 页展开的工具名(目录卡片折叠态)
     pub expanded_inspector_tools: HashSet<String>,
+    /// Tools 页展开集版本(检查器正文缓存签名的一份;切换处 +1)
+    pub expanded_tools_ver: u64,
+    /// 检查器正文派生缓存(签名守卫,单槽 = 当前 target+tab;
+    /// pretty 序列化/逐行 tokenize/LCS 只在签名变化时跑)
+    pub inspector_cache: Option<crate::features::trajectory::views::InspectorCache>,
     /// 时间线选区(域归一化 0..1;Some = 表格按时间窗过滤)
     pub timeline_selection: Option<(f64, f64)>,
     /// 时间线视口(域归一化 0..1;None = 全览)
@@ -193,6 +198,8 @@ impl Default for TrajectoryStore {
             inspector_raw_thinking: false,
             json_expanded: HashSet::new(),
             expanded_inspector_tools: HashSet::new(),
+            expanded_tools_ver: 0,
+            inspector_cache: None,
             timeline_selection: None,
             timeline_viewport: None,
             timeline_drag: None,
@@ -757,6 +764,7 @@ impl AppStore {
         {
             self.trajectory.expanded_inspector_tools.remove(name);
         }
+        self.trajectory.expanded_tools_ver += 1;
         cx.notify();
     }
 
