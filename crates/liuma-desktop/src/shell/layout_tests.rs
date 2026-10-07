@@ -375,6 +375,8 @@ fn long_user_message_folds_with_fade_and_expand(cx: &mut TestAppContext) {
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
 
     // 超长消息:40 段显式行(每段都长于一行)≫ 15 行阈值
@@ -474,6 +476,8 @@ fn optimistic_user_bubble_renders_and_hands_off(cx: &mut TestAppContext) {
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
     let sid = cx.update(|app| {
         store.update(app, |st, cx| {
@@ -546,6 +550,8 @@ fn tool_read_expanded_keeps_collapse_and_inspect_jumps(cx: &mut TestAppContext) 
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
 
     // 10 行 read 卡(key=call:55;CHAT_CARD_MAX_LINES=8 → hidden=2,有折叠)。
@@ -1058,6 +1064,8 @@ fn mermaid_viewer_full_interaction(cx: &mut TestAppContext) {
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
 
     // 发送一条消息 → fakes 演示首段(mermaid 演示)回流为助手回复
@@ -1458,6 +1466,8 @@ fn mermaid_viewer_drag_panning(cx: &mut TestAppContext) {
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
     let source: std::sync::Arc<str> = "flowchart LR\n    N0[0] --> N1[1] --> N2[2] --> N3[3] --> N4[4] --> N5[5] --> N6[6] --> N7[7] --> N8[8] --> N9[9] --> N10[10] --> N11[11] --> N12[12] --> N13[13]\n".into();
 
@@ -2768,6 +2778,8 @@ fn mermaid_code_view_is_drag_selectable(cx: &mut TestAppContext) {
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
     let bounds = wcx
         .debug_bounds("composer-hit")
@@ -3707,6 +3719,8 @@ fn trajectory_ledger_rows_anchor_to_list_width(cx: &mut TestAppContext) {
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
 
     let long_cmd = "bash {\"command\":\"cargo test -p liuma-core --all-features --release -- --test-threads=4 --nocapture 2>&1 | tee /tmp/liuma-measure/run-20260930/full-cargo-test-output.log\"}";
@@ -3862,6 +3876,8 @@ fn trajectory_float_jump_buttons_visibility(cx: &mut TestAppContext) {
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
     let rec = |index: u64| TrajectoryRecord {
         index,
@@ -5035,6 +5051,8 @@ fn sidebar_resize_drag(cx: &mut TestAppContext) {
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
     redraw(cx, &mut wcx);
 
@@ -6337,6 +6355,8 @@ fn ask_card_header_states_never_fall_back_to_question(cx: &mut TestAppContext) {
     for _ in 0..50 {
         std::thread::sleep(std::time::Duration::from_millis(200));
         cx.run_until_parked();
+        // gpui-fast:换帧在窗口 update 边界落地,先泵再验(否则首读为旧帧)
+        wcx.update(|_, _| ());
         if wcx.debug_bounds("ask-question").is_some() {
             popped = true;
             break;
@@ -6361,6 +6381,8 @@ fn ask_card_header_states_never_fall_back_to_question(cx: &mut TestAppContext) {
     for _ in 0..50 {
         std::thread::sleep(std::time::Duration::from_millis(200));
         cx.run_until_parked();
+        // 同上:先泵再验,避免误认上一张未撤的旧卡
+        wcx.update(|_, _| ());
         if wcx.debug_bounds("ask-question").is_some() {
             popped2 = true;
             break;
@@ -6521,6 +6543,8 @@ fn ask_card_multi_page_gating(cx: &mut TestAppContext) {
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
     let sid = cx
         .update(|app| store.read(app).state.current_id.clone())
@@ -8394,6 +8418,8 @@ fn ws_info_card_opens_on_row_spacer_hover(cx: &mut TestAppContext) {
     wcx.simulate_mouse_move(pos, MouseButton::Left, gpui_kit::Modifiers::default());
     cx.update(|_: &mut App| {});
     cx.run_until_parked();
+    // gpui-fast:悬停翻转的重绘换帧在窗口 update 边界落地,泵后再读
+    wcx.update(|_, _| ());
     // 卡应同帧在场(锚在事件分发期捕获,无渲染期捕获的一帧延迟)
     let card = wcx
         .debug_bounds("ws-info-card")
@@ -8410,6 +8436,7 @@ fn ws_info_card_opens_on_row_spacer_hover(cx: &mut TestAppContext) {
     wcx.simulate_mouse_move(mid, MouseButton::Left, gpui_kit::Modifiers::default());
     cx.update(|_: &mut App| {});
     cx.run_until_parked();
+    wcx.update(|_, _| ());
     assert!(
         wcx.debug_bounds("ws-info-card").is_some(),
         "移到卡上后卡应保持打开"
@@ -8427,6 +8454,8 @@ fn ws_info_card_opens_on_row_spacer_hover(cx: &mut TestAppContext) {
         .advance_clock(std::time::Duration::from_millis(400));
     cx.run_until_parked();
     cx.update(|_: &mut App| {});
+    // gpui-fast:延迟关的换帧同样在窗口 update 边界落地
+    wcx.update(|_, _| ());
     assert!(
         wcx.debug_bounds("ws-info-card").is_none(),
         "行与卡双离开后卡应关闭"
@@ -9946,11 +9975,15 @@ fn settings_page_route_end_to_end(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 渲染推进三连(run_until_parked + refresh + run_until_parked)
+/// 渲染推进三连(run_until_parked + refresh + run_until_parked)。
+/// 末尾补一次窗口访问:gpui-fast 的帧完成在 update 边界才落地
+/// (park/refresh 只置脏不触发),不补这一拍,紧随的断言会读到
+/// 换帧前的旧画面(实测:settle 后首读陈旧、次读起全部正确)
 fn settle(wcx: &mut gpui_kit::VisualTestContext) {
     wcx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     wcx.run_until_parked();
+    wcx.update(|_, _| ());
 }
 
 /// 决策表单七输入的当前文本
@@ -11265,6 +11298,8 @@ fn streaming_entrance_gate_and_tool_sweep(cx: &mut TestAppContext) {
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
 
     // 直播新节点:born 刚记录 → 入场 wrapper 在场
@@ -11362,6 +11397,8 @@ fn turn_status_gated_by_running(cx: &mut TestAppContext) {
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
 
     cx.update(|app| {
@@ -11412,6 +11449,8 @@ fn todo_write_row_summary_from_call_args(cx: &mut TestAppContext) {
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
     let inject = |cx: &mut TestAppContext, args: &str| {
         cx.update(|app| {
@@ -11489,6 +11528,8 @@ fn turn_group_collapse_expand_roundtrip(cx: &mut TestAppContext) {
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
 
     cx.update(|app| {
@@ -11629,6 +11670,8 @@ fn aborted_turn_stays_flat_with_stopped_tool(cx: &mut TestAppContext) {
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
 
     cx.update(|app| {
@@ -11729,6 +11772,8 @@ fn collapsed_turn_reset_pins_tail_visible(cx: &mut TestAppContext) {
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
 
     cx.update(|app| {
@@ -11848,6 +11893,8 @@ fn compaction_rows_quiet_states(cx: &mut TestAppContext) {
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
     // 轮询等待元素入场(直改 chats 的重绘偶发晚一拍,单次 refresh 断言
     // 在 0.3.5 帧调度下竞态;家族既定药方:异步回写断言改轮询)
@@ -12053,6 +12100,8 @@ fn nav_rail_show_hover_card_and_jump(cx: &mut TestAppContext) {
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
 
     cx.update(|app| {
@@ -12268,6 +12317,8 @@ fn subagent_tool_expand_body_stays_in_viewport(cx: &mut TestAppContext) {
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
 
     // 真机形态的 subagent 调用参数(description + 数百字 prompt 的 JSON)
@@ -14230,6 +14281,8 @@ fn compaction_progress_row_and_settle(cx: &mut TestAppContext) {
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
     };
     let poll =
         |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext, sel: &'static str| {
