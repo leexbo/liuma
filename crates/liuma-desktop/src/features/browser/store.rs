@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use gpui_kit::component::input::{InputEvent, InputState};
-use gpui_kit::{AppContext as _, Context, Entity, Window};
+use gpui_kit::{AppContext as _, Context, Entity, Focusable as _, Window};
 
 use crate::shell::panel::BrowserTabId;
 use crate::shell::store::AppStore;
@@ -36,7 +36,7 @@ pub(crate) struct NavState {
     /// 后退/前进可用性
     pub can_back: bool,
     pub can_fwd: bool,
-    /// 最近一次失败(加载失败/地址被拒;下次导航清除)
+    /// 最近一次导航失败(错误页依据;下次导航清除)
     pub error: Option<String>,
 }
 
@@ -101,8 +101,8 @@ pub(crate) struct BrowserTab {
     pub pending: Option<NavCommand>,
     /// 地址栏输入(None = 未 ensure;懒建于正文渲染期)
     pub addr_input: Option<Entity<InputState>>,
-    /// 地址栏编辑中(Focus 起,Blur/Enter 止;编辑期不回填 URL)
-    pub addr_editing: bool,
+    /// 地址栏输入被拒的原因(小条提示;不动已显示页面,下次提交清除)
+    pub addr_error: Option<String>,
     /// 视口预设
     pub viewport: ViewportPreset,
 }
@@ -144,7 +144,7 @@ impl BrowserStore {
             nav: NavState::idle(),
             pending: None,
             addr_input: None,
-            addr_editing: false,
+            addr_error: None,
             viewport: ViewportPreset::Desktop,
         });
     }
@@ -165,6 +165,8 @@ pub(crate) enum NavEvent {
     Failed { url: String, message: String },
     /// 能力快照(后退/前进可用性)
     Capability { can_back: bool, can_fwd: bool },
+    /// 原生层提示(重定向循环熔断等;进工具栏下小条,不动页面)
+    Notice { message: String },
 }
 
 impl AppStore {
@@ -188,22 +190,10 @@ impl AppStore {
         if !needs_input {
             return;
         }
-        let input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(crate::kits::i18n::t!("browser.addr_placeholder"))
-        });
+        let input = cx.new(|cx| InputState::new(window, cx));
         cx.subscribe(&input, move |this, _, event: &InputEvent, cx| {
-            let Some(tab) = this.browser.tab_mut(id) else {
-                return;
-            };
-            match event {
-                InputEvent::Focus => tab.addr_editing = true,
-                InputEvent::Blur => tab.addr_editing = false,
-                InputEvent::PressEnter { .. } => {
-                    tab.addr_editing = false;
-                    this.browser_addr_commit(id, cx);
-                }
-                InputEvent::Change => {}
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.browser_addr_commit(id, cx);
             }
         })
         .detach();
@@ -250,6 +240,7 @@ impl AppStore {
             if let NavCommand::Load(url) = &cmd {
                 tab.nav.url = url.clone();
                 tab.nav.error = None;
+                tab.addr_error = None;
             }
             tab.pending = Some(cmd);
             tab.nav.loading = true;
@@ -266,18 +257,26 @@ impl AppStore {
             .map(|i| i.read(cx).value().trim().to_string());
         let Some(raw) = raw else { return };
         match normalize_browser_url(&raw) {
-            Ok(url) => self.browser_navigate(id, NavCommand::Load(url), cx),
+            Ok(url) => {
+                if let Some(tab) = self.browser.tab_mut(id) {
+                    tab.addr_error = None;
+                }
+                self.browser_navigate(id, NavCommand::Load(url), cx);
+            }
             Err(UrlReject::Empty) => {}
             Err(other) => {
                 if let Some(tab) = self.browser.tab_mut(id) {
-                    tab.nav.error = Some(super::url_reject_message(&other));
+                    tab.addr_error = Some(super::url_reject_message(&other));
                 }
                 cx.notify();
             }
         }
     }
 
-    /// 地址栏回填当前 URL(非编辑态渲染期调用;编辑中不覆盖)
+    /// 地址栏回填当前 URL(渲染期调用;输入框聚焦中不覆盖——聚焦
+    /// 态实时查询:Enter 提交后焦点仍留框内,后续点击框内定位光标
+    /// 不会再发 Focus 事件,靠事件记账会把编辑期误判为非编辑、
+    /// 键入即被回填弹光标到末尾)
     pub(crate) fn browser_addr_sync(
         &mut self,
         id: BrowserTabId,
@@ -287,7 +286,11 @@ impl AppStore {
         let Some(tab) = self.browser.tab(id) else {
             return;
         };
-        if tab.addr_editing || tab.nav.url.is_empty() {
+        let editing = tab
+            .addr_input
+            .as_ref()
+            .is_some_and(|i| i.read(cx).focus_handle(cx).contains_focused(window, cx));
+        if editing || tab.nav.url.is_empty() {
             return;
         }
         let url = tab.nav.url.clone();
@@ -334,6 +337,9 @@ impl AppStore {
             NavEvent::Capability { can_back, can_fwd } => {
                 tab.nav.can_back = can_back;
                 tab.nav.can_fwd = can_fwd;
+            }
+            NavEvent::Notice { message } => {
+                tab.addr_error = Some(message);
             }
         }
         cx.notify();

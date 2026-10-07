@@ -4,10 +4,6 @@ _version: 2
 
 browser:
 
-  addr_placeholder:
-    zh-CN: "输入地址(localhost:3000 或 https://…)"
-    en: "Enter address (localhost:3000 or https://…)"
-
   back:
     zh-CN: "后退"
     en: "Back"
@@ -39,6 +35,10 @@ browser:
   err_scheme:
     zh-CN: "仅支持 http/https 地址,不支持 %{scheme}"
     en: "Only http/https addresses are supported, not %{scheme}"
+
+  err_redirect_loop:
+    zh-CN: "已拦截该页面的循环跳转(http/https 反复重定向),页面保持当前版本"
+    en: "Blocked this page's redirect loop (repeated http/https bounces); the loaded page is kept"
 
   err_credentials:
     zh-CN: "地址中不允许内嵌凭据"
