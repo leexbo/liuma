@@ -1,0 +1,17 @@
+[package]
+name = "gpui-pre-macros"
+version = "0.3.8"
+edition = "2024"
+publish = false
+description = "gpui-fast-macros under the name and version of the gpui-pre snapshot gpui-kit pins"
+
+[lib]
+name = "gpui_macros"
+path = "lib.rs"
+doctest = false
+
+[features]
+inspector = ["gpui_fast_macros/inspector"]
+
+[dependencies]
+gpui_fast_macros = { package = "gpui-fast-macros", version = "=0.1.4", default-features = false }

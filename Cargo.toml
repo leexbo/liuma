@@ -131,10 +131,14 @@ windows-sys = { version = "0.61", default-features = false }
 # 全量 debuginfo 下 wasmtime+turso 构建达数十 GB;行号表足够日常调试
 debug = "line-tables-only"
 
-# 热点依赖 debug 下走优化;包名 = crates.io 真实名(gpui 发布为 gpui-pre)
+# 热点依赖 debug 下走优化;包名 = crates.io 真实名(gpui 发布为 gpui-pre;
+# 换轨后 gpui-pre* 命中的是 third_party/gpui-fast-compat 薄垫片,真身
+# 是 gpui-fast / gpui-fast-macros)
 [profile.dev.package]
 gpui-pre = { opt-level = 3 }
 gpui-pre-macros = { opt-level = 3 }
+gpui-fast = { opt-level = 3 }
+gpui-fast-macros = { opt-level = 3 }
 taffy = { opt-level = 3 }
 ttf-parser = { opt-level = 3 }
 rustybuzz = { opt-level = 3 }
@@ -147,3 +151,13 @@ xml5ever = { opt-level = 3 }
 [profile.release]
 lto = "thin"
 strip = "symbols"
+
+# GPUI 核心换轨:gpui-kit 门面不动,vendor 三垫片(name/version 与 gpui-kit
+# 所钉 =0.3.8 同名同版)把核心指到 crates.io 的 gpui-fast 族(retained-mode
+# 布局引擎)。全依赖仍走 crates.io;gpui-kit 升版改钉 =0.3.9+ 时 patch 静默
+# 失效(cargo 仅警告)——守卫见 AGENTS.md §1 [Deps]。
+[patch.crates-io]
+gpui-pre = { path = "third_party/gpui-fast-compat/gpui-pre" }
+gpui-pre-platform = { path = "third_party/gpui-fast-compat/gpui-pre-platform" }
+gpui-pre-macros = { path = "third_party/gpui-fast-compat/gpui-pre-macros" }
+gpui-pre-web = { path = "third_party/gpui-fast-compat/gpui-pre-web" }

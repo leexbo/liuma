@@ -19,6 +19,11 @@ mod gitinfo;
 mod kits;
 mod shell;
 
+// gpui-fast 的宏(actions! / #[test])展开输出字面 `gpui::` 路径;stock
+// gpui-pre 的宏会改写成 `::gpui_kit::`,gpui-fast 不会。别名把门面挂回
+// `gpui` 名下,只影响本 crate(bin + 全部 #[cfg(test)] 模组)。
+extern crate gpui_kit as gpui;
+
 // `t!` 展开为 `crate::_rust_i18n_t!` → `crate::_rust_i18n_try_translate`
 // (`kits/i18n/gen.rs` 的 `i18n!` 生成物),故两个名字必须在 crate 根可见。
 pub(crate) use crate::kits::i18n::backend::{_rust_i18n_t, _rust_i18n_try_translate};

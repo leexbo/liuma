@@ -1,0 +1,27 @@
+[package]
+name = "gpui-pre-platform"
+version = "0.3.8"
+edition = "2024"
+publish = false
+description = "gpui-fast-platform under the name and version of the gpui-pre snapshot gpui-kit pins"
+
+[lib]
+name = "gpui_platform"
+path = "lib.rs"
+doctest = false
+
+[features]
+default = ["gpui_fast_platform/default"]
+bench-support = ["gpui_fast_platform/bench-support"]
+font-kit = ["gpui_fast_platform/font-kit"]
+inspector = ["gpui_fast/inspector"]
+runtime_shaders = ["gpui_fast_platform/runtime_shaders"]
+screen-capture = ["gpui_fast_platform/screen-capture"]
+test-support = ["gpui_fast_platform/test-support"]
+wayland = ["gpui_fast_platform/wayland"]
+x11 = ["gpui_fast_platform/x11"]
+
+[dependencies]
+gpui_fast_platform = { package = "gpui-fast-platform", version = "=0.1.4", default-features = false }
+# inspector 转发到核心(platform 无此 feature),同上游 compat 结构
+gpui_fast = { package = "gpui-fast", version = "=0.1.4", default-features = false }
