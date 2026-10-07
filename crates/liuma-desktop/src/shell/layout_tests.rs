@@ -2912,6 +2912,24 @@ fn user_bubble_text_is_drag_selectable(cx: &mut TestAppContext) {
 }
 
 /// 工作区选中态(hero)发送 = 发送即建会话:会话落入选中工作区、
+/// 有界等待宿主(tokio runtime)墙钟进度:gpui-fast 保留模式停帧后
+/// run_until_parked 不再顺带覆盖宿主侧回合推进(窗口收窄),宿主回合
+/// 需要真实墙钟时间落帧。谓词成真即返;超时后由调用侧原断言给出
+/// 失败文案(不掩盖)。
+fn wait_host_progress(
+    cx: &mut TestAppContext,
+    store: &Entity<AppStore>,
+    ready: impl Fn(&[ChatNode]) -> bool,
+) {
+    for _ in 0..25 {
+        cx.run_until_parked();
+        if cx.update(|app| ready(store.read(app).current_nodes())) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// 打开后 prompt 送达,选中态切回会话(active_workspace 清空)。
 /// 回归「无会话时 send 静默吞稿」
 #[gpui_kit::test]
@@ -2940,8 +2958,13 @@ fn send_in_workspace_selected_mode_creates_session(cx: &mut TestAppContext) {
         !current.contains('/'),
         "默认工作区会话 id 应无前缀,实际:{current}"
     );
-    // 用户消息确已送达新会话(回合尾标记在后,扫全节点断言)
-    cx.run_until_parked();
+    // 用户消息确已送达新会话(回合尾标记在后,扫全节点断言)。
+    // 宿主回合在独立 tokio runtime 推进,park 窗口收窄后有界等待其落帧
+    wait_host_progress(cx, &store, |ns| {
+        ns.iter().any(
+            |n| matches!(n, ChatNode::User { text, .. } if text.contains("工作区里第一条消息")),
+        )
+    });
     let nodes = cx.update(|app| store.read(app).current_nodes().to_vec());
     assert!(
         nodes.iter().any(|n| matches!(
@@ -3136,7 +3159,8 @@ fn setter_error_pushes_notice(cx: &mut TestAppContext) {
             st.set_session_provider_model("deepseek", "__no_such_model__", cx)
         });
     });
-    cx.run_until_parked();
+    // 宿主路由校验在独立 tokio runtime 落帧,park 窗口收窄后有界等待
+    wait_host_progress(cx, &store, |ns| !ns.is_empty());
     let last = cx.update(|app| store.read(app).current_nodes().last().cloned());
     match last {
         Some(ChatNode::Notice {
