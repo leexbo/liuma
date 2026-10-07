@@ -160,4 +160,3 @@ strip = "symbols"
 gpui-pre = { path = "third_party/gpui-fast-compat/gpui-pre" }
 gpui-pre-platform = { path = "third_party/gpui-fast-compat/gpui-pre-platform" }
 gpui-pre-macros = { path = "third_party/gpui-fast-compat/gpui-pre-macros" }
-gpui-pre-web = { path = "third_party/gpui-fast-compat/gpui-pre-web" }
