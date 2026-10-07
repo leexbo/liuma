@@ -313,6 +313,17 @@ fn panel_header(
                         plus_menu_card(&store, pop, shortcut, cx).into_any_element()
                     }
                 })
+                // 开态回写:浏览器原生 webview 的抑制判据(gpui popover
+                // 画不过原生子视图,开着时须藏 webview)
+                .on_open_change({
+                    let store = store.clone();
+                    move |open, _, cx| {
+                        store.update(cx, |st, cx| {
+                            st.panel_menu_open = *open;
+                            cx.notify();
+                        });
+                    }
+                })
                 .into_any_element(),
         );
     }

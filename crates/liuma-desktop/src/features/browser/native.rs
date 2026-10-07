@@ -24,10 +24,12 @@
 //!
 //! ## 焦点
 //! GPUIView 覆写 `performKeyEquivalent:` 且不调 super:webview 持
-//! first responder 时 ⌘ 组合仍先到 gpui 键表(⌘T/⇧⌘P 可达)。调停
-//! 只做两件事:webview 持 FR 时清 gpui 残留焦点(避免 ⌘V 错投
-//! composer);webview 被隐藏时若持 FR 则归还 GPUIView。gpui 侧
-//! focus() 自会 makeFirstResponder,点击 gpui 控件无需额外归还。
+//! first responder 时 ⌘ 组合仍先到 gpui 键表(⌘T/⇧⌘P 可达)。但
+//! gpui 的 focus() 不调 makeFirstResponder——调停按「gpui 区域是否
+//! 刚被点击」(mouse-down 标记;点击 webview 时原生层吃掉事件,gpui
+//! 收不到)分流:点击 gpui 控件 → FR 归还 GPUIView(键盘进 gpui,
+//! 派发到焦点元素);点击 webview → 清 gpui 残留焦点(⌘V 不在页面
+//! 里错投)。webview 被隐藏时若持 FR 同样归还。
 //!
 //! ## 平台边界
 //! 本文件是浏览器功能唯一的平台 API 面(`platform` 模块按 OS 切换,

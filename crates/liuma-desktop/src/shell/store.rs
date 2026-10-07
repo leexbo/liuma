@@ -101,6 +101,9 @@ pub struct AppStore {
     pub sidebar_auto_collapsed: bool,
     /// 面板是否为「让位自动隐藏」(低于让位下限;变宽自动恢复)
     pub panel_auto_closed: bool,
+    /// 面板「+」清单菜单开态(Popover on_open_change 回写;原生
+    /// webview 抑制判据——gpui popover 画不过原生子视图)
+    pub panel_menu_open: bool,
     /// 会话与工作区树功能切片状态(行/组/工作区菜单开态与坐标、
     /// 重命名/删除目标、工作区路径/标题/分支表、折叠组;域与行为
     /// 见 features::sessions)
@@ -273,6 +276,7 @@ impl AppStore {
             sidebar_resize_anchor: None,
             sidebar_auto_collapsed: false,
             panel_auto_closed: false,
+            panel_menu_open: false,
             sessions: SessionsStore::default(),
             session_cfg_by_id: HashMap::new(),
             subagents: SubagentsStore::default(),

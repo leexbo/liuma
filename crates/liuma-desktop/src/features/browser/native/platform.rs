@@ -4,7 +4,7 @@
 //! 经 `MainThreadMarker::new()` 门控(失败即静默返回)。
 
 use std::cell::{OnceCell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -51,10 +51,22 @@ struct NavMsg {
     event: NavEvent,
 }
 
+/// 重定向循环熔断阈值:窗口期内 Started 次数(站点脚本在 http/https
+/// 间主动降级 + WKWebView 的 HTTPS 升级顶回 = 协议乒乓,页面级跳转
+/// 死循环;全新 cookie 存储的独立 webview 最易触发)
+const NAV_BURST_LIMIT: usize = 8;
+/// 计数窗口与熔断冷却(同一时间基)
+const NAV_BURST_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+const NAV_TRIP_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// NavDelegate 的 ivars(事件通道 + tab id;OnceCell 挂载于创建侧)
 struct NavDelegateIvars {
     tx: OnceCell<UnboundedSender<NavMsg>>,
     tab: OnceCell<u64>,
+    /// 最近导航意图时刻(Started 计数窗口)
+    nav_burst: RefCell<VecDeque<std::time::Instant>>,
+    /// 熔断时刻(None = 未熔断;冷却后自动复位,用户重新导航即复位)
+    tripped_at: RefCell<Option<std::time::Instant>>,
 }
 
 define_class!(
@@ -75,6 +87,9 @@ define_class!(
             web_view: &WKWebView,
             _navigation: Option<&WKNavigation>,
         ) {
+            if self.check_nav_burst(web_view) {
+                return;
+            }
             self.emit(web_view, NavEventKind::Started);
         }
 
@@ -85,6 +100,9 @@ define_class!(
             web_view: &WKWebView,
             _navigation: Option<&WKNavigation>,
         ) {
+            if self.is_tripped() {
+                return;
+            }
             self.emit(web_view, NavEventKind::Committed);
         }
 
@@ -95,6 +113,9 @@ define_class!(
             web_view: &WKWebView,
             _navigation: Option<&WKNavigation>,
         ) {
+            if self.is_tripped() {
+                return;
+            }
             self.emit(web_view, NavEventKind::Finished);
         }
 
@@ -106,6 +127,9 @@ define_class!(
             _navigation: Option<&WKNavigation>,
             error: &NSError,
         ) {
+            if self.is_tripped() {
+                return;
+            }
             self.emit_failure(web_view, error);
         }
 
@@ -118,6 +142,9 @@ define_class!(
             error: &NSError,
         ) {
             // dev server 未起时的连接失败走这里(provisional 阶段)
+            if self.is_tripped() {
+                return;
+            }
             self.emit_failure(web_view, error);
         }
     }
@@ -136,6 +163,8 @@ impl NavDelegate {
         let this = this.set_ivars(NavDelegateIvars {
             tx: OnceCell::new(),
             tab: OnceCell::new(),
+            nav_burst: RefCell::new(VecDeque::new()),
+            tripped_at: RefCell::new(None),
         });
         // SAFETY: NSObject init 是根初始化器,不为空不失败
         unsafe { msg_send![super(this), init] }
@@ -146,6 +175,78 @@ impl NavDelegate {
         let ivars = self.ivars();
         let _ = ivars.tx.set(tx);
         let _ = ivars.tab.set(tab);
+    }
+
+    /// 重定向循环熔断:窗口期内导航意图过密 → 掐死后续导航并保持
+    /// 当前页面 + 报错;冷却后自动复位,用户主动导航(Load)即时复位。
+    /// 返回 true = 已熔断(调用方吞掉本事件)
+    fn check_nav_burst(&self, web_view: &WKWebView) -> bool {
+        let ivars = self.ivars();
+        let now = std::time::Instant::now();
+        // 先复制再判定:let-chain 的 scrutinee 临时(Ref)存活到块尾,
+        // 块内 borrow_mut 会撞车
+        let tripped = *ivars.tripped_at.borrow();
+        if let Some(t) = tripped
+            && now.duration_since(t) > NAV_TRIP_COOLDOWN
+        {
+            *ivars.tripped_at.borrow_mut() = None;
+            ivars.nav_burst.borrow_mut().clear();
+        }
+        if ivars.tripped_at.borrow().is_some() {
+            // SAFETY: 主线程直调;页面保持已加载内容,跳转意图即起即灭
+            unsafe { web_view.stopLoading() };
+            return true;
+        }
+        {
+            let mut burst = ivars.nav_burst.borrow_mut();
+            burst.push_back(now);
+            while let Some(&oldest) = burst.front()
+                && now.duration_since(oldest) > NAV_BURST_WINDOW
+            {
+                burst.pop_front();
+            }
+            if burst.len() < NAV_BURST_LIMIT {
+                return false;
+            }
+            *ivars.tripped_at.borrow_mut() = Some(now);
+        }
+        // 掐死循环中的 provisional 导航;页面保持在最后一次成功加载的
+        // 内容(循环里每轮页面其实都加载成功,毁掉反而粗暴),后续跳转
+        // 由熔断激活分支逐个 stop
+        // SAFETY: 主线程直调
+        unsafe { web_view.stopLoading() };
+        let _ = self.send_notice(crate::kits::i18n::t!("browser.err_redirect_loop").to_string());
+        true
+    }
+
+    /// 熔断生效中(断页期间的残余事件全吞;didStart 里由
+    /// check_nav_burst 顺带做冷却复位)
+    fn is_tripped(&self) -> bool {
+        let ivars = self.ivars();
+        let tripped = *ivars.tripped_at.borrow();
+        match tripped {
+            Some(t) => t.elapsed() <= NAV_TRIP_COOLDOWN,
+            None => false,
+        }
+    }
+
+    /// 用户主动导航(Load):复位熔断与计数
+    fn reset_cycle_guard(&self) {
+        let ivars = self.ivars();
+        *ivars.tripped_at.borrow_mut() = None;
+        ivars.nav_burst.borrow_mut().clear();
+    }
+
+    /// 发提示(不附带能力快照;熔断路径用)
+    fn send_notice(&self, message: String) -> Option<()> {
+        let ivars = self.ivars();
+        let tx = ivars.tx.get()?;
+        let tab = ivars.tab.get().copied()?;
+        let _ = tx.send(NavMsg {
+            tab,
+            event: NavEvent::Notice { message },
+        });
+        Some(())
     }
 
     fn emit(&self, web_view: &WKWebView, kind: NavEventKind) {
@@ -178,6 +279,11 @@ impl NavDelegate {
     }
 
     fn emit_failure(&self, web_view: &WKWebView, error: &NSError) {
+        // NSURLErrorCancelled(-999):stopLoading/新导航打断旧导航的正常
+        // 取消,不是失败——静默
+        if error.code() == -999 {
+            return;
+        }
         let ivars = self.ivars();
         let Some(tx) = ivars.tx.get() else { return };
         let Some(tab) = ivars.tab.get().copied() else {
@@ -278,6 +384,11 @@ pub(super) fn paint_mount(
         store.update(cx, |st, _| st.browser_take_pending(id));
         REGISTRY.with(|r| {
             if let Some(tab) = r.borrow().get(&id.0) {
+                // 用户主动导航(Load/Reload/Back/Forward)一律复位熔断
+                // (Stop 无导航意图,不复位)
+                if !matches!(cmd, NavCommand::Stop) {
+                    tab.delegate.reset_cycle_guard();
+                }
                 dispatch(&tab.web_view, &cmd);
             }
         });
@@ -417,13 +528,29 @@ fn first_responder_in_any_webview() -> bool {
     })
 }
 
+// gpui 区域刚被点击的帧标记(mouse-down bubble 相置位,调停消费)。
+// 点击 webview 时原生子视图吃掉事件,gpui 收不到 mouse-down——标记
+// 缺席即「用户点的是 webview」的判据
+thread_local! {
+    static GPUI_AREA_CLICKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// 根级兜底:每帧把「不该可见」的 webview 全部隐藏 + 焦点调停
 pub(super) fn paint_root_sync(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) {
     let active = match store.read(cx).panel_active_tab {
         Some(crate::shell::panel::PanelTab::Browser(id)) => Some(id.0),
         _ => None,
     };
-    let hidden_all = active.is_none() || super::is_suppressed(store, window, cx);
+    // 错误页在场时正文 canvas 不挂载,webview 须显式隐藏(canvas
+    // 分支的显示门控管不到这条路径)
+    let error_active = active.is_some_and(|a| {
+        store
+            .read(cx)
+            .browser
+            .tab(BrowserTabId(a))
+            .is_some_and(|t| t.nav.error.is_some())
+    });
+    let hidden_all = active.is_none() || error_active || super::is_suppressed(store, window, cx);
     REGISTRY.with(|r| {
         let keys: Vec<u64> = r.borrow().keys().copied().collect();
         for key in keys {
@@ -438,10 +565,40 @@ pub(super) fn paint_root_sync(store: &Entity<AppStore>, window: &mut Window, cx:
             resign_if_focused(&web_view);
         }
     });
-    // 焦点调停:webview 持 FR 且 gpui 仍有焦点句柄 = 点击 webview 后的
-    // gpui 残留(composer 输入态/光标)→ 清掉,⌘V 等不再错投 gpui
+    // 焦点调停。gpui 的 focus() 不调 makeFirstResponder——点击 gpui
+    // 控件后原生 FR 可能仍留在 webview,键盘进不了 gpui(按键落空
+    // beep)。按「gpui 区域是否刚被点击」分流:
+    // - 点击 gpui 控件(gpui 收到 mouse-down):FR 归还 GPUIView,
+    //   键盘经 gpui 派发到焦点元素(⌘V 也不在页面里错投)
+    // - 点击 webview(gpui 无 mouse-down):gpui 焦点是残留,清掉
+    window.on_mouse_event(
+        |_: &gpui_kit::MouseDownEvent,
+         phase: gpui_kit::DispatchPhase,
+         _: &mut Window,
+         _: &mut App| {
+            if phase.bubble() {
+                GPUI_AREA_CLICKED.with(|c| c.set(true));
+            }
+        },
+    );
+    let clicked_gpui = GPUI_AREA_CLICKED.with(|c| c.replace(false));
     if window.focused(cx).is_some() && first_responder_in_any_webview() {
-        window.blur(cx);
+        if clicked_gpui {
+            if let Some(content) = content_view(window)
+                && let Some(ns_window) = content.window()
+            {
+                // TEMP-DIAG: 焦点调停定位(验证后删除)
+                let fr = ns_window
+                    .firstResponder()
+                    .map(|r| r.class().name().to_str().unwrap_or("?").to_string())
+                    .unwrap_or_else(|| "<nil>".into());
+                eprintln!("[browser-focus] 归位 FR(gpui 区点击) prev_fr={fr}");
+                let responder: &NSResponder = &content;
+                ns_window.makeFirstResponder(Some(responder));
+            }
+        } else {
+            window.blur(cx);
+        }
     }
 }
 
@@ -458,7 +615,8 @@ pub(super) fn is_suppressed(store: &Entity<AppStore>, window: &mut Window, cx: &
         return true;
     }
     let st = store.read(cx);
-    st.sessions.ws_info_card.is_some()
+    st.panel_menu_open
+        || st.sessions.ws_info_card.is_some()
         || st.settings.needs_onboarding
         || st.attachments.lightbox.is_some()
         || st.chat.mermaid_viewer.is_some()

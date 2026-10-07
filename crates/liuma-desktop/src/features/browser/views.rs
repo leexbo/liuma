@@ -39,19 +39,22 @@ pub(crate) fn render(
     let nav = tab.nav.clone();
     let viewport = tab.viewport;
     let addr_input = tab.addr_input.clone();
+    let addr_error = tab.addr_error.clone();
 
     div()
         .debug_selector(|| "panel-browser-view".to_string())
-        .flex_1()
-        .min_h(px(0.))
-        .min_w(px(0.))
+        // size_full 显式量满 tab_body wrapper(flex_1 在 row 父里传导
+        // 不稳定,terminal 根同款 size_full 手法)
+        .relative()
+        .size_full()
         .v_flex()
         .child(toolbar(store, id, &nav, viewport, addr_input, cx))
-        .when_some(nav.error.clone(), |c, err| {
+        // 地址栏输入被拒:工具栏下小条(不动已显示的页面)
+        .when_some(addr_error, |c, err| {
             c.child(
                 div()
-                    .id("browser-error")
-                    .debug_selector(|| "browser-error".to_string())
+                    .id("browser-addr-error")
+                    .debug_selector(|| "browser-addr-error".to_string())
                     .flex()
                     .items_center()
                     .gap(px(6.))
@@ -65,23 +68,40 @@ pub(crate) fn render(
                     .child(div().min_w(px(0.)).child(err)),
             )
         })
-        // 正文:有 URL = mount canvas(平台层挂 webview/派发命令);
-        // 无 URL = 空态引导
-        .child(if nav.url.is_empty() {
+        // 正文三分支:无 URL = 空态;导航失败 = 错误页(替换页面,
+        // 通用浏览器语义);否则 mount canvas(平台层挂 webview/派发
+        // 命令)。canvas 是无固有尺寸的叶子,直接作 flex 子项会量到
+        // 0 高(terminal 尺寸测量 canvas 同坑)——包裹 div 拉伸,
+        // canvas 绝对锚定铺满。div 垫中性底色:webview 隐藏
+        // (抑制/切标签)时底下不是裸 Metal 清屏黑
+        .child(if nav.error.is_some() {
+            error_page(&nav, cx).into_any_element()
+        } else if nav.url.is_empty() {
             empty_hint(cx).into_any_element()
         } else {
             let s_mount = store.clone();
-            gpui_kit::canvas(
-                // prepaint:无自定义绘制
-                |_, _, _| (),
-                move |bounds, _, window, cx| {
-                    super::native::paint_mount(id, &s_mount, bounds, window, cx);
-                },
-            )
-            .flex_1()
-            .min_h(px(0.))
-            .min_w(px(0.))
-            .into_any_element()
+            div()
+                .id("browser-body")
+                .debug_selector(|| "browser-body".to_string())
+                .flex_1()
+                .min_h(px(0.))
+                .min_w(px(0.))
+                .relative()
+                .bg(theme::dock(cx))
+                .child(
+                    gpui_kit::canvas(
+                        // prepaint:无自定义绘制
+                        |_, _, _| (),
+                        move |bounds, _, window, cx| {
+                            super::native::paint_mount(id, &s_mount, bounds, window, cx);
+                        },
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                )
+                .into_any_element()
         })
         .into_any_element()
 }
@@ -253,7 +273,44 @@ fn nav_button(
         })
 }
 
-/// 空态引导(未导航;加载/错误态由 webview 自渲染 + 错误条承担)
+/// 错误页(导航失败/重定向循环):整块替换页面区,居中报错 +
+/// 目标地址(通用浏览器语义)
+fn error_page(nav: &super::store::NavState, cx: &App) -> impl IntoElement {
+    div()
+        .debug_selector(|| "browser-error-page".to_string())
+        .flex_1()
+        .min_h(px(0.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .v_flex()
+                .items_center()
+                .gap(px(8.))
+                .max_w(px(360.))
+                .px(px(16.))
+                .child(fixed(IconName::TriangleAlert, 20.).text_color(theme::warning(cx)))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(theme::label(cx))
+                        .text_center()
+                        .child(nav.error.clone().unwrap_or_default()),
+                )
+                .when(!nav.url.is_empty(), |c| {
+                    c.child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(theme::caption(cx))
+                            .text_center()
+                            .child(nav.url.clone()),
+                    )
+                }),
+        )
+}
+
+/// 空态引导(未导航;加载/错误态由 webview 自渲染 + 错误页承担)
 fn empty_hint(cx: &App) -> impl IntoElement {
     div()
         .debug_selector(|| "browser-body-placeholder".to_string())
