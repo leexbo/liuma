@@ -20,8 +20,9 @@ use gpui_kit::component::StyledExt;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Bounds, Context, DispatchPhase, Element, ElementId, Entity, ExternalPaths,
-    GlobalElementId, InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseMoveEvent,
-    ParentElement, Pixels, Render, StatefulInteractiveElement as _, Style, Styled, Window, div, px,
+    GlobalElementId, InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render,
+    StatefulInteractiveElement as _, Style, Styled, Window, div, px,
 };
 
 use crate::features::ask;
@@ -159,6 +160,124 @@ impl Element for SelectionRefreshDriver {
                             #[cfg(test)]
                             SELECTION_DRIVEN_REFRESHES
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            window.refresh();
+                        }
+                    });
+                }
+            },
+        );
+    }
+}
+
+/// 单击折叠守卫(手势级判定)。
+///
+/// gpui-base 的选择手势在 end() 后保留 anchor/cursor:真实世界的
+/// 单击几乎必含 1~2px 抖动,move 把 cursor 推离 anchor → 留下零字符
+/// 的「活选择」——右键 Copy 菜单/⌘C 随即激活(= 点开轨迹详情即进入
+/// 复制模式的根因)。原生语义(与 dsh 一致)是「单击不产生选择,
+/// 拖动才选择」。
+///
+/// 判定取**手势几何**而非选择内容:mouse-down(捕获相)把按下点记入
+/// App 级 global,mouse-up(bubble,defer 到选择层 end() 之后)比较
+/// 位移——`click_count == 1` 且位移 < 5px 视为单击,清掉本次手势的
+/// 选择。不查 selected_text:end() 会把区间内参与者的投影缓存清空
+/// (set_snapshot 置 projected = None),此刻取值退到 fallback——
+/// TextView 的 fallback 是空串(真拖选被误清 = 无法复制),聊天列
+/// SelectableText 行的 fallback 是行全文(零字符选择被判非空 =
+/// 折叠失效)。手势距离对两者免疫。
+/// 词选/行选(click_count 2/3)与真拖选(位移 ≥ 5px)天然豁免。
+/// 已知残留:从 chrome 空白处刻意拖入文本仍会选中至域尾(区间
+/// 钳制);彻底禁止 chrome 锚定需上游(gpui-kit)支持,不本地 patch。
+pub(crate) struct SelectionCollapseGuard;
+
+/// 单击手势起点(window id → 按下位置;App 级 global,guard 每帧
+/// 的监听闭包经它共享状态,元素自身每帧重建不可持有)
+#[derive(Default)]
+struct ClickGestureOrigins(std::collections::HashMap<gpui_kit::WindowId, gpui_kit::Point<Pixels>>);
+impl gpui_kit::Global for ClickGestureOrigins {}
+
+/// 单击判定的位移阈值(逻辑像素;对齐系统 click/drag 分界)
+const CLICK_MAX_TRAVEL: f64 = 5.0;
+
+impl IntoElement for SelectionCollapseGuard {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for SelectionCollapseGuard {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some("selection-collapse-guard".into())
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        (window.request_layout(Style::default(), [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        _: &mut Window,
+        _: &mut App,
+    ) -> Self::PrepaintState {
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        _: &mut Self::PrepaintState,
+        window: &mut Window,
+        _: &mut App,
+    ) {
+        // 捕获相记按下点(先于 bubble 相的层 begin,extend 语义不受影响)
+        window.on_mouse_event(
+            |event: &MouseDownEvent, phase: DispatchPhase, window: &mut Window, cx: &mut App| {
+                if phase.capture() && event.button == MouseButton::Left {
+                    cx.default_global::<ClickGestureOrigins>()
+                        .0
+                        .insert(window.window_handle().window_id(), event.position);
+                }
+            },
+        );
+        window.on_mouse_event(
+            |event: &MouseUpEvent, phase: DispatchPhase, window: &mut Window, cx: &mut App| {
+                if phase.bubble()
+                    && event.button == MouseButton::Left
+                    && event.click_count == 1
+                    && let Some(start) = cx
+                        .global::<ClickGestureOrigins>()
+                        .0
+                        .get(&window.window_handle().window_id())
+                        .copied()
+                {
+                    let travel = (event.position - start).magnitude();
+                    // defer 到选择层 end() 跑完之后再判定清除
+                    window.defer(cx, move |window, cx| {
+                        if travel < CLICK_MAX_TRAVEL
+                            && gpui_kit::base::TextSelection::has_selection(window, cx)
+                        {
+                            gpui_kit::base::TextSelection::clear(window, cx);
                             window.refresh();
                         }
                     });
@@ -457,6 +576,9 @@ impl Render for WorkspaceView {
             // 拖选实时刷新驱动器(零尺寸;见其文档)——必须与本列同窗,
             // 监听挂在窗口级,置脏后渲染循环出帧高亮才实时
             .child(SelectionRefreshDriver)
+            // 微抖动单击折叠守卫(零尺寸;见其文档):零字符活选择
+            // 在 mouse-up 后清除,单击不再激活复制面
+            .child(SelectionCollapseGuard)
             // 聊天域尾哨兵:铺满窗口(栈底),拖选落空时终点钳在聊天域,
             // 不经 predecessor 回退跳进右栏(见 SelectionDomainSink)
             .child(div().absolute().size_full().child(SelectionDomainSink::new(
@@ -751,3 +873,7 @@ impl Render for WorkspaceView {
 /// 节点 bounds 垂直不交叠。
 #[cfg(test)]
 mod layout_tests;
+
+/// 窗口文本选择行为锁(微抖动单击折叠/拖选保留)
+#[cfg(test)]
+mod selection_tests;
