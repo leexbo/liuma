@@ -213,22 +213,22 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 关闭标签:状态面移除(原生层 webview 的拆除见 native.rs;
-    /// 无原生层平台本方法即全部清理)
+    /// 关闭标签:原生层拆视图/停转发(native::remove_tab,主线程),
+    /// 状态面移除
     pub(crate) fn browser_remove(&mut self, id: BrowserTabId, cx: &mut Context<Self>) {
+        super::native::remove_tab(id);
         self.browser.tabs.remove(&id.0);
         cx.notify();
     }
 
-    /// 渲染期取走待执行命令(原生层执行入口;随 macOS webview 层接入
-    /// 启用)
-    #[allow(dead_code)]
+    /// 渲染期取走待执行命令(原生层执行入口)
     pub(crate) fn browser_take_pending(&mut self, id: BrowserTabId) -> Option<NavCommand> {
         self.browser.tab_mut(id).and_then(|t| t.pending.take())
     }
 
     /// 渲染期无原生层的命令落位(丢弃命令并结束加载态,避免无限
-    /// 转圈;占位视图场景)
+    /// 转圈;仅非 macOS stub 的 paint_mount 调用)
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub(crate) fn browser_drop_pending(&mut self, id: BrowserTabId, cx: &mut Context<Self>) {
         if let Some(tab) = self.browser.tab_mut(id)
             && tab.pending.take().is_some()

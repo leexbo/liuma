@@ -27,6 +27,7 @@ use gpui_kit::{
 
 use crate::features::ask;
 use crate::features::attachments;
+use crate::features::browser;
 use crate::features::chat;
 use crate::features::opener;
 use crate::features::sessions;
@@ -87,7 +88,7 @@ pub fn bind_global_keys(cx: &mut App) {
     let browser_shortcut = format!("{SECONDARY_MOD}-t");
     cx.bind_keys([gpui_kit::KeyBinding::new(
         &browser_shortcut,
-        crate::features::browser::OpenPanelBrowser,
+        browser::OpenPanelBrowser,
         None,
     )]);
 }
@@ -430,14 +431,11 @@ impl WorkspaceView {
         });
         // ⌘T = 开浏览器新标签(NEW 哨兵兑换见 open_panel_tab)
         let browser_store = store.clone();
-        App::on_action(
-            cx,
-            move |_: &crate::features::browser::OpenPanelBrowser, cx: &mut App| {
-                browser_store.update(cx, |st, cx| {
-                    st.open_panel_tab(panel::PanelTab::Browser(panel::BrowserTabId::NEW), cx);
-                });
-            },
-        );
+        App::on_action(cx, move |_: &browser::OpenPanelBrowser, cx: &mut App| {
+            browser_store.update(cx, |st, cx| {
+                st.open_panel_tab(panel::PanelTab::Browser(panel::BrowserTabId::NEW), cx);
+            });
+        });
         // 聊天正文右键「复制」:App 级全局 on_action(右键原生菜单派发的动作
         // 在 bubble 末尾送达全局监听,不受焦点/dispatch path 限制)。选中文
         // 本在右键弹菜单时已抓取(stash,见 chat_pane::render),此处只写剪贴板
@@ -597,6 +595,9 @@ impl Render for WorkspaceView {
             // 微抖动单击折叠守卫(零尺寸;见其文档):零字符活选择
             // 在 mouse-up 后清除,单击不再激活复制面
             .child(SelectionCollapseGuard)
+            // 浏览器原生层根级同步(零尺寸;见 features::browser::native
+            // 文档):每帧收敛 webview 隐藏面 + 焦点调停。macOS 外空转
+            .child(browser::NativeSync::new(&self.store))
             // 聊天域尾哨兵:铺满窗口(栈底),拖选落空时终点钳在聊天域,
             // 不经 predecessor 回退跳进右栏(见 SelectionDomainSink)
             .child(div().absolute().size_full().child(SelectionDomainSink::new(

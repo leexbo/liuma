@@ -108,9 +108,13 @@ resvg = "0.48.1"
 usvg = "0.48.1"
 # macOS Dock 图标运行时绘制(objc2 系与 gpui 同源锁定)
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "objc2-core-graphics"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder", "NSView", "NSWindow", "objc2-core-graphics"] }
 objc2-core-graphics = { version = "0.3", features = ["CGBitmapContext", "CGColor", "CGColorSpace", "CGContext", "CGImage"] }
 objc2-foundation = "0.3"
+# 浏览器面板的 WKWebView 挂载(features/browser;特性名随 WebKit header)
+objc2-web-kit = { version = "0.3", features = ["WKBackForwardList", "WKNavigation", "WKNavigationDelegate", "WKPreferences", "WKWebView", "WKWebViewConfiguration"] }
+# gpui 窗口原生句柄(HasWindowHandle;gpui 未重导出到 prelude)
+raw-window-handle = "0.6"
 # macOS 钥匙串凭据(非 macOS 平台该级缺席)
 # 附件图片解码校验(与 gpui 锁同版)
 image = "0.25"

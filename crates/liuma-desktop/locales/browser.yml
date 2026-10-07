@@ -36,10 +36,6 @@ browser:
     zh-CN: "输入地址开始浏览,或点击聊天中的链接"
     en: "Type an address or click a chat link to browse"
 
-  loading:
-    zh-CN: "加载中…"
-    en: "Loading…"
-
   err_scheme:
     zh-CN: "仅支持 http/https 地址,不支持 %{scheme}"
     en: "Only http/https addresses are supported, not %{scheme}"

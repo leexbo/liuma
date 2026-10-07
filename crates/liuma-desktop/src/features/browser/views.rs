@@ -25,11 +25,11 @@ pub(crate) fn render(
     cx: &mut App,
 ) -> gpui_kit::AnyElement {
     // —— 突变相位(terminal render 同款模式)——
-    // ensure:懒建档 + 地址栏输入/订阅;drop:无原生层平台的命令落位
-    // (macOS 原生层接入后由 native 派发取代);sync:地址栏回填
+    // ensure:懒建档 + 地址栏输入/订阅;sync:地址栏回填。命令
+    // (pending)由正文 mount canvas 的 paint 期平台层取走执行
+    // (macOS 派发 WKWebView;其余平台丢弃落位)
     store.update(cx, |st, cx| {
         st.browser_ensure(id, window, cx);
-        st.browser_drop_pending(id, cx);
         st.browser_addr_sync(id, window, cx);
     });
     let st = store.read(cx);
@@ -65,9 +65,24 @@ pub(crate) fn render(
                     .child(div().min_w(px(0.)).child(err)),
             )
         })
-        // 正文:占位(原生层缺席或未导航)。有 URL 且加载中 = 转圈;
-        // 无 URL = 空态引导。macOS webview 挂载后此处替换为 mount 区
-        .child(body_placeholder(&nav, cx))
+        // 正文:有 URL = mount canvas(平台层挂 webview/派发命令);
+        // 无 URL = 空态引导
+        .child(if nav.url.is_empty() {
+            empty_hint(cx).into_any_element()
+        } else {
+            let s_mount = store.clone();
+            gpui_kit::canvas(
+                // prepaint:无自定义绘制
+                |_, _, _| (),
+                move |bounds, _, window, cx| {
+                    super::native::paint_mount(id, &s_mount, bounds, window, cx);
+                },
+            )
+            .flex_1()
+            .min_h(px(0.))
+            .min_w(px(0.))
+            .into_any_element()
+        })
         .into_any_element()
 }
 
@@ -238,8 +253,8 @@ fn nav_button(
         })
 }
 
-/// 占位正文(原生层缺席/未导航)
-fn body_placeholder(nav: &super::store::NavState, cx: &App) -> impl IntoElement {
+/// 空态引导(未导航;加载/错误态由 webview 自渲染 + 错误条承担)
+fn empty_hint(cx: &App) -> impl IntoElement {
     div()
         .debug_selector(|| "browser-body-placeholder".to_string())
         .flex_1()
@@ -247,7 +262,7 @@ fn body_placeholder(nav: &super::store::NavState, cx: &App) -> impl IntoElement 
         .flex()
         .items_center()
         .justify_center()
-        .child(if nav.url.is_empty() {
+        .child(
             div()
                 .flex()
                 .items_center()
@@ -255,27 +270,8 @@ fn body_placeholder(nav: &super::store::NavState, cx: &App) -> impl IntoElement 
                 .text_size(px(12.))
                 .text_color(theme::caption(cx))
                 .child(fixed(IconName::Globe, 14.))
-                .child(crate::kits::i18n::t!("browser.empty_hint"))
-                .into_any_element()
-        } else if nav.loading {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .text_size(px(12.))
-                .text_color(theme::caption(cx))
-                .child(fixed(IconName::LoaderCircle, 14.))
-                .child(crate::kits::i18n::t!("browser.loading"))
-                .into_any_element()
-        } else {
-            // 有 URL、无加载、无原生层 = 页面不可渲染(macOS 之外),
-            // 静态给出地址即可(错误条由导航事件另行驱动)
-            div()
-                .text_size(px(12.))
-                .text_color(theme::caption(cx))
-                .child(nav.url.clone())
-                .into_any_element()
-        })
+                .child(crate::kits::i18n::t!("browser.empty_hint")),
+        )
 }
 
 fn t_back() -> String {

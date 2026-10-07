@@ -6,6 +6,7 @@
 //! 原生 webview 挂载见 native.rs(仅 macOS;WKWebView 直挂 GPUIView)。
 //! 范围外:书签/历史/下载/多窗口;标签列表不持久化(同终端/预览)。
 
+pub(crate) mod native;
 pub(crate) mod store;
 pub(crate) mod url;
 pub(crate) mod views;
@@ -13,6 +14,8 @@ pub(crate) mod views;
 use gpui_kit::actions;
 
 actions!(browser, [OpenPanelBrowser]);
+
+pub(crate) use native::NativeSync;
 
 use url::UrlReject;
 

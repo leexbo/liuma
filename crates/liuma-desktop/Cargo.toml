@@ -60,6 +60,10 @@ objc2.workspace = true
 objc2-app-kit.workspace = true
 objc2-core-graphics.workspace = true
 objc2-foundation.workspace = true
+# 浏览器面板 WKWebView 嵌入(features/browser/native.rs)
+objc2-web-kit.workspace = true
+# Window → NSView 原生句柄(HasWindowHandle trait)
+raw-window-handle.workspace = true
 
 [dev-dependencies]
 # test-support 经 gpui-kit 透传到 gpui(features 树内 union)
