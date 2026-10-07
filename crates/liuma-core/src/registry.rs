@@ -2992,6 +2992,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             "defaultProvider": self.default_provider().id,
             "workspaceProviders": Value::Object(workspace_providers),
             "busyEnter": file.busy_enter,
+            "linkOpen": file.link_open,
             "language": file.language,
             "appearance": file.appearance,
             "themeLight": file.theme_light,
@@ -3102,6 +3103,21 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         }
         self.settings
             .update(|s| s.busy_enter = behavior.to_string())
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))
+    }
+
+    /// 聊天 http(s) 链接打开位置偏好(sidebar / system)
+    pub fn link_open(&self) -> String {
+        self.settings.read().link_open.clone()
+    }
+
+    /// 设置聊天链接打开位置偏好(落盘)
+    pub fn set_link_open(&self, where_to: &str) -> Result<(), RpcError> {
+        if !["sidebar", "system"].contains(&where_to) {
+            return Err(RpcError::bad_request("未知链接打开位置"));
+        }
+        self.settings
+            .update(|s| s.link_open = where_to.to_string())
             .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))
     }
 
@@ -14490,6 +14506,25 @@ mod tests {
         .unwrap();
         assert_eq!(host2.busy_enter(), "steer", "重启保留");
         assert_eq!(host2.settings_view()["busyEnter"], "steer");
+    }
+
+    /// 通用区偏好:link_open 落盘 + 校验 + 重启保留 + view 携带
+    #[test]
+    fn link_open_preference_roundtrip() {
+        let host = temp_host("linkopen");
+        assert_eq!(host.link_open(), "sidebar", "缺省应用内浏览器");
+        host.set_link_open("system").unwrap();
+        assert_eq!(host.link_open(), "system");
+        assert!(host.set_link_open("nope").is_err(), "非法值拒绝");
+        let host2 = AppHost::new_at(
+            host.workspace.clone(),
+            true,
+            "test-key",
+            host.sessions_root.clone(),
+        )
+        .unwrap();
+        assert_eq!(host2.link_open(), "system", "重启保留");
+        assert_eq!(host2.settings_view()["linkOpen"], "system");
     }
 
     /// 通用区偏好:界面语言白名单(zh-CN/en)落盘 + 未知值拒绝 + 重启保留

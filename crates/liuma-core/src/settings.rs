@@ -336,6 +336,10 @@ pub struct SettingsFile {
     /// 运行中 Enter 行为(queue = 排队下一轮 / steer = 转向当前轮)
     #[serde(default = "default_busy_enter")]
     pub busy_enter: String,
+    /// 聊天 http(s) 链接打开位置(sidebar = 应用内浏览器面板 /
+    /// system = 系统浏览器;写入侧 registry 白名单校验)
+    #[serde(default = "default_link_open")]
+    pub link_open: String,
     /// 界面语言偏好(zh / en;写入侧 registry 白名单校验,未知值读取
     /// 回落 zh)
     #[serde(default = "default_language")]
@@ -588,6 +592,11 @@ fn default_busy_enter() -> String {
     "queue".into()
 }
 
+/// link_open 缺省值(应用内浏览器面板)
+fn default_link_open() -> String {
+    "sidebar".into()
+}
+
 /// 内置默认 provider(凭据走默认环境变量名 `DEEPSEEK_API_KEY`)
 pub fn builtin_provider() -> ProviderEntry {
     ProviderEntry {
@@ -619,6 +628,7 @@ impl Default for SettingsFile {
             pinned_workspaces: Vec::new(),
             session_order: Vec::new(),
             busy_enter: default_busy_enter(),
+            link_open: default_link_open(),
             language: default_language(),
             appearance: default_appearance(),
             theme_light: String::new(),
