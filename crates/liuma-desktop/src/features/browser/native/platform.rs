@@ -33,6 +33,8 @@ struct NativeTab {
     delegate: Retained<NavDelegate>,
     /// 上次 setFrame(脏检查;None = 尚未摆位)
     last_frame: Option<NSRect>,
+    /// 当前 UA 是否移动档(None = 未设置;脏检查基线)
+    ua_mobile: Option<bool>,
     /// 转发任务保活(存住才在跑;drop = 取消)
     #[allow(dead_code)]
     forwarder: gpui_kit::Task<()>,
@@ -260,6 +262,7 @@ pub(super) fn paint_mount(
                     web_view,
                     delegate,
                     last_frame: None,
+                    ua_mobile: None,
                     forwarder,
                 },
             );
@@ -311,12 +314,30 @@ pub(super) fn paint_mount(
             tab.web_view.setFrame(frame);
             tab.last_frame = Some(frame);
         }
+        // UA 跟随视口档(移动档 = 移动 Safari UA,桌面档 = 系统默认;
+        // 脏检查,变更只影响后续请求,不触发重载)
+        let mobile_ua = viewport.is_some();
+        if tab.ua_mobile != Some(mobile_ua) {
+            // SAFETY: 主线程直调属性 setter
+            unsafe {
+                if mobile_ua {
+                    let ua = NSString::from_str(MOBILE_UA_NS);
+                    tab.web_view.setCustomUserAgent(Some(&ua));
+                } else {
+                    tab.web_view.setCustomUserAgent(None);
+                }
+            }
+            tab.ua_mobile = Some(mobile_ua);
+        }
         tab.web_view.setHidden(!visible);
         if !visible {
             resign_if_focused(&tab.web_view);
         }
     });
 }
+
+/// 移动视口档的 UA(iOS Safari;dev server 的响应式断点按它命中)
+const MOBILE_UA_NS: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
 
 /// 执行导航命令。reload/goBack/goForward 返回的新 WKNavigation 只是
 /// 意图句柄,进度与结果由 delegate 回调覆盖,丢弃
