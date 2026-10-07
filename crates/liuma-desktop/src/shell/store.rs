@@ -19,7 +19,7 @@ use crate::features::subagents::SubagentsStore;
 use crate::features::trajectory::TrajectoryStore;
 use crate::kits::theme;
 use crate::shell::host::HostBridge;
-use crate::shell::panel::{PanelTab, TerminalTabId};
+use crate::shell::panel::{BrowserTabId, PanelTab, TerminalTabId};
 use crate::shell::reducer::{self, Effect, StoreState};
 
 /// 会话级配置缓存(打开会话时拉取,设置成功后回写)
@@ -124,6 +124,9 @@ pub struct AppStore {
     /// 终端功能切片状态(右栏「终端」标签:多路 shell 会话/网格尺寸;
     /// 域与行为见 features::terminal)
     pub terminal: crate::features::terminal::store::TerminalStore,
+    /// 浏览器功能切片状态(右栏「浏览器」标签:导航状态机;
+    /// 域与行为见 features::browser)
+    pub browser: crate::features::browser::store::BrowserStore,
     /// 「在编辑器中打开」功能切片状态(应用清单/选中/图标缓存/菜单
     /// 开态/失败 toast;域与行为见 features::opener)
     pub opener: OpenerStore,
@@ -278,6 +281,7 @@ impl AppStore {
             preview: crate::features::preview::PreviewStore::default(),
             preview_poll: None,
             terminal: crate::features::terminal::store::TerminalStore::new(),
+            browser: crate::features::browser::store::BrowserStore::new(),
             opener: OpenerStore::default(),
             status_refresh: None,
             status_refresh_gen: 0,
@@ -1329,10 +1333,13 @@ impl AppStore {
     /// 无条件刷新;同会话重拉保留选中/折叠态(原主区切入轨迹语义)
     pub fn open_panel_tab(&mut self, tab: PanelTab, cx: &mut Context<Self>) {
         self.panel_open = true;
-        // 终端 NEW 哨兵兑换真实 id:菜单每次点 = 新开一路 shell
+        // 终端/浏览器 NEW 哨兵兑换真实 id:菜单每次点 = 新开一路
         let tab = match tab {
             PanelTab::Terminal(id) if id == TerminalTabId::NEW => {
                 PanelTab::Terminal(self.terminal.alloc_id())
+            }
+            PanelTab::Browser(id) if id == BrowserTabId::NEW => {
+                PanelTab::Browser(self.browser.alloc_id())
             }
             other => other,
         };
@@ -1353,6 +1360,9 @@ impl AppStore {
         if let Some(PanelTab::Terminal(id)) = self.panel_active_tab {
             self.terminal_ensure(id, cx);
         }
+        if let Some(PanelTab::Browser(id)) = self.panel_active_tab {
+            self.browser_ensure_record(id, cx);
+        }
         cx.notify();
     }
 
@@ -1365,6 +1375,9 @@ impl AppStore {
         }
         if let PanelTab::Terminal(id) = tab {
             self.terminal_remove(id, cx);
+        }
+        if let PanelTab::Browser(id) = tab {
+            self.browser_remove(id, cx);
         }
         self.panel_tabs.retain(|t| *t != tab);
         if self.panel_active_tab == Some(tab) {
@@ -1395,6 +1408,9 @@ impl AppStore {
             }
             if let Some(PanelTab::Terminal(id)) = self.panel_active_tab {
                 self.terminal_ensure(id, cx);
+            }
+            if let Some(PanelTab::Browser(id)) = self.panel_active_tab {
+                self.browser_ensure_record(id, cx);
             }
             cx.notify();
         }

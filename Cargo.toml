@@ -69,6 +69,8 @@ smallvec = "1"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "stream"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# 浏览器面板地址栏规范化(scheme 补全/白名单/凭据拒收)
+url = "2"
 # preset manifest 解析(serde_yaml 的接棒 fork)
 yaml_serde = "0.10"
 wit-bindgen = "0.62"

@@ -3,6 +3,7 @@
 
 pub(crate) mod ask;
 pub(crate) mod attachments;
+pub(crate) mod browser;
 pub(crate) mod chat;
 pub(crate) mod feedback;
 pub(crate) mod files;

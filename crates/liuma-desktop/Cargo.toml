@@ -51,6 +51,8 @@ notify.workspace = true
 smol.workspace = true
 # 轨迹 Started 时刻/时间线 tooltip 的本地时区格式化
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# 浏览器面板地址栏 URL 规范化(features/browser)
+url.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Dock 图标运行时绘制(app_icon.rs);objc2 系与 gpui 同源,纯绑定无 C 交付物

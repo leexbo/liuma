@@ -82,6 +82,14 @@ pub fn bind_global_keys(cx: &mut App) {
         panel::OpenPanelPlan,
         None,
     )]);
+    // 浏览器新标签 = ⌘T / Ctrl+T(浏览器惯例;经 GPUIView 的
+    // performKeyEquivalent 在 webview 聚焦下仍可达)
+    let browser_shortcut = format!("{SECONDARY_MOD}-t");
+    cx.bind_keys([gpui_kit::KeyBinding::new(
+        &browser_shortcut,
+        crate::features::browser::OpenPanelBrowser,
+        None,
+    )]);
 }
 
 /// 拖选实时刷新驱动器。
@@ -420,6 +428,16 @@ impl WorkspaceView {
         App::on_action(cx, move |_: &panel::OpenPanelPlan, cx: &mut App| {
             hotkey_store.update(cx, |st, cx| st.open_panel_tab(panel::PanelTab::Plan, cx));
         });
+        // ⌘T = 开浏览器新标签(NEW 哨兵兑换见 open_panel_tab)
+        let browser_store = store.clone();
+        App::on_action(
+            cx,
+            move |_: &crate::features::browser::OpenPanelBrowser, cx: &mut App| {
+                browser_store.update(cx, |st, cx| {
+                    st.open_panel_tab(panel::PanelTab::Browser(panel::BrowserTabId::NEW), cx);
+                });
+            },
+        );
         // 聊天正文右键「复制」:App 级全局 on_action(右键原生菜单派发的动作
         // 在 bubble 末尾送达全局监听,不受焦点/dispatch path 限制)。选中文
         // 本在右键弹菜单时已抓取(stash,见 chat_pane::render),此处只写剪贴板

@@ -1,0 +1,61 @@
+# 浏览器面板文案(key 根段 == 文件 stem)。
+# 值一律加引号(YAML 裸标量会被解析成非字符串,rust-i18n 只收字符串叶子)。
+_version: 2
+
+browser:
+
+  addr_placeholder:
+    zh-CN: "输入地址(localhost:3000 或 https://…)"
+    en: "Enter address (localhost:3000 or https://…)"
+
+  back:
+    zh-CN: "后退"
+    en: "Back"
+
+  forward:
+    zh-CN: "前进"
+    en: "Forward"
+
+  reload:
+    zh-CN: "刷新"
+    en: "Reload"
+
+  stop:
+    zh-CN: "停止"
+    en: "Stop"
+
+  open_external:
+    zh-CN: "在系统浏览器打开"
+    en: "Open in system browser"
+
+  viewport_desktop:
+    zh-CN: "桌面"
+    en: "Desktop"
+
+  empty_hint:
+    zh-CN: "输入地址开始浏览,或点击聊天中的链接"
+    en: "Type an address or click a chat link to browse"
+
+  loading:
+    zh-CN: "加载中…"
+    en: "Loading…"
+
+  err_scheme:
+    zh-CN: "仅支持 http/https 地址,不支持 %{scheme}"
+    en: "Only http/https addresses are supported, not %{scheme}"
+
+  err_credentials:
+    zh-CN: "地址中不允许内嵌凭据"
+    en: "Embedded credentials are not allowed in the address"
+
+  err_no_host:
+    zh-CN: "地址缺少主机名"
+    en: "Address is missing a host"
+
+  err_too_long:
+    zh-CN: "地址过长"
+    en: "Address is too long"
+
+  err_malformed:
+    zh-CN: "地址无法解析"
+    en: "Address could not be parsed"

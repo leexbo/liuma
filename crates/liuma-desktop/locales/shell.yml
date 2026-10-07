@@ -32,6 +32,10 @@ shell:
     zh-CN: "终端"
     en: "Terminal"
 
+  browser_tab:
+    zh-CN: "浏览器"
+    en: "Browser"
+
   preview_tab:
     zh-CN: "预览"
     en: "Preview"
