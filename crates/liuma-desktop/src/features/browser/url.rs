@@ -1,9 +1,9 @@
 //! 地址栏输入规范化:唯一入口 [`normalize_browser_url`]。只放行
-//! http/https(含 loopback dev server);无 scheme 的主机名按 loopback
-//! 与否补 `http://`/`https://`(dev server 场景 `localhost:3000` 应落
-//! http,公网主机缺省 https)。拒绝:空输入、内嵌凭据、空 host、
-//! 超长输入。文件与脚本类 scheme(file:/data:/javascript:/blob:)天然
-//! 不在白名单内。
+//! http/https;无 scheme 的输入默认补 `https://`(浏览器通用习惯),
+//! 例外 = IP 字面量(loopback/私网/任意 IPv4·IPv6,dev server 场景
+//! `localhost:3000`、`192.168.1.10:5173` 落 http)。拒绝:空输入、
+//! 内嵌凭据、空 host、超长输入。文件与脚本类 scheme
+//! (file:/data:/javascript:/blob:)天然不在白名单内。
 
 /// 地址上限(字节;对齐 dsh 侧栏浏览器 16KiB 上限)
 const MAX_URL_BYTES: usize = 16 * 1024;
@@ -48,7 +48,7 @@ pub(crate) fn normalize_browser_url(input: &str) -> Result<String, UrlReject> {
         }
     } else if trimmed.contains("://") {
         trimmed.to_string()
-    } else if is_loopback_host(trimmed) {
+    } else if is_plain_http_host(trimmed) {
         format!("http://{trimmed}")
     } else {
         format!("https://{trimmed}")
@@ -89,26 +89,28 @@ fn bare_scheme(input: &str) -> Option<&str> {
     (valid_name && !is_port).then_some(scheme)
 }
 
-/// 无 scheme 输入是否 loopback 主机(`localhost` / `127.x.x.x` /
-/// `[::1]`,可带端口;IPv6 形态先取 `]` 前的整段再剥括号)
-fn is_loopback_host(input: &str) -> bool {
+/// 无 scheme 输入是否明文 http 主机:`localhost` 或 IP 字面量
+/// (任意 IPv4/IPv6,含 loopback 与私网——dev server 心智;可带端口)
+fn is_plain_http_host(input: &str) -> bool {
     let host = if let Some(end) = input.find(']') {
         &input[..=end]
     } else {
         input.split(':').next().unwrap_or("")
     };
     let bare = host.trim_start_matches('[').trim_end_matches(']');
-    bare == "localhost" || bare == "::1" || is_ipv4_loopback(bare)
+    bare == "localhost" || is_ipv4_literal(bare) || bare.contains(':')
 }
 
-/// `127.0.0.1` 形态判定(后三段全数字)
-fn is_ipv4_loopback(bare: &str) -> bool {
-    let Some(rest) = bare.strip_prefix("127.") else {
-        return false;
-    };
-    let mut parts = rest.split('.');
-    (0..3).all(|_| match parts.next() {
-        Some(p) => !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()),
+/// IPv4 字面量判定(四段 0-255 数字)
+fn is_ipv4_literal(bare: &str) -> bool {
+    let mut parts = bare.split('.');
+    (0..4).all(|_| match parts.next() {
+        Some(p) => {
+            !p.is_empty()
+                && p.len() <= 3
+                && p.bytes().all(|b| b.is_ascii_digit())
+                && p.parse::<u16>().is_ok_and(|n| n <= 255)
+        }
         None => false,
     }) && parts.next().is_none()
 }
@@ -126,11 +128,15 @@ mod tests {
     }
 
     #[test]
-    fn scheme_completion_prefers_http_for_loopback() {
+    fn scheme_completion_defaults_to_https_except_ip_literals() {
         assert_eq!(ok("localhost:3000"), "http://localhost:3000/");
         assert_eq!(ok("localhost"), "http://localhost/");
         assert_eq!(ok("127.0.0.1:8080"), "http://127.0.0.1:8080/");
+        assert_eq!(ok("192.168.1.10:5173"), "http://192.168.1.10:5173/");
         assert_eq!(ok("[::1]:5173"), "http://[::1]:5173/");
+        assert_eq!(ok("[fe80::1]:3000"), "http://[fe80::1]:3000/");
+        // 域名一律 https(显式 scheme 不受影响)
+        assert_eq!(ok("example.com"), "https://example.com/");
     }
 
     #[test]
