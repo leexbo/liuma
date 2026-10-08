@@ -7427,6 +7427,10 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                         }
                     }
                     RpcResult::Err(_) => {
+                        // 用户取消(桌面 ✕/放弃):点名文案必须送进工具结果。
+                        // 只丢 tx 会让模型看到笼统的「未被应答」,把「用户明确
+                        // 取消」伪装成没作答,进而当作默许推进(真机事故)
+                        let _ = tx.send(Err(ASK_USER_CANCELLED.to_string()));
                         return RespondReceipt {
                             accepted: false,
                             reason: Some("cancelled".into()),
@@ -7516,6 +7520,10 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
 
 /// plan 评审问询的批准选项 label(应答判别键;桌面审批卡回带同值)
 const PLAN_APPROVE_LABEL: &str = "批准";
+
+/// ask_user_question 用户取消文案(应答 Err 经 tx 送进工具结果,模型逐字
+/// 看到)。要点:点名取消、否认同意/推荐项、禁止代答推进、停止等待指示。
+const ASK_USER_CANCELLED: &str = "用户已取消 ask_user_question:这不是同意,也不代表选择了任何推荐项。不得代替用户作答或推进该决策,应停止并等待用户的明确指示。";
 
 /// 计划评审问询帧(live in-turn 与冷恢复 re-ask 同一形状)。
 /// 桌面按 intent.kind=plan-review 窄化成计划审批卡(两步制)。
@@ -14056,6 +14064,49 @@ mod tests {
         assert!(reason.contains("q1"), "裁决缘由应指名道姓:{reason}");
         let err = ask_task.await.unwrap().unwrap_err();
         assert_eq!(err, reason, "工具侧应拿到裁决缘由,而不是「未被应答」");
+    }
+
+    /// respond Err(用户取消)必须把点名文案送进工具结果:只丢 tx 会让模型
+    /// 看到笼统的「未被应答」,把「用户明确取消」伪装成没作答——真机事故:
+    /// 模型把取消当默许,按推荐项推进。
+    #[tokio::test]
+    async fn respond_err_names_user_cancellation() {
+        let host = temp_host("ask-cancel-err");
+        let id = host.create_session(None, None, None);
+        let mut mux = host.mux_subscribe();
+        let questions = vec![liuma_tools::QuestionItem {
+            id: "q1".into(),
+            question: "继续?".into(),
+            header: None,
+            options: vec![liuma_tools::QuestionOption {
+                label: "是".into(),
+                description: None,
+            }],
+            multi_select: false,
+        }];
+        let host2 = host.clone();
+        let sid = id.clone();
+        let ask_task = tokio::spawn(async move { host2.ask_questions(&sid, &questions).await });
+        let f = recv_until(&mut mux, |f| f.method == "question/requested")
+            .await
+            .expect("应收到 question/requested");
+        let rpc_id = f.rpc_id.clone();
+        host.respond(
+            &rpc_id,
+            &RpcResult::Err(RpcError {
+                code: "cancelled".into(),
+                message: "user cancelled the question".into(),
+                details: Value::Null,
+            }),
+        );
+        let err = ask_task.await.unwrap().unwrap_err();
+        assert!(err.contains("用户已取消"), "应点名用户取消:{err}");
+        assert!(err.contains("不得代替用户作答"), "应禁止代答推进:{err}");
+        assert!(!err.contains("未被应答"), "不得退化为笼统未应答:{err}");
+        assert!(
+            !host.pending.lock().unwrap().contains_key(&rpc_id),
+            "取消后 pending 应清空"
+        );
     }
 
     /// 答题卡期间「停止」能真正中止:ask 阻塞在 rx 时会话软取消令牌触发
