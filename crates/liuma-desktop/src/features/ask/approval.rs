@@ -1,10 +1,10 @@
 //! 沙箱升级审批卡(intent = sandbox-escalation):bash 命令被沙箱拒绝
 //! 后,模型带 `sandbox_permissions` + `justification` 请求一次性加宽;
 //! 卡片信任锚 = **命令原文 + 目标模式**(justification 是模型写的不可信
-//! 文本)。交互 = 一步两钮(批准一次 / 拒绝,✕ = 取消)——被拒
+//! 文本)。交互 = 一步两钮(批准一次 / 拒绝),无关闭钮——审批强制
+//! 作答(对齐 dsh fail-closed);停止键中断是唯一取消路径。被拒
 //! 对该命令终局,无反馈通道;批准只盖本次执行,不落 sandbox/mode。
 
-use gpui_kit::component::IconName;
 use gpui_kit::component::StyledExt;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -13,7 +13,6 @@ use gpui_kit::{
 };
 
 use crate::kits::i18n::t;
-use crate::kits::icons::fixed;
 use crate::kits::theme;
 use crate::shell::store::AppStore;
 
@@ -56,7 +55,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
         Some(_) => t!("ask.risk_reason_uncertain", p = probability).into_owned(),
         None => String::new(),
     };
-    let (approve, reject, dismiss) = (store.clone(), store.clone(), store.clone());
+    let (approve, reject) = (store.clone(), store.clone());
     Some(
         div()
             .id("approval-card")
@@ -69,7 +68,8 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
             .border_color(theme::border(cx))
             .bg(theme::layer(cx))
             .p(px(14.))
-            // 标题行:工具名 + 模式迁移;✕ = 取消请求
+            // 标题行:工具名 + 模式迁移。无 ✕:审批强制作答(对齐 dsh,
+            // fail-closed;停止键中断是唯一取消路径,core 落 cancelled)
             .child(
                 div()
                     .flex()
@@ -93,23 +93,7 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
                                 target = target_mode
                             )),
                     )
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .id("approval-dismiss")
-                            .debug_selector(|| "approval-dismiss".to_string())
-                            .size(px(24.))
-                            .rounded_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_color(theme::caption(cx))
-                            .hover(|s| s.bg(theme::dock(cx)))
-                            .on_click(move |_, _, cx| {
-                                dismiss.update(cx, |st, cx| st.dismiss_approval(cx));
-                            })
-                            .child(fixed(IconName::Close, 12.)),
-                    ),
+                    .child(div().flex_1()),
             )
             // 命令原文(信任锚:全量可读,不截断)
             .child(

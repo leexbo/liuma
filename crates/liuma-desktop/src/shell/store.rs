@@ -58,6 +58,8 @@ pub struct AppStore {
     /// 运行时长秒刷定时器:仅当前会话 running 时在场;drop = 取消。
     /// 存句柄以便会话停止/切换时主动停止,避免空闲期悬空轮询。
     pub run_tick: Option<gpui_kit::Task<()>>,
+    /// 问答卡倒计时秒刷(带 deadline 的可见卡;无即停)
+    pub ask_tick: Option<gpui_kit::Task<()>>,
     /// 子代理菜单秒刷定时器(lineage 菜单开且有运行中子代理时在场)
     pub lineage_tick: Option<gpui_kit::Task<()>>,
     /// 额度自动刷新 5min 节拍(挂窗一次常驻;触发面见 start_billing_tick)
@@ -245,10 +247,12 @@ impl AppStore {
                 pending_plan: None,
                 pending_ask: None,
                 pending_approval: None,
+                pending_by_session: HashMap::new(),
             },
             bridge,
             stats_by_id: HashMap::new(),
             run_tick: None,
+            ask_tick: None,
             lineage_tick: None,
             billing_tick: None,
             window: None,
@@ -570,9 +574,14 @@ impl AppStore {
         {
             self.apply_permission_echo(mode, cx);
         }
+        let prev_ask_rpc = self.state.pending_ask.as_ref().map(|a| a.rpc_id.clone());
         let effects = reducer::apply_frame(&mut self.state, frame);
         for effect in effects {
             self.run_effect(effect, cx);
+        }
+        // 新问询到卡:掀开收起态(同一 rpc 的 baseline 重放不扰动 hide)
+        if self.state.pending_ask.as_ref().map(|a| &a.rpc_id) != prev_ask_rpc.as_ref() {
+            self.ask.ask_hidden = false;
         }
         if touches_current_chat {
             self.chat.chat_version += 1;
@@ -582,6 +591,7 @@ impl AppStore {
         }
         self.sync_run_tick(cx);
         self.sync_lineage_tick(cx);
+        self.sync_ask_tick(cx);
         cx.notify();
     }
 
@@ -674,6 +684,53 @@ impl AppStore {
         } else if !running {
             // 会话停止/切换:停掉旧节拍,让 run_tick 复位为 None
             self.run_tick.take();
+        }
+    }
+
+    /// 问答倒计时秒刷:当前会话有带 deadline 的可见问答卡 → 1s 节拍驱动
+    /// 卡头倒计时重绘;无即停(照 sync_run_tick 手法)。deadline 到点由
+    /// core 超时臂收卡(resolved timed-out),UI 至多滞后 1s
+    pub(crate) fn sync_ask_tick(&mut self, cx: &mut Context<Self>) {
+        let live = self
+            .state
+            .current_id
+            .as_deref()
+            .zip(self.state.pending_ask.as_ref())
+            .is_some_and(|(id, a)| {
+                a.session_id == id && a.deadline_ms.is_some() && !self.ask.ask_hidden
+            });
+        if live && self.ask_tick.is_none() {
+            self.ask_tick = Some(cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(1))
+                        .await;
+                    let gone = this
+                        .update(cx, |s, cx| {
+                            let alive = s
+                                .state
+                                .current_id
+                                .as_deref()
+                                .zip(s.state.pending_ask.as_ref())
+                                .is_some_and(|(id, a)| {
+                                    a.session_id == id
+                                        && a.deadline_ms.is_some()
+                                        && !s.ask.ask_hidden
+                                });
+                            if alive {
+                                cx.notify();
+                            }
+                            !alive
+                        })
+                        .unwrap_or(true);
+                    if gone {
+                        break;
+                    }
+                }
+            }));
+            cx.notify();
+        } else if !live {
+            self.ask_tick.take();
         }
     }
 

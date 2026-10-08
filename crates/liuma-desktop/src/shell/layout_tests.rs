@@ -6326,7 +6326,7 @@ fn ask_card_header_states_never_fall_back_to_question(cx: &mut TestAppContext) {
     assert!(wcx.debug_bounds("ask-title").is_some(), "标题应恒在场");
 
     // 态 2:header 缺席 → eyebrow 缺席、title 在场(问题文本只出现一次)
-    cx.update(|app| store.update(app, |st, cx| st.cancel_ask(cx)));
+    cx.update(|app| store.update(app, |st, cx| st.hide_ask(cx)));
     cx.run_until_parked();
     let no_header: Vec<serde_json::Value> = serde_json::from_value(serde_json::json!([
         { "id": "q2", "question": "只有这一句问题文本", "multi_select": false }

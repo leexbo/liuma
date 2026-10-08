@@ -1,7 +1,10 @@
 //! 问答卡:
 //! 模型 `ask_user_question` 抛出的问题集,分页一题一答(单选/多选),
-//! 可自定义文本;提交(整批)或放弃(取消)。应答经 host.respond 回填,
-//! 工具结果作为同一 tool-call 的 tool/result。
+//! 可自定义文本;整批提交。应答经 host.respond 回填,工具结果作为同一
+//! tool-call 的 tool/result。✕ 只收起不取消:请求站立、工具继续阻塞,
+//! 消息流 ask 行的「回答」入口可重开(对齐 dsh keyed 卡 hide 语义);
+//! 停止键中断是唯一取消路径(core 落点名取消文案)。计时问询(带
+//! deadline)卡头有倒计时,超时由 core 收口转 continued(仍可答)。
 //!
 //! 选项、分页、校验与键盘全部归库 `Questionnaire`:状态机与 wire 形状的
 //! 互译见 [`crate::features::ask::store::AppStore::ensure_ask_questionnaire`],
@@ -12,6 +15,7 @@
 use gpui_kit::component::IconName;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::StyledExt;
+use gpui_kit::component::progress::ProgressCircle;
 use gpui_kit::component::questionnaire::{
     Questionnaire, QuestionnaireActions, QuestionnaireChoice, QuestionnaireChoices,
     QuestionnaireError, QuestionnaireInput, QuestionnaireItem, QuestionnaireNext,
@@ -36,6 +40,10 @@ pub fn render(
     cx: &mut App,
 ) -> Option<impl IntoElement> {
     let ask = store.read(cx).state.pending_ask.clone()?;
+    // 收起态:卡撤下(pending 保留,行可重开)
+    if store.read(cx).ask.ask_hidden {
+        return None;
+    }
     let current = store.read(cx).state.current_id.clone()?;
     if ask.session_id != current {
         eprintln!(
@@ -71,6 +79,40 @@ pub fn render(
         .and_then(|q| q.options.as_ref().map(Vec::len))
         .unwrap_or(0);
     let cancel = store.clone();
+    // 倒计时槽(计时问询):剩余秒 + 环形进度(总时长 = 建卡时剩余;
+    // 到点由 core 超时臂收卡,UI 至多滞后 1s——sync_ask_tick 秒刷)
+    let countdown = ask.deadline_ms.map(|deadline| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let remaining = (deadline - now).max(0);
+        let total = store
+            .read(cx)
+            .ask
+            .ask_deadline_total
+            .filter(|t| *t > 0)
+            .unwrap_or(remaining.max(1));
+        let pct = (remaining as f32 / total as f32).clamp(0., 1.) * 100.;
+        let secs = (remaining + 999) / 1000;
+        div()
+            .id("ask-countdown")
+            .debug_selector(|| "ask-countdown".to_string())
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .child(
+                ProgressCircle::new("ask-countdown-ring")
+                    .value(pct)
+                    .color(theme::warning(cx)),
+            )
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(theme::caption(cx))
+                    .child(t!("ask.countdown_s", s = secs).to_string()),
+            )
+    });
     // 库只报「为什么不合格」,句子归表现层(其自带译文仅默认值):
     // 本卡无必答项,故 Required 与 Unanswered 同取「请选择一个选项或
     // 填写自定义答案。」
@@ -163,21 +205,29 @@ pub fn render(
                                     )
                                     .child(
                                         div()
-                                            .id("ask-cancel")
-                                            .debug_selector(|| "ask-cancel".to_string())
-                                            .size(px(24.))
-                                            .flex_shrink_0()
-                                            .rounded_full()
                                             .flex()
                                             .items_center()
-                                            .justify_center()
-                                            .cursor_pointer()
-                                            .text_color(theme::caption(cx))
-                                            .hover(|s| s.bg(theme::dock(cx)))
-                                            .on_click(move |_, _, cx| {
-                                                cancel.update(cx, |st, cx| st.cancel_ask(cx))
-                                            })
-                                            .child(fixed(IconName::Close, 12.)),
+                                            .gap(px(6.))
+                                            .flex_shrink_0()
+                                            .children(countdown)
+                                            .child(
+                                                div()
+                                                    .id("ask-cancel")
+                                                    .debug_selector(|| "ask-cancel".to_string())
+                                                    .size(px(24.))
+                                                    .rounded_full()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .cursor_pointer()
+                                                    .text_color(theme::caption(cx))
+                                                    .hover(|s| s.bg(theme::dock(cx)))
+                                                    .tooltip(crate::shell::tip(t!("ask.hide_tip")))
+                                                    .on_click(move |_, _, cx| {
+                                                        cancel.update(cx, |st, cx| st.hide_ask(cx))
+                                                    })
+                                                    .child(fixed(IconName::Close, 12.)),
+                                            ),
                                     ),
                             )
                             .child(

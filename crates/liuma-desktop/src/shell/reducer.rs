@@ -30,6 +30,10 @@ pub struct PendingAsk {
     pub session_id: String,
     /// 完整问题集(UI pager 分页,整批提交)
     pub questions: Vec<Question>,
+    /// 关联 tool/call 日志 seq(行键 `call:{seq}`;骑通道问询缺席)
+    pub call_id: Option<String>,
+    /// 超时截止(epoch ms;阻塞问询缺席——卡头倒计时的数据源)
+    pub deadline_ms: Option<i64>,
 }
 
 /// 待批沙箱升级(intent = sandbox-escalation;一次两钮,批准 = allow-once)
@@ -89,6 +93,9 @@ pub struct StoreState {
     pub pending_ask: Option<PendingAsk>,
     /// 待批沙箱升级(intent = sandbox-escalation;resolved 清空)
     pub pending_approval: Option<PendingApproval>,
+    /// 会话 → 未决问答的 rpc(侧栏「待答」角标数据源:卡收起/超时转
+    /// continued 后唯一的全局痕迹;resolved 按 rpc 收口)
+    pub pending_by_session: HashMap<String, String>,
 }
 
 /// 应用一帧,返回待执行副作用。
@@ -240,19 +247,70 @@ pub fn apply_frame(state: &mut StoreState, frame: ServerRequest) -> Vec<Effect> 
                     });
                 }
             } else {
-                // 通用 ask_user_question(完整问题集;UI pager 分页)
+                // 通用 ask_user_question(完整问题集;UI pager 分页)。
+                // continued 态(超时/冷恢复)不开卡:模型已拿 pending
+                // 结果继续干活,只留角标 + 行「回答」入口
+                state
+                    .pending_by_session
+                    .insert(f.session_id.clone(), frame.rpc_id.clone());
+                if f.state.as_deref() == Some("continued") {
+                    if state
+                        .pending_ask
+                        .as_ref()
+                        .is_some_and(|a| a.rpc_id == frame.rpc_id)
+                    {
+                        state.pending_ask = None;
+                    }
+                    return vec![];
+                }
                 state.pending_ask = Some(PendingAsk {
                     rpc_id: frame.rpc_id,
                     session_id: f.session_id,
                     questions: f.questions,
+                    call_id: f.call_id,
+                    deadline_ms: f.deadline_ms,
                 });
             }
             vec![]
         }
         "question/resolved" => {
-            state.pending_plan = None;
-            state.pending_ask = None;
-            state.pending_approval = None;
+            let Ok(f) = serde_json::from_value::<liuma_core::proto::QuestionResolvedFrame>(
+                frame.payload.clone(),
+            ) else {
+                // 遗留形状(无必需字段):按旧语义全清三卡
+                state.pending_plan = None;
+                state.pending_ask = None;
+                state.pending_approval = None;
+                return vec![];
+            };
+            // 按 rpc 精确收口(不再无条件清三卡):多交互并存时各自的
+            // resolved 不误伤他人;角标同步按 rpc 回收
+            if state
+                .pending_ask
+                .as_ref()
+                .is_some_and(|a| a.rpc_id == f.question_rpc_id)
+            {
+                state.pending_ask = None;
+            }
+            if state
+                .pending_plan
+                .as_ref()
+                .is_some_and(|p| p.rpc_id == f.question_rpc_id)
+            {
+                state.pending_plan = None;
+            }
+            if state
+                .pending_approval
+                .as_ref()
+                .is_some_and(|p| p.rpc_id == f.question_rpc_id)
+            {
+                state.pending_approval = None;
+            }
+            if state.pending_by_session.get(&f.session_id) == Some(&f.question_rpc_id)
+                && f.outcome != "timed-out"
+            {
+                state.pending_by_session.remove(&f.session_id);
+            }
             vec![]
         }
         _ => vec![],
@@ -441,6 +499,7 @@ mod tests {
             pending_plan: None,
             pending_ask: None,
             pending_approval: None,
+            pending_by_session: HashMap::new(),
         }
     }
 
@@ -775,5 +834,133 @@ mod tests {
     fn workspace_key_split() {
         assert_eq!(workspace_of("proj/s-1", "w"), "proj");
         assert_eq!(workspace_of("s-1", "w"), "w");
+    }
+
+    /// resolved 按 rpc 精确收口:ask 的 resolved 不清 plan/approval 卡;
+    /// 非本人 rpc 不清卡;角标按 rpc 回收(timed-out 保留——仍可答)。
+    #[test]
+    fn resolved_matches_by_rpc_id() {
+        let mut st = state();
+        // 三卡并存(同一会话理论上串行,但收口语义必须精确)
+        st.pending_ask = Some(PendingAsk {
+            rpc_id: "r-ask".into(),
+            session_id: "s1".into(),
+            questions: vec![],
+            call_id: None,
+            deadline_ms: None,
+        });
+        st.pending_plan = Some(PendingPlan {
+            rpc_id: "r-plan".into(),
+            session_id: "s1".into(),
+            question: Question {
+                id: "plan".into(),
+                question: "q".into(),
+                header: None,
+                detail: None,
+                options: None,
+                multi_select: None,
+                intent: None,
+                data: None,
+            },
+        });
+        st.pending_by_session.insert("s1".into(), "r-ask".into());
+        // ask 的 answered resolved:只清 ask + 角标
+        apply_frame(
+            &mut st,
+            ServerRequest {
+                r#type: "server-request".into(),
+                rpc_id: "x".into(),
+                method: "question/resolved".into(),
+                payload: json!({
+                    "sessionId": "s1", "questionRpcId": "r-ask", "outcome": "answered"
+                }),
+            },
+        );
+        assert!(st.pending_ask.is_none(), "本人 resolved 收口 ask");
+        assert!(st.pending_plan.is_some(), "他人卡不得误伤");
+        assert!(
+            !st.pending_by_session.contains_key("s1"),
+            "answered 回收角标"
+        );
+        // timed-out:卡在(pending 由后续帧处理)、角标保留
+        st.pending_by_session.insert("s1".into(), "r-ask2".into());
+        apply_frame(
+            &mut st,
+            ServerRequest {
+                r#type: "server-request".into(),
+                rpc_id: "x".into(),
+                method: "question/resolved".into(),
+                payload: json!({
+                    "sessionId": "s1", "questionRpcId": "r-ask2", "outcome": "timed-out"
+                }),
+            },
+        );
+        assert_eq!(
+            st.pending_by_session.get("s1").map(String::as_str),
+            Some("r-ask2"),
+            "timed-out 保留角标(仍可答)"
+        );
+        // plan 的 resolved:清 plan 不动角标外的东西
+        apply_frame(
+            &mut st,
+            ServerRequest {
+                r#type: "server-request".into(),
+                rpc_id: "x".into(),
+                method: "question/resolved".into(),
+                payload: json!({
+                    "sessionId": "s1", "questionRpcId": "r-plan", "outcome": "approved"
+                }),
+            },
+        );
+        assert!(st.pending_plan.is_none());
+        assert!(st.pending_by_session.contains_key("s1"));
+    }
+
+    /// continued 问询(超时/冷恢复)不开卡只记角标;open 问询开卡 + 记角标。
+    #[test]
+    fn continued_request_opens_no_card_but_flags_badge() {
+        let mut st = state();
+        let q = json!([{
+            "id": "q1", "question": "继续?", "multiSelect": false
+        }]);
+        // continued 帧
+        apply_frame(
+            &mut st,
+            ServerRequest {
+                r#type: "server-request".into(),
+                rpc_id: "r-c".into(),
+                method: "question/requested".into(),
+                payload: json!({
+                    "sessionId": "s1", "questions": q, "state": "continued",
+                    "callId": "7"
+                }),
+            },
+        );
+        assert!(st.pending_ask.is_none(), "continued 不开卡");
+        assert_eq!(
+            st.pending_by_session.get("s1").map(String::as_str),
+            Some("r-c")
+        );
+        // open 帧(带 deadline)
+        apply_frame(
+            &mut st,
+            ServerRequest {
+                r#type: "server-request".into(),
+                rpc_id: "r-o".into(),
+                method: "question/requested".into(),
+                payload: json!({
+                    "sessionId": "s1", "questions": q, "callId": "8",
+                    "deadlineMs": 123_456
+                }),
+            },
+        );
+        let ask = st.pending_ask.as_ref().expect("open 应开卡");
+        assert_eq!(ask.rpc_id, "r-o");
+        assert_eq!(ask.call_id.as_deref(), Some("8"));
+        assert_eq!(ask.deadline_ms, Some(123_456));
+        assert_eq!(
+            st.pending_by_session.get("s1").map(String::as_str),
+            Some("r-o")
+        );
     }
 }
