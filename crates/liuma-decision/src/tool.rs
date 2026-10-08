@@ -335,6 +335,7 @@ mod tests {
         ToolCallRequest {
             name: DECIDE_TOOL_NAME.into(),
             arguments,
+            id: String::new(),
         }
     }
 

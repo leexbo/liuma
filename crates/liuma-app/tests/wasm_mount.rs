@@ -120,6 +120,7 @@ async fn preset_mounts_external_wasm_tool() {
         .execute(&ToolCallRequest {
             name: "echo_config".into(),
             arguments: serde_json::json!({ "message": "hi" }),
+            id: String::new(),
         })
         .await;
     assert!(out.success, "执行成功:{}", out.output);

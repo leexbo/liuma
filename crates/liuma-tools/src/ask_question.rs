@@ -1,10 +1,15 @@
 //! ask_user_question 工具。
 //!
-//! 模型调用 `ask_user_question` 向用户提一组问题(单选/多选/自定义),**阻塞**等待
-//! 用户应答(严格阻塞语义):宿主经 [`AskQuestionPort`] 落 pending + 广播
-//! `question/requested`,用户应答后 resolve,结果作为**同一 tool-call 的
-//! tool/result 回填**(`{"answers":[{id, selected[], custom?}]}`),模型继续同一 turn。
-//! 无超时预算;取消仅经用户放弃/中断。
+//! 模型调用 `ask_user_question` 向用户提一组问题(单选/多选/自定义),等待
+//! 用户应答;两种等待语义由 `timeout` 参数决定:
+//! - `timeout > 0`(缺省 120):计时等待——超时前应答则作为**同一 tool-call
+//!   的 tool/result** 回填(`{"answers":[{id, selected[], custom?}]}`),模型
+//!   继续同一 turn;超时则回填 `{"pending":true, callId, message}`,问题转
+//!   continued(仍可答),迟到应答经 steer 通道以
+//!   `answer_to_pending_question` 用户消息注入后续 step。
+//! - `timeout = -1`:无限阻塞(仅在必须先有答案才能继续时使用)。
+//!
+//! 取消仅经会话中断;用户放弃(桌面 ✕)不结束请求,只收起卡。
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -37,15 +42,23 @@ pub struct QuestionItem {
     pub multi_select: bool,
 }
 
+/// 缺省计时等待(秒);`timeout` 入参缺席时生效
+pub const DEFAULT_ASK_TIMEOUT_SEC: i64 = 120;
+
 /// 用户应答端口(宿主注入;实现方:liuma-core AppHost)。
-/// 阻塞 ask:落 pending → 广播 question/requested → await 用户 respond →
-/// 返回 tool/result 文本 JSON(`{"answers":[...]}`)。
+/// ask:落 pending → 广播 question/requested → await 用户 respond / 超时。
+/// 返回 tool/result 文本:应答 = `{"answers":[...]}`;
+/// `timeout_sec > 0` 且超时 = `{"pending":true, callId, message}`(问题转
+/// continued,迟到应答走 steer);取消/中断 → Err(点名文案)。
 pub trait AskQuestionPort: Send + Sync {
-    /// 阻塞提问(单个 ask 可含多问题);取消/中断 → Err(可恢复文案)。
+    /// 提问(单个 ask 可含多问题);`call_id` = tool/call 日志 seq(行键,
+    /// 可空),`timeout_sec` = 等待秒数(-1 阻塞)。
     fn ask(
         &self,
         session_id: &str,
+        call_id: &str,
         questions: &[QuestionItem],
+        timeout_sec: i64,
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send>>;
 }
 
@@ -71,7 +84,7 @@ impl ToolPort for AskQuestionTool {
             "type": "function",
             "function": {
                 "name": "ask_user_question",
-                "description": "Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding. Send one or more questions, each with a stable id that will be echoed in the answer. An answer item with an empty `selected` array means the user skipped the question: treat it as 'no answer' — never choose an option on the user's behalf and never continue the skipped decision; re-ask with different wording or stop and wait for the user's explicit direction.",
+                "description": "Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding. Send one or more questions, each with a stable id that will be echoed in the answer. An answer item with an empty `selected` array means the user skipped the question: treat it as 'no answer' — never choose an option on the user's behalf and never continue the skipped decision; re-ask with different wording or stop and wait for the user's explicit direction. A `pending` result means no answer batch arrived before the timeout and the user can still answer; it is not a skipped answer: continue useful independent work, and do not treat it as permission — the user's reply will arrive as a user message identified as answer_to_pending_question with this callId.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -100,6 +113,10 @@ impl ToolPort for AskQuestionTool {
                                 },
                                 "required": ["id", "question"]
                             }
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": "Wait seconds for the entire batch (default 120); omit unless the user specifies a duration. Use -1 only when an answer is required before proceeding."
                         }
                     },
                     "required": ["questions"]
@@ -111,6 +128,7 @@ impl ToolPort for AskQuestionTool {
     fn execute(&mut self, call: &ToolCallRequest) -> impl Future<Output = ToolOutput> + Send {
         let port = self.port.clone();
         let current = self.current.clone();
+        let call_id = call.id.clone();
         async move {
             let questions = match parse_questions(&call.arguments) {
                 Ok(q) => q,
@@ -122,7 +140,17 @@ impl ToolPort for AskQuestionTool {
                     };
                 }
             };
-            match port.ask(&current, &questions).await {
+            let timeout_sec = match parse_timeout(&call.arguments) {
+                Ok(t) => t,
+                Err(e) => {
+                    return ToolOutput {
+                        output: format!("ask_user_question 参数无效:{e}"),
+                        success: false,
+                        ..Default::default()
+                    };
+                }
+            };
+            match port.ask(&current, &call_id, &questions, timeout_sec).await {
                 Ok(text) => ToolOutput {
                     output: text,
                     success: true,
@@ -201,6 +229,18 @@ fn args_or_json_string(args: &Value) -> Value {
     }
 }
 
+/// 解析 `timeout` 入参:-1(无限阻塞)或 1..=2147483 秒;缺席取缺省。
+fn parse_timeout(args: &Value) -> Result<i64, String> {
+    let args = args_or_json_string(args);
+    match args.get("timeout") {
+        None | Some(Value::Null) => Ok(DEFAULT_ASK_TIMEOUT_SEC),
+        Some(v) => match v.as_i64() {
+            Some(t) if t == -1 || (1..=2_147_483).contains(&t) => Ok(t),
+            _ => Err("timeout 必须是 -1 或 1..=2147483 的整数秒".to_string()),
+        },
+    }
+}
+
 // ── 生命周期落档(事件信封 + 冷恢复 fold)──────────────────────────
 // ask 族事件:ask/requested → 终局 ask/answered | ask/cancelled;
 // ask/timed-out 非终局(超时后仍可答)。事件是桌面行状态机与冷恢复
@@ -220,8 +260,9 @@ pub struct PendingAskEntry {
 }
 
 /// questions → 事件/帧共用的 JSON 数组形状(与 proto Question 序列化同构:
-/// header/description 为 null 而非缺席)
-fn questions_to_event_json(questions: &[QuestionItem]) -> Value {
+/// header/description 为 null 而非缺席)。迟到应答的 steer 文本与
+/// ask/requested 事件共用此形状
+pub fn questions_to_event_json(questions: &[QuestionItem]) -> Value {
     json!(
         questions
             .iter()
@@ -397,6 +438,57 @@ mod tests {
         );
     }
 
+    /// 模型面 pending 契约锁:超时 pending ≠ 跳过,描述必须载明
+    /// 「仍可答、继续独立工作、不得视为许可、迟到回复形状」(对齐 dsh
+    /// timed 描述;真机事故的同族风险:模型把「没答」读成默许)
+    #[test]
+    fn description_carries_pending_contract() {
+        let tool = AskQuestionTool::new(Arc::new(RecordingPort), "ws");
+        let spec = tool.specs()[0]["function"]["description"]
+            .as_str()
+            .expect("描述应在场")
+            .to_string();
+        assert!(
+            spec.contains("A `pending` result means no answer batch arrived before the timeout"),
+            "描述应载明 pending 语义"
+        );
+        assert!(
+            spec.contains("do not treat it as permission"),
+            "描述应封死「没答=默许」"
+        );
+        assert!(
+            spec.contains("answer_to_pending_question"),
+            "描述应写明迟到回复的标识"
+        );
+    }
+
+    /// timeout 入参校验:-1 / 1..=2147483 / 缺省 120 / 越界与非整数拒。
+    #[test]
+    fn parse_timeout_validates() {
+        let args = |v: Value| v;
+        assert_eq!(
+            parse_timeout(&args(json!({ "questions": [] }))).unwrap(),
+            DEFAULT_ASK_TIMEOUT_SEC,
+            "缺席取缺省"
+        );
+        assert_eq!(parse_timeout(&args(json!({ "timeout": -1 }))).unwrap(), -1);
+        assert_eq!(parse_timeout(&args(json!({ "timeout": 1 }))).unwrap(), 1);
+        assert_eq!(
+            parse_timeout(&args(json!({ "timeout": 2_147_483 }))).unwrap(),
+            2_147_483
+        );
+        for bad in [0, -2, 2_147_484] {
+            assert!(
+                parse_timeout(&args(json!({ "timeout": bad }))).is_err(),
+                "{bad} 应被拒"
+            );
+        }
+        assert!(parse_timeout(&args(json!({ "timeout": "120" }))).is_err());
+        // JSON 字符串方言(OpenAI 兼容 wire)
+        let wire = json!(serde_json::to_string(&json!({ "timeout": 30 })).unwrap());
+        assert_eq!(parse_timeout(&wire).unwrap(), 30);
+    }
+
     #[derive(Default)]
     struct RecordingPort;
 
@@ -404,7 +496,9 @@ mod tests {
         fn ask(
             &self,
             _session_id: &str,
+            _call_id: &str,
             _questions: &[QuestionItem],
+            _timeout_sec: i64,
         ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send>> {
             Box::pin(std::future::ready(Err("未应答".into())))
         }

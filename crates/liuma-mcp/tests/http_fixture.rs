@@ -148,6 +148,8 @@ async fn http_connect_discover_call_and_headers_passthrough() {
         &ToolCallRequest {
             name: "mcp__httpsrv__echo_auth".into(),
             arguments: json!({}),
+
+            id: String::new(),
         },
     )
     .await;

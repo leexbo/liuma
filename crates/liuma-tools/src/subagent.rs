@@ -2000,6 +2000,7 @@ mod tests {
         ToolCallRequest {
             name: "subagent".into(),
             arguments: json!({ "description": description, "prompt": prompt }),
+            id: String::new(),
         }
     }
 
@@ -2076,6 +2077,8 @@ mod tests {
             &ToolCallRequest {
                 name: "send_message".into(),
                 arguments: json!({ "agent_id": session_id, "message": "continue please" }),
+
+                id: String::new(),
             },
         )
         .await;
@@ -2143,6 +2146,8 @@ mod tests {
             &ToolCallRequest {
                 name: "subagent".into(),
                 arguments: json!({ "description": "Steer me", "prompt": "run long" }),
+
+                id: String::new(),
             },
         )
         .await;
@@ -2174,6 +2179,8 @@ mod tests {
             &ToolCallRequest {
                 name: "send_message".into(),
                 arguments: json!({ "agent_id": session_id, "message": "change course now" }),
+
+                id: String::new(),
             },
         )
         .await;
@@ -2344,6 +2351,8 @@ mod tests {
             &ToolCallRequest {
                 name: "subagent".into(),
                 arguments: json!({ "description": "Long task", "prompt": "run long bash" }),
+
+                id: String::new(),
             },
         )
         .await;
@@ -2370,6 +2379,8 @@ mod tests {
             &ToolCallRequest {
                 name: "interrupt_agent".into(),
                 arguments: json!({ "agent_id": session_id }),
+
+                id: String::new(),
             },
         )
         .await;
@@ -2405,6 +2416,8 @@ mod tests {
             &ToolCallRequest {
                 name: "send_message".into(),
                 arguments: json!({ "agent_id": session_id, "message": "wrap up" }),
+
+                id: String::new(),
             },
         )
         .await;
@@ -2487,7 +2500,8 @@ mod tests {
             &ToolCallRequest {
                 name: "subagent".into(),
                 arguments: json!({ "description": "Fg task", "prompt": "run fg", "run_in_background": false }),
-            },
+
+                id: String::new(),},
         )
         .await;
         assert!(fg.success, "{}", fg.output);
@@ -2506,6 +2520,8 @@ mod tests {
             &ToolCallRequest {
                 name: "list_agents".into(),
                 arguments: json!({}),
+
+                id: String::new(),
             },
         )
         .await;
@@ -2744,6 +2760,8 @@ mod tests {
             &ToolCallRequest {
                 name: "terminate_agent".into(),
                 arguments: json!({ "agent_id": session_id }),
+
+                id: String::new(),
             },
         )
         .await;
@@ -2793,6 +2811,8 @@ mod tests {
             &ToolCallRequest {
                 name: "send_message".into(),
                 arguments: json!({ "agent_id": session_id, "message": "anyone?" }),
+
+                id: String::new(),
             },
         )
         .await;
@@ -2840,6 +2860,8 @@ mod tests {
             &ToolCallRequest {
                 name: "subagent".into(),
                 arguments: json!({ "description": "Term running", "prompt": "run long" }),
+
+                id: String::new(),
             },
         )
         .await;
@@ -2864,6 +2886,8 @@ mod tests {
             &ToolCallRequest {
                 name: "terminate_agent".into(),
                 arguments: json!({ "agent_id": session_id }),
+
+                id: String::new(),
             },
         )
         .await;

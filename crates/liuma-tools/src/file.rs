@@ -763,6 +763,8 @@ mod tests {
         let call = ToolCallRequest {
             name: "file_edit".into(),
             arguments: json!({ "path": "a.txt", "old_text": "beta", "new_text": "BETA" }),
+
+            id: String::new(),
         };
         let intent = tools.present_call(&call).expect("call 侧意图 diff");
         assert!(matches!(&intent, ToolView::Diff { diffs }
@@ -776,6 +778,8 @@ mod tests {
                 .present_call(&ToolCallRequest {
                     name: "file_read".into(),
                     arguments: json!({ "path": "a.txt" }),
+
+                    id: String::new(),
                 })
                 .is_none()
         );
@@ -790,6 +794,8 @@ mod tests {
             .execute(&ToolCallRequest {
                 name: "file_edit".into(),
                 arguments: json!({ "path": "b.txt", "old_text": "x", "new_text": "y" }),
+
+                id: String::new(),
             })
             .await;
         assert!(!failed.success);
@@ -1109,6 +1115,8 @@ mod tests {
         let call = ToolCallRequest {
             name: "file_edit".into(),
             arguments: json!(r#"{ "path": "a.txt", "old_text": "two", "new_text": "2" }"#),
+
+            id: String::new(),
         };
         let out = tools.execute(&call).await;
         assert!(out.success, "{}", out.output);

@@ -514,7 +514,8 @@ async fn todo_write_events_flow_through_engine_and_restore() {
         &ToolCallRequest {
             name: "todo_write".into(),
             arguments: json!({ "todos": [ { "content": "write todo tests", "status": "completed" } ] }),
-        },
+            id: String::new(),
+},
     )
     .await;
     assert_eq!(
@@ -863,6 +864,7 @@ async fn subagent_runs_own_session_and_reports_back() {
         &ToolCallRequest {
             name: "subagent".into(),
             arguments: json!({ "task": "echo something" }),
+            id: String::new(),
         },
     )
     .await;
@@ -895,7 +897,8 @@ async fn subagent_runs_own_session_and_reports_back() {
         &ToolCallRequest {
             name: "bash".into(),
             arguments: json!({ "command": format!("touch {}", escape.display()), "description": "Touch escaped path" }),
-        },
+            id: String::new(),
+},
     )
     .await;
     let denied_exit = match denied.view {
@@ -920,6 +923,7 @@ async fn subagent_runs_own_session_and_reports_back() {
         &ToolCallRequest {
             name: "list_agents".into(),
             arguments: json!({}),
+            id: String::new(),
         },
     )
     .await;
@@ -992,6 +996,7 @@ async fn subagent_cancel_propagates_from_parent() {
         &ToolCallRequest {
             name: "subagent".into(),
             arguments: json!({ "task": "long task" }),
+            id: String::new(),
         },
     )
     .await;
@@ -1020,6 +1025,7 @@ async fn background_job_runs_reads_and_stops() {
         ToolCallRequest {
             name: "bash".into(),
             arguments: args,
+            id: String::new(),
         }
     }
 
@@ -1046,6 +1052,7 @@ async fn background_job_runs_reads_and_stops() {
         &ToolCallRequest {
             name: "jobs".into(),
             arguments: json!({ "action": "list" }),
+            id: String::new(),
         },
     )
     .await;
@@ -1075,6 +1082,7 @@ async fn background_job_runs_reads_and_stops() {
         &ToolCallRequest {
             name: "jobs".into(),
             arguments: json!({ "action": "read", "id": 1 }),
+            id: String::new(),
         },
     )
     .await;
@@ -1089,6 +1097,7 @@ async fn background_job_runs_reads_and_stops() {
         &ToolCallRequest {
             name: "jobs".into(),
             arguments: json!({ "action": "stop", "id": 2 }),
+            id: String::new(),
         },
     )
     .await;
@@ -1140,6 +1149,7 @@ async fn jobs_read_streams_output_while_running() {
                 "description": "Emit output then linger",
                 "run_in_background": true
             }),
+            id: String::new(),
         },
     )
     .await;
@@ -1160,6 +1170,7 @@ async fn jobs_read_streams_output_while_running() {
         &ToolCallRequest {
             name: "jobs".into(),
             arguments: json!({ "action": "read", "id": 1 }),
+            id: String::new(),
         },
     )
     .await;
@@ -1175,6 +1186,7 @@ async fn jobs_read_streams_output_while_running() {
         &ToolCallRequest {
             name: "jobs".into(),
             arguments: json!({ "action": "stop", "id": 1 }),
+            id: String::new(),
         },
     )
     .await;
@@ -1205,6 +1217,7 @@ async fn foreground_timeout_moves_command_to_background() {
                 "description": "Outlive the budget then linger",
                 "timeout_ms": 300
             }),
+            id: String::new(),
         },
     )
     .await;
@@ -1247,6 +1260,7 @@ async fn foreground_timeout_moves_command_to_background() {
         &ToolCallRequest {
             name: "jobs".into(),
             arguments: json!({ "action": "stop", "id": 1 }),
+            id: String::new(),
         },
     )
     .await;
@@ -1276,6 +1290,7 @@ async fn tiny_timeout_never_kills_a_fast_command() {
                 "description": "Complete around the deadline",
                 "timeout_ms": 1
             }),
+            id: String::new(),
         },
     )
     .await;
@@ -1321,6 +1336,7 @@ async fn foreground_timeout_without_jobs_degrades_to_kill() {
                 "description": "Outlive the budget with no jobs support",
                 "timeout_ms": 300
             }),
+            id: String::new(),
         },
     )
     .await;
@@ -1370,6 +1386,7 @@ async fn pty_timeout_moves_command_to_background() {
                 "description": "Outlive the pty budget then linger",
                 "timeout_ms": 300
             }),
+            id: String::new(),
         },
     )
     .await;
@@ -1397,6 +1414,7 @@ async fn pty_timeout_moves_command_to_background() {
         &ToolCallRequest {
             name: "jobs".into(),
             arguments: json!({ "action": "stop", "id": 1 }),
+            id: String::new(),
         },
     )
     .await;
@@ -1449,6 +1467,7 @@ async fn background_job_settles_with_notice() {
                 "description": "Emit tail for the notice",
                 "run_in_background": true
             }),
+            id: String::new(),
         },
     )
     .await;
@@ -1483,6 +1502,7 @@ async fn background_job_settles_with_notice() {
                 "description": "Linger for the stop notice",
                 "run_in_background": true
             }),
+            id: String::new(),
         },
     )
     .await;
@@ -1492,6 +1512,7 @@ async fn background_job_settles_with_notice() {
         &ToolCallRequest {
             name: "jobs".into(),
             arguments: json!({ "action": "stop", "id": 2 }),
+            id: String::new(),
         },
     )
     .await;
@@ -1629,6 +1650,7 @@ async fn sibling_agents_message_each_other() {
         &ToolCallRequest {
             name: "subagent".into(),
             arguments: json!({ "description": "B worker", "prompt": "run b" }),
+            id: String::new(),
         },
     )
     .await;
@@ -1658,6 +1680,7 @@ async fn sibling_agents_message_each_other() {
         &ToolCallRequest {
             name: "subagent".into(),
             arguments: json!({ "description": "A worker", "prompt": "run a" }),
+            id: String::new(),
         },
     )
     .await;

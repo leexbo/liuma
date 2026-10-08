@@ -297,6 +297,8 @@ mod tests {
             &ToolCallRequest {
                 name: "workflow".into(),
                 arguments: json!({ "steps": ["compute the answer", "use the answer"] }),
+
+                id: String::new(),
             },
         )
         .await;
@@ -329,6 +331,8 @@ mod tests {
             &ToolCallRequest {
                 name: "ralph".into(),
                 arguments: json!({ "task": "finish the thing" }),
+
+                id: String::new(),
             },
         )
         .await;

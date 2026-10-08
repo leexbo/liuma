@@ -1409,6 +1409,8 @@ mod tests {
             &ToolCallRequest {
                 name: "mcp__b__y".into(),
                 arguments: json!({}),
+
+                id: String::new(),
             },
         )
         .await;
@@ -1421,6 +1423,8 @@ mod tests {
             &ToolCallRequest {
                 name: "mcp__a__nope".into(),
                 arguments: json!({}),
+
+                id: String::new(),
             },
         )
         .await;

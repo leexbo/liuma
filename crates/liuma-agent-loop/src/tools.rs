@@ -24,6 +24,9 @@ pub struct ToolCallRequest {
     /// 的参数被判成缺字段/类型错」,不报错、只给错误结论。写回模型面时
     /// 保持原样(provider 要的是它自己那种形态)。
     pub arguments: Value,
+    /// 调用身份 = tool/call 日志 seq(引擎落档后回填;夹具可空串)。
+    /// ask 迟到应答与桌面工具行以此关联交互
+    pub id: String,
 }
 
 impl ToolCallRequest {
@@ -263,6 +266,7 @@ mod tests {
         ToolCallRequest {
             name: name.into(),
             arguments: json!({}),
+            id: String::new(),
         }
     }
 

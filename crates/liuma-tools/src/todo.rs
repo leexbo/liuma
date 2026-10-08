@@ -217,6 +217,7 @@ mod tests {
         ToolCallRequest {
             name: "todo_write".into(),
             arguments: args,
+            id: String::new(),
         }
     }
 

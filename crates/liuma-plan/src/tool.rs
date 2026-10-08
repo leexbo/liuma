@@ -166,6 +166,7 @@ mod tests {
         ToolCallRequest {
             name: "exit_plan_mode".into(),
             arguments: json!({ "plan": plan }),
+            id: String::new(),
         }
     }
 

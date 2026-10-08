@@ -140,6 +140,8 @@ async fn stdio_fixture_connect_discover_and_call() {
         &ToolCallRequest {
             name: "mcp__fixture__echo".into(),
             arguments: json!({"msg": "hi"}),
+
+            id: String::new(),
         },
     )
     .await;
@@ -157,6 +159,8 @@ async fn stdio_fixture_is_error_marks_failure() {
         &ToolCallRequest {
             name: "mcp__fixture__echo".into(),
             arguments: json!({"fail": true}),
+
+            id: String::new(),
         },
     )
     .await;
@@ -177,6 +181,8 @@ async fn stdio_fixture_image_bridge_and_degradation() {
         &ToolCallRequest {
             name: "mcp__fixture__image".into(),
             arguments: json!({}),
+
+            id: String::new(),
         },
     )
     .await;
@@ -196,6 +202,8 @@ async fn stdio_fixture_image_bridge_and_degradation() {
         &ToolCallRequest {
             name: "mcp__fixture__badimage".into(),
             arguments: json!({}),
+
+            id: String::new(),
         },
     )
     .await;
@@ -223,6 +231,8 @@ async fn stdio_fixture_cancel_shuts_down() {
             &ToolCallRequest {
                 name: "mcp__fixture__echo".into(),
                 arguments: json!({}),
+
+                id: String::new(),
             },
         )
         .await;

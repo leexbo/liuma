@@ -1465,9 +1465,10 @@ impl LoopEngine {
 
             // 工具执行在本 step 内:tool/call → 执行 → tool/result
             for call in &tool_calls {
-                let request = crate::tools::ToolCallRequest {
+                let mut request = crate::tools::ToolCallRequest {
                     name: call["name"].as_str().unwrap_or_default().to_string(),
                     arguments: call["arguments"].clone(),
+                    id: String::new(),
                 };
                 // call 侧渲染意图(运行中意图,如 file_edit 的 old/new
                 // diff);视图随事件持久化,回放与新会话恒等
@@ -1485,6 +1486,9 @@ impl LoopEngine {
                     EventEnvelope::new("tool/call", clock(), call_data),
                     sink,
                 )?;
+                // 行键回填:tool/call 日志 seq 即调用身份(ask 迟到应答、
+                // 桌面工具行以此关联)
+                request.id = call_seq.to_string();
                 // 安全点:工具执行前(取消则本 turn 温和收尾)
                 if self.cancel.is_cancelled() {
                     return Self::stop_cancelled(&self.log, clock, sink);

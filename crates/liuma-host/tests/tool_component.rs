@@ -65,6 +65,7 @@ async fn loads_describes_and_executes() {
         .execute(&ToolCallRequest {
             name: "echo_config".into(),
             arguments: serde_json::json!({ "message": "hello" }),
+            id: String::new(),
         })
         .await;
     assert!(out.success, "执行成功:{}", out.output);
@@ -79,6 +80,7 @@ async fn loads_describes_and_executes() {
         .execute(&ToolCallRequest {
             name: "echo_config".into(),
             arguments: serde_json::json!("{\"message\":\"world\"}"),
+            id: String::new(),
         })
         .await;
     assert!(out.success, "执行成功:{}", out.output);
@@ -94,6 +96,7 @@ async fn loads_describes_and_executes() {
         .execute(&ToolCallRequest {
             name: "nope".into(),
             arguments: serde_json::json!({}),
+            id: String::new(),
         })
         .await;
     assert!(!out.success);
@@ -127,6 +130,7 @@ async fn spin_hard_stopped_by_epoch_budget() {
         .execute(&ToolCallRequest {
             name: "spin".into(),
             arguments: serde_json::json!({ "note": "x" }),
+            id: String::new(),
         })
         .await;
     assert!(!out.success, "spin 应失败");
@@ -155,6 +159,7 @@ async fn cancel_abandons_wait_immediately() {
         tool.execute(&ToolCallRequest {
             name: "spin".into(),
             arguments: serde_json::json!({}),
+            id: String::new(),
         })
         .await
     });
