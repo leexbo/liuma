@@ -27,7 +27,7 @@ members = [
 [workspace.package]
 version = "0.3.0"
 edition = "2024"
-rust-version = "1.97"
+rust-version = "1.99"
 
 # 棘轮:生产代码禁 unwrap/expect(测试经 clippy.toml 放行);
 # 例外 = AGENTS.md §1 ①,逐点 #[allow] + 前提说明登记。

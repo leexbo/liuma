@@ -15,6 +15,25 @@ use std::time::Duration;
 use liuma_decision::types::{DecisionRequest, Question};
 use liuma_decision::{DecisionError, DecisionPort, SystemOneClient};
 
+/// mock 服务器在回环:清环境代理再起(reqwest 吃 http_proxy 系变量
+/// 且不豁免回环——带代理的 CI/开发机会把 mock 流量送进代理,请求侧
+/// 报错且 serve_once 的 accept 永不到来,join 挂死;客户端在测试内
+/// 构建,时序安全)
+fn clear_env_proxies() {
+    for k in [
+        "http_proxy",
+        "https_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        // SAFETY(测试基线):本文件用例全部面向回环 mock,清代理是
+        // 共同期望状态
+        unsafe { std::env::remove_var(k) }
+    }
+}
+
 /// 起一个一次性本地端点:读入首个 HTTP 请求(原样交给 inspector),
 /// 按 `status`/`body`(可含次数语义)回响应。返回 (url, join 句柄)。
 fn serve_once(
@@ -22,6 +41,7 @@ fn serve_once(
     body: &'static str,
     inspector: std::sync::Arc<dyn Fn(&str) + Send + Sync>,
 ) -> (String, std::thread::JoinHandle<()>) {
+    clear_env_proxies();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
     let handle = std::thread::spawn(move || {
@@ -99,6 +119,7 @@ async fn aliyun_style_response_without_output_tokens() {
 /// 429(带 Retry-After)后重试成功:两连发,第一次 429 第二次 200
 #[tokio::test]
 async fn rate_limit_retries_then_succeeds() {
+    clear_env_proxies();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
     let server = std::thread::spawn(move || {
@@ -154,6 +175,7 @@ async fn auth_error_is_fatal() {
 /// 硬截止:端点挂起 → DecisionError::Timeout(消费方 fail-open 依据)
 #[tokio::test]
 async fn deadline_enforced() {
+    clear_env_proxies();
     // 不 accept 的监听者:连接建立但永不响应
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();

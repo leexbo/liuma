@@ -1728,8 +1728,11 @@ fn click_sel(wcx: &mut gpui_kit::VisualTestContext, sel: &'static str) {
     // 场,命中盒随 hover 门控/懒注册的控件(mermaid 段控等)对裸
     // simulate_click 会静默落空——on_click 不触发、无任何报错,表现为
     // 「点击无反应」型偶发失败;②重绘会推进滑入动画,弹层按钮的落位
-    // 可能移动——点击必须取重绘后的新坐标,否则打在旧位置上落空
-    wcx.simulate_mouse_move(pt, MouseButton::Left, gpui_kit::Modifiers::default());
+    // 可能移动——点击必须取重绘后的新坐标,否则打在旧位置上落空。
+    // pressed_button 必须为 None(裸悬停):带 Left 会让框架认为按键
+    // 已按下,随后的 down-up 点击对序列不一致,慢机上 on_click 路由
+    // 退化(CI runner 实证)
+    wcx.simulate_mouse_move(pt, None::<MouseButton>, gpui_kit::Modifiers::default());
     wcx.refresh().expect("刷新失败");
     wcx.run_until_parked();
     let pt = wcx
@@ -1941,6 +1944,7 @@ fn composer_menu_open_select_permission(cx: &mut TestAppContext) {
 /// billing_cache)且**不落设置页通告**(静默纪律;手动路径才有通告)
 #[gpui_kit::test]
 fn billing_auto_refresh_quiet_writes_cache(cx: &mut TestAppContext) {
+    clear_env_proxies();
     let (store, _wcx, root) = menu_harness(cx, "billing-auto");
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -2037,6 +2041,7 @@ fn provider_switch_refreshes_billing_badge(cx: &mut TestAppContext) {
     cx.update(|app| {
         store.update(app, |s, cx| s.select_workspace(&ws, cx));
     });
+    clear_env_proxies();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
@@ -5903,6 +5908,24 @@ fn panel_trajectory_tab_listing_and_entry(cx: &mut TestAppContext) {
         "空态行点击应开轨迹标签"
     );
     let _ = std::fs::remove_dir_all(root);
+}
+
+/// billing 系 mock 服务器在回环:清环境代理再起(reqwest 吃 http_proxy
+/// 系变量且不豁免回环,带代理的 CI/开发机会把 mock 流量送进代理;
+/// 宿主侧客户端在此后构建,时序安全)
+fn clear_env_proxies() {
+    for k in [
+        "http_proxy",
+        "https_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        // SAFETY(测试基线):仅 billing 回环 mock 用例调用,清代理是
+        // 它们的共同期望状态
+        unsafe { std::env::remove_var(k) }
+    }
 }
 
 /// 轮询等待选择器出现(树/预览装载走真实异步:refresh + park + 小睡,

@@ -24,7 +24,7 @@
 
 | 依赖 | 用途与安装 |
 |---|---|
-| Rust 1.97+ | edition 2024;Unix `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh`,Windows 用 [rustup](https://rustup.rs) |
+| Rust 1.99+ | 定版见 `rust-toolchain.toml`;Unix `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh`,Windows 用 [rustup](https://rustup.rs) |
 | `wasm32-wasip2` 目标 | 组件契约测试要真编译 wasm 组件:`rustup target add wasm32-wasip2` |
 | `just` | 命令入口:`cargo install just` / `brew install just` / `winget install Casey.Just` |
 | 真 Python 3 | `scripts/verify-links` 与 MCP fixture 需要;Unix `brew install python3` / `apt install python3`,Windows `winget install --id Python.Python.3.13` |

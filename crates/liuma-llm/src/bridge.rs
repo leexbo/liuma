@@ -212,6 +212,9 @@ mod tests {
     }
 
     fn test_bridge(hook: fn(&str) -> Option<TransportError>) -> Bridge {
+        // 回环 mock 不进 env 代理(reqwest 读环境在建 Client 时,清在
+        // 构建前)
+        crate::clear_env_proxies();
         Bridge {
             client: reqwest::Client::new(),
             body_error: Arc::new(hook),

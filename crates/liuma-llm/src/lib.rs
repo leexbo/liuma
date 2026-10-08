@@ -35,6 +35,27 @@ pub mod translate;
 pub mod transport;
 pub mod usage;
 
+/// 测试基线:清环境代理变量。本 crate 的 mock 服务器全在回环,而
+/// reqwest 默认吃 http_proxy 系变量且不豁免回环——CI runner(自带
+/// 代理环境)与配了公司代理的开发机会把 mock 流量送进代理而全红。
+/// 产品语义不动:真实供应商是远端,走 env 代理正确,本地代理用户
+/// 也依赖该语义
+#[cfg(test)]
+pub(crate) fn clear_env_proxies() {
+    for k in [
+        "http_proxy",
+        "https_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        // SAFETY(测试基线):仅在测试二进制内调用,同二进制的网络用例
+        // 全部面向回环 mock,清代理是共同期望状态
+        unsafe { std::env::remove_var(k) }
+    }
+}
+
 pub use adapters::{ProviderAdapter, RigFamily, adapter_by_name};
 pub use attachments::{
     AttachmentSource, MAX_REQUEST_IMAGE_BYTES, NoAttachments, OFFLOADED_IMAGE_TEXT,

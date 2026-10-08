@@ -762,11 +762,15 @@ impl ClientHandler for ServerHandler {
 /// streamable-http 传输:headers 原样透传走 reqwest default_headers
 /// (rmcp config 的 custom_headers 拒 `authorization` 等保留头,reqwest
 /// 层无此限制,支持用户自带鉴权头);连接池/重定向对齐 rmcp 默认形态。
+/// 回环端点(localhost/127/8/::1)强制绕过环境代理:reqwest 默认吃
+/// http_proxy 系变量且不豁免回环,本地 MCP server 会被送进(到不了
+/// 回环的)代理,表现为 initialize 全部 connection failed——远端端点
+/// 照常走代理语义。
 fn http_transport(
     url: &str,
     headers: &BTreeMap<String, String>,
 ) -> Result<StreamableHttpClientTransport<reqwest::Client>, String> {
-    reqwest::Url::parse(url).map_err(|e| format!("MCP url 无效: {e}"))?;
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("MCP url 无效: {e}"))?;
     let mut header_map = reqwest::header::HeaderMap::new();
     for (k, v) in headers {
         let name = reqwest::header::HeaderName::from_bytes(k.as_bytes())
@@ -775,10 +779,23 @@ fn http_transport(
             .map_err(|e| format!("MCP header 值无效 {k:?}: {e}"))?;
         header_map.insert(name, value);
     }
-    let client = reqwest::Client::builder()
+    // host_str 为 Url 正典化后的串:IPv4 = 点分十进制,IPv6 = 无括号
+    // 压缩形式 → 首段判 127/8、字面判 ::1 与 localhost 即覆盖全部回环
+    let host = parsed.host_str().unwrap_or_default();
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host.eq_ignore_ascii_case("::1")
+        || host
+            .split('.')
+            .next()
+            .is_some_and(|octet| octet.parse::<u8>() == Ok(127));
+    let mut builder = reqwest::Client::builder()
         .pool_max_idle_per_host(0)
         .redirect(reqwest::redirect::Policy::none())
-        .default_headers(header_map)
+        .default_headers(header_map);
+    if loopback {
+        builder = builder.no_proxy();
+    }
+    let client = builder
         .build()
         .map_err(|e| format!("MCP http 客户端构建失败: {e}"))?;
     Ok(StreamableHttpClientTransport::with_client(

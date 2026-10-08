@@ -26,9 +26,28 @@ fn header() -> RequestHeader {
     }
 }
 
+/// mock 服务器在回环:清环境代理再起(reqwest 吃 http_proxy 系变量
+/// 且不豁免回环,CI runner 与代理开发机会把 mock 流量送进代理全红;
+/// 客户端在此后构建,时序安全)
+fn clear_env_proxies() {
+    for k in [
+        "http_proxy",
+        "https_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        // SAFETY(测试基线):本文件用例全部面向回环 mock,清代理是
+        // 共同期望状态
+        unsafe { std::env::remove_var(k) }
+    }
+}
+
 /// 带节奏的 mock SSE 服务器:n 个事件,每个间隔 interval
 async fn spawn_paced_sse_server(events: usize, interval: Duration) -> String {
     use tokio::io::AsyncWriteExt as _;
+    clear_env_proxies();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {

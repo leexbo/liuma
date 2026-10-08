@@ -10165,6 +10165,24 @@ async fn driver_loop(
 mod tests {
     use super::*;
 
+    /// mock 服务器在回环:清环境代理再起(reqwest 吃 http_proxy 系变量
+    /// 且不豁免回环,带代理的 CI/开发机会把 mock 流量送进代理全红;
+    /// 客户端在测试内构建,时序安全)
+    fn clear_env_proxies() {
+        for k in [
+            "http_proxy",
+            "https_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
+            // SAFETY(测试基线):仅测试用例调用,清代理是回环 mock 的
+            // 共同期望状态
+            unsafe { std::env::remove_var(k) }
+        }
+    }
+
     /// 回声链锁中毒恢复:log 锁被毒化后 broadcast_event 仍发出 seq
     /// 定向帧(此前 poison-else 静默吞回声,中毒是持久态,同进程后续
     /// 全部回声连坐丢失)
@@ -10554,6 +10572,7 @@ mod tests {
     /// DeepSeek 余额响应形状)→ 路径求值 → billing_cache 落盘
     #[tokio::test]
     async fn fetch_billing_balance_writes_cache() {
+        clear_env_proxies();
         let host = temp_host("billing");
         let ws =
             std::env::temp_dir().join(format!("liuma-core-billing-ws-{}", Uuid::new_v4().simple()));
@@ -10609,6 +10628,7 @@ mod tests {
     /// 前缀)+ JSONPath filter 命中 5h/周两窗 + epoch 毫秒重置时间字符串化
     #[tokio::test]
     async fn glm_usage_preset_raw_auth_and_filter_paths() {
+        clear_env_proxies();
         // 空显式 key 宿主:链上 provider api_key 才会被采用(temp_host
         // 的 "test-key" 显式注入优先级最高,会盖掉被测的裸 token)
         let dir = std::env::temp_dir().join(format!(
