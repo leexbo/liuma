@@ -453,6 +453,7 @@ fn pinned_session_row(store: &Entity<AppStore>, cx: &App, s: &SessionSummary) ->
     let active = st.state.current_id.as_deref() == Some(&s.session_id);
     let title = st.title_for(&s.session_id);
     let running = st.is_running(&s.session_id);
+    let pending = st.state.pending_by_session.contains_key(&s.session_id);
     let pinned = st
         .sessions
         .pinned_sessions
@@ -491,11 +492,11 @@ fn pinned_session_row(store: &Entity<AppStore>, cx: &App, s: &SessionSummary) ->
                 .flex_shrink_0()
                 .justify_center()
                 .text_color(theme::label_3(cx))
-                .children(
-                    running
-                        .then(|| running_dot(cx))
-                        .or_else(|| Some(fixed(LiumaIcon::Message, 13.).into_any_element())),
-                ),
+                .children(match row_leading_status(pending, running) {
+                    RowLeading::Pending => Some(pending_dot(cx)),
+                    RowLeading::Running => Some(running_dot(cx)),
+                    RowLeading::Idle => Some(fixed(LiumaIcon::Message, 13.).into_any_element()),
+                }),
         )
         .child(
             div()
@@ -1330,6 +1331,9 @@ fn session_row_in(
     let active = st.state.current_id.as_deref() == Some(&s.session_id);
     let title = st.title_for(&s.session_id);
     let running = st.is_running(&s.session_id);
+    // 待答角标(问答收起/超时转 continued 后的唯一全局痕迹;行首优先
+    // 于活动动画,对齐 dsh pendingInteraction > running)
+    let pending = st.state.pending_by_session.contains_key(&s.session_id);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -1443,14 +1447,18 @@ fn session_row_in(
                 st.reorder_session_manual(&d, &drop_id, after, cx);
             });
         })
-        // 行首状态槽(活动动画在行首,非运行时空占位对齐)
+        // 行首状态槽(待答 > 活动动画;空占位对齐)
         .child(
             div()
                 .flex()
                 .w(px(14.))
                 .flex_shrink_0()
                 .justify_center()
-                .children(running.then(|| running_dot(cx))),
+                .children(match row_leading_status(pending, running) {
+                    RowLeading::Pending => Some(pending_dot(cx)),
+                    RowLeading::Running => Some(running_dot(cx)),
+                    RowLeading::Idle => None,
+                }),
         )
         .child(
             div()
@@ -2083,8 +2091,31 @@ fn sub_running_badge(n: usize, cx: &App) -> gpui_kit::AnyElement {
         .into_any_element()
 }
 
+fn pending_dot(cx: &App) -> gpui_kit::AnyElement {
+    crate::kits::state_dot::pending_dot(cx).into_any_element()
+}
+
+/// 行首状态槽选择:待答 > 运行 > 空闲(对齐 dsh pendingInteraction >
+/// running;优先级由单测锁死)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RowLeading {
+    Pending,
+    Running,
+    Idle,
+}
+
+pub(crate) fn row_leading_status(pending: bool, running: bool) -> RowLeading {
+    if pending {
+        RowLeading::Pending
+    } else if running {
+        RowLeading::Running
+    } else {
+        RowLeading::Idle
+    }
+}
+
 fn running_dot(cx: &App) -> gpui_kit::AnyElement {
-    crate::kits::state_dot::ongoing_dot(8., cx).into_any_element()
+    crate::kits::state_dot::ongoing_ring(14., cx).into_any_element()
 }
 
 /// 相对时间
@@ -2095,4 +2126,19 @@ fn plain_time(time: &str, cx: &App) -> gpui_kit::AnyElement {
         .text_color(theme::caption(cx))
         .child(time.to_string())
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 行首状态槽优先级:待答 > 运行 > 空闲(待答是问答收起/超时后的
+    /// 唯一全局痕迹,不得被活动动画吞掉)
+    #[test]
+    fn pending_badge_overrides_running() {
+        assert_eq!(row_leading_status(true, true), RowLeading::Pending);
+        assert_eq!(row_leading_status(true, false), RowLeading::Pending);
+        assert_eq!(row_leading_status(false, true), RowLeading::Running);
+        assert_eq!(row_leading_status(false, false), RowLeading::Idle);
+    }
 }
