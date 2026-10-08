@@ -487,6 +487,16 @@ pub struct QuestionRequestedFrame {
     pub session_id: String,
     /// 问题(≥1)
     pub questions: Vec<Question>,
+    /// 关联 tool/call 日志 seq(桌面行键;plan/审批问询与无行归属的
+    /// 旧版问询缺席)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    /// open(缺省)/ continued(超时或冷恢复:可答,不再阻塞 turn)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// 超时截止(epoch ms;阻塞与 continued 缺席,由 core 超时臂收口)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deadline_ms: Option<i64>,
 }
 
 /// `question/resolved` 载荷
@@ -497,7 +507,9 @@ pub struct QuestionResolvedFrame {
     pub session_id: String,
     /// 所答问题的 rpcId
     pub question_rpc_id: String,
-    /// 结局(answered / cancelled)
+    /// 结局(answered / answered-late / timed-out / cancelled;
+    /// plan 评审另用 approved / declined,审批另用 allowed-once /
+    /// rejected / unavailable)
     pub outcome: String,
 }
 
@@ -649,13 +661,35 @@ mod tests {
                 intent: Some(json!({ "kind": "plan-review", "approve": "批准" })),
                 data: None,
             }],
+            call_id: None,
+            state: None,
+            deadline_ms: None,
         };
         let v = serde_json::to_value(&q).unwrap();
         assert_eq!(v["questions"][0]["multiSelect"], false);
         assert_eq!(v["questions"][0]["intent"]["kind"], "plan-review");
+        // 三扩展字段缺席不出场(旧帧形状不变;旧端反解 None)
+        assert!(v.get("callId").is_none());
+        assert!(v.get("state").is_none());
+        assert!(v.get("deadlineMs").is_none());
         assert_eq!(
             serde_json::from_value::<QuestionRequestedFrame>(v).unwrap(),
             q
+        );
+        // 在场时 camelCase 携带并往返
+        let keyed = QuestionRequestedFrame {
+            call_id: Some("call:7".into()),
+            state: Some("continued".into()),
+            deadline_ms: Some(1234),
+            ..q.clone()
+        };
+        let v = serde_json::to_value(&keyed).unwrap();
+        assert_eq!(v["callId"], "call:7");
+        assert_eq!(v["state"], "continued");
+        assert_eq!(v["deadlineMs"], 1234);
+        assert_eq!(
+            serde_json::from_value::<QuestionRequestedFrame>(v).unwrap(),
+            keyed
         );
 
         let hist = HistoryValue {

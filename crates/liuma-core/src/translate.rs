@@ -373,6 +373,11 @@ impl Translator {
             "plan/submitted" | "plan/approved" | "plan/cancelled" | "plan/declined" => {
                 session_event(ev, ev.data.clone(), None, None, None)
             }
+            // 问答归档四件(请求/应答/超时/取消)——原样透传,桌面投影成
+            // ask 工具行状态(等待/已答/超时仍可答/已取消)
+            "ask/requested" | "ask/answered" | "ask/timed-out" | "ask/cancelled" => {
+                session_event(ev, ev.data.clone(), None, None, None)
+            }
             // 压缩结果对(summary 落档成功 / error 手动压缩失败)——原样
             // 透传,桌面投影成「已压缩」标记行(可展开摘要)或失败通告
             "compaction/summary" | "compaction/error" => {

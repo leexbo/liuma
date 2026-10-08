@@ -5968,7 +5968,34 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         session_id: &str,
         questions: &[liuma_tools::QuestionItem],
     ) -> Result<String, String> {
+        let provider_info = self.provider_info();
+        let log = {
+            // attach 幂等(单飞闸):turn 内调用 = 热路径直返;夹具直呼则
+            // 按需装配。问询要落档,必须先有日志面
+            let slot = self
+                .attach(session_id)
+                .map_err(|e| format!("问答:会话不可用:{}", e.message))?;
+            let Ok(inner) = slot.inner() else {
+                return Err("问答:会话未完成装配".into());
+            };
+            Arc::clone(&inner.log)
+        };
         let rpc_id = Uuid::now_v7().to_string();
+        // ask/requested 先落档(桌面行状态机与冷恢复 re-ask 的事实源);
+        // 落档失败不放问(审计原子性,同 plan/submitted)
+        let req_seq = splice_event(
+            &log,
+            liuma_tools::ask_question::ask_requested_envelope(
+                &rpc_id,
+                None,
+                questions,
+                -1,
+                now_ms() as i64,
+            ),
+        )
+        .ok_or_else(|| "问答:请求落档失败".to_string())?;
+        broadcast_event(&provider_info, &log, session_id, &self.mux, Some(req_seq));
+
         let frame_questions: Vec<Question> = questions
             .iter()
             .map(|q| Question {
@@ -5993,6 +6020,9 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         let request = QuestionRequestedFrame {
             session_id: session_id.into(),
             questions: frame_questions,
+            call_id: None,
+            state: None,
+            deadline_ms: None,
         };
         let request_frame = ServerRequest {
             r#type: "server-request".into(),
@@ -6009,36 +6039,117 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             },
         );
         let _ = self.mux.send(request_frame);
+        // drop 守卫:port future 被丢弃(turn 硬中断)→ 清 pending +
+        // ask/cancelled 收口 + resolved 帧(live 评审不留悬挂,同
+        // PlanReviewGuard;正常路径 disarm)
+        let mut guard = AskGuard {
+            host: Arc::clone(self),
+            session_id: session_id.into(),
+            rpc_id: rpc_id.clone(),
+            log: Arc::clone(&log),
+            provider: provider_info.clone(),
+            disarmed: false,
+        };
         // 取消竞速:会话软取消令牌与应答 oneshot 并行等待。工具执行是引擎
         // 里的裸 await(无竞速),阻塞在此 rx 时引擎走不到取消检查点——点
-        // 「停止」只置令牌无法唤醒。取消即清 pending、广播 question/resolved
-        // (答卡经此收下,否则「停止」后卡片残留在界面)并返回 cancelled,
-        // 工具返回后引擎下一安全点收尾 turn。应答路径不广播:客户端提交/
-        // 放弃时已本地清卡(既有语义)。
-        match self.session_cancel(session_id) {
-            Some(cancel) => {
-                tokio::select! {
-                    res = rx => {
-                        res.map_err(|_| "ask_user_question 未被应答".to_string())?
-                    }
-                    _ = cancel.cancelled() => {
-                        self.pending.lock_recover().remove(&rpc_id);
-                        let _ = self.mux.send(frame(
-                            "question/resolved",
-                            serde_json::to_value(QuestionResolvedFrame {
-                                session_id: session_id.into(),
-                                question_rpc_id: rpc_id.clone(),
-                                outcome: "cancelled".into(),
-                            })
-                            .unwrap_or(Value::Null),
-                        ));
-                        Err("ask_user_question 已被取消".to_string())
-                    }
-                }
-            }
-            _ => rx
+        // 「停止」只置令牌无法唤醒。取消即清 pending、落 ask/cancelled、
+        // 广播 question/resolved(答卡经此收下,否则「停止」后卡片残留
+        // 在界面)并返回点名取消文案,工具返回后引擎下一安全点收尾 turn。
+        // 应答收口同样落档 + 广播 resolved(answered)——行状态机与冷恢复
+        // 的事实源保持完整。
+        let answer = match self.session_cancel(session_id) {
+            Some(cancel) => tokio::select! {
+                res = rx => res.map_err(|_| "ask_user_question 未被应答".to_string()),
+                _ = cancel.cancelled() => Err("__session_cancelled__".to_string()),
+            },
+            None => rx
                 .await
-                .map_err(|_| "ask_user_question 未被应答".to_string())?,
+                .map_err(|_| "ask_user_question 未被应答".to_string()),
+        };
+        guard.disarmed = true;
+        match answer.flatten() {
+            Ok(text) => {
+                let answers = serde_json::from_str::<Value>(&text)
+                    .ok()
+                    .and_then(|v| v.get("answers").cloned());
+                ask_settle(
+                    &log,
+                    &provider_info,
+                    session_id,
+                    &self.mux,
+                    liuma_tools::ask_question::ask_answered_envelope(
+                        &rpc_id,
+                        None,
+                        answers.as_ref(),
+                        false,
+                        now_ms() as i64,
+                    ),
+                );
+                let _ = self.mux.send(frame(
+                    "question/resolved",
+                    serde_json::to_value(QuestionResolvedFrame {
+                        session_id: session_id.into(),
+                        question_rpc_id: rpc_id.clone(),
+                        outcome: "answered".into(),
+                    })
+                    .unwrap_or(Value::Null),
+                ));
+                Ok(text)
+            }
+            Err(e) if e == "__session_cancelled__" => {
+                self.pending.lock_recover().remove(&rpc_id);
+                ask_settle(
+                    &log,
+                    &provider_info,
+                    session_id,
+                    &self.mux,
+                    liuma_tools::ask_question::ask_terminal_envelope(
+                        "ask/cancelled",
+                        &rpc_id,
+                        None,
+                        now_ms() as i64,
+                    ),
+                );
+                let _ = self.mux.send(frame(
+                    "question/resolved",
+                    serde_json::to_value(QuestionResolvedFrame {
+                        session_id: session_id.into(),
+                        question_rpc_id: rpc_id.clone(),
+                        outcome: "cancelled".into(),
+                    })
+                    .unwrap_or(Value::Null),
+                ));
+                Err(ASK_USER_CANCELLED.to_string())
+            }
+            // 用户放弃(respond Err):pending 已由 respond 清;落终局 +
+            // resolved,否则冷恢复会把用户明确取消的题重问一遍
+            Err(e) if e == ASK_USER_CANCELLED => {
+                ask_settle(
+                    &log,
+                    &provider_info,
+                    session_id,
+                    &self.mux,
+                    liuma_tools::ask_question::ask_terminal_envelope(
+                        "ask/cancelled",
+                        &rpc_id,
+                        None,
+                        now_ms() as i64,
+                    ),
+                );
+                let _ = self.mux.send(frame(
+                    "question/resolved",
+                    serde_json::to_value(QuestionResolvedFrame {
+                        session_id: session_id.into(),
+                        question_rpc_id: rpc_id.clone(),
+                        outcome: "cancelled".into(),
+                    })
+                    .unwrap_or(Value::Null),
+                ));
+                Err(e)
+            }
+            // 形状拒答(裁决缘由已由 respond 经 tx 送进工具结果)/通道死:
+            // 不落终局事件——拒答可诊断,重启 re-ask 同题无害
+            Err(e) => Err(e),
         }
     }
 
@@ -6296,6 +6407,9 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         let request = QuestionRequestedFrame {
             session_id: session_id.into(),
             questions: vec![question],
+            call_id: None,
+            state: None,
+            deadline_ms: None,
         };
         let request_frame = ServerRequest {
             r#type: "server-request".into(),
@@ -7549,6 +7663,9 @@ fn plan_question_frame(session_id: &str, rpc_id: &str, plan: &str) -> ServerRequ
             intent: Some(json!({ "kind": "plan-review", "approve": PLAN_APPROVE_LABEL })),
             data: None,
         }],
+        call_id: None,
+        state: None,
+        deadline_ms: None,
     };
     ServerRequest {
         r#type: "server-request".into(),
@@ -7667,6 +7784,63 @@ impl Drop for PlanReviewGuard {
 
 /// 「去聊天里说」引导轮文案(冷恢复取消审批;宿主注入,非用户原文)
 const PLAN_CANCEL_GUIDE: &str = "用户取消了计划审批,想在聊天里继续讨论。请简短确认已停止执行该计划,并邀请用户直接说明要调整的方向;不要重复输出计划全文。";
+
+/// ask 终局/相位事件落档 + 回声(requested 由 ask_questions 直呼同对)。
+/// 落档失败不阻断既有收口路径(事件是行状态机/冷恢复的事实源,尽最大努力)
+fn ask_settle(
+    log: &Arc<Mutex<EventLog>>,
+    provider: &ProviderInfo,
+    session_id: &str,
+    mux: &broadcast::Sender<ServerRequest>,
+    ev: EventEnvelope,
+) {
+    if let Some(seq) = splice_event(log, ev) {
+        broadcast_event(provider, log, session_id, mux, Some(seq));
+    }
+}
+
+/// ask pending 守卫:port future 被丢弃(turn 硬中断)→ 清 pending +
+/// ask/cancelled 收口 + resolved 帧(照 PlanReviewGuard 形态;仅护 live
+/// 等待态——超时转 Continued 后无 turn 归属,不设守卫)
+struct AskGuard {
+    host: Arc<AppHost>,
+    session_id: String,
+    rpc_id: String,
+    log: Arc<Mutex<EventLog>>,
+    provider: ProviderInfo,
+    /// 正常路径置 true(drop 不再收口)
+    disarmed: bool,
+}
+
+impl Drop for AskGuard {
+    fn drop(&mut self) {
+        if self.disarmed {
+            return;
+        }
+        self.host.pending.lock_recover().remove(&self.rpc_id);
+        ask_settle(
+            &self.log,
+            &self.provider,
+            &self.session_id,
+            &self.host.mux,
+            liuma_tools::ask_question::ask_terminal_envelope(
+                "ask/cancelled",
+                &self.rpc_id,
+                None,
+                now_ms() as i64,
+            ),
+        );
+        let _ = self.host.mux.send(frame(
+            "question/resolved",
+            serde_json::to_value(QuestionResolvedFrame {
+                session_id: self.session_id.clone(),
+                question_rpc_id: self.rpc_id.clone(),
+                outcome: "cancelled".into(),
+            })
+            .unwrap_or(Value::Null),
+        ));
+    }
+}
 
 /// 批准引导轮文案(冷恢复批准:原 turn 已死,无工具结果可回填,经队列
 /// 注入驱动模型即刻开工)
@@ -14109,6 +14283,116 @@ mod tests {
         );
     }
 
+    /// 会话日志的事件类型快照(锁内收集,生命周期断言用)
+    fn session_event_types(host: &Arc<AppHost>, id: &str) -> Vec<String> {
+        let slots = host.sessions.read_recover();
+        let slot = slots.get(id).expect("会话应在场");
+        let inner = slot.inner().expect("inner");
+        let l = inner.log.lock_recover();
+        l.iter().map(|e| e.r#type.clone()).collect()
+    }
+
+    /// ask 生命周期落档:requested → answered(live 应答 late=false)+
+    /// resolved(answered)——桌面行状态机与冷恢复的事实源。
+    #[tokio::test]
+    async fn ask_lifecycle_logs_requested_answered() {
+        let host = temp_host("ask-log");
+        let id = host.create_session(None, None, None);
+        let mut mux = host.mux_subscribe();
+        // 第二订阅者专收翻译帧:ask/requested 的 session/event 回声先于
+        // question/requested 发出,主订阅者的 recv_until 会把它扫掉
+        let mut mux_ev = host.mux_subscribe();
+        let questions = vec![liuma_tools::QuestionItem {
+            id: "q1".into(),
+            question: "继续?".into(),
+            header: None,
+            options: vec![liuma_tools::QuestionOption {
+                label: "是".into(),
+                description: None,
+            }],
+            multi_select: false,
+        }];
+        let host2 = host.clone();
+        let sid = id.clone();
+        let ask_task = tokio::spawn(async move { host2.ask_questions(&sid, &questions).await });
+        let f = recv_until(&mut mux, |f| f.method == "question/requested")
+            .await
+            .expect("应收到 question/requested");
+        host.respond(
+            &f.rpc_id,
+            &RpcResult::Ok(json!({
+                "sessionId": id,
+                "answer": { "answers": [ { "id": "q1", "selected": ["是"] } ] },
+            })),
+        );
+        ask_task.await.unwrap().unwrap();
+        // 翻译面:ask/requested 经 Translator 透传为 session/event 帧
+        //(落 `_` catch-all 即静默丢失,行状态机将无事实源)
+        let ev = recv_until(&mut mux_ev, |f| {
+            f.method == "session/event" && f.payload["event"]["type"] == "ask/requested"
+        })
+        .await
+        .expect("ask/requested 应透传为 session/event");
+        assert_eq!(
+            ev.payload["event"]["data"]["questions"][0]["id"], "q1",
+            "questions 形状应原样透传"
+        );
+        let resolved = recv_until(&mut mux, |f| f.method == "question/resolved")
+            .await
+            .expect("应答应广播 resolved");
+        assert_eq!(resolved.payload["outcome"], "answered");
+        let types = session_event_types(&host, &id);
+        let req = types
+            .iter()
+            .position(|t| t == "ask/requested")
+            .expect("requested 应落档");
+        let ans = types
+            .iter()
+            .position(|t| t == "ask/answered")
+            .expect("answered 应落档");
+        assert!(req < ans, "requested 先于 answered");
+    }
+
+    /// AskGuard:ask future 被硬丢弃(turn 中断)→ 清 pending +
+    /// ask/cancelled 收口 + resolved(cancelled),不留悬挂交互。
+    #[tokio::test]
+    async fn ask_guard_drop_closes_lifecycle() {
+        let host = temp_host("ask-guard");
+        let id = host.create_session(None, None, None);
+        let mut mux = host.mux_subscribe();
+        let questions = vec![liuma_tools::QuestionItem {
+            id: "q1".into(),
+            question: "继续?".into(),
+            header: None,
+            options: vec![],
+            multi_select: false,
+        }];
+        let host2 = host.clone();
+        let sid = id.clone();
+        let mut ask_task = tokio::spawn(async move { host2.ask_questions(&sid, &questions).await });
+        let f = recv_until(&mut mux, |f| f.method == "question/requested")
+            .await
+            .expect("应收到 question/requested");
+        let rpc_id = f.rpc_id.clone();
+        assert!(host.pending.lock().unwrap().contains_key(&rpc_id));
+        // turn 硬中断 = future 被丢弃;await 返回即 drop 已发生
+        ask_task.abort();
+        let _ = (&mut ask_task).await;
+        assert!(
+            !host.pending.lock().unwrap().contains_key(&rpc_id),
+            "guard drop 应清 pending"
+        );
+        let resolved = recv_until(&mut mux, |f| f.method == "question/resolved")
+            .await
+            .expect("guard drop 应广播 resolved");
+        assert_eq!(resolved.payload["outcome"], "cancelled");
+        let types = session_event_types(&host, &id);
+        assert!(
+            types.iter().any(|t| t == "ask/cancelled"),
+            "guard drop 应落 ask/cancelled"
+        );
+    }
+
     /// 答题卡期间「停止」能真正中止:ask 阻塞在 rx 时会话软取消令牌触发
     /// → 清 pending、工具返回 Err、引擎下一安全点收尾 turn。
     /// 回归锚:工具执行是引擎里的裸 await,取消检查点在其后——不在此处
@@ -14158,6 +14442,12 @@ mod tests {
             .expect("取消应广播 question/resolved");
         assert_eq!(resolved.payload["outcome"], "cancelled");
         assert_eq!(resolved.payload["questionRpcId"], rpc_id);
+        // 生命周期收口:ask/cancelled 落档(冷恢复据此不重问已取消的题)
+        let types = session_event_types(&host, &id);
+        assert!(
+            types.iter().any(|t| t == "ask/cancelled"),
+            "会话取消应落 ask/cancelled"
+        );
     }
 
     /// encode_answers 校验(单选≤1/多选题放行/缺 id/非法形状)

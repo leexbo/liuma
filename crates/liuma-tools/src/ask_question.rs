@@ -201,6 +201,174 @@ fn args_or_json_string(args: &Value) -> Value {
     }
 }
 
+// ── 生命周期落档(事件信封 + 冷恢复 fold)──────────────────────────
+// ask 族事件:ask/requested → 终局 ask/answered | ask/cancelled;
+// ask/timed-out 非终局(超时后仍可答)。事件是桌面行状态机与冷恢复
+// re-ask 的事实源;questions 形状与 question/requested 帧同构。
+
+/// 一次未收口的问答(冷恢复 re-ask 的输入)
+#[derive(Debug, Clone)]
+pub struct PendingAskEntry {
+    /// ask/requested 事件 id(发起时的 rpc_id)
+    pub id: String,
+    /// 关联 tool/call 日志 seq(行键;缺席 = 无行归属)
+    pub call_id: Option<String>,
+    /// 原问题集(re-ask 原样重发)
+    pub questions: Vec<QuestionItem>,
+    /// 等待秒数(-1 阻塞;re-ask 沿用)
+    pub timeout_sec: i64,
+}
+
+/// questions → 事件/帧共用的 JSON 数组形状(与 proto Question 序列化同构:
+/// header/description 为 null 而非缺席)
+fn questions_to_event_json(questions: &[QuestionItem]) -> Value {
+    json!(
+        questions
+            .iter()
+            .map(|q| {
+                json!({
+                    "id": q.id,
+                    "question": q.question,
+                    "header": q.header,
+                    "options": q.options.iter().map(|o| json!({
+                        "label": o.label,
+                        "description": o.description,
+                    })).collect::<Vec<_>>(),
+                    "multiSelect": q.multi_select,
+                })
+            })
+            .collect::<Vec<_>>()
+    )
+}
+
+/// 事件 questions → 问题集(缺 id/question 的畸形条目跳过,不猜不补)
+fn questions_from_event_json(v: &Value) -> Vec<QuestionItem> {
+    v.as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|q| {
+                    Some(QuestionItem {
+                        id: q["id"].as_str()?.to_string(),
+                        question: q["question"].as_str()?.to_string(),
+                        header: q["header"].as_str().map(String::from),
+                        options: q["options"]
+                            .as_array()
+                            .map(|opts| {
+                                opts.iter()
+                                    .filter_map(|o| {
+                                        Some(QuestionOption {
+                                            label: o["label"].as_str()?.to_string(),
+                                            description: o["description"]
+                                                .as_str()
+                                                .map(String::from),
+                                        })
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        multi_select: q["multiSelect"].as_bool().unwrap_or(false),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `ask/requested` 事件信封(全集:id/callId/questions/timeoutSec)。
+pub fn ask_requested_envelope(
+    id: &str,
+    call_id: Option<&str>,
+    questions: &[QuestionItem],
+    timeout_sec: i64,
+    ts: i64,
+) -> liuma_session::EventEnvelope {
+    let mut data = json!({
+        "id": id,
+        "questions": questions_to_event_json(questions),
+        "timeoutSec": timeout_sec,
+    });
+    if let Some(cid) = call_id {
+        data["callId"] = json!(cid);
+    }
+    liuma_session::EventEnvelope::new("ask/requested", ts, data)
+}
+
+/// `ask/answered` 事件信封(answers 来自应答载荷;late = 超时后的迟到应答)。
+pub fn ask_answered_envelope(
+    id: &str,
+    call_id: Option<&str>,
+    answers: Option<&Value>,
+    late: bool,
+    ts: i64,
+) -> liuma_session::EventEnvelope {
+    let mut data = json!({ "id": id, "late": late });
+    if let Some(cid) = call_id {
+        data["callId"] = json!(cid);
+    }
+    if let Some(answers) = answers {
+        data["answers"] = answers.clone();
+    }
+    liuma_session::EventEnvelope::new("ask/answered", ts, data)
+}
+
+/// `ask/timed-out` / `ask/cancelled` 事件信封(非终局/终局收口)。
+pub fn ask_terminal_envelope(
+    ty: &str,
+    id: &str,
+    call_id: Option<&str>,
+    ts: i64,
+) -> liuma_session::EventEnvelope {
+    let mut data = json!({ "id": id });
+    if let Some(cid) = call_id {
+        data["callId"] = json!(cid);
+    }
+    liuma_session::EventEnvelope::new(ty, ts, data)
+}
+
+/// 待答折叠:ask/requested 之后无同键终局(answered/cancelled)的条目,
+/// 按 seq 序。键 = callId,缺席回落事件 id——冷恢复 re-ask 换新 rpc_id,
+/// 同 callId 的终局同样收口(防重启后重复 re-ask)。timed-out 非终局,
+/// 条目保留(仍可答)。
+pub fn pending_asks(log: &liuma_session::EventLog) -> Vec<PendingAskEntry> {
+    let key_of = |data: &Value| -> Option<String> {
+        data["callId"]
+            .as_str()
+            .map(String::from)
+            .or_else(|| data["id"].as_str().map(String::from))
+    };
+    let mut pending: Vec<PendingAskEntry> = Vec::new();
+    for ev in log.iter() {
+        match ev.r#type.as_str() {
+            "ask/requested" => {
+                // 畸形条目(缺 id)跳过:fold 不猜不补
+                let Some(entry) = pending_ask_entry(&ev.data) else {
+                    continue;
+                };
+                let key = entry.call_id.clone().unwrap_or_else(|| entry.id.clone());
+                pending.retain(|e| e.call_id.clone().unwrap_or_else(|| e.id.clone()) != key);
+                pending.push(entry);
+            }
+            "ask/answered" | "ask/cancelled" => {
+                if let Some(key) = key_of(&ev.data) {
+                    pending.retain(|e| e.call_id.clone().unwrap_or_else(|| e.id.clone()) != key);
+                }
+            }
+            _ => {}
+        }
+    }
+    pending
+}
+
+/// `ask/requested` 事件数据 → 条目(缺 id 视为畸形,跳过)
+fn pending_ask_entry(data: &Value) -> Option<PendingAskEntry> {
+    Some(PendingAskEntry {
+        id: data["id"].as_str()?.to_string(),
+        call_id: data["callId"].as_str().map(String::from),
+        questions: questions_from_event_json(&data["questions"]),
+        timeout_sec: data["timeoutSec"].as_i64().unwrap_or(-1),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,5 +460,125 @@ mod tests {
         let q = parse_questions(&args).unwrap();
         assert_eq!(q.len(), 1);
         assert_eq!(q[0].id, "q1");
+    }
+
+    // ── 生命周期落档 fold ─────────────────────────────────────────
+
+    use liuma_session::{EventEnvelope, EventLog};
+
+    fn log_of(events: &[EventEnvelope]) -> EventLog {
+        let mut log = EventLog::new();
+        for (i, ev) in events.iter().enumerate() {
+            let mut ev = ev.clone();
+            ev.seq = i as u64 + 1;
+            log.append(ev).unwrap();
+        }
+        log
+    }
+
+    fn requested(id: &str, call_id: Option<&str>, ts: i64) -> EventEnvelope {
+        ask_requested_envelope(
+            id,
+            call_id,
+            &[QuestionItem {
+                id: "q1".into(),
+                question: "继续?".into(),
+                header: None,
+                options: vec![QuestionOption {
+                    label: "是".into(),
+                    description: None,
+                }],
+                multi_select: false,
+            }],
+            -1,
+            ts,
+        )
+    }
+
+    /// requested 无终局 → 在;answered/cancelled → 收口;timed-out → 保留。
+    #[test]
+    fn pending_asks_folds_lifecycle() {
+        assert!(pending_asks(&EventLog::new()).is_empty(), "无事件无待答");
+        let unresolved = log_of(&[requested("r1", None, 1)]);
+        let entries = pending_asks(&unresolved);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "r1");
+        assert_eq!(entries[0].questions.len(), 1);
+        assert_eq!(entries[0].timeout_sec, -1);
+        for terminal in ["ask/answered", "ask/cancelled"] {
+            let log = log_of(&[
+                requested("r1", None, 1),
+                ask_terminal_envelope(terminal, "r1", None, 2),
+            ]);
+            assert!(pending_asks(&log).is_empty(), "{terminal} 应收口待答");
+        }
+        // timed-out 非终局:仍可答,条目保留
+        let timed_out = log_of(&[
+            requested("r1", None, 1),
+            ask_terminal_envelope("ask/timed-out", "r1", None, 2),
+        ]);
+        assert_eq!(pending_asks(&timed_out).len(), 1);
+    }
+
+    /// 键 = callId(缺席回落 id):re-ask 换新 rpc_id,同 callId 终局同样
+    /// 收口——否则每次重启都会对同一 tool 行重复 re-ask。
+    #[test]
+    fn pending_asks_folds_by_call_id() {
+        let log = log_of(&[
+            requested("r1", Some("call:7"), 1),
+            // 冷恢复 re-ask:新 rpc、同 callId
+            requested("r2", Some("call:7"), 2),
+            // 迟到应答落在新 rpc 上,但 callId 相同 → 整链收口
+            ask_answered_envelope("r2", Some("call:7"), None, true, 3),
+        ]);
+        assert!(
+            pending_asks(&log).is_empty(),
+            "同 callId 的终局应收口全部同键条目"
+        );
+        // 无 callId 时按 id 折叠:不同 id 互不干扰
+        let log = log_of(&[
+            requested("r1", None, 1),
+            requested("r2", None, 2),
+            ask_terminal_envelope("ask/cancelled", "r1", None, 3),
+        ]);
+        let entries = pending_asks(&log);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "r2");
+    }
+
+    /// questions 事件形状往返:envelope 落档 → fold 反解,字段不丢。
+    #[test]
+    fn questions_roundtrip_through_event_shape() {
+        let questions = vec![
+            QuestionItem {
+                id: "q1".into(),
+                question: "选模式?".into(),
+                header: Some("Choose Mode".into()),
+                options: vec![QuestionOption {
+                    label: "甲".into(),
+                    description: Some("说明".into()),
+                }],
+                multi_select: true,
+            },
+            QuestionItem {
+                id: "q2".into(),
+                question: "继续?".into(),
+                header: None,
+                options: vec![],
+                multi_select: false,
+            },
+        ];
+        let ev = ask_requested_envelope("r1", Some("call:3"), &questions, 120, 1);
+        let log = log_of(&[ev]);
+        let entries = pending_asks(&log);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].call_id.as_deref(), Some("call:3"));
+        assert_eq!(entries[0].timeout_sec, 120);
+        let got = &entries[0].questions;
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].header.as_deref(), Some("Choose Mode"));
+        assert_eq!(got[0].options[0].description.as_deref(), Some("说明"));
+        assert!(got[0].multi_select);
+        assert!(got[1].options.is_empty());
     }
 }
