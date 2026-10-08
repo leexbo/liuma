@@ -128,10 +128,6 @@ ask:
     zh-CN: "%{n}/%{total} 已回答"
     en: "%{n}/%{total} answered"
 
-  row_view_answers:
-    zh-CN: "查看回答"
-    en: "View answers"
-
   row_cancelled:
     zh-CN: "已取消"
     en: "Cancelled"

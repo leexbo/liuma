@@ -493,7 +493,7 @@ fn pinned_session_row(store: &Entity<AppStore>, cx: &App, s: &SessionSummary) ->
                 .justify_center()
                 .text_color(theme::label_3(cx))
                 .children(match row_leading_status(pending, running) {
-                    RowLeading::Pending => Some(pending_dot(cx)),
+                    RowLeading::Pending => Some(pending_leading(&id, cx)),
                     RowLeading::Running => Some(running_dot(cx)),
                     RowLeading::Idle => Some(fixed(LiumaIcon::Message, 13.).into_any_element()),
                 }),
@@ -1455,7 +1455,7 @@ fn session_row_in(
                 .flex_shrink_0()
                 .justify_center()
                 .children(match row_leading_status(pending, running) {
-                    RowLeading::Pending => Some(pending_dot(cx)),
+                    RowLeading::Pending => Some(pending_leading(&format!("{id_ns}-{id}"), cx)),
                     RowLeading::Running => Some(running_dot(cx)),
                     RowLeading::Idle => None,
                 }),
@@ -2093,6 +2093,21 @@ fn sub_running_badge(n: usize, cx: &App) -> gpui_kit::AnyElement {
 
 fn pending_dot(cx: &App) -> gpui_kit::AnyElement {
     crate::kits::state_dot::pending_dot(cx).into_any_element()
+}
+
+/// 待答角标(行首):琥珀点 + tooltip——点无文字,悬停说明「待答」
+/// (收起/超时转 continued 后的唯一全局痕迹)。`key` = 行内唯一 id
+/// 片段(会话 id,调用方带命名空间)
+fn pending_leading(key: &str, cx: &App) -> gpui_kit::AnyElement {
+    div()
+        .id(gpui_kit::SharedString::from(format!("row-pending-{key}")))
+        .flex()
+        .w(px(14.))
+        .flex_shrink_0()
+        .justify_center()
+        .tooltip(crate::shell::tip(t!("ask.pending_badge")))
+        .child(pending_dot(cx))
+        .into_any_element()
 }
 
 /// 行首状态槽选择:待答 > 运行 > 空闲(对齐 dsh pendingInteraction >
