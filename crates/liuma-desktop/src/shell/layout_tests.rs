@@ -15788,3 +15788,40 @@ fn trajectory_open_inspector_by_click_has_no_selection(cx: &mut TestAppContext) 
     assert!(!clipped.is_empty(), "剪贴板应写入系统提示词全文");
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// 回归锁:归档区首开后,侧栏归档动作要让已加载的缓存静默重拉——
+/// 旧实现清单只在首开拉取,归档后进设置区看不到新条目(不实时且
+/// 无刷新钮)。同锁刷新钮在场可点(显式加载态收敛)
+#[gpui_kit::test]
+fn archived_list_refreshes_after_sidebar_archive(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "archfresh");
+    // 归档动作的对象:宿主里放一个活跃会话
+    cx.update(|app| {
+        let host = store.read(app).bridge.host().clone();
+        host.create_session(Some("fresh-one".into()), None, None);
+    });
+    open_archived_section_ui(cx, &mut wcx);
+    wait_bounds_state(cx, &mut wcx, "archived-empty", true);
+    // 归档区已开(缓存 = 空清单),侧栏归档同一会话
+    cx.update(|app| {
+        store.update(app, |s, cx| s.archive("fresh-one", cx));
+    });
+    let aid = cx.update(|app| {
+        store
+            .read(app)
+            .bridge
+            .host()
+            .list_archived_sessions()
+            .into_iter()
+            .find(|s| s.session_id == "fresh-one")
+            .expect("宿主归档在场")
+            .archive_id
+    });
+    let row_sel: &'static str = Box::leak(format!("archived-row-{aid}").into_boxed_str());
+    // 缓存后台重拉是宿主往返:轮询到行在场
+    wait_bounds_state(cx, &mut wcx, row_sel, true);
+    // 刷新钮:显式加载态闪过(旧清单不闪是静默档的事),行仍在
+    click_sel(&mut wcx, "archived-refresh");
+    wait_bounds_state(cx, &mut wcx, row_sel, true);
+    let _ = std::fs::remove_dir_all(root);
+}
