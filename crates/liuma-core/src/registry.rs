@@ -7961,6 +7961,80 @@ async fn plan_question(
     outcome
 }
 
+/// ask 冷恢复 re-ask:未决问答重新挂回 pending 为 Continued(新 rpc_id、
+/// callId 继承原 tool 行)。不等待、无守卫——原 turn 已死,应答走 steer
+/// (respond 的 AskContinued 臂 → notice 投递)。
+fn re_ask_continued(
+    host: &Arc<AppHost>,
+    inner: &SlotInner,
+    session_id: &str,
+    entry: liuma_tools::ask_question::PendingAskEntry,
+) {
+    let rpc_id = Uuid::now_v7().to_string();
+    let call_key = entry.call_id.clone();
+    let frame_questions: Vec<Question> = entry
+        .questions
+        .iter()
+        .map(|q| Question {
+            id: q.id.clone(),
+            question: q.question.clone(),
+            header: q.header.clone(),
+            detail: None,
+            options: Some(
+                q.options
+                    .iter()
+                    .map(|o| QuestionOption {
+                        label: o.label.clone(),
+                        description: o.description.clone(),
+                    })
+                    .collect(),
+            ),
+            multi_select: Some(q.multi_select),
+            intent: None,
+            data: None,
+        })
+        .collect();
+    let request = QuestionRequestedFrame {
+        session_id: session_id.into(),
+        questions: frame_questions,
+        call_id: call_key.clone(),
+        state: Some("continued".into()),
+        deadline_ms: None,
+    };
+    let request_frame = ServerRequest {
+        r#type: "server-request".into(),
+        rpc_id: rpc_id.clone(),
+        method: "question/requested".into(),
+        payload: serde_json::to_value(&request).unwrap_or(Value::Null),
+    };
+    host.pending.lock_recover().insert(
+        rpc_id.clone(),
+        PendingInteraction {
+            kind: PendingKind::AskContinued {
+                questions: entry.questions.clone(),
+                call_id: entry.call_id.unwrap_or_default(),
+            },
+            frame: request_frame.clone(),
+        },
+    );
+    let _ = host.mux.send(request_frame);
+    // 落新一轮 requested(与冷恢复终局判定对账:pending_asks 按 callId
+    // 折叠,本条目在应答/取消前保持未决,重启可再次恢复)
+    ask_settle(
+        &inner.log,
+        &host.provider_info(),
+        session_id,
+        &host.mux,
+        liuma_tools::ask_question::ask_requested_envelope(
+            &rpc_id,
+            call_key.as_deref(),
+            &entry.questions,
+            entry.timeout_sec,
+            now_ms() as i64,
+        ),
+    );
+}
+
 /// 评审 pending 守卫:port future 被丢弃(turn 硬中断)→ 清 pending +
 /// plan/cancelled 收口 + resolved 帧——live 评审路径不复制 ask 通道的
 /// 悬挂缺陷(照 ApprovalGuard 形态)
@@ -9524,6 +9598,26 @@ async fn driver_loop(
                 inject_plan_guide_turn(&session_id, inner, &host0, PLAN_APPROVED_GUIDE);
             }
         }
+    }
+
+    // 重启恢复:ask/requested 无终局(含 timed-out 未答)→ re-ask 为
+    // Continued(新 rpc_id,callId 继承原 tool 行)。原 tool-call 已死
+    // (悬空占位由 pair_dangling_tool_calls 补),应答注定走 steer——
+    // 不等待、不落守卫,只把交互重新挂回 pending。折出后先放日志锁:
+    // re_ask_continued 内部落档要再取同一把锁,持锁重入 = 自锁死
+    let unresolved = {
+        let l = inner.log.lock_recover();
+        liuma_tools::ask_question::pending_asks(&l)
+    };
+    for entry in unresolved {
+        // 同进程在途交互不重发:attach 懒触发,驱动首次 poll 可能晚于
+        // live ask 落表(桌面重连/夹具直呼都会走到)——条目 id 仍在
+        // pending 表即交互活着(等待中或已转 continued,baseline 会重放
+        // 它),重发只会造出第二张幽灵卡抢走应答
+        if host0.pending.lock_recover().contains_key(&entry.id) {
+            continue;
+        }
+        re_ask_continued(&host0, inner, &session_id, entry);
     }
 
     // workspace 指令(AGENTS.md)逐步重扫(agent-instructions pre-step
@@ -14918,6 +15012,165 @@ mod tests {
             text.contains("answers"),
             "应答先到必须回填答案,不得改写为 pending:{text}"
         );
+    }
+
+    // ── 冷恢复:未决 ask 重启后 re-ask 为 continued ────────────────────
+
+    /// 重启后未决 ask(timed-out 未答)re-ask:新 rpc、callId 继承、
+    /// state=continued,应答走 steer(notice)。
+    #[tokio::test]
+    async fn cold_recovery_reasks_unresolved_ask() {
+        let ws = std::env::temp_dir().join(format!("liuma-core-cold-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&ws).unwrap();
+        let sroot =
+            std::env::temp_dir().join(format!("liuma-core-cold-s-{}", Uuid::new_v4().simple()));
+        let host1 = Arc::new(AppHost::new_at(ws.clone(), true, "test-key", sroot.clone()).unwrap());
+        let id = host1.create_session(None, None, None);
+        // 定时 ask 到超时:日志留下 requested(未决)+ timed-out
+        let questions = one_question();
+        let h = host1.clone();
+        let sid = id.clone();
+        let ask_task =
+            tokio::spawn(async move { h.ask_questions(&sid, "call:9", &questions, 1).await });
+        let mut mux1 = host1.mux_subscribe();
+        let f1 = recv_until(&mut mux1, |f| f.method == "question/requested")
+            .await
+            .expect("应收到 question/requested");
+        drop(f1);
+        tokio::time::timeout(Duration::from_secs(5), ask_task)
+            .await
+            .expect("超时应返回")
+            .unwrap()
+            .unwrap();
+        drop(host1);
+
+        // 重启:同 workspace + 会话根的新宿主;attach 触发 driver_loop re-ask
+        let host2 = Arc::new(AppHost::new_at(ws, true, "test-key", sroot).unwrap());
+        let mut mux2 = host2.mux_subscribe();
+        host2.history(&id, None, 10).await.expect("重开加载成功");
+        let f = recv_until(&mut mux2, |f| {
+            f.method == "question/requested" && f.payload["state"] == "continued"
+        })
+        .await
+        .expect("重启应对未决 ask re-ask(continued)");
+        assert_eq!(f.payload["callId"], "call:9", "callId 应继承原 tool 行");
+        let rpc_id = f.rpc_id.clone();
+        {
+            let pending = host2.pending.lock().unwrap();
+            let entry = pending.get(&rpc_id).expect("re-ask 条目应在场");
+            assert!(
+                matches!(entry.kind, PendingKind::AskContinued { .. }),
+                "re-ask 挂回为 Continued"
+            );
+        }
+        // 重启后的迟到应答照走 steer
+        let receipt = host2.respond(
+            &rpc_id,
+            &RpcResult::Ok(json!({
+                "sessionId": id,
+                "answer": { "answers": [ { "id": "q1", "selected": ["是"] } ] },
+            })),
+        );
+        assert!(
+            receipt.accepted,
+            "重启后迟到应答可投递:{:?}",
+            receipt.reason
+        );
+    }
+
+    /// 已收口(answered / cancelled)的 ask 重启后不重问。
+    #[tokio::test]
+    async fn cold_recovery_skips_answered_and_cancelled() {
+        let ws =
+            std::env::temp_dir().join(format!("liuma-core-cold-skip-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&ws).unwrap();
+        let sroot = std::env::temp_dir().join(format!(
+            "liuma-core-cold-skip-s-{}",
+            Uuid::new_v4().simple()
+        ));
+        let host1 = Arc::new(AppHost::new_at(ws.clone(), true, "test-key", sroot.clone()).unwrap());
+        let id = host1.create_session(None, None, None);
+        // 其一:阻塞 ask 正常应答(answered 收口)
+        let questions = one_question();
+        let h = host1.clone();
+        let sid = id.clone();
+        let answered =
+            tokio::spawn(async move { h.ask_questions(&sid, "call:a", &questions, -1).await });
+        let mut mux1 = host1.mux_subscribe();
+        let fa = recv_until(&mut mux1, |f| f.method == "question/requested")
+            .await
+            .expect("应收到 question/requested");
+        host1
+            .respond(
+                &fa.rpc_id,
+                &RpcResult::Ok(json!({
+                    "sessionId": id,
+                    "answer": { "answers": [ { "id": "q1", "selected": ["是"] } ] },
+                })),
+            )
+            .accepted
+            .then_some(())
+            .expect("应答应接受");
+        answered.await.unwrap().unwrap();
+        let questions = one_question();
+        let h = host1.clone();
+        let sid = id.clone();
+        let cancelled =
+            tokio::spawn(async move { h.ask_questions(&sid, "call:c", &questions, -1).await });
+        let fc = recv_until(&mut mux1, |f| f.method == "question/requested")
+            .await
+            .expect("应收到 question/requested");
+        host1.respond(
+            &fc.rpc_id,
+            &RpcResult::Err(RpcError {
+                code: "cancelled".into(),
+                message: "user cancelled".into(),
+                details: Value::Null,
+            }),
+        );
+        cancelled.await.unwrap().unwrap_err();
+        drop(host1);
+
+        // 重启:不应对任一收口 ask re-ask(pending 空,无 continued 帧)
+        let host2 = Arc::new(AppHost::new_at(ws, true, "test-key", sroot).unwrap());
+        let mux2 = host2.mux_subscribe();
+        host2.history(&id, None, 10).await.expect("重开加载成功");
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(
+            host2.pending.lock().unwrap().is_empty(),
+            "已收口的 ask 不得重问"
+        );
+        drop(mux2);
+    }
+
+    /// mux_baseline:超时转 continued 后,重连基线的 pending 帧带
+    /// state=continued(桌面凭此恢复「可答不阻塞」形态)。
+    #[tokio::test]
+    async fn mux_baseline_carries_continued_state() {
+        let host = temp_host("ask-baseline");
+        let id = host.create_session(None, None, None);
+        let questions = one_question();
+        let h = host.clone();
+        let sid = id.clone();
+        let ask_task =
+            tokio::spawn(async move { h.ask_questions(&sid, "call:4", &questions, 1).await });
+        let mut mux = host.mux_subscribe();
+        let f = recv_until(&mut mux, |f| f.method == "question/requested")
+            .await
+            .expect("应收到 question/requested");
+        drop(f);
+        tokio::time::timeout(Duration::from_secs(5), ask_task)
+            .await
+            .expect("超时应返回")
+            .unwrap()
+            .unwrap();
+        let hit = host
+            .mux_baseline()
+            .into_iter()
+            .find(|f| f.method == "question/requested")
+            .expect("基线应重放 pending 问询帧");
+        assert_eq!(hit.payload["state"], "continued", "重放帧应带 continued");
+        assert_eq!(hit.payload["callId"], "call:4");
     }
 
     /// 答题卡期间「停止」能真正中止:ask 阻塞在 rx 时会话软取消令牌触发

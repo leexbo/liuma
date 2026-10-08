@@ -331,7 +331,7 @@ pub fn ask_requested_envelope(
     if let Some(cid) = call_id {
         data["callId"] = json!(cid);
     }
-    liuma_session::EventEnvelope::new("ask/requested", ts, data)
+    liuma_session::EventEnvelope::new_ignorable("ask/requested", ts, data)
 }
 
 /// `ask/answered` 事件信封(answers 来自应答载荷;late = 超时后的迟到应答)。
@@ -349,7 +349,7 @@ pub fn ask_answered_envelope(
     if let Some(answers) = answers {
         data["answers"] = answers.clone();
     }
-    liuma_session::EventEnvelope::new("ask/answered", ts, data)
+    liuma_session::EventEnvelope::new_ignorable("ask/answered", ts, data)
 }
 
 /// `ask/timed-out` / `ask/cancelled` 事件信封(非终局/终局收口)。
@@ -363,7 +363,7 @@ pub fn ask_terminal_envelope(
     if let Some(cid) = call_id {
         data["callId"] = json!(cid);
     }
-    liuma_session::EventEnvelope::new(ty, ts, data)
+    liuma_session::EventEnvelope::new_ignorable(ty, ts, data)
 }
 
 /// 待答折叠:ask/requested 之后无同键终局(answered/cancelled)的条目,
