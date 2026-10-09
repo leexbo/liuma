@@ -1724,15 +1724,18 @@ fn click_sel(wcx: &mut gpui_kit::VisualTestContext, sel: &'static str) {
         x: b.origin.x + b.size.width / 2.,
         y: b.origin.y + b.size.height / 2.,
     };
-    // 悬停前置 + 重绘 + 取新坐标再点击:①真实用户的光标在点击前总在
-    // 场,命中盒随 hover 门控/懒注册的控件(mermaid 段控等)对裸
-    // simulate_click 会静默落空——on_click 不触发、无任何报错,表现为
-    // 「点击无反应」型偶发失败;②重绘会推进滑入动画,弹层按钮的落位
-    // 可能移动——点击必须取重绘后的新坐标,否则打在旧位置上落空。
-    // pressed_button 必须为 None(裸悬停):带 Left 会让框架认为按键
-    // 已按下,随后的 down-up 点击对序列不一致,慢机上 on_click 路由
-    // 退化(CI runner 实证)
+    // 悬停前置(裸悬停,pressed_button=None)+ 时钟推进 300ms + 重绘取
+    // 新坐标再点击。三层防御对应三类落空:①命中盒随 hover 门控/懒注册
+    // 的控件对裸 simulate_click 静默落空——真实用户的光标在点击前总
+    // 在场;②pressed_button 带 Left 会让框架认为按键已按下,随后的
+    // down-up 点击对序列不一致,慢机上 on_click 路由退化;③弹层/弹窗
+    // 的入场动画(组件库 Dialog = 250ms fade-in)在首帧内点击会偶发
+    // 落空——真实用户不可能在弹层首帧点击,推进时钟让动画/去抖走完,
+    // 与 eventually 同一纪律。重绘后按钮落位可能移动,点击必须取新坐标
     wcx.simulate_mouse_move(pt, None::<MouseButton>, gpui_kit::Modifiers::default());
+    wcx.executor()
+        .advance_clock(std::time::Duration::from_millis(300));
+    wcx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     wcx.run_until_parked();
     let pt = wcx
