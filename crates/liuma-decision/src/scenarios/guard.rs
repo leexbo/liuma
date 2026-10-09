@@ -296,6 +296,7 @@ mod tests {
         liuma_agent_loop::ToolCallRequest {
             name: "bash".into(),
             arguments: json!({ "command": "rm -rf /" }),
+            id: String::new(),
         }
     }
 
@@ -484,6 +485,7 @@ mod tests {
         let wire = liuma_agent_loop::ToolCallRequest {
             name: "bash".into(),
             arguments: Value::String(json!({ "command": "rm -rf /tmp/x" }).to_string()),
+            id: String::new(),
         };
         assert_eq!(
             HookPort::pre_tool(&guard, &wire, 1).await,

@@ -303,6 +303,7 @@ mod tests {
         let call = ToolCallRequest {
             name: "bash".into(),
             arguments: serde_json::json!({}),
+            id: String::new(),
         };
         assert_eq!(
             HookPortObj::pre_tool(&*obj, &call, 1).await,
@@ -340,6 +341,7 @@ mod tests {
         let call = ToolCallRequest {
             name: "rm".into(),
             arguments: serde_json::json!({}),
+            id: String::new(),
         };
         assert_eq!(
             HookPort::pre_tool(&hook, &call, 2).await,
@@ -458,6 +460,7 @@ mod tests {
         let call = ToolCallRequest {
             name: "bash".into(),
             arguments: serde_json::json!({}),
+            id: String::new(),
         };
         let out = ToolOutput::default();
 

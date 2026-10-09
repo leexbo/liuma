@@ -595,6 +595,13 @@ pub const KNOWN_EVENT_TYPES: &[&str] = &[
     // 非 surface;新增类型对旧日志安全,漏登记会整体拒读)
     "title/set",
     "title/llm_request",
+    // ask_user_question 生命周期四件(问询行状态机与冷恢复 re-ask 的
+    // 事实源;log-only、非 surface;写侧标 ignorable(新版本写旧版本读
+    // 安全),此处登记保证读取方守卫放行。漏登记会整体拒读)
+    "ask/requested",
+    "ask/answered",
+    "ask/timed-out",
+    "ask/cancelled",
 ];
 
 /// surface 事件类型(携带 surfaceOp 的类别:用户面三件 + 注入上下文)

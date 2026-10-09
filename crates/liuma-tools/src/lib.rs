@@ -1324,6 +1324,7 @@ mod tests {
                 &ToolCallRequest {
                     name: shell::tool_name().into(),
                     arguments: args,
+                    id: String::new(),
                 },
             )
             .await;
@@ -1338,6 +1339,7 @@ mod tests {
             &ToolCallRequest {
                 name: shell::tool_name().into(),
                 arguments: json!({ "command": "echo hi", "description": "Echo greeting" }),
+                id: String::new(),
             },
         )
         .await;
@@ -1359,6 +1361,7 @@ mod tests {
         let call = |cmd: String| ToolCallRequest {
             name: shell::tool_name().into(),
             arguments: json!({ "command": cmd, "description": "Probe write" }),
+            id: String::new(),
         };
         let denied =
             ToolPort::execute(&mut tool, &call(format!("touch {}/f", dir.display()))).await;
@@ -1439,6 +1442,7 @@ mod tests {
                 "sandbox_permissions": "full-access",
                 "justification": "命令需要写工作区外的用户目录",
             }),
+            id: String::new(),
         };
         let probe = |n: &str| format!("touch ~/liuma-esc-probe-{n}-{}", std::process::id());
 
@@ -1488,6 +1492,7 @@ mod tests {
         let plain_call = ToolCallRequest {
             name: shell::tool_name().into(),
             arguments: json!({ "command": probe("plain"), "description": "Plain probe" }),
+            id: String::new(),
         };
         let back = ToolPort::execute(&mut tool, &plain_call).await;
         assert!(!back.success, "无参执行应回到会话模式(被拦)");
@@ -1508,6 +1513,7 @@ mod tests {
                 "sandbox_permissions": "read-only",
                 "justification": "试图原地重复",
             }),
+            id: String::new(),
         };
         let out = ToolPort::execute(&mut tool, &narrow).await;
         assert!(
@@ -1555,6 +1561,7 @@ mod tests {
                 &ToolCallRequest {
                     name: shell::tool_name().into(),
                     arguments: args,
+                    id: String::new(),
                 },
             )
             .await;
@@ -1572,6 +1579,7 @@ mod tests {
                     "sandbox_permissions": "full-access",
                     "justification": "需要全盘写",
                 }),
+                id: String::new(),
             },
         )
         .await;
@@ -1618,6 +1626,7 @@ mod tests {
                 &ToolCallRequest {
                     name: shell::tool_name().into(),
                     arguments: args,
+                    id: String::new(),
                 },
             )
             .await;

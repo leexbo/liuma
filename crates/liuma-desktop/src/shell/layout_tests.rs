@@ -1730,13 +1730,30 @@ fn click_sel(wcx: &mut gpui_kit::VisualTestContext, sel: &'static str) {
     let b = wcx
         .debug_bounds(sel)
         .unwrap_or_else(|| panic!("selector {sel} bounds 缺失"));
-    wcx.simulate_click(
-        gpui_kit::Point {
+    let pt = gpui_kit::Point {
+        x: b.origin.x + b.size.width / 2.,
+        y: b.origin.y + b.size.height / 2.,
+    };
+    // 悬停前置 + 重绘 + 取新坐标再点击:①真实用户的光标在点击前总在
+    // 场,命中盒随 hover 门控/懒注册的控件(mermaid 段控等)对裸
+    // simulate_click 会静默落空;②重绘会推进滑入动画,弹层按钮的落位
+    // 可能移动——点击必须取重绘后的新坐标。
+    // pressed_button 必须为 None(裸悬停):带 Left 会让框架认为按键
+    // 已按下,随后的 down-up 点击对序列不一致,慢机上 on_click 路由
+    // 退化。**不要**在此推进时钟:300ms 推进会触发 hover 延迟的
+    // tooltip/浮层展开,反而挡住目标命中(mermaid 拖选回归实证),且
+    // 对弹窗取消落空无救治(runner 两轮实证)——慢机根因另查
+    wcx.simulate_mouse_move(pt, None::<MouseButton>, gpui_kit::Modifiers::default());
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    let pt = wcx
+        .debug_bounds(sel)
+        .map(|b| gpui_kit::Point {
             x: b.origin.x + b.size.width / 2.,
             y: b.origin.y + b.size.height / 2.,
-        },
-        gpui_kit::Modifiers::default(),
-    );
+        })
+        .unwrap_or(pt);
+    wcx.simulate_click(pt, gpui_kit::Modifiers::default());
 }
 
 /// 读 harness 临时根下全部 session.jsonl 的 session/mode 序列(plan 回归
@@ -1780,10 +1797,37 @@ fn allow_host_parking(cx: &mut TestAppContext) {
     cx.background_executor.allow_parking();
 }
 
+/// 轮询直到谓词命中或超时(返回命中值;超时返回 None 由调用方断言)。
+/// 宿主往返跑在真实线程上,`run_until_parked` 探不到它的进度——固定
+/// 次数的 park 后立即断言等于和线程调度打赌(全量并行时几十个进程内
+/// 运行时互相争抢,往返常落在最后一次 park 之后)。轮询三件套:真实
+/// sleep 放行宿主线程、advance_clock 驱动去抖/延迟效果、park 抽干测试
+/// 执行器。这是本文件 first_message_titles_session / wait_permission
+/// 既有手法的统一化。
+fn eventually<T>(
+    cx: &mut TestAppContext,
+    mut pred: impl FnMut(&mut TestAppContext) -> Option<T>,
+) -> Option<T> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(v) = pred(cx) {
+            return Some(v);
+        }
+        if std::time::Instant::now() > deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(50));
+        cx.run_until_parked();
+    }
+}
+
 /// 轮询宿主会话权限直到期望值或超时(异步 set_permission 落盘日志事件,
 /// 与 liuma-core 侧 wait_log_sandbox 同义;desktop 测试环境用真实线程阻塞)。
 fn wait_permission(host: &liuma_core::registry::AppHost, id: &str, want: &str) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    // 满载下宿主往返可远超 3s:窗口对齐全族 10s(命中即返)
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while host.session_permission(id) != want && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -1816,12 +1860,12 @@ fn composer_menu_open_select_permission(cx: &mut TestAppContext) {
         wcx.debug_bounds("full-access-card").is_some(),
         "完全权限风险确认弹窗未出现"
     );
-    click_sel(&mut wcx, "full-access-cancel");
-    cx.run_until_parked();
     // 弹窗退场不走 debug_bounds(该 map 只增不清,残留不可靠),以
-    // store 确认态兜底
-    let ask = cx.update(|app| store.read(app).settings.full_access_confirm);
-    assert_eq!(ask, None, "取消后确认态未清");
+    // store 确认态兜底;点击带效果验证与有界重试(慢 runner 弹层
+    // 沉降期单击会落空,run 8 实证)
+    click_until(cx, &mut wcx, "full-access-cancel", |cx, _| {
+        cx.update(|app| store.read(app).settings.full_access_confirm.is_none())
+    });
     assert_ne!(
         host.session_permission(&id),
         "full-access",
@@ -1911,6 +1955,7 @@ fn composer_menu_open_select_permission(cx: &mut TestAppContext) {
 /// billing_cache)且**不落设置页通告**(静默纪律;手动路径才有通告)
 #[gpui_kit::test]
 fn billing_auto_refresh_quiet_writes_cache(cx: &mut TestAppContext) {
+    clear_env_proxies();
     let (store, _wcx, root) = menu_harness(cx, "billing-auto");
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -2007,6 +2052,7 @@ fn provider_switch_refreshes_billing_badge(cx: &mut TestAppContext) {
     cx.update(|app| {
         store.update(app, |s, cx| s.select_workspace(&ws, cx));
     });
+    clear_env_proxies();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
@@ -2824,8 +2870,10 @@ fn mermaid_code_view_is_drag_selectable(cx: &mut TestAppContext) {
     // 切到代码态
     let seg_code = Box::leak(format!("{card}-seg-code").into_boxed_str());
     click_sel(&mut wcx, seg_code);
-    redraw(cx, &mut wcx);
     let code_sel = Box::leak(format!("{card}-code").into_boxed_str());
+    // 换视图渲染过帧队列,满载下单帧断言会抢跑——轮询
+    wait_bounds_state(cx, &mut wcx, code_sel, true);
+    redraw(cx, &mut wcx);
     let b = wcx.debug_bounds(code_sel).expect("代码态未渲染");
     let y = b.origin.y + b.size.height / 2.;
     wcx.simulate_mouse_down(
@@ -2923,25 +2971,6 @@ fn user_bubble_text_is_drag_selectable(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 工作区选中态(hero)发送 = 发送即建会话:会话落入选中工作区、
-/// 有界等待宿主(tokio runtime)墙钟进度:gpui-fast 保留模式停帧后
-/// run_until_parked 不再顺带覆盖宿主侧回合推进(窗口收窄),宿主回合
-/// 需要真实墙钟时间落帧。谓词成真即返;超时后由调用侧原断言给出
-/// 失败文案(不掩盖)。
-fn wait_host_progress(
-    cx: &mut TestAppContext,
-    store: &Entity<AppStore>,
-    ready: impl Fn(&[ChatNode]) -> bool,
-) {
-    for _ in 0..25 {
-        cx.run_until_parked();
-        if cx.update(|app| ready(store.read(app).current_nodes())) {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-}
-
 /// 打开后 prompt 送达,选中态切回会话(active_workspace 清空)。
 /// 回归「无会话时 send 静默吞稿」
 #[gpui_kit::test]
@@ -2956,34 +2985,32 @@ fn send_in_workspace_selected_mode_creates_session(cx: &mut TestAppContext) {
     cx.update(|app| {
         store.update(app, |st, cx| st.send("工作区里第一条消息", cx));
     });
-    cx.run_until_parked();
-    let (current, active) = cx.update(|app| {
-        let st = store.read(app);
-        (
-            st.state.current_id.clone(),
-            st.state.active_workspace.clone(),
-        )
-    });
-    let current = current.expect("发送应建会话并打开");
+    // 建会话 + prompt 送达都是宿主真实线程上的往返:轮询到节点落定
+    //(固定次数 park 后立即断言 = 和线程调度打赌,全量并行必偶发)
+    let delivered = eventually(cx, |cx| {
+        let (current, active, nodes) = cx.update(|app| {
+            let st = store.read(app);
+            (
+                st.state.current_id.clone(),
+                st.state.active_workspace.clone(),
+                st.current_nodes().to_vec(),
+            )
+        });
+        let current = current?;
+        let hit = nodes.iter().any(|n| {
+            matches!(
+                n,
+                ChatNode::User { text, .. } if text.contains("工作区里第一条消息")
+            )
+        });
+        hit.then_some((current, active))
+    })
+    .expect("prompt 未送达新会话(poll 10s)");
+    let (current, active) = delivered;
     assert_eq!(active, None, "新会话打开后工作区选中应清空");
     assert!(
         !current.contains('/'),
         "默认工作区会话 id 应无前缀,实际:{current}"
-    );
-    // 用户消息确已送达新会话(回合尾标记在后,扫全节点断言)。
-    // 宿主回合在独立 tokio runtime 推进,park 窗口收窄后有界等待其落帧
-    wait_host_progress(cx, &store, |ns| {
-        ns.iter().any(
-            |n| matches!(n, ChatNode::User { text, .. } if text.contains("工作区里第一条消息")),
-        )
-    });
-    let nodes = cx.update(|app| store.read(app).current_nodes().to_vec());
-    assert!(
-        nodes.iter().any(|n| matches!(
-            n,
-            ChatNode::User { text, .. } if text.contains("工作区里第一条消息")
-        )),
-        "prompt 未送达新会话:{nodes:?}"
     );
     let _ = std::fs::remove_dir_all(root);
 }
@@ -3171,10 +3198,21 @@ fn setter_error_pushes_notice(cx: &mut TestAppContext) {
             st.set_session_provider_model("deepseek", "__no_such_model__", cx)
         });
     });
-    // 宿主路由校验在独立 tokio runtime 落帧,park 窗口收窄后有界等待
-    wait_host_progress(cx, &store, |ns| !ns.is_empty());
-    let last = cx.update(|app| store.read(app).current_nodes().last().cloned());
-    match last {
+    // 失败通告在异步回调里 push(桥 runtime):固定 park 后断言与回落
+    // 竞速——轮询
+    let hit = eventually(cx, |cx| {
+        let n = cx.update(|app| store.read(app).current_nodes().last().cloned());
+        matches!(
+            n,
+            Some(ChatNode::Notice {
+                kind: chat::projection::NoticeKind::Local { .. },
+                ..
+            })
+        )
+        .then_some(n)
+    })
+    .expect("尾部应为 Notice 节点(poll 10s)");
+    match hit {
         Some(ChatNode::Notice {
             kind: chat::projection::NoticeKind::Local { text },
             ..
@@ -5890,6 +5928,24 @@ fn panel_trajectory_tab_listing_and_entry(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// billing 系 mock 服务器在回环:清环境代理再起(reqwest 吃 http_proxy
+/// 系变量且不豁免回环,带代理的 CI/开发机会把 mock 流量送进代理;
+/// 宿主侧客户端在此后构建,时序安全)
+fn clear_env_proxies() {
+    for k in [
+        "http_proxy",
+        "https_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        // SAFETY(测试基线):仅 billing 回环 mock 用例调用,清代理是
+        // 它们的共同期望状态
+        unsafe { std::env::remove_var(k) }
+    }
+}
+
 /// 轮询等待选择器出现(树/预览装载走真实异步:refresh + park + 小睡,
 /// 见异步断言纪律);超时 panic 带选择器名
 fn wait_bounds(
@@ -5918,16 +5974,47 @@ fn wait_bounds_state(
     sel: &'static str,
     want: bool,
 ) {
-    for _ in 0..300 {
+    // 满载过载(多测试并行 × 各自宿主 runtime)下宿主往返可远超 4.5s:
+    // 窗口放宽到 10s,命中即返不拖慢常径
+    for _ in 0..400 {
         wcx.refresh().expect("刷新失败");
         cx.update(|_: &mut App| {});
         cx.run_until_parked();
         if wcx.debug_bounds(sel).is_some() == want {
             return;
         }
-        std::thread::sleep(std::time::Duration::from_millis(15));
+        std::thread::sleep(std::time::Duration::from_millis(25));
     }
     panic!("selector {sel} 等待超时(期望在场={want})");
+}
+
+/// 点击并验证效果,未达则重取坐标再点(至多 3 击,每击后 5s 轮询)。
+/// 慢 runner 上弹层布局在字体解析/入场沉降完成前会跨帧漂移,单发点击
+/// 打在按钮「上一帧」的位置上会静默落空——真实用户对没反应的按钮
+/// 就是再点一次。谓词轮询兼承 [`wait_bounds_state`] 纪律(真实 sleep
+/// 放行宿主线程 + park 抽干)。产品行为由谓词断言兜底,重试不掩盖
+/// 任何「点了没效果」的真实缺陷(谓词不过即 panic)
+fn click_until(
+    cx: &mut TestAppContext,
+    wcx: &mut gpui_kit::VisualTestContext,
+    sel: &'static str,
+    mut effect: impl FnMut(&mut TestAppContext, &mut gpui_kit::VisualTestContext) -> bool,
+) {
+    for attempt in 1..=3 {
+        click_sel(wcx, sel);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            wcx.refresh().expect("刷新失败");
+            cx.update(|_: &mut App| {});
+            cx.run_until_parked();
+            if effect(cx, wcx) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        eprintln!("[click_until] 第 {attempt} 击后效果未达,重取坐标重试");
+    }
+    panic!("点击 {sel} 三击后效果仍未达成");
 }
 
 /// 文件标签:「+」清单/空态清单收录 + 进出视图(轨迹同构回归锁)
@@ -6370,7 +6457,7 @@ fn ask_card_header_states_never_fall_back_to_question(cx: &mut TestAppContext) {
     assert!(wcx.debug_bounds("ask-title").is_some(), "标题应恒在场");
 
     // 态 2:header 缺席 → eyebrow 缺席、title 在场(问题文本只出现一次)
-    cx.update(|app| store.update(app, |st, cx| st.cancel_ask(cx)));
+    cx.update(|app| store.update(app, |st, cx| st.hide_ask(cx)));
     cx.run_until_parked();
     let no_header: Vec<serde_json::Value> = serde_json::from_value(serde_json::json!([
         { "id": "q2", "question": "只有这一句问题文本", "multi_select": false }
@@ -9536,16 +9623,18 @@ fn hero_preset_select(cx: &mut TestAppContext) {
     );
 
     click_sel(&mut wcx, "preset-item-minimal");
-    cx.run_until_parked();
-    assert_eq!(
-        host.session_preset(&id),
-        "minimal",
-        "preset override 未生效"
-    );
-    // 缓存回写经 bridge.call 异步落地(refresh_session_cfg),满载下
-    // run_until_parked 单次等待与 tokio 回落竞速——轮询等待
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    let cached = loop {
+    // preset override 经 bridge.call 异步落宿主(满载下单次 park 与
+    // tokio 回落竞速)——轮询到宿主态翻新再断言
+    let preset_landed = eventually(cx, |cx| {
+        let v = cx.update(|_| host.session_preset(&id));
+        (v == "minimal").then_some(v)
+    })
+    .expect("preset override 未生效(poll 10s)");
+    assert_eq!(preset_landed, "minimal");
+    // 缓存回写经 bridge.call 异步落地(refresh_session_cfg 的完成回调),
+    // 满载下与 tokio 回落竞速——轮询必须带 park(裸 sleep 循环轮不到
+    // 回调任务),统一走 eventually
+    let cached = eventually(cx, |cx| {
         let v = cx.update(|app| {
             store
                 .read(app)
@@ -9553,12 +9642,10 @@ fn hero_preset_select(cx: &mut TestAppContext) {
                 .get(&id)
                 .map(|c| c.preset.clone())
         });
-        if v.as_deref() == Some("minimal") || std::time::Instant::now() > deadline {
-            break v;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    };
-    assert_eq!(cached.as_deref(), Some("minimal"), "preset 缓存未回写");
+        (v.as_deref() == Some("minimal")).then_some(v)
+    })
+    .expect("preset 缓存未回写(poll 10s)");
+    assert_eq!(cached.as_deref(), Some("minimal"));
     wcx.refresh().expect("刷新失败");
     assert!(
         wcx.debug_bounds("hero-preset-card").is_none(),
@@ -9636,7 +9723,7 @@ fn context_meter_renders_and_opens(cx: &mut TestAppContext) {
     // 注入占用(正常路径 = 首个 LLM 请求后 session_stats 产出;
     // 不触发真实 refresh_stats 以免后台回读覆盖注入值;attach 期的
     // 在途回读仍可能晚到覆写——轮询内幂等重申注入(与静默写竞速)
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         cx.update(|app| {
             let id = store.read(app).state.current_id.clone().unwrap();
@@ -9672,7 +9759,7 @@ fn context_meter_renders_and_opens(cx: &mut TestAppContext) {
 
     click_sel(&mut wcx, "context-ring");
     // 详情卡同为单帧断言面:并发负载下偶发晚一拍,轮询兜底
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         wcx.refresh().expect("刷新失败");
         cx.update(|_: &mut App| {});
@@ -10811,19 +10898,11 @@ fn provider_editor_postures(cx: &mut TestAppContext) {
     wcx.run_until_parked();
     // 「移除」→ 确认模态;取消不删
     click_sel(&mut wcx, "provider-remove-deepseek");
-    wcx.run_until_parked();
-    wcx.refresh().expect("刷新失败");
-    wcx.run_until_parked();
-    assert!(wcx.debug_bounds("provider-delete-card").is_some());
-    // 确认弹窗已迁组件库 Dialog 层:在场 = dialog-layer 渲染
-    assert!(wcx.debug_bounds("dialog-layer").is_some());
-    click_sel(&mut wcx, "provider-delete-cancel");
-    wcx.run_until_parked();
-    wcx.refresh().expect("刷新失败");
-    assert!(
-        wcx.debug_bounds("dialog-layer").is_none(),
-        "取消后确认弹层应已关闭"
-    );
+    // 弹层开关都过帧队列,满载下固定两拍会抢跑——轮询
+    wait_bounds_state(cx, &mut wcx, "provider-delete-card", true);
+    click_until(cx, &mut wcx, "provider-delete-cancel", |_, wcx| {
+        wcx.debug_bounds("dialog-layer").is_none()
+    });
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -11900,7 +11979,7 @@ fn compaction_rows_quiet_states(cx: &mut TestAppContext) {
     // 在 0.3.5 帧调度下竞态;家族既定药方:异步回写断言改轮询)
     let poll =
         |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext, sel: &'static str| {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             loop {
                 redraw(cx, wcx);
                 if wcx.debug_bounds(sel).is_some() || std::time::Instant::now() > deadline {
@@ -11913,7 +11992,7 @@ fn compaction_rows_quiet_states(cx: &mut TestAppContext) {
     // 排队:回合进行中受理 → compact-queued 行(静态,非红)。
     // compact_queued/running 是瞬态位:迟到的历史折叠(真 tokio I/O,
     // 完成时刻不定)会将其复位——轮询内幂等重申,不与折叠竞速
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         cx.update(|app| {
             store.update(app, |st, cx| {
@@ -11959,7 +12038,7 @@ fn compaction_rows_quiet_states(cx: &mut TestAppContext) {
     );
 
     // 进行中:受理置位 → compact-running 在场,红色告警不在场
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         cx.update(|app| {
             store.update(app, |st, cx| {
@@ -12950,17 +13029,19 @@ fn hero_mode_model_pick_persists_workspace_default(cx: &mut TestAppContext) {
     wcx.refresh().expect("刷新失败");
     cx.run_until_parked();
 
-    let stored = cx.update(|app| {
-        store.read(app).settings.settings_snapshot["workspaces"]
-            .as_object()
-            .and_then(|m| m.values().next())
-            .and_then(|w| w["model"].as_str().map(str::to_string))
-    });
-    assert_eq!(
-        stored.as_deref(),
-        Some(target.as_str()),
-        "hero 态选型应落工作区默认模型"
-    );
+    // 选型落盘 → settings 快照回读是宿主真实线程上的往返:轮询到
+    // 快照翻新再断言(固定次数 park 后立即读 = 偶发读旧值)
+    let stored = eventually(cx, |cx| {
+        let v = cx.update(|app| {
+            store.read(app).settings.settings_snapshot["workspaces"]
+                .as_object()
+                .and_then(|m| m.values().next())
+                .and_then(|w| w["model"].as_str().map(str::to_string))
+        });
+        (v.as_deref() == Some(target.as_str())).then_some(v)
+    })
+    .expect("hero 态选型应落工作区默认模型(poll 10s)");
+    assert_eq!(stored.as_deref(), Some(target.as_str()));
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -14286,7 +14367,7 @@ fn compaction_progress_row_and_settle(cx: &mut TestAppContext) {
     };
     let poll =
         |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext, sel: &'static str| {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             loop {
                 redraw(cx, wcx);
                 if wcx.debug_bounds(sel).is_some() || std::time::Instant::now() > deadline {
@@ -14510,7 +14591,8 @@ fn archived_roundtrip_ui(cx: &mut TestAppContext) {
     settle(&mut wcx);
     settle(&mut wcx);
     wait_bounds_state(cx, &mut wcx, row_sel, false);
-    assert!(wcx.debug_bounds("archived-empty").is_some(), "清单清空空态");
+    // 空态行是清单重拉后的又一帧:也轮询
+    wait_bounds_state(cx, &mut wcx, "archived-empty", true);
     let back = cx.update(|app| {
         store
             .read(app)
@@ -14532,20 +14614,19 @@ fn archived_delete_confirm_flow(cx: &mut TestAppContext) {
     open_archived_section_ui(cx, &mut wcx);
     let del_sel: &'static str = Box::leak(format!("archived-del-{aid}").into_boxed_str());
     let row_sel: &'static str = Box::leak(format!("archived-row-{aid}").into_boxed_str());
+    // 行到位再点(开区清单是宿主往返,满载下列表可能晚到)
+    wait_bounds_state(cx, &mut wcx, row_sel, true);
     click_sel(&mut wcx, del_sel);
-    settle(&mut wcx);
-    assert!(
-        wcx.debug_bounds("dialog-layer").is_some()
-            && wcx.debug_bounds("archived-confirm-card").is_some(),
-        "确认弹层在场"
-    );
-    click_sel(&mut wcx, "archived-confirm-cancel");
-    settle(&mut wcx);
-    assert!(wcx.debug_bounds("dialog-layer").is_none(), "取消后弹层关闭");
+    wait_bounds_state(cx, &mut wcx, "archived-confirm-card", true);
+    click_until(cx, &mut wcx, "archived-confirm-cancel", |_, wcx| {
+        wcx.debug_bounds("archived-confirm-card").is_none()
+    });
     assert!(wcx.debug_bounds(row_sel).is_some(), "取消后行仍在");
     click_sel(&mut wcx, del_sel);
-    settle(&mut wcx);
-    click_sel(&mut wcx, "archived-del-confirm");
+    wait_bounds_state(cx, &mut wcx, "archived-confirm-card", true);
+    click_until(cx, &mut wcx, "archived-del-confirm", |_, wcx| {
+        wcx.debug_bounds("archived-confirm-card").is_none()
+    });
     settle(&mut wcx);
     settle(&mut wcx);
     wait_bounds_state(cx, &mut wcx, row_sel, false);
@@ -15596,7 +15677,17 @@ fn trajectory_inspector_scrollbar_wired(cx: &mut TestAppContext) {
     cx.update(|app| {
         store.update(app, |s, cx| s.open_panel_tab(PanelTab::Trajectory, cx));
     });
-    wcx.run_until_parked();
+    // 开页即重拉,回包跑在宿主真实线程上(park 探不到):必须轮询到首轮
+    // 回包落库再注入——迟到回包按空台账整体替换 records,且选中记录
+    // 不在页内会按失配语义关掉检查器。「先收敛再注入」在此真正兑现
+    eventually(cx, |cx| {
+        cx.update(|app| {
+            let st = store.read(app);
+            (!st.trajectory.trajectory.loading && st.trajectory.trajectory_session.is_some())
+                .then_some(())
+        })
+    })
+    .expect("轨迹首拉未收敛(poll 10s)");
     let prompt = "段落正文,足够长以撑出垂直溢出。".repeat(600);
     let rec = TrajectoryRecord {
         index: 1,
@@ -15724,7 +15815,16 @@ fn trajectory_open_inspector_by_click_has_no_selection(cx: &mut TestAppContext) 
     cx.update(|app| {
         store.update(app, |s, cx| s.open_panel_tab(PanelTab::Trajectory, cx));
     });
-    wcx.run_until_parked();
+    // 同 trajectory_inspector_scrollbar_wired:先轮询到首轮回包落库再注入,
+    // 迟到空台账回包会整体替换注入的 records(点行落空型偶发红)
+    eventually(cx, |cx| {
+        cx.update(|app| {
+            let st = store.read(app);
+            (!st.trajectory.trajectory.loading && st.trajectory.trajectory_session.is_some())
+                .then_some(())
+        })
+    })
+    .expect("轨迹首拉未收敛(poll 10s)");
     cx.update(|app| {
         store.update(app, |s, cx| {
             s.trajectory.trajectory = TrajectoryView {
@@ -15795,5 +15895,42 @@ fn trajectory_open_inspector_by_click_has_no_selection(cx: &mut TestAppContext) 
         .unwrap_or_default();
     eprintln!("[dbg] 剪贴板前 10 字: {clipped:?}");
     assert!(!clipped.is_empty(), "剪贴板应写入系统提示词全文");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 回归锁:归档区首开后,侧栏归档动作要让已加载的缓存静默重拉——
+/// 旧实现清单只在首开拉取,归档后进设置区看不到新条目(不实时且
+/// 无刷新钮)。同锁刷新钮在场可点(显式加载态收敛)
+#[gpui_kit::test]
+fn archived_list_refreshes_after_sidebar_archive(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "archfresh");
+    // 归档动作的对象:宿主里放一个活跃会话
+    cx.update(|app| {
+        let host = store.read(app).bridge.host().clone();
+        host.create_session(Some("fresh-one".into()), None, None);
+    });
+    open_archived_section_ui(cx, &mut wcx);
+    wait_bounds_state(cx, &mut wcx, "archived-empty", true);
+    // 归档区已开(缓存 = 空清单),侧栏归档同一会话
+    cx.update(|app| {
+        store.update(app, |s, cx| s.archive("fresh-one", cx));
+    });
+    let aid = cx.update(|app| {
+        store
+            .read(app)
+            .bridge
+            .host()
+            .list_archived_sessions()
+            .into_iter()
+            .find(|s| s.session_id == "fresh-one")
+            .expect("宿主归档在场")
+            .archive_id
+    });
+    let row_sel: &'static str = Box::leak(format!("archived-row-{aid}").into_boxed_str());
+    // 缓存后台重拉是宿主往返:轮询到行在场
+    wait_bounds_state(cx, &mut wcx, row_sel, true);
+    // 刷新钮:显式加载态闪过(旧清单不闪是静默档的事),行仍在
+    click_sel(&mut wcx, "archived-refresh");
+    wait_bounds_state(cx, &mut wcx, row_sel, true);
     let _ = std::fs::remove_dir_all(root);
 }

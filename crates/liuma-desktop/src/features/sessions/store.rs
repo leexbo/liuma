@@ -961,6 +961,9 @@ impl AppStore {
         if self.bridge.host().archive_session(id).is_ok() {
             self.state.sessions.retain(|s| s.session_id != id);
             self.refresh_list(cx);
+            // 设置页归档缓存若已加载,静默重拉保持实时(旧实现只在
+            // 首开拉取,归档后进设置区看不到新条目)
+            self.revalidate_archived(cx);
             // 归档当前会话 → 回 hero(不隐式跳下一会话:单选模型下
             // 自动导航属意外选中;再聊点行或「+」)
             if self.state.current_id.as_deref() == Some(id) {

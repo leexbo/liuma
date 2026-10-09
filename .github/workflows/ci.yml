@@ -1,0 +1,46 @@
+# CI 门禁:与本地 `just verify` 同一全集(fmt / clippy / test / 契约 / e2e /
+# links / 桌面文案)。
+# 平台分阶段:当前仅 macOS(开发平台,红了可本地复现);Linux / Windows
+# 后置——无人开发的平台红了无法低成本排查,不当阻塞门禁,补齐时按
+# v0.3.0-roadmap.md §1 的前置清单加矩阵。
+# flake 处置:全量并行偶发失败先 Rerun failed jobs 再判归属(既有惯例;
+# 布局套件三类根因已根修)。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      # 版本唯一事实源 = rust-toolchain.toml;action 不读该文件(toolchain
+      # 为必填输入),从文件解析 channel 喂入,避免第二份硬编码漂移
+      - name: Resolve pinned toolchain
+        id: toolchain
+        run: echo "channel=$(sed -n 's/^channel *= *\"\(.*\)\"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          components: rustfmt, clippy
+      - run: rustup target add wasm32-wasip2
+      - uses: Swatinem/rust-cache@v2
+      - run: brew install just
+      # 代理环境回显:runner 镜像带 http_proxy 类变量,回环 MCP fixture
+      # 曾被劫持(已在产品侧修:回环端点强制 no_proxy);留此行便于
+      # 环境再生变时直接看到
+      - run: env | grep -iE "proxy" || echo "无代理环境变量"
+      - run: just preflight
+      - run: just verify

@@ -382,6 +382,7 @@ mod tests {
     async fn spawn_sse_server(
         response_body: &'static str,
     ) -> (String, Arc<std::sync::Mutex<Vec<u8>>>) {
+        crate::clear_env_proxies();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -579,6 +580,7 @@ mod tests {
     /// 秒级转成 Err——否则 turn 永久悬挂零反馈
     #[tokio::test]
     async fn stalled_server_times_out() {
+        crate::clear_env_proxies();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -613,6 +615,7 @@ mod tests {
     /// 非 2xx 状态经桥保留 → engine 分类器归类(401 → AUTH)
     #[tokio::test]
     async fn error_status_surfaced() {
+        crate::clear_env_proxies();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {

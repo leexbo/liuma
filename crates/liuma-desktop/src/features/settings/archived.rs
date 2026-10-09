@@ -4,7 +4,8 @@ use super::*;
 
 impl AppStore {
     /// 进入归档区(nav 钩子):惰建搜索输入与两下拉 + 首拉清单。
-    /// 重复进入不重置筛选态(回导航再进,搜索词/排序/项目筛选保留)
+    /// 重复进入不重置筛选态(回导航再进,搜索词/排序/项目筛选保留),
+    /// 清单走静默重校验(外部归档变更随入口收敛)
     pub(crate) fn open_archived_section(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings.archived_search.is_none() {
             self.settings.archived_search = Some(cx.new(|cx| {
@@ -15,14 +16,36 @@ impl AppStore {
         self.ensure_archived_project_select(window, cx);
         if self.settings.archived.is_none() {
             self.refresh_archived(cx);
+        } else {
+            self.revalidate_archived(cx);
         }
     }
 
-    /// 归档清单异步重拉:全项目 .archive 扫描要读日志派生事实(标题/blank),
-    /// 照清单刷新先例上 blocking 池,不占 runtime worker。回填后项目选项集
-    /// 可能已变(归档项首次出现/清空),经窗桥惰重建下拉
+    /// 归档清单异步重拉(显式加载态;删除/恢复/刷新钮入口):全项目
+    /// .archive 扫描要读日志派生事实(标题/blank),照清单刷新先例上
+    /// blocking 池,不占 runtime worker。失败保旧清单静默;回填后项目
+    /// 选项集可能已变(归档项首次出现/清空),经窗桥惰重建下拉
     pub fn refresh_archived(&mut self, cx: &mut Context<Self>) {
-        self.settings.archived_loading = true;
+        self.fetch_archived(true, cx);
+    }
+
+    /// 既有缓存的静默重拉(不置加载态;进入归档区与侧栏归档动作入口):
+    /// stale-while-revalidate——旧清单照常可读,回包后原位换新。覆盖
+    /// 本实例之外的归档变更(重复进入)与本实例侧栏归档(缓存已在
+    /// 场时保持实时);未加载过则由首开显式拉取
+    pub(crate) fn revalidate_archived(&mut self, cx: &mut Context<Self>) {
+        if self.settings.archived.is_none() {
+            return;
+        }
+        self.fetch_archived(false, cx);
+    }
+
+    /// 清单拉取共享体:`loud` = 置/清加载态(显式入口要反馈),静默档
+    /// 全程不动 `archived_loading`(旧清单在场不闪)
+    fn fetch_archived(&mut self, loud: bool, cx: &mut Context<Self>) {
+        if loud {
+            self.settings.archived_loading = true;
+        }
         let store = cx.entity().clone();
         let host = self.bridge.host().clone();
         let rx = self
@@ -31,7 +54,9 @@ impl AppStore {
         cx.spawn(async move |_this, cx| {
             let items = rx.await;
             store.update(cx, |s, cx| {
-                s.settings.archived_loading = false;
+                if loud {
+                    s.settings.archived_loading = false;
+                }
                 if let Ok(items) = items {
                     s.settings.archived = Some(items);
                 }
@@ -469,7 +494,31 @@ pub(crate) fn archived_section(store: &Entity<AppStore>, cx: &App) -> impl IntoE
                             .as_ref()
                             .map(Select::new),
                     ),
-            ),
+            )
+            .child({
+                // 手动刷新(显式加载态;入口重校验之外的逃生口——
+                // 归档区打开期间外部进程改了归档目录也能立刻收敛)
+                let s = store.clone();
+                div()
+                    .id("archived-refresh")
+                    .debug_selector(|| "archived-refresh".to_string())
+                    .flex()
+                    .flex_shrink_0()
+                    .size(px(32.))
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(theme::border(cx))
+                    .cursor_pointer()
+                    .text_color(theme::label_2(cx))
+                    .hover(|s| s.bg(theme::dock(cx)).text_color(theme::label(cx)))
+                    .tooltip(crate::shell::tip(t!("settings.archived_refresh")))
+                    .child(fixed(LiumaIcon::RefreshCw, 14.))
+                    .on_click(move |_, _, cx| {
+                        s.update(cx, |st, cx| st.refresh_archived(cx));
+                    })
+            }),
     );
 
     // 态分流:加载 / 空清单 / 零命中 = 余高内居中(不进滚动区);

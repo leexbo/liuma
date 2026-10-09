@@ -1,0 +1,5 @@
+# 工具链定版:fmt/clippy 门禁随环境版本漂移的根治点(本地与 CI 同版,
+# `cargo fmt --all --check` 结果两侧一致)。升版 = 本文件改一行 + 全量
+# `just verify` 收口存量重排。
+[toolchain]
+channel = "1.99.0"

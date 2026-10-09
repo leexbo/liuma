@@ -68,8 +68,27 @@ const ANTHROPIC_MIN_SSE: &str = concat!(
     "data: {\"type\":\"message_stop\"}\n\n",
 );
 
+/// mock 服务器在回环:清环境代理再起(reqwest 吃 http_proxy 系变量
+/// 且不豁免回环,CI runner 与代理开发机会把 mock 流量送进代理全红;
+/// 客户端在此后构建,时序安全)
+fn clear_env_proxies() {
+    for k in [
+        "http_proxy",
+        "https_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        // SAFETY(测试基线):本文件用例全部面向回环 mock,清代理是
+        // 共同期望状态
+        unsafe { std::env::remove_var(k) }
+    }
+}
+
 /// mock SSE 服务器:捕获原始请求,回固定 SSE 体
 async fn spawn_sse_server(response_body: &'static str) -> (String, Arc<Mutex<Vec<u8>>>) {
+    clear_env_proxies();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let captured: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));

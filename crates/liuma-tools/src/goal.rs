@@ -185,6 +185,7 @@ mod tests {
         ToolCallRequest {
             name: "goal".into(),
             arguments: args,
+            id: String::new(),
         }
     }
 

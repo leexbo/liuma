@@ -103,3 +103,35 @@ ask:
   decline_desc:
     zh-CN: "留在计划模式;反馈会回传给模型"
     en: "Stays in plan mode; feedback goes back to the model"
+
+  hide_tip:
+    zh-CN: "收起,可从消息行的「回答」重新打开"
+    en: "Collapse — reopen it from the tool row"
+
+  countdown_s:
+    zh-CN: "%{s} 秒"
+    en: "%{s}s"
+
+  row_waiting:
+    zh-CN: "等待回答"
+    en: "Waiting for answer"
+
+  row_continued:
+    zh-CN: "已继续工作,仍可回答"
+    en: "Work continued; still answerable"
+
+  row_answer_btn:
+    zh-CN: "回答"
+    en: "Answer"
+
+  row_answered:
+    zh-CN: "%{n}/%{total} 已回答"
+    en: "%{n}/%{total} answered"
+
+  row_cancelled:
+    zh-CN: "已取消"
+    en: "Cancelled"
+
+  pending_badge:
+    zh-CN: "待答"
+    en: "Waiting"

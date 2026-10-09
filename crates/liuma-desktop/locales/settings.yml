@@ -867,6 +867,10 @@ settings:
     zh-CN: "加载中…"
     en: "Loading…"
 
+  archived_refresh:
+    zh-CN: "刷新"
+    en: "Refresh"
+
   archived_unarchive:
     zh-CN: "取消归档"
     en: "Unarchive"

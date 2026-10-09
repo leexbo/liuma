@@ -1,6 +1,9 @@
-//! 问答/计划审批的 store 域:UI 交互态(AskUiState)+ 应答/取消/分页/
+//! 问答/计划审批的 store 域:UI 交互态(AskUiState)+ 应答/收起/重开/
 //! 提交/自定义输入。pending_ask/pending_plan 是 StoreState 的会话镜像
 //! (reducer 侧),本域应答后经 host.respond 回填。
+//!
+//! 收起(hide)不 respond:请求原地站立,工具继续阻塞,消息流 ask 行的
+//! 「回答」入口可重开(对齐 dsh keyed 卡的 dismissal=hide 语义)。
 
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::component::questionnaire::{
@@ -44,6 +47,12 @@ pub(crate) struct AskStore {
     /// 审批卡选项选择态(选择→批准两步;None=未选,
     /// Some(true)=①实施 / Some(false)=②修改意见)。提交后随 pending 清空
     pub plan_selection: Option<bool>,
+    /// 问答卡收起态(pending_ask 仍在:请求站立,行可重开;新 rpc 到来
+    /// 的 requested 重置)
+    pub ask_hidden: bool,
+    /// 建卡时的倒计时总时长(建卡瞬间 deadline - now;环形进度的分母,
+    /// 与 ask_questionnaire 同生命周期)
+    pub ask_deadline_total: Option<i64>,
 }
 
 impl AppStore {
@@ -192,35 +201,60 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 取消审批(✕ → cancelled;模型收到逐字取消文案,审计对收口)
-    pub fn dismiss_approval(&mut self, cx: &mut Context<Self>) {
-        let Some(p) = self.state.pending_approval.take() else {
-            return;
-        };
-        self.bridge.host().respond(
-            &p.rpc_id,
-            &RpcResult::Err(liuma_core::proto::RpcError {
-                code: "cancelled".into(),
-                message: t!("ask.user_cancelled").into(),
-                details: serde_json::Value::Null,
-            }),
-        );
+    /// 收起问答卡(✕):只撤卡不 respond——请求站立、工具继续阻塞,
+    /// 消息流 ask 行的「回答」入口可重开(对齐 dsh keyed 卡 hide 语义)。
+    /// 侧栏角标与行状态不受影响
+    pub fn hide_ask(&mut self, cx: &mut Context<Self>) {
+        self.ask.ask_hidden = true;
         cx.notify();
     }
 
-    /// 放弃整组问题(取消;respond ok:false → host reject)
-    pub fn cancel_ask(&mut self, cx: &mut Context<Self>) {
-        let Some(ask) = self.state.pending_ask.take() else {
+    /// 从工具行重开问答(行键 `call:{seq}`):pending_ask 不在场或已换代
+    /// (收起后被 resolved 清/continued 帧)时按行状态重建——行的 rpc 仍在
+    /// core pending 表(Ask 等待中或 AskContinued),respond 照走同一通道
+    pub fn reopen_ask_from_row(&mut self, key: &str, cx: &mut Context<Self>) {
+        use crate::features::chat::projection::AskPhase;
+        use crate::shell::reducer::PendingAsk;
+        use liuma_core::proto::Question;
+
+        let Some(session_id) = self.state.current_id.clone() else {
             return;
         };
-        self.bridge.host().respond(
-            &ask.rpc_id,
-            &RpcResult::Err(liuma_core::proto::RpcError {
-                code: "cancelled".into(),
-                message: "user cancelled the question".into(),
-                details: serde_json::Value::Null,
-            }),
-        );
+        let Some(row) = self
+            .state
+            .chats
+            .get(&session_id)
+            .and_then(|c| c.asks.get(key).cloned())
+        else {
+            return;
+        };
+        if !matches!(row.phase, AskPhase::Open | AskPhase::Continued) {
+            return;
+        }
+        if self
+            .state
+            .pending_ask
+            .as_ref()
+            .is_some_and(|a| a.rpc_id == row.rpc_id)
+        {
+            self.ask.ask_hidden = false;
+            cx.notify();
+            return;
+        }
+        let Ok(questions) = serde_json::from_value::<Vec<Question>>(row.questions.clone()) else {
+            return;
+        };
+        if questions.is_empty() {
+            return;
+        }
+        self.state.pending_ask = Some(PendingAsk {
+            rpc_id: row.rpc_id,
+            session_id,
+            questions,
+            call_id: key.strip_prefix("call:").map(str::to_string),
+            deadline_ms: None,
+        });
+        self.ask.ask_hidden = false;
         cx.notify();
     }
 
@@ -244,11 +278,20 @@ impl AppStore {
             self.ask.ask_questionnaire = None;
             self.ask.ask_questionnaire_key = None;
             self.ask.ask_wire = None;
+            self.ask.ask_deadline_total = None;
             return;
         };
         if self.ask.ask_questionnaire_key.as_deref() == Some(ask.rpc_id.as_str()) {
             return;
         }
+        // 倒计时分母 = 建卡瞬间剩余时长(同卡不重建 → 不刷新)
+        self.ask.ask_deadline_total = ask.deadline_ms.map(|deadline| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            (deadline - now).max(1)
+        });
         let mut ids = Vec::with_capacity(ask.questions.len());
         let mut labels = Vec::with_capacity(ask.questions.len());
         let mut items = Vec::with_capacity(ask.questions.len());

@@ -351,6 +351,7 @@ mod tests {
         ToolCallRequest {
             name: name.into(),
             arguments: args,
+            id: String::new(),
         }
     }
 

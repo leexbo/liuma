@@ -395,6 +395,39 @@ pub struct ChatState {
     pub history_cut: u64,
     /// 是否还有更早历史页(session.history 响应回填)
     pub history_has_more: bool,
+    /// ask_user_question 行状态(行键 `call:{seq}` → 相位/题目/答案)。
+    /// 直播与历史同 fold:工具行摘要与「回答」重开入口的事实源;迟到
+    /// 应答/超时/取消都经 ask 族事件收口,重放一致
+    pub asks: std::collections::HashMap<String, AskRowState>,
+}
+
+/// ask 工具行相位(事件驱动:requested→Open,timed-out→Continued,
+/// answered→Answered,cancelled→Cancelled)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AskPhase {
+    /// 等待作答(卡在场或已收起,行可重开)
+    Open,
+    /// 超时转持续(模型已拿 pending 结果;仍可答)
+    Continued,
+    /// 已答(行摘要 n/total,展开只读回看)
+    Answered,
+    /// 已取消
+    Cancelled,
+}
+
+/// 一行 ask 的折叠状态
+#[derive(Debug, Clone, PartialEq)]
+pub struct AskRowState {
+    /// 发起 rpc(行「回答」重开卡时按此应答)
+    pub rpc_id: String,
+    /// 相位
+    pub phase: AskPhase,
+    /// 原问题集(事件载荷原样;重开卡与回看共用)
+    pub questions: Value,
+    /// 超时截止(信封时间 + timeoutSec;阻塞/continued 无)
+    pub deadline_ms: Option<i64>,
+    /// 已答批(ask/answered 的 answers;未答 None)
+    pub answers: Option<Value>,
 }
 
 /// 相等性排除 UI 元数据:同事件序列的两个状态节点/业务字段全同,
@@ -407,6 +440,7 @@ impl PartialEq for ChatState {
             && self.queue == other.queue
             && self.plan_mode == other.plan_mode
             && self.turn_deliverables == other.turn_deliverables
+            && self.asks == other.asks
     }
 }
 
@@ -450,6 +484,12 @@ impl ChatState {
                 *state = ToolState::Stopped;
             }
         }
+    }
+
+    /// ask 终局/相位事件 → 行状态(按 callId 定位;id 兜底 = 未建行则忽略)
+    fn ask_row_mut(&mut self, data: &Value) -> Option<&mut AskRowState> {
+        let call = data["callId"].as_str()?;
+        self.asks.get_mut(&format!("call:{call}"))
     }
 
     /// 应用单个客方事件
@@ -590,7 +630,7 @@ impl ChatState {
                     }
                 } else if matches!(
                     kind,
-                    "subagent-settled" | "subagent-message" | "shell-job-settled"
+                    "subagent-settled" | "subagent-message" | "shell-job-settled" | "ask-answer"
                 ) {
                     // 结算/回发通知是**模型侧 turn 输入**(steer 注入),
                     // 不是对话内容:不建节点,转录完全不渲染(与 Claude
@@ -604,6 +644,41 @@ impl ChatState {
                         content: content_text(&ev.data["content"]),
                         source: ev.data["source"].clone(),
                     });
+                }
+            }
+            // ask 族生命周期:行状态机折叠(无 callId 的骑通道问询不建行)
+            "ask/requested" => {
+                let Some(call) = ev.data["callId"].as_str() else {
+                    return;
+                };
+                let timeout_sec = ev.data["timeoutSec"].as_i64().unwrap_or(-1);
+                let row = AskRowState {
+                    rpc_id: ev.data["id"].as_str().unwrap_or_default().to_string(),
+                    phase: AskPhase::Open,
+                    questions: ev.data["questions"].clone(),
+                    deadline_ms: (timeout_sec > 0)
+                        .then(|| ev.time + timeout_sec.saturating_mul(1000)),
+                    answers: None,
+                };
+                self.asks.insert(format!("call:{call}"), row);
+            }
+            "ask/timed-out" => {
+                if let Some(row) = self.ask_row_mut(&ev.data) {
+                    row.phase = AskPhase::Continued;
+                    row.deadline_ms = None;
+                }
+            }
+            "ask/answered" => {
+                if let Some(row) = self.ask_row_mut(&ev.data) {
+                    row.phase = AskPhase::Answered;
+                    row.deadline_ms = None;
+                    row.answers = Some(ev.data["answers"].clone());
+                }
+            }
+            "ask/cancelled" => {
+                if let Some(row) = self.ask_row_mut(&ev.data) {
+                    row.phase = AskPhase::Cancelled;
+                    row.deadline_ms = None;
                 }
             }
             "agent/inbox/spliced" => {
@@ -2169,6 +2244,100 @@ mod tests {
             ChatNode::User { text, .. } => assert_eq!(text, "hi"),
             other => panic!("唯一节点应为用户消息,实际 {other:?}"),
         }
+    }
+
+    /// ask 族事件折叠:requested 建行(deadline 派生)→ timed-out 转
+    /// Continued(清 deadline)→ answered 收 Answered + 答案批;无 callId
+    /// 的骑通道问询不建行。
+    #[test]
+    fn ask_events_fold_row_phases() {
+        let mut st = ChatState::default();
+        st.apply(&ev(
+            "ask/requested",
+            10,
+            json!({
+                "id": "r1", "callId": "7", "timeoutSec": 30,
+                "questions": [ { "id": "q1", "question": "继续?" } ],
+            }),
+        ));
+        let row = st.asks.get("call:7").expect("requested 建行");
+        assert_eq!(row.rpc_id, "r1");
+        assert_eq!(row.phase, AskPhase::Open);
+        // ev 夹具信封时间恒 0:deadline = 0 + timeoutSec
+        assert_eq!(
+            row.deadline_ms,
+            Some(30_000),
+            "deadline = 信封时间 + timeoutSec"
+        );
+        // 无 callId(骑通道)不建行
+        st.apply(&ev(
+            "ask/requested",
+            11,
+            json!({ "id": "r2", "timeoutSec": -1, "questions": [] }),
+        ));
+        assert_eq!(st.asks.len(), 1);
+        // 超时 → Continued
+        st.apply(&ev(
+            "ask/timed-out",
+            50,
+            json!({ "id": "r1", "callId": "7" }),
+        ));
+        let row = st.asks.get("call:7").expect("行仍在");
+        assert_eq!(row.phase, AskPhase::Continued);
+        assert_eq!(row.deadline_ms, None, "转持续清倒计时");
+        // 迟到应答 → Answered + 答案
+        st.apply(&ev(
+            "ask/answered",
+            60,
+            json!({
+                "id": "r1", "callId": "7", "late": true,
+                "answers": [ { "id": "q1", "selected": ["是"] } ],
+            }),
+        ));
+        let row = st.asks.get("call:7").expect("行仍在");
+        assert_eq!(row.phase, AskPhase::Answered);
+        assert_eq!(
+            row.answers
+                .as_ref()
+                .and_then(|a| a[0]["selected"][0].as_str()),
+            Some("是")
+        );
+        // 取消相位(另一行)
+        st.apply(&ev(
+            "ask/requested",
+            70,
+            json!({ "id": "r3", "callId": "9", "timeoutSec": -1, "questions": [] }),
+        ));
+        st.apply(&ev(
+            "ask/cancelled",
+            80,
+            json!({ "id": "r3", "callId": "9" }),
+        ));
+        assert_eq!(
+            st.asks.get("call:9").map(|r| r.phase),
+            Some(AskPhase::Cancelled)
+        );
+    }
+
+    /// 迟到应答通知(ask-answer steer 的 user/message)不建节点:答案
+    /// 归宿是 ask 行摘要与只读回看,转录不重复渲染注入文本。
+    #[test]
+    fn late_answer_notice_not_rendered() {
+        let mut st = ChatState::default();
+        st.apply(&ev(
+            "user/message",
+            1,
+            json!({
+                "id": "notice-late",
+                "role": "user",
+                "content": [ {
+                    "type": "text",
+                    "text": "{\"kind\":\"answer_to_pending_question\",\"callId\":\"7\"}"
+                } ],
+                "source": { "kind": "ask-answer", "callId": "7", "outcome": "answered" },
+            }),
+        ));
+        assert!(st.nodes.is_empty(), "迟到应答通知零节点");
     }
 
     /// 被杀回合(日志无 `turn/end`)重放后,未落定的调用必须冻结为

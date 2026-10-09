@@ -28,8 +28,26 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[cfg(unix)] // 平台沙箱与壳就位前仅 Unix 真跑(见文件头)
+/// mock 服务器在回环:清环境代理再起(reqwest 吃 http_proxy 系变量且
+/// 不豁免回环,带代理的 CI/开发机会把 mock 流量送进代理;LLM 传输
+/// 客户端在测试内构建,时序安全)
+fn clear_env_proxies() {
+    for k in [
+        "http_proxy",
+        "https_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        // SAFETY(测试基线):本文件回环 mock 用例的期望状态
+        unsafe { std::env::remove_var(k) }
+    }
+}
+
 #[tokio::test]
 async fn http_tool_round_trip_through_sandbox() {
+    clear_env_proxies();
     let dir = std::env::temp_dir().join(format!("liuma-cli-e2e-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let marker = dir.join("marker.txt");

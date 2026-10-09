@@ -19,7 +19,8 @@ use gpui_kit::{
 };
 
 use super::projection::{
-    ChatNode, CompactProgress, Deliverable, NavAnchor, PlanStatus, RetryState, RowSlot, ToolState,
+    AskPhase, AskRowState, ChatNode, CompactProgress, Deliverable, NavAnchor, PlanStatus,
+    RetryState, RowSlot, ToolState,
 };
 use crate::kits::filetype::class_icon;
 use crate::kits::icons::{self, LiumaIcon, fixed};
@@ -2345,6 +2346,60 @@ fn tool_block(
     } else {
         None
     };
+    // ask_user_question 行:事件折叠态决定摘要;Open/Continued 挂「回答」
+    // 入口(收起卡的唯一重开通道;行键 = asks 键同构 `call:{seq}`)
+    let ask_row = store.read(cx).state.current_id.as_deref().and_then(|sid| {
+        store
+            .read(cx)
+            .state
+            .chats
+            .get(sid)
+            .and_then(|c| c.asks.get(key.as_str()).cloned())
+    });
+    let ask_summary = ask_row.as_ref().map(|r| match r.phase {
+        AskPhase::Open => t!("ask.row_waiting").to_string(),
+        AskPhase::Continued => t!("ask.row_continued").to_string(),
+        AskPhase::Cancelled => t!("ask.row_cancelled").to_string(),
+        AskPhase::Answered => {
+            let total = r.questions.as_array().map_or(0, Vec::len);
+            let n = r
+                .answers
+                .as_ref()
+                .and_then(|a| a.as_array())
+                .map_or(0, Vec::len)
+                .min(total);
+            t!("ask.row_answered", n = n, total = total).to_string()
+        }
+    });
+    let answer_btn = ask_row
+        .as_ref()
+        .filter(|r| matches!(r.phase, AskPhase::Open | AskPhase::Continued))
+        .map(|_| {
+            let s2 = store.clone();
+            let bkey = key.to_string();
+            let sel = format!("ask-answer-btn-{bkey}");
+            div()
+                .id(("ask-answer-btn", ix))
+                .debug_selector(move || sel.clone())
+                .flex_shrink_0()
+                .px(px(8.))
+                .py(px(2.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(theme::border(cx))
+                .text_size(px(11.))
+                .text_color(theme::label(cx))
+                .cursor_pointer()
+                .hover(|st| st.bg(theme::dock(cx)))
+                // 拦截冒泡:点击回答不得触发行开合
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |_, _, cx| {
+                    let key = bkey.clone();
+                    s2.update(cx, |st, cx| st.reopen_ask_from_row(&key, cx));
+                })
+                .child(t!("ask.row_answer_btn").to_string())
+                .into_any_element()
+        });
     let ws_root = ws_root_of(store.read(cx));
     // skill 行摘要 = 参数名(折叠态「Skill <名>」:标题槽
     // 固定「Skill」,名字落摘要槽)
@@ -2371,10 +2426,11 @@ fn tool_block(
     let summary_line = failure_line
         .map(str::to_string)
         .or(todo_row.as_ref().map(|s| s.text.clone()))
+        .or(ask_summary)
         .unwrap_or(summary_display);
     // 摘要槽:失败/todo 摘要纯文本;路径工具 = 可点文件链接
     // (相对路径点击开侧栏预览)
-    let summary_slot = if failure_line.is_some() || todo_row.is_some() {
+    let summary_slot = if failure_line.is_some() || todo_row.is_some() || ask_row.is_some() {
         MemberSummary::Text(summary_line)
     } else if matches!(name, "file_read" | "file_edit") && !summary_line.is_empty() {
         MemberSummary::File {
@@ -2398,6 +2454,7 @@ fn tool_block(
                 .child(format!("+{}", s.extra))
                 .into_any_element()
         })
+        .or(answer_btn)
         .or_else(|| {
             (failure_line.is_none())
                 .then(|| super::toolcard::diff_totals(view))
@@ -2459,6 +2516,71 @@ fn tool_block(
     col
 }
 
+/// ask 已答只读卡:题面 + 所选标签 + 自定义文本(答案按 id 与题对齐;
+/// 缺答/多答按事件原样呈现,不猜不补)
+fn ask_answers_card(row: &AskRowState, cx: &App) -> AnyElement {
+    let answers_by_id: std::collections::HashMap<&str, &serde_json::Value> = row
+        .answers
+        .as_ref()
+        .and_then(|a| a.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|a| a["id"].as_str().map(|id| (id, a)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let items = row
+        .questions
+        .as_array()
+        .map(|qs| {
+            qs.iter()
+                .map(|q| {
+                    let ans = q["id"]
+                        .as_str()
+                        .and_then(|id| answers_by_id.get(id).copied());
+                    (
+                        q["question"].as_str().unwrap_or_default().to_string(),
+                        ans.and_then(|a| a["selected"].as_array().cloned()),
+                        ans.and_then(|a| a["custom"].as_str().map(str::to_string)),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    div()
+        .id("ask-answers-card")
+        .debug_selector(|| "ask-answers-card".to_string())
+        .w_full()
+        .rounded(px(8.))
+        .bg(theme::dock(cx))
+        .p(px(10.))
+        .v_flex()
+        .gap(px(8.))
+        .children(items.into_iter().map(|(question, selected, custom)| {
+            div()
+                .v_flex()
+                .gap(px(3.))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(gpui_kit::FontWeight::MEDIUM)
+                        .text_color(theme::label(cx))
+                        .child(question),
+                )
+                .children(
+                    selected
+                        .map(|sel| {
+                            sel.iter()
+                                .filter_map(|s| s.as_str().map(str::to_string))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default(),
+                )
+                .children(custom.filter(|c| !c.trim().is_empty()))
+        }))
+        .into_any_element()
+}
+
 /// 展开体路由:视图在场按 `card` 分发(终端/read/search/diff),
 /// bash 前台例外认名取命令素材(运行中/旧会话无视图同走终端卡);
 /// 其余与窄化失败 → IN/OUT 通用卡
@@ -2476,6 +2598,21 @@ fn tool_expanded_body(
     images: &[serde_json::Value],
 ) -> AnyElement {
     use super::toolcard::{self, CardView};
+    // ask_user_question 已答:只读答案卡(题面 + 所选 + 自定义;
+    // pending 结果文本走通用 IN/OUT 卡)
+    if name == "ask_user_question"
+        && let Some(row) = store.read(cx).state.current_id.as_deref().and_then(|sid| {
+            store
+                .read(cx)
+                .state
+                .chats
+                .get(sid)
+                .and_then(|c| c.asks.get(key))
+        })
+        && row.phase == AskPhase::Answered
+    {
+        return ask_answers_card(row, cx);
+    }
     let narrowed = view.and_then(toolcard::narrow);
     let term = match &narrowed {
         Some(CardView::Terminal(t)) => Some(t),
@@ -4063,7 +4200,7 @@ fn tool_display_name(name: &str) -> Option<std::borrow::Cow<'static, str>> {
         "web_fetch" => t!("chat.tool_web_fetch"),
         "read_image" => t!("chat.tool_read_image"),
         "code" => t!("chat.tool_code"),
-        "ask" => t!("chat.tool_ask"),
+        "ask" | "ask_user_question" => t!("chat.tool_ask"),
         "jobs" => t!("chat.tool_jobs"),
         "goal" => t!("chat.tool_goal"),
         "workflow" => t!("chat.tool_workflow"),
