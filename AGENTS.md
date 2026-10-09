@@ -1,7 +1,7 @@
 ## 1. 编码约束 (Coding Constraints)
 
 - **[Error] (MUST)**: 库层强制 `thiserror`，装配层强制 `anyhow`。**(FORBIDDEN)**: 无前置保证的 `unwrap()` / `expect()`。**(ALLOWED)**: ① 守卫/构造已保证非空后的不变式断言（`expect` 须带说明前提的消息）；② 数学上不可失败的序列化。锁获取统一恢复式 `lock().unwrap_or_else(|p| p.into_inner())`，禁止 `expect("锁中毒")`——后台任务 panic 不得连坐整个进程；数据完整性由结构自身校验兜底（如 `EventLog` 的 seq 连续性守卫），不靠进程崩溃。
-- **[Deps] (MUST)**: 统一锁定于 `[workspace.dependencies]`。**(FORBIDDEN)**: 未经指令授权的 `cargo update`。
+- **[Deps] (MUST)**: 统一锁定于 `[workspace.dependencies]`。**(FORBIDDEN)**: 未经指令授权的 `cargo update`。GPUI 核心走 gpui-fast(D60):垫片钉版在 `third_party/gpui-fast-compat/`(升版 = 改 4 条 `=x.y.z` + 定向 `cargo update`);升 gpui-kit 后必查 `cargo tree -i gpui-fast -p liuma-desktop` 仍命中——出现 `Patch … was not used` 警告即 patch 静默失效已回退 stock,须同步垫片版本。
 - **[Wasm] (MUST)**: 100% 重放确定性。**(FORBIDDEN)**: 组件内直读系统时钟/随机数，强制通过 WASI 显式 import。
 - **[FFI] (MUST)**: Linux 沙箱隔离使用纯 Rust 实现 (如 `landlock`)。**(FORBIDDEN)**: 引入任何 C 交付物。
 - **[Docs] (MUST)**: `liuma-host` 与 `liuma-wit` 公开 API 强制 `#![deny(missing_docs)]`。
