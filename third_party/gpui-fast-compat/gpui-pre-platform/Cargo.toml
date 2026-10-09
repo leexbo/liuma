@@ -22,6 +22,6 @@ wayland = ["gpui_fast_platform/wayland"]
 x11 = ["gpui_fast_platform/x11"]
 
 [dependencies]
-gpui_fast_platform = { package = "gpui-fast-platform", version = "=0.1.4", default-features = false }
+gpui_fast_platform = { package = "gpui-fast-platform", version = "=0.1.6", default-features = false }
 # inspector 转发到核心(platform 无此 feature),同上游 compat 结构
-gpui_fast = { package = "gpui-fast", version = "=0.1.4", default-features = false }
+gpui_fast = { package = "gpui-fast", version = "=0.1.6", default-features = false }

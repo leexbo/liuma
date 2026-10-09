@@ -25,4 +25,4 @@ windows-manifest = ["gpui_fast/windows-manifest"]
 x11 = ["gpui_fast/x11"]
 
 [dependencies]
-gpui_fast = { package = "gpui-fast", version = "=0.1.4", default-features = false }
+gpui_fast = { package = "gpui-fast", version = "=0.1.6", default-features = false }
