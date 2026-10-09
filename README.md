@@ -1,119 +1,122 @@
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 <div align="center">
-  <img src="crates/liuma-desktop/assets/logo.svg" alt="流马 liuma" width="200"/>
-  <h1>流马 liuma</h1>
+  <img src="crates/liuma-desktop/assets/logo.svg" alt="liuma 流马" width="200"/>
+  <h1>liuma 流马</h1>
 </div>
 
-流马 liuma 是一个本地运行的 AI 编程智能体:接入多家大模型,驱动多轮对话与工具执行;工具在受控沙箱中安全运行,全过程完整记录、可回放;附桌面客户端。取名自木牛流马:不食不眠、自行运转的运输 agent。
+[![ci](https://github.com/leexbo/liuma/actions/workflows/ci.yml/badge.svg)](https://github.com/leexbo/liuma/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-项目起步阶段参照 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的开发快照设计部分语义。
+liuma is an AI coding agent that runs locally: it connects to multiple LLM providers and drives multi-turn conversation with tool execution; tools run safely inside a controlled sandbox, and everything is fully recorded and replayable; a native desktop client is included. The name comes from the *wooden ox and flowing horse* of Three Kingdoms lore — transport agents that need neither food nor rest and keep moving on their own.
 
-![流马 liuma 桌面客户端](screenshot.png)
+The project took early inspiration from the development-snapshot semantics of [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 
-## 特性
+![liuma desktop client](screenshot.png)
 
-- **事件溯源**:会话全部状态是追加式 JSONL 事件日志;模型历史、审计、遥测均为投影,同一日志任意时刻重放结果一致,崩溃后从日志恢复。
-- **结构性不变式**:「模型可见 ⟺ 已记录」由不变式闸门在唯一出网点强制,不依赖调用方自律;沙箱不可用即拒绝执行。
-- **WASM 组件工具**:接口以 WIT 契约定义(`wit/`),wasmtime 运行;组件权限由能力束显式界定,时钟与随机源显式注入保证重放确定性。
-- **沙箱执行**:macOS Seatbelt / Linux Landlock / bubblewrap / Windows 受限令牌 + 能力 SID 授权沙箱链(fail-closed);权限三态 + 审批门(ask / never)。
-- **决策模型接入**:按开放品类接入 System One 决策模型(`noul` / `choice` / `score` 三类问题,返回约束在预声明选项内的结构化答案),覆盖审批评审员 / Stop 哨兵 / 工具守卫 / 上下文裁判四个场景,外加一个 `decide` 工具供模型主动咨询。阈值与问题文案集中一处便于人审;默认全关、只建议不自动执行、服务不可用即回退原有行为,每次询问留审计记录(设置页「决策模型」区唯一配置面)。
-- **原生桌面客户端**:GPUI 桌面端(聊天 / 计划审批 / 问答卡 / 轨迹检查器 / 全文检索 / 会话导出),另有 `liuma` CLI(REPL / JSON-RPC stdio 网关)。
+## Features
 
-## 安装
+- **Event sourcing**: all session state is an append-only JSONL event log; model history, audit, and telemetry are all projections — replaying the same log at any moment yields identical results, and the session recovers from the log after a crash.
+- **Structural invariant**: "visible to the model ⟺ recorded" is enforced by the invariant gate at the single outbound choke point, not by caller discipline; execution is refused outright when the sandbox is unavailable.
+- **WASM component tools**: interfaces are defined by WIT contracts (`wit/`) and run on wasmtime; component permissions are bounded by explicit capability bundles, and clock and random sources are injected explicitly to keep replay deterministic.
+- **Sandboxed execution**: macOS Seatbelt / Linux Landlock / bubblewrap / Windows restricted token + capability SID authorization sandbox chain (fail-closed); three-state permissions plus an approval gate (ask / never).
+- **Decision model integration**: open-category access to System One decision models (`noul` / `choice` / `score` question types returning structured answers constrained to pre-declared options), covering four scenarios — approval reviewer / stop sentinel / tool guard / context judge — plus a `decide` tool the model can consult proactively. Thresholds and question copy live in one place for easy human review; everything is off by default, advises without auto-executing, falls back to the previous behavior when the service is unavailable, and leaves an audit record for every query (single configuration surface under "Decision model" in Settings).
+- **Native desktop client**: GPUI desktop app (chat / plan approval / Q&A cards / trajectory inspector / full-text search / session export), plus a `liuma` CLI (REPL / JSON-RPC stdio gateway).
 
-前置依赖(用 `just preflight` 自检缺件,它会逐项打印安装命令):
+## Getting Started
 
-| 依赖 | 用途与安装 |
+Prerequisites (`just preflight` self-checks them and prints the install command for anything missing):
+
+| Dependency | Purpose & install |
 |---|---|
-| Rust 1.99+ | 定版见 `rust-toolchain.toml`;Unix `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh`,Windows 用 [rustup](https://rustup.rs) |
-| `wasm32-wasip2` 目标 | 组件契约测试要真编译 wasm 组件:`rustup target add wasm32-wasip2` |
-| `just` | 命令入口:`cargo install just` / `brew install just` / `winget install Casey.Just` |
-| 真 Python 3 | `scripts/verify-links` 与 MCP fixture 需要;Unix `brew install python3` / `apt install python3`,Windows `winget install --id Python.Python.3.13` |
-| `bash` | Unix 自带;Windows 用 Git for Windows 自带的那份 |
+| Rust 1.99+ | pinned in `rust-toolchain.toml`; Unix: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh`, Windows: [rustup](https://rustup.rs) |
+| `wasm32-wasip2` target | contract tests compile real wasm components: `rustup target add wasm32-wasip2` |
+| `just` | command entry point: `cargo install just` / `brew install just` / `winget install Casey.Just` |
+| Real Python 3 | required by `scripts/verify-links` and the MCP fixture; Unix: `brew install python3` / `apt install python3`, Windows: `winget install --id Python.Python.3.13` |
+| `bash` | preinstalled on Unix; on Windows use the copy bundled with Git for Windows |
 
-Windows 另需 `pwsh`(shell 工具的运行时):`winget install --id Microsoft.PowerShell`。Microsoft Store 的 `python3` 只是应用执行别名(命令存在、运行即退出 49),不算真解释器。
+Windows additionally needs `pwsh` (the runtime behind shell tools): `winget install --id Microsoft.PowerShell`. The `python3` from the Microsoft Store is merely an app-execution alias (the command exists and exits 49 immediately); it is not a real interpreter.
 
 ```bash
 git clone git@github.com:leexbo/liuma.git && cd liuma
-just preflight    # 开发前置自检:缺什么、怎么装,一次说清
+just preflight    # dev-prerequisite self-check: what's missing and how to install it, in one pass
 ```
 
-构建:
+Build:
 
 ```bash
-cargo build --workspace    # 全部 crate;首次构建含 wasm 组件与桌面端,耗时较长
-just desktop               # 只构建 GPUI 桌面客户端
+cargo build --workspace    # all crates; the first build includes wasm components and the desktop app and takes a while
+just desktop               # build only the GPUI desktop client
 ```
 
-### macOS 应用打包
+Run:
 
 ```bash
-just package-macos    # 产出 dist/Liuma.app + zip + dmg(仅 Darwin)
-```
-
-release 构建(Liuma-<版本>-<架构>.zip / .dmg,版本号取自根 `Cargo.toml`)加 ad-hoc 签名,本机直接可用;未经公证,分发给他人时 Gatekeeper 首次打开需右键打开或 `xattr -cr`。应用图标与运行时 Dock 图标同源:由 `logo.svg` 经 resvg 离线栅格化(`examples/emit-app-icon`)+ `iconutil` 出 `.icns`;bundle 模板见 `crates/liuma-desktop/packaging/`。
-
-打包链路目前仅覆盖 macOS,Windows / Linux 平台尚未适配。
-
-## 快速开始
-
-前置工具链见[安装](#安装);以下命令均在仓库根目录执行。
-
-```bash
-# 不联网自检(fake provider,脚本化回声)
+# offline self-check (fake provider, scripted echo)
 cargo run -p liuma -- chat --fake
 
-# 接真实 provider(缺省读 DEEPSEEK_API_KEY;--dialect 可切 anthropic / openai-chat 等)
+# connect to a real provider (reads DEEPSEEK_API_KEY by default; --dialect switches anthropic / openai-chat etc.)
 cargo run -p liuma -- chat
 
-# JSON-RPC stdio 网关
+# JSON-RPC stdio gateway
 cargo run -p liuma -- serve
 
-# GPUI 桌面客户端
-just desktop-run        # 参数透传,如 just desktop-run --fake
+# GPUI desktop client
+just desktop-run        # passes args through, e.g. just desktop-run --fake
 ```
 
-## 验证
+## macOS Packaging
 
 ```bash
-just verify    # 格式 / clippy / 测试 / WIT / 组件契约 / e2e / 链接检查 / 桌面文案
+just package-macos    # produces dist/Liuma.app + zip + dmg (Darwin only)
 ```
 
-## 仓库布局
+The release build (Liuma-\<version\>-\<arch\>.zip / .dmg, version taken from the root `Cargo.toml`) is ad-hoc signed and works out of the box on this machine; it is not notarized, so when distributing to others Gatekeeper requires right-click → Open or `xattr -cr` on first launch. The app icon and the runtime Dock icon share one source: `logo.svg` is rasterized offline by resvg (`examples/emit-app-icon`) and packaged into `.icns` via `iconutil`; the bundle template lives in `crates/liuma-desktop/packaging/`.
 
-| 路径 | 职责 |
+Packaging currently covers macOS only; Windows / Linux are not yet supported.
+
+## Verify
+
+```bash
+just verify    # fmt / clippy / tests / WIT / component contracts / e2e / link check / desktop copy
+```
+
+## Repository Layout
+
+| Path | Responsibility |
 |---|---|
-| `wit/` | 契约层,全部 WIT 包的唯一契约源 |
-| `crates/liuma` | 宿主二进制(CLI 薄壳) |
-| `crates/liuma-app` | 会话装配层(配置合并 / prompt 组装 / preset 工具组装) |
-| `crates/liuma-core` | 多会话应用核心(注册表 / 客方协议类型 / 轨迹与统计投影) |
-| `crates/liuma-desktop` | GPUI 桌面客户端 |
-| `crates/liuma-desktop/packaging/` | macOS bundle 模板(Info.plist) |
-| `crates/liuma-host` | 组件宿主(wasmtime 组件管理器 / 事件总线 / 持久化 / 网关) |
-| `crates/liuma-llm` | LLM 接入(方言引擎 / HTTP+SSE transport / 不变式闸门) |
-| `crates/liuma-sandbox` | 执行原语(沙箱链 / 受控 spawn / PTY) |
-| `crates/liuma-sandbox-winacl` | Windows 沙箱后端(受限令牌 + 能力 SID 授权 + Job Object) |
-| `crates/liuma-agent-loop` | turn/step 状态机与端口 trait |
-| `crates/liuma-compaction` | 上下文压缩策略(纯函数:阈值 / 保留尾 / 切点不拆 tool 配对) |
-| `crates/liuma-plan` | plan 模式协作状态(逐 agent 布尔态 + `exit_plan_mode` 阻塞评审) |
-| `crates/liuma-session` | 事件日志(信封 / seq / 消息派生,wasm32-wasip2 产物 + rlib) |
-| `crates/liuma-attachment` | 附件存储与准入(内容寻址存储 / 图片解码 / 粘贴与拖放准入链) |
-| `crates/liuma-prompt` | system prompt 组装(纯函数) |
-| `crates/liuma-hooks` | hooks 桥(Claude Code / Codex shell hooks 接入) |
-| `crates/liuma-mcp` | MCP client 桥(rmcp;stdio + streamable-http 双传输 / 断线重连 / 工具桥接) |
-| `crates/liuma-decision` | 决策模型接入(System One 协议 / 四场景策略 / `decide` 工具) |
-| `crates/liuma-skill` | Skill 子系统(`.agents/skills` 目录加载 / 渐进披露 / skill 工具) |
-| `crates/liuma-tools` | 工具注册表与内置工具 |
-| `crates/liuma-wit` | host 侧 bindgen 与组件契约测试 |
-| `crates/liuma-example-tool` | 示例工具组件(`liuma:tools` world 参考实现) |
-| `presets/` | 内置能力 preset manifest(standard / minimal) |
-| `scripts/` | verify 与打包脚本 |
+| `wit/` | Contract layer; the single source of truth for all WIT packages |
+| `crates/liuma` | Host binary (thin CLI shell) |
+| `crates/liuma-app` | Session assembly layer (config merge / prompt assembly / preset tool assembly) |
+| `crates/liuma-core` | Multi-session application core (registry / client-side protocol types / trajectory & stats projections) |
+| `crates/liuma-desktop` | GPUI desktop client |
+| `crates/liuma-desktop/packaging/` | macOS bundle template (Info.plist) |
+| `crates/liuma-host` | Component host (wasmtime component manager / event bus / persistence / gateway) |
+| `crates/liuma-llm` | LLM access (dialect engines / HTTP+SSE transport / invariant gate) |
+| `crates/liuma-sandbox` | Execution primitives (sandbox chain / controlled spawn / PTY) |
+| `crates/liuma-sandbox-winacl` | Windows sandbox backend (restricted token + capability SID authorization + Job Object) |
+| `crates/liuma-agent-loop` | turn/step state machine and port traits |
+| `crates/liuma-compaction` | Context compaction strategies (pure functions: threshold / retained tail / cut points never split tool pairs) |
+| `crates/liuma-plan` | Plan-mode collaboration state (per-agent boolean state + `exit_plan_mode` blocking review) |
+| `crates/liuma-session` | Event log (envelope / seq / message derivation; wasm32-wasip2 artifact + rlib) |
+| `crates/liuma-attachment` | Attachment storage & admission (content-addressed store / image decoding / paste & drop admission chain) |
+| `crates/liuma-prompt` | System prompt assembly (pure functions) |
+| `crates/liuma-hooks` | Hooks bridge (Claude Code / Codex shell hooks integration) |
+| `crates/liuma-mcp` | MCP client bridge (rmcp; stdio + streamable-http transports / reconnect / tool bridging) |
+| `crates/liuma-decision` | Decision model integration (System One protocol / four scenario policies / `decide` tool) |
+| `crates/liuma-skill` | Skill subsystem (`.agents/skills` directory loading / progressive disclosure / skill tool) |
+| `crates/liuma-tools` | Tool registry and built-in tools |
+| `crates/liuma-wit` | Host-side bindgen and component contract tests |
+| `crates/liuma-example-tool` | Example tool component (reference implementation of the `liuma:tools` world) |
+| `presets/` | Built-in capability preset manifests (standard / minimal) |
+| `scripts/` | Verify and packaging scripts |
 
-## 文档
+## Documentation
 
-- [docs/design.md](docs/design.md) —— 设计文档(质量目标 / 架构约束 / 构件与运行视图 / 横切概念 / 术语表)
-- [docs/plugin-sdk.md](docs/plugin-sdk.md) —— 插件 SDK
-- [wit/](wit) —— WIT 契约定义
+- [docs/design.md](docs/design.md) — design document (quality goals / architectural constraints / component & runtime views / cross-cutting concepts / glossary)
+- [docs/plugin-sdk.md](docs/plugin-sdk.md) — plugin SDK
+- [wit/](wit) — WIT contract definitions
 
-## 许可证
+## License
 
 [MIT](LICENSE)
