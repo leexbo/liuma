@@ -1724,18 +1724,16 @@ fn click_sel(wcx: &mut gpui_kit::VisualTestContext, sel: &'static str) {
         x: b.origin.x + b.size.width / 2.,
         y: b.origin.y + b.size.height / 2.,
     };
-    // 悬停前置(裸悬停,pressed_button=None)+ 时钟推进 300ms + 重绘取
-    // 新坐标再点击。三层防御对应三类落空:①命中盒随 hover 门控/懒注册
-    // 的控件对裸 simulate_click 静默落空——真实用户的光标在点击前总
-    // 在场;②pressed_button 带 Left 会让框架认为按键已按下,随后的
-    // down-up 点击对序列不一致,慢机上 on_click 路由退化;③弹层/弹窗
-    // 的入场动画(组件库 Dialog = 250ms fade-in)在首帧内点击会偶发
-    // 落空——真实用户不可能在弹层首帧点击,推进时钟让动画/去抖走完,
-    // 与 eventually 同一纪律。重绘后按钮落位可能移动,点击必须取新坐标
+    // 悬停前置 + 重绘 + 取新坐标再点击:①真实用户的光标在点击前总在
+    // 场,命中盒随 hover 门控/懒注册的控件(mermaid 段控等)对裸
+    // simulate_click 会静默落空;②重绘会推进滑入动画,弹层按钮的落位
+    // 可能移动——点击必须取重绘后的新坐标。
+    // pressed_button 必须为 None(裸悬停):带 Left 会让框架认为按键
+    // 已按下,随后的 down-up 点击对序列不一致,慢机上 on_click 路由
+    // 退化。**不要**在此推进时钟:300ms 推进会触发 hover 延迟的
+    // tooltip/浮层展开,反而挡住目标命中(mermaid 拖选回归实证),且
+    // 对弹窗取消落空无救治(runner 两轮实证)——慢机根因另查
     wcx.simulate_mouse_move(pt, None::<MouseButton>, gpui_kit::Modifiers::default());
-    wcx.executor()
-        .advance_clock(std::time::Duration::from_millis(300));
-    wcx.run_until_parked();
     wcx.refresh().expect("刷新失败");
     wcx.run_until_parked();
     let pt = wcx
@@ -1852,12 +1850,12 @@ fn composer_menu_open_select_permission(cx: &mut TestAppContext) {
         wcx.debug_bounds("full-access-card").is_some(),
         "完全权限风险确认弹窗未出现"
     );
-    click_sel(&mut wcx, "full-access-cancel");
-    cx.run_until_parked();
     // 弹窗退场不走 debug_bounds(该 map 只增不清,残留不可靠),以
-    // store 确认态兜底
-    let ask = cx.update(|app| store.read(app).settings.full_access_confirm);
-    assert_eq!(ask, None, "取消后确认态未清");
+    // store 确认态兜底;点击带效果验证与有界重试(慢 runner 弹层
+    // 沉降期单击会落空,run 8 实证)
+    click_until(cx, &mut wcx, "full-access-cancel", |cx, _| {
+        cx.update(|app| store.read(app).settings.full_access_confirm.is_none())
+    });
     assert_ne!(
         host.session_permission(&id),
         "full-access",
@@ -5971,6 +5969,35 @@ fn wait_bounds_state(
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     panic!("selector {sel} 等待超时(期望在场={want})");
+}
+
+/// 点击并验证效果,未达则重取坐标再点(至多 3 击,每击后 5s 轮询)。
+/// 慢 runner 上弹层布局在字体解析/入场沉降完成前会跨帧漂移,单发点击
+/// 打在按钮「上一帧」的位置上会静默落空——真实用户对没反应的按钮
+/// 就是再点一次。谓词轮询兼承 [`wait_bounds_state`] 纪律(真实 sleep
+/// 放行宿主线程 + park 抽干)。产品行为由谓词断言兜底,重试不掩盖
+/// 任何「点了没效果」的真实缺陷(谓词不过即 panic)
+fn click_until(
+    cx: &mut TestAppContext,
+    wcx: &mut gpui_kit::VisualTestContext,
+    sel: &'static str,
+    mut effect: impl FnMut(&mut TestAppContext, &mut gpui_kit::VisualTestContext) -> bool,
+) {
+    for attempt in 1..=3 {
+        click_sel(wcx, sel);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            wcx.refresh().expect("刷新失败");
+            cx.update(|_: &mut App| {});
+            cx.run_until_parked();
+            if effect(cx, wcx) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        eprintln!("[click_until] 第 {attempt} 击后效果未达,重取坐标重试");
+    }
+    panic!("点击 {sel} 三击后效果仍未达成");
 }
 
 /// 文件标签:「+」清单/空态清单收录 + 进出视图(轨迹同构回归锁)
@@ -10841,8 +10868,9 @@ fn provider_editor_postures(cx: &mut TestAppContext) {
     click_sel(&mut wcx, "provider-remove-deepseek");
     // 弹层开关都过帧队列,满载下固定两拍会抢跑——轮询
     wait_bounds_state(cx, &mut wcx, "provider-delete-card", true);
-    click_sel(&mut wcx, "provider-delete-cancel");
-    wait_bounds_state(cx, &mut wcx, "dialog-layer", false);
+    click_until(cx, &mut wcx, "provider-delete-cancel", |_, wcx| {
+        wcx.debug_bounds("dialog-layer").is_none()
+    });
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -14538,12 +14566,15 @@ fn archived_delete_confirm_flow(cx: &mut TestAppContext) {
     wait_bounds_state(cx, &mut wcx, row_sel, true);
     click_sel(&mut wcx, del_sel);
     wait_bounds_state(cx, &mut wcx, "archived-confirm-card", true);
-    click_sel(&mut wcx, "archived-confirm-cancel");
-    wait_bounds_state(cx, &mut wcx, "archived-confirm-card", false);
+    click_until(cx, &mut wcx, "archived-confirm-cancel", |_, wcx| {
+        wcx.debug_bounds("archived-confirm-card").is_none()
+    });
     assert!(wcx.debug_bounds(row_sel).is_some(), "取消后行仍在");
     click_sel(&mut wcx, del_sel);
     wait_bounds_state(cx, &mut wcx, "archived-confirm-card", true);
-    click_sel(&mut wcx, "archived-del-confirm");
+    click_until(cx, &mut wcx, "archived-del-confirm", |_, wcx| {
+        wcx.debug_bounds("archived-confirm-card").is_none()
+    });
     settle(&mut wcx);
     settle(&mut wcx);
     wait_bounds_state(cx, &mut wcx, row_sel, false);
