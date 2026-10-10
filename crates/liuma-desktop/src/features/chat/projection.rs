@@ -953,11 +953,16 @@ impl ChatState {
                 // 计划卡失败收口:错误结果且草稿卡仍在(未见
                 // plan/submitted)→ Failed,计划正文保留可见
                 if plan_call_failed
-                    && let Some(ChatNode::Plan { status, .. }) = self
-                        .nodes
-                        .iter_mut()
-                        .rev()
-                        .find(|n| matches!(n, ChatNode::Plan { status: PlanStatus::Draft, .. }))
+                    && let Some(ChatNode::Plan { status, .. }) =
+                        self.nodes.iter_mut().rev().find(|n| {
+                            matches!(
+                                n,
+                                ChatNode::Plan {
+                                    status: PlanStatus::Draft,
+                                    ..
+                                }
+                            )
+                        })
                 {
                     *status = PlanStatus::Failed;
                 }
@@ -968,12 +973,17 @@ impl ChatState {
             // 待批节点的状态(事件序保证配对)
             "plan/submitted" => {
                 let plan = ev.data["plan"].as_str().unwrap_or_default().to_string();
-                if let Some(ChatNode::Plan { plan: p, status, .. }) = self
-                    .nodes
-                    .iter_mut()
-                    .rev()
-                    .find(|n| matches!(n, ChatNode::Plan { status: PlanStatus::Draft, .. }))
-                {
+                if let Some(ChatNode::Plan {
+                    plan: p, status, ..
+                }) = self.nodes.iter_mut().rev().find(|n| {
+                    matches!(
+                        n,
+                        ChatNode::Plan {
+                            status: PlanStatus::Draft,
+                            ..
+                        }
+                    )
+                }) {
                     *p = plan;
                     *status = PlanStatus::Pending;
                 } else {
@@ -2886,10 +2896,14 @@ mod tests {
     #[test]
     fn plan_card_derives_from_call_and_survives_failure() {
         let mut st = ChatState::default();
-        st.apply(&ev("tool/call", 1, json!({
-            "callId": "c1", "name": "exit_plan_mode",
-            "arguments": "{\"plan\": \"# 方案 步骤\"}",
-        })));
+        st.apply(&ev(
+            "tool/call",
+            1,
+            json!({
+                "callId": "c1", "name": "exit_plan_mode",
+                "arguments": "{\"plan\": \"# 方案 步骤\"}",
+            }),
+        ));
         match st.nodes.last() {
             Some(ChatNode::Plan {
                 key,
@@ -2928,10 +2942,14 @@ mod tests {
         ));
 
         // 失败路径:调用出卡 → 错误结果收口 Failed(无 submitted)
-        st.apply(&ev("tool/call", 4, json!({
-            "callId": "c2", "name": "exit_plan_mode",
-            "arguments": "{\"plan\": \"## 小标题\"}",
-        })));
+        st.apply(&ev(
+            "tool/call",
+            4,
+            json!({
+                "callId": "c2", "name": "exit_plan_mode",
+                "arguments": "{\"plan\": \"## 小标题\"}",
+            }),
+        ));
         assert!(matches!(
             st.nodes.last(),
             Some(ChatNode::Plan {
@@ -2939,10 +2957,14 @@ mod tests {
                 ..
             })
         ));
-        st.apply(&ev("tool/result", 5, json!({
-            "message": { "content": [ { "toolCallId": "c2", "isError": true,
-                "content": [ { "type": "text", "text": "requires a # heading" } ] } ] },
-        })));
+        st.apply(&ev(
+            "tool/result",
+            5,
+            json!({
+                "message": { "content": [ { "toolCallId": "c2", "isError": true,
+                    "content": [ { "type": "text", "text": "requires a # heading" } ] } ] },
+            }),
+        ));
         match st.nodes.last() {
             Some(ChatNode::Plan {
                 plan,
@@ -2953,12 +2975,20 @@ mod tests {
         }
 
         // 参数解析失败不出卡;非 exit_plan_mode 不出卡
-        st.apply(&ev("tool/call", 6, json!({
-            "callId": "c3", "name": "exit_plan_mode", "arguments": "{broken",
-        })));
-        st.apply(&ev("tool/call", 7, json!({
-            "callId": "c4", "name": "bash", "arguments": "{\"command\": \"ls\"}",
-        })));
+        st.apply(&ev(
+            "tool/call",
+            6,
+            json!({
+                "callId": "c3", "name": "exit_plan_mode", "arguments": "{broken",
+            }),
+        ));
+        st.apply(&ev(
+            "tool/call",
+            7,
+            json!({
+                "callId": "c4", "name": "bash", "arguments": "{\"command\": \"ls\"}",
+            }),
+        ));
         assert_eq!(
             st.nodes
                 .iter()

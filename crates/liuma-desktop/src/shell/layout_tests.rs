@@ -5199,6 +5199,12 @@ fn plan_review_compact_card_two_options(cx: &mut TestAppContext) {
     seed_user(cx, &store);
     seed_plan(cx, &store);
     redraw(cx, &mut wcx);
+    // 评审接管输入区(dsh PlanReviewPanel 同构):待审期间 composer
+    // 整体让位,「批准」类文本无法绕过评审直发
+    assert!(
+        wcx.debug_bounds("composer-card").is_none(),
+        "待审期间 composer 应被评审卡替换"
+    );
     // 计划/批准分离:正文容器不应存在;查看入口与 ✕ 在场
     assert!(
         wcx.debug_bounds("plan-detail").is_none(),
@@ -5250,12 +5256,16 @@ fn plan_review_compact_card_two_options(cx: &mut TestAppContext) {
     });
     assert!(pending, "点选项 1 不应直接批准");
     assert_eq!(selection, Some(true), "点选项 1 应标记选择态");
-    // 点「批准」才提交 → pending 清空
+    // 点「批准」才提交 → pending 清空,composer 恢复
     click_sel(&mut wcx, "plan-confirm");
     redraw(cx, &mut wcx);
     assert!(
         cx.update(|app| store.read(app).state.pending_plan.is_none()),
         "确认后 pending 应清空"
+    );
+    assert!(
+        wcx.debug_bounds("composer-card").is_some(),
+        "评审收口后 composer 应恢复"
     );
     // ② 流程:选中 → 输入展开 → 空反馈提交 = 仅拒绝(原「跳过」并入)
     seed_plan(cx, &store);
