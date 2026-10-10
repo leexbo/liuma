@@ -999,6 +999,31 @@ mod tests {
         assert!(KNOWN_EVENT_TYPES.contains(&payload.type_name()));
     }
 
+    /// 注入旁白(source.kind≠user)必须进模型可见面,且文本从 `content`
+    /// 数组投影——引擎通告([model changed] / plan-mode 旁白)曾把文本放
+    /// 顶层 `text`,`message_from_event` 只投影 `data["content"]`,模型
+    /// 收到 content:null(UI 注入行预览同样空白)。回归锁:发射方 ↔
+    /// message_from_event 的形状契约。
+    #[test]
+    fn injected_notice_reaches_model_face_via_content() {
+        let ev = crate::EventEnvelope::new(
+            "user/message",
+            0,
+            json!({
+                "id": "n1",
+                "content": [ { "type": "text",
+                    "text": "The user switched this session to plan mode." } ],
+                "source": { "kind": "plan-mode", "form": "notice" },
+            }),
+        );
+        let msgs = derive_visible_messages(std::iter::once(&ev));
+        assert_eq!(msgs.as_array().unwrap().len(), 1, "注入旁白模型可见");
+        assert_eq!(
+            msgs[0]["content"][0]["text"],
+            "The user switched this session to plan mode."
+        );
+    }
+
     /// 权限三事件(permission/preset + sandbox/mode + approval/policy):
     /// ①tagged roundtrip;②登记 KNOWN;③log-only(非 surface 非 attributed);
     /// ④非消息面(message_from_event = None);⑤delegation source 保留。
