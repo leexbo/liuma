@@ -634,10 +634,13 @@ fn panel_plan_content(latest: Option<(String, PlanStatus)>, cx: &App) -> impl In
         Some((plan, status)) => {
             use crate::kits::i18n::t;
             let (status_text, status_color) = match status {
-                PlanStatus::Pending => (t!("shell.plan_pending"), theme::warning(cx)),
+                PlanStatus::Draft | PlanStatus::Pending => {
+                    (t!("shell.plan_pending"), theme::warning(cx))
+                }
                 PlanStatus::Approved => (t!("shell.plan_approved"), theme::success(cx)),
                 PlanStatus::Declined => (t!("shell.plan_declined"), theme::caption(cx)),
                 PlanStatus::Cancelled => (t!("shell.plan_cancelled"), theme::caption(cx)),
+                PlanStatus::Failed => (t!("shell.plan_failed"), theme::danger(cx)),
             };
             col = col
                 .child(

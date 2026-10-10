@@ -287,6 +287,9 @@ pub enum QueuePlacement {
 /// 计划归档卡状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanStatus {
+    /// 调用派生(tool/call 落卡)尚未见 plan/submitted 确认;渲染同
+    /// Pending,失败收口后转 Failed
+    Draft,
     /// 已提交待批
     Pending,
     /// 已批准
@@ -295,6 +298,8 @@ pub enum PlanStatus {
     Declined,
     /// 已取消/驳回
     Cancelled,
+    /// 提交失败(校验/模式拒绝;对齐 dsh:失败的提交计划正文仍可见)
+    Failed,
 }
 
 /// 摘要长度估算:分母 = 折叠前缀 token 的 1/4,夹在 [800, 6000] 字符。
@@ -830,12 +835,26 @@ impl ChatState {
                     summary: liuma_core::export::summarize_call(&name, &arguments),
                     key: format!("call:{call_id}"),
                     view: ev.data.get("view").filter(|v| !v.is_null()).cloned(),
-                    name,
+                    name: name.clone(),
                     state: ToolState::Running,
-                    arguments,
+                    arguments: arguments.clone(),
                     output: None,
                     images: Vec::new(),
                 });
+                // 计划卡调用派生(dsh 口径):exit_plan_mode 的提交即出卡,
+                // 失败路径计划正文不再只活在 80 字符摘要里。参数解析失败
+                // 不出卡(与 dsh submittedPlan 同判);正文以 plan/submitted
+                // 为权威,此处仅草稿态
+                if name == "exit_plan_mode"
+                    && let Ok(args) = serde_json::from_str::<Value>(&arguments)
+                    && let Some(plan) = args["plan"].as_str().filter(|p| !p.is_empty())
+                {
+                    self.push_node(ChatNode::Plan {
+                        key: format!("plan-call:{call_id}"),
+                        plan: plan.to_string(),
+                        status: PlanStatus::Draft,
+                    });
+                }
             }
             "tool/result" => {
                 // message.content[0].toolCallId 配对
@@ -845,12 +864,15 @@ impl ChatState {
                     .to_string();
                 let is_error = ev.data["message"]["content"][0]["isError"].as_bool();
                 let output = content_text(&ev.data["message"]["content"][0]["content"]);
+                // exit_plan_mode 错误结果的计划卡收口标记(节点借用结束后生效)
+                let mut plan_call_failed = false;
                 if let Some(ix) = self.position(&format!("call:{call_id}"))
                     && let ChatNode::Tool {
                         state,
                         output: o,
                         view,
                         images,
+                        name,
                         ..
                     } = &mut self.nodes[ix]
                 {
@@ -860,6 +882,9 @@ impl ChatState {
                         ToolState::Done
                     };
                     *o = Some(output);
+                    // 计划卡失败收口在节点借用结束后执行(见块尾):
+                    // exit_plan_mode 错误结果且未见 plan/submitted → Failed
+                    plan_call_failed = is_error == Some(true) && name == "exit_plan_mode";
                     // result 侧视图权威替换:在场覆盖 call 意图,缺席清除
                     // (如编辑失败无 diff → 通用卡)
                     *view = ev.data.get("view").filter(|v| !v.is_null()).cloned();
@@ -925,16 +950,39 @@ impl ChatState {
                         }
                     }
                 }
+                // 计划卡失败收口:错误结果且草稿卡仍在(未见
+                // plan/submitted)→ Failed,计划正文保留可见
+                if plan_call_failed
+                    && let Some(ChatNode::Plan { status, .. }) = self
+                        .nodes
+                        .iter_mut()
+                        .rev()
+                        .find(|n| matches!(n, ChatNode::Plan { status: PlanStatus::Draft, .. }))
+                {
+                    *status = PlanStatus::Failed;
+                }
             }
-            // 计划归档四件:submitted 落归档卡节点;approved/declined/
-            // cancelled 更新最后一个待批节点的状态(事件序保证配对)
+            // 计划归档四件:submitted 把就近调用派生草稿卡转正(同一提交
+            // 只一张卡;正文以本事件为权威);无草稿卡(旧日志/参数解析
+            // 失败)退回落新卡。approved/declined/cancelled 更新最后一个
+            // 待批节点的状态(事件序保证配对)
             "plan/submitted" => {
                 let plan = ev.data["plan"].as_str().unwrap_or_default().to_string();
-                self.push_indexed(ChatNode::Plan {
-                    key: format!("plan:{}", ev.seq),
-                    plan,
-                    status: PlanStatus::Pending,
-                });
+                if let Some(ChatNode::Plan { plan: p, status, .. }) = self
+                    .nodes
+                    .iter_mut()
+                    .rev()
+                    .find(|n| matches!(n, ChatNode::Plan { status: PlanStatus::Draft, .. }))
+                {
+                    *p = plan;
+                    *status = PlanStatus::Pending;
+                } else {
+                    self.push_indexed(ChatNode::Plan {
+                        key: format!("plan:{}", ev.seq),
+                        plan,
+                        status: PlanStatus::Pending,
+                    });
+                }
             }
             // 压缩标记行(历史折叠落档;标记行不
             // 替换被折叠的转写行,展开看摘要)。终局清进行/排队位
@@ -1015,13 +1063,14 @@ impl ChatState {
                     _ => PlanStatus::Cancelled,
                 };
                 // 事件序保证配对:更新最后一个待批计划节点 →
-                // 归档卡状态徽标随之变化(拒绝/取消的界面反馈)
+                // 归档卡状态徽标随之变化(拒绝/取消的界面反馈);
+                // Draft 一并防御(终局先于 submitted 的异常序)
                 if let Some(ChatNode::Plan { status: s, .. }) =
                     self.nodes.iter_mut().rev().find(|n| {
                         matches!(
                             n,
                             ChatNode::Plan {
-                                status: PlanStatus::Pending,
+                                status: PlanStatus::Pending | PlanStatus::Draft,
                                 ..
                             }
                         )
@@ -2827,6 +2876,103 @@ mod tests {
         assert_eq!(
             summarize_call(liuma_sandbox::shell::tool_name(), "{\"command\":\"ls\"}"),
             "ls"
+        );
+    }
+
+    /// 调用派生计划卡(dsh 口径):exit_plan_mode 的 tool/call 即出卡
+    /// (Draft);plan/submitted 就近转正不重复推卡,正文以事件为权威;
+    /// 错误结果把未见 submitted 的草稿卡收口 Failed(提交失败的正文
+    /// 仍可见);参数解析失败与非计划调用不出卡;旧日志兜底落新卡
+    #[test]
+    fn plan_card_derives_from_call_and_survives_failure() {
+        let mut st = ChatState::default();
+        st.apply(&ev("tool/call", 1, json!({
+            "callId": "c1", "name": "exit_plan_mode",
+            "arguments": "{\"plan\": \"# 方案 步骤\"}",
+        })));
+        match st.nodes.last() {
+            Some(ChatNode::Plan {
+                key,
+                plan,
+                status: PlanStatus::Draft,
+            }) => {
+                assert_eq!(key, "plan-call:c1");
+                assert_eq!(plan, "# 方案 步骤");
+            }
+            other => panic!("调用即出草稿卡:{other:?}"),
+        }
+        st.apply(&ev("plan/submitted", 2, json!({ "plan": "# 方案 v2" })));
+        assert_eq!(
+            st.nodes
+                .iter()
+                .filter(|n| matches!(n, ChatNode::Plan { .. }))
+                .count(),
+            1,
+            "同一提交只一张卡"
+        );
+        match st.nodes.last() {
+            Some(ChatNode::Plan {
+                plan,
+                status: PlanStatus::Pending,
+                ..
+            }) => assert_eq!(plan, "# 方案 v2", "正文以 submitted 为权威"),
+            other => panic!("应转待批:{other:?}"),
+        }
+        st.apply(&ev("plan/approved", 3, json!({ "plan": "# 方案 v2" })));
+        assert!(matches!(
+            st.nodes.last(),
+            Some(ChatNode::Plan {
+                status: PlanStatus::Approved,
+                ..
+            })
+        ));
+
+        // 失败路径:调用出卡 → 错误结果收口 Failed(无 submitted)
+        st.apply(&ev("tool/call", 4, json!({
+            "callId": "c2", "name": "exit_plan_mode",
+            "arguments": "{\"plan\": \"## 小标题\"}",
+        })));
+        assert!(matches!(
+            st.nodes.last(),
+            Some(ChatNode::Plan {
+                status: PlanStatus::Draft,
+                ..
+            })
+        ));
+        st.apply(&ev("tool/result", 5, json!({
+            "message": { "content": [ { "toolCallId": "c2", "isError": true,
+                "content": [ { "type": "text", "text": "requires a # heading" } ] } ] },
+        })));
+        match st.nodes.last() {
+            Some(ChatNode::Plan {
+                plan,
+                status: PlanStatus::Failed,
+                ..
+            }) => assert_eq!(plan, "## 小标题", "失败提交的正文保留可见"),
+            other => panic!("错误结果应收口 Failed:{other:?}"),
+        }
+
+        // 参数解析失败不出卡;非 exit_plan_mode 不出卡
+        st.apply(&ev("tool/call", 6, json!({
+            "callId": "c3", "name": "exit_plan_mode", "arguments": "{broken",
+        })));
+        st.apply(&ev("tool/call", 7, json!({
+            "callId": "c4", "name": "bash", "arguments": "{\"command\": \"ls\"}",
+        })));
+        assert_eq!(
+            st.nodes
+                .iter()
+                .filter(|n| matches!(n, ChatNode::Plan { .. }))
+                .count(),
+            2,
+            "解析失败与非计划调用不出卡"
+        );
+        // 旧日志兜底:无前置调用的 submitted 仍落新卡
+        st.apply(&ev("plan/submitted", 8, json!({ "plan": "# 旧日志" })));
+        let last = st.nodes.last().unwrap();
+        assert!(
+            matches!(last, ChatNode::Plan { key, status: PlanStatus::Pending, .. } if key.starts_with("plan:")),
+            "无草稿卡退回落新卡:{last:?}"
         );
     }
 
