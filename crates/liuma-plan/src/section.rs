@@ -83,10 +83,9 @@ mod tests {
         );
         assert!(mode.body.contains("Make the plan decision-complete"));
         // conduct 授予在 plan 模式下的暂停句(逐字锁)
-        assert!(
-            mode.body
-                .contains("editing files and running tests in the workspace are yours to do freely is suspended")
-        );
+        assert!(mode.body.contains(
+            "editing files and running tests in the workspace are yours to do freely is suspended"
+        ));
         // 调查类任务的交付物仍是提交的计划(逐字锁)
         assert!(
             mode.body

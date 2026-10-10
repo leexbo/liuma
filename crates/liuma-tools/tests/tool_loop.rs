@@ -704,8 +704,7 @@ async fn plan_mode_in_turn_review_flow() {
             .find(|e| e.r#type == "tool/result")
             .expect("tool/result");
         assert_eq!(
-            result.data["success"],
-            true,
+            result.data["success"], true,
             "字符串形态参数应照常提交: {}",
             result.data["output"]
         );

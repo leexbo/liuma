@@ -921,7 +921,7 @@ impl LoopEngine {
         // repeats the notice」同款)
         let turn_route = self.turn_route.clone();
         let baseline_route = Self::last_turn_route(&self.log);
-        let mut pending_notices: Vec<serde_json::Value> = Vec::new();
+        let mut pending_notices: Vec<Value> = Vec::new();
         if let (Some(prev), Some(next)) = (&baseline_route, &turn_route)
             && prev != next
         {

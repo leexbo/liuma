@@ -115,9 +115,7 @@ impl ToolPort for PlanTool {
             Err(e) => return fail(format!("exit_plan_mode {e}")),
         };
         if !arguments.is_object() {
-            return fail(
-                "exit_plan_mode arguments must be a JSON object with a plan field".into(),
-            );
+            return fail("exit_plan_mode arguments must be a JSON object with a plan field".into());
         }
         let Some(plan) = arguments["plan"].as_str() else {
             return fail("exit_plan_mode requires arguments.plan (string)".into());
