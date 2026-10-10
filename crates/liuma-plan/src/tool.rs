@@ -78,16 +78,6 @@ fn has_heading(plan: &str) -> bool {
     false
 }
 
-/// 把工具入参统一成对象:若为 JSON 字符串则解析,否则原样(模型对话方言
-/// 把 tool 参数作为字符串下发)。
-fn args_or_json_string(args: &Value) -> Value {
-    if let Some(s) = args.as_str() {
-        serde_json::from_str(s).unwrap_or_else(|_| json!({}))
-    } else {
-        args.clone()
-    }
-}
-
 impl ToolPort for PlanTool {
     fn specs(&self) -> Vec<Value> {
         vec![json!({
@@ -118,7 +108,17 @@ impl ToolPort for PlanTool {
         if self.current_mode() != "plan" {
             return fail("exit_plan_mode is only available in plan mode".into());
         }
-        let arguments = args_or_json_string(&call.arguments);
+        // 参数读取走 parsed_arguments:字符串形态解析失败要报「不是合法
+        // JSON」,不静默降级成空对象(误报缺字段,带偏排查方向)
+        let arguments = match call.parsed_arguments() {
+            Ok(v) => v,
+            Err(e) => return fail(format!("exit_plan_mode {e}")),
+        };
+        if !arguments.is_object() {
+            return fail(
+                "exit_plan_mode arguments must be a JSON object with a plan field".into(),
+            );
+        }
         let Some(plan) = arguments["plan"].as_str() else {
             return fail("exit_plan_mode requires arguments.plan (string)".into());
         };
@@ -261,6 +261,73 @@ mod tests {
         assert_eq!(
             out.output,
             "exit_plan_mode requires a non-empty markdown plan starting with a # heading"
+        );
+    }
+
+    /// 回归锁:wire 字符串形态(OpenAI 兼容方言)合法 JSON 照常提交。
+    #[tokio::test]
+    async fn accepts_wire_string_form_arguments() {
+        let mut t = PlanTool::new(
+            log_with_mode(Some("plan")),
+            Some(FakePort::new(vec![Ok(PlanReviewDecision::Approve)])),
+            "s",
+        );
+        let call = ToolCallRequest {
+            name: "exit_plan_mode".into(),
+            arguments: Value::String("{\"plan\": \"# wire form body\"}".into()),
+            id: String::new(),
+        };
+        let out = ToolPort::execute(&mut t, &call).await;
+        assert!(out.success, "{}", out.output);
+        assert_eq!(out.output, APPROVED_RESULT);
+    }
+
+    /// 回归锁:坏 JSON 字符串报「不是合法 JSON」,不静默降级成缺字段。
+    #[tokio::test]
+    async fn invalid_json_string_reports_parse_error() {
+        let mut t = PlanTool::new(
+            log_with_mode(Some("plan")),
+            Some(FakePort::new(vec![Ok(PlanReviewDecision::Approve)])),
+            "s",
+        );
+        let call = ToolCallRequest {
+            name: "exit_plan_mode".into(),
+            arguments: Value::String("{\"plan\": \"# p\"".into()), // 缺右括号
+            id: String::new(),
+        };
+        let out = ToolPort::execute(&mut t, &call).await;
+        assert!(!out.success);
+        assert!(
+            out.output.contains("not valid JSON"),
+            "实际输出: {}",
+            out.output
+        );
+        assert!(
+            !out.output.contains("requires arguments.plan"),
+            "不得误报为缺字段: {}",
+            out.output
+        );
+    }
+
+    /// 回归锁:双层编码(解析出字符串而非对象)报明确形状错。
+    #[tokio::test]
+    async fn double_encoded_arguments_report_shape_error() {
+        let mut t = PlanTool::new(
+            log_with_mode(Some("plan")),
+            Some(FakePort::new(vec![Ok(PlanReviewDecision::Approve)])),
+            "s",
+        );
+        let inner = serde_json::to_string(&json!({ "plan": "# p" })).unwrap();
+        let call = ToolCallRequest {
+            name: "exit_plan_mode".into(),
+            arguments: Value::String(serde_json::to_string(&inner).unwrap()),
+            id: String::new(),
+        };
+        let out = ToolPort::execute(&mut t, &call).await;
+        assert!(!out.success);
+        assert_eq!(
+            out.output,
+            "exit_plan_mode arguments must be a JSON object with a plan field"
         );
     }
 

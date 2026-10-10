@@ -665,6 +665,52 @@ async fn plan_mode_in_turn_review_flow() {
         );
     }
 
+    // 回归锁:wire 字符串形态(OpenAI 兼容方言恒为 JSON 编码字符串;引擎原样
+    // 透传)合法 JSON 照常提交——坏 JSON 须报「不是合法 JSON」而非缺字段
+    let mut provider = FakeProvider::new();
+    provider.then(vec![LlmEvent::AssistantMessage(json!({
+        "content": "", "tool_calls": [
+            { "name": "exit_plan_mode", "arguments": "{\"plan\": \"# wire form\"}" } ],
+    }))]);
+    provider.then(vec![LlmEvent::AssistantMessage(
+        json!({ "content": "carry out wire" }),
+    )]);
+    let mut tools = ToolSet::new(vec![Box::new(PlanTool::new(
+        Arc::clone(&log),
+        port(Ok(PlanReviewDecision::Approve)),
+        "s",
+    ))])
+    .unwrap();
+    let mut gate = InvariantGate::new(provider, Arc::clone(&log));
+    engine
+        .run_turn(
+            "wire form",
+            None,
+            &[],
+            &[],
+            &[],
+            &mut gate,
+            &mut tools,
+            &clock,
+            &mut sink,
+        )
+        .await
+        .expect("turn");
+    {
+        let l = log.lock().unwrap();
+        let result = l
+            .iter()
+            .rev()
+            .find(|e| e.r#type == "tool/result")
+            .expect("tool/result");
+        assert_eq!(
+            result.data["success"],
+            true,
+            "字符串形态参数应照常提交: {}",
+            result.data["output"]
+        );
+    }
+
     // 拒绝终局:错误结果携带反馈(留在 plan 模式;模型修订重提)
     let mut provider = FakeProvider::new();
     provider.then(vec![LlmEvent::AssistantMessage(json!({
