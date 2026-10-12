@@ -52,6 +52,10 @@ shell:
     zh-CN: "已拒绝"
     en: "Declined"
 
+  plan_failed:
+    zh-CN: "提交失败"
+    en: "Failed"
+
   plan_cancelled:
     zh-CN: "已取消"
     en: "Cancelled"

@@ -550,6 +550,12 @@ impl Render for WorkspaceView {
             st.panel_px,
         );
         let settings_open = st.settings.settings_open;
+        // 计划评审接管输入区(dsh PlanReviewPanel 同构):当前会话待审时
+        // 评审卡替换 composer——要说话先经 ✕ 取消评审(模型收「留在计划
+        // 模式等待」指引),杜绝「待审悬置 + 自由输入」并行让「批准」类
+        // 文本落进缝隙(失败会话实证:计划未提交,用户打「批准」无处可批)
+        let plan_review = ask::render_plan(&self.store, window, cx).map(|el| el.into_any_element());
+        let plan_pending = plan_review.is_some();
         div()
             .relative()
             // 分离式侧栏(方案 B):左右两列——左列侧栏卡满高(顶到窗口
@@ -663,7 +669,7 @@ impl Render for WorkspaceView {
                                                 .mx_auto()
                                                 .w(col_w)
                                                 .gap(px(8.))
-                                                .children(ask::render_plan(&self.store, window, cx))
+                                                .children(plan_review)
                                                 .children(ask::render_approval(&self.store, cx))
                                                 .children(ask::render_question(
                                                     &self.store,
@@ -683,21 +689,24 @@ impl Render for WorkspaceView {
                                                 // 输入卡顶(负 margin 塞 3px,输入卡
                                                 // 顶边收口),DSH QueueDock 同构;队列
                                                 // 空时 dock 为空节点,组退化为裸
-                                                // composer
-                                                .child(
-                                                    div()
-                                                        .v_flex()
-                                                        .child(chat::queue_dock::render(
-                                                            &self.store,
-                                                            window,
-                                                            cx,
-                                                        ))
-                                                        .child(chat::composer::render(
-                                                            &self.store,
-                                                            window,
-                                                            cx,
-                                                        )),
-                                                ),
+                                                // composer。计划评审待审时整组让位
+                                                // (评审卡已替换输入面,见 plan_pending)
+                                                .when(!plan_pending, |el| {
+                                                    el.child(
+                                                        div()
+                                                            .v_flex()
+                                                            .child(chat::queue_dock::render(
+                                                                &self.store,
+                                                                window,
+                                                                cx,
+                                                            ))
+                                                            .child(chat::composer::render(
+                                                                &self.store,
+                                                                window,
+                                                                cx,
+                                                            )),
+                                                    )
+                                                }),
                                         ),
                                 )
                                 // 组件库默认滚动条(滚动时浮现、闲置淡出;拖
