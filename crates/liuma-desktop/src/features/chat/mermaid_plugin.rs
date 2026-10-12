@@ -75,13 +75,18 @@ impl MarkdownPlugin for MermaidTextViewPlugin {
         if !mermaid::is_supported_diagram_type(&source) {
             return None;
         }
-        Some(MarkdownNode::new(
-            "mermaid",
-            MermaidData {
-                card_key: mermaid_card_key(&source),
-                source,
-            },
-        ))
+        // 块级插件在 gpui-base ≥0.7.2 是**原子**选区单元(#3390):块内起止
+        // 的拖拽不选中任何内部文本(含嵌套的代码态 TextView),只有跨越块
+        // 边界或全选才整体并入选区。故把图源声明为节点纯文本/Markdown,
+        // 命中「选中块 = 复制源码」的路径(卡内 copy 按钮仍是一键副本)。
+        let card_key = mermaid_card_key(&source);
+        let plain: String = source.to_string();
+        let markdown = format!("```mermaid\n{source}\n```");
+        Some(
+            MarkdownNode::new("mermaid", MermaidData { card_key, source })
+                .text(plain)
+                .markdown(markdown),
+        )
     }
 
     fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {

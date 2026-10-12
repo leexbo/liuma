@@ -2814,12 +2814,14 @@ fn chat_body_text_is_drag_selectable(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// mermaid 卡「代码」态的源码可拖选。手绘期这块是普通 div(不可选),
-/// 「点一下回图表」还会把拖选一起挡掉;现走库 Base `TextView`(自带选区
-/// participant),拖选即取得到源码文本。锁的是结果:选中文本非空且确为
-/// 图源(不是空白或别的元素)。
+/// mermaid 卡的图源可经选中复制。手绘期这块是普通 div(不可选),「点一下
+/// 回图表」还会把拖选一起挡掉;现走库 Base `TextView`。**gpui-base ≥0.7.2
+/// 起块级 `MarkdownPlugin` 是原子选区单元(#3390):块内起止的拖拽不再选中
+/// 任何内部文本(含代码态 TextView,迁移前正靠它自身选区工作)**;上游语义
+/// 是跨块边界 / 全选时把整块并入选区,故改为验「拖出卡片上缘后选中含图源」
+/// ——锁的是节点声明的图源文本随块选区一并可取(卡内 copy 按钮是一键路径)。
 #[gpui_kit::test]
-fn mermaid_code_view_is_drag_selectable(cx: &mut TestAppContext) {
+fn mermaid_source_selected_across_block_edge(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "mermaid-sel");
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
@@ -2876,6 +2878,9 @@ fn mermaid_code_view_is_drag_selectable(cx: &mut TestAppContext) {
     redraw(cx, &mut wcx);
     let b = wcx.debug_bounds(code_sel).expect("代码态未渲染");
     let y = b.origin.y + b.size.height / 2.;
+    // 跨卡片上边界拖:起点在代码态内,终点落回上方段落,块整体并入选区。
+    let card_static: &'static str = Box::leak(card.clone().into_boxed_str());
+    let card_b = wcx.debug_bounds(card_static).expect("卡片边界缺失");
     wcx.simulate_mouse_down(
         gpui_kit::Point {
             x: b.origin.x + px(20.),
@@ -2887,8 +2892,8 @@ fn mermaid_code_view_is_drag_selectable(cx: &mut TestAppContext) {
     cx.run_until_parked();
     wcx.simulate_mouse_move(
         gpui_kit::Point {
-            x: b.right() - px(20.),
-            y,
+            x: b.origin.x + px(20.),
+            y: card_b.origin.y - px(40.),
         },
         MouseButton::Left,
         gpui_kit::Modifiers::default(),
@@ -2896,8 +2901,8 @@ fn mermaid_code_view_is_drag_selectable(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let selected = wcx.update(gpui_kit::base::TextSelection::selected_text);
     assert!(
-        selected.contains("flowchart") || selected.contains("-->") || selected.contains("graph"),
-        "代码态拖选应取到图源文本,实际 {selected:?}"
+        selected.contains("WASM 组件"),
+        "跨块边界拖选应把图源并入选区,实际 {selected:?}"
     );
     let _ = std::fs::remove_dir_all(root);
 }
