@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui_kit::component::RopeExt;
+use gpui_kit::component::diff::DiffState;
 use gpui_kit::component::input::TextareaState;
 use gpui_kit::{AppContext as _, Context, Entity, Window};
 
@@ -134,6 +135,10 @@ pub(crate) struct ChatStore {
     pub expanded_tools: HashSet<String>,
     /// 工具卡头尾展开钮(call key;read/search/diff 卡共用)
     pub card_expanded: HashSet<String>,
+    /// diff 卡的库 `DiffState` 缓存(键 = 卡 key,值 = (内容哈希, 实体);
+    /// 内容变则重建)。DiffState 持虚拟列表滚动态,须跨帧存活,故挂
+    /// store;内存态,不持久化
+    pub diff_states: HashMap<String, (u64, Entity<DiffState>)>,
     /// 搜索组折叠(键 = `{callKey}:{path}`;search 卡 matches 形态)
     pub search_collapsed: HashSet<String>,
     /// 展开的 Think 行 key(a:<turn>:<step>)
@@ -364,6 +369,7 @@ impl Default for ChatStore {
             pending_composer_clear: false,
             expanded_tools: HashSet::new(),
             card_expanded: HashSet::new(),
+            diff_states: HashMap::new(),
             search_collapsed: HashSet::new(),
             open_reasoning: HashSet::new(),
             user_unfolded: HashSet::new(),

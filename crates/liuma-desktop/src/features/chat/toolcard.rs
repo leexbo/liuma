@@ -12,7 +12,9 @@
 //! /「收起」)。read/search 横幅 bg `theme::card(cx)`(bluish-850 banner
 //! token);diff 无横幅(浮动复制钮)。
 
+use gpui_kit::AppContext as _;
 use gpui_kit::component::StyledExt;
+use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
@@ -811,16 +813,52 @@ pub(crate) fn search_recovery_footer(output: Option<&str>) -> Option<String> {
 
 // ── diff 卡 ───────────────────────────────────────────────────
 
-/// 展平行(path 头/删行/增行/同文件间隙)
-enum DiffRow {
-    Path(String),
-    Del(String, Option<Vec<Span>>),
-    Add(String, Option<Vec<Span>>),
-    Gap,
+/// wire hunk 序列 → unified patch 文本(喂库 `DiffFile::parse`)。
+/// wire 语义是整块替换(old 全删/new 全增,无行级对齐),patch 直排即可;
+/// 同 path 连续 hunk 合并进同一文件段,行号按出现序累计(显示用——
+/// 卡内渲染关掉行号列,只为满足格式)。全空 hunk 跳过。
+fn unified_patch(diffs: &[DiffHunk]) -> String {
+    let mut patch = String::new();
+    let mut prev_path: Option<&str> = None;
+    let (mut old_at, mut new_at) = (0usize, 0usize);
+    for d in diffs {
+        let old_lines: Vec<&str> = d.old_text.as_deref().map(content_lines).unwrap_or_default();
+        let new_lines = content_lines(&d.new_text);
+        if old_lines.is_empty() && new_lines.is_empty() {
+            continue;
+        }
+        if prev_path != Some(d.path.as_str()) {
+            patch.push_str(&format!("--- a/{}\n+++ b/{}\n", d.path, d.path));
+            (old_at, new_at) = (0, 0);
+        }
+        patch.push_str(&format!(
+            "@@ -{old_start},{o} +{new_start},{n} @@\n",
+            old_start = old_at + 1,
+            o = old_lines.len(),
+            new_start = new_at + 1,
+            n = new_lines.len()
+        ));
+        for line in &old_lines {
+            patch.push('-');
+            patch.push_str(line);
+            patch.push('\n');
+        }
+        for line in &new_lines {
+            patch.push('+');
+            patch.push_str(line);
+            patch.push('\n');
+        }
+        old_at += old_lines.len();
+        new_at += new_lines.len();
+        prev_path = Some(d.path.as_str());
+    }
+    patch
 }
 
-/// diff 卡:无横幅,path 头(粗体,pr 56 让位浮动钮)+ `-` 红 / `+` 绿
-/// 正文 + `└ +A -R · N file(s)` footer + 浮动复制钮
+/// diff 卡:无横幅,库 `Diff` 视图(统一模式,关行号列/文件头,库自管
+/// 虚拟滚动 + 语法高亮)+ `└ +A -R · N file(s)` footer + 浮动复制钮。
+/// 收起态视口 ≈ 旧头尾截断的 8 行;展开钮改展视口(DiffState 虚拟化,
+/// 全量行常驻)。DiffState 挂 store 缓存(键 = 卡 key,内容哈希变则重建)。
 pub(crate) fn render_diff(
     store: &Entity<AppStore>,
     cx: &App,
@@ -830,56 +868,71 @@ pub(crate) fn render_diff(
 ) -> gpui_kit::AnyElement {
     let expanded = store.read(cx).chat.card_expanded.contains(key);
 
-    // 展平:同文件第二条 hunk 以 `⋯` 间隙开头(不重复路径头)。
-    // 每文件:路径 + (row_index, text) 段(展平序追加);展平完成后
-    // attach_diff_spans 按段高亮回填。
-    let mut rows: Vec<DiffRow> = Vec::new();
     let mut added = 0usize;
     let mut removed = 0usize;
     let mut paths = std::collections::HashSet::new();
-    let mut prev_path: Option<&str> = None;
-    let mut segs: Vec<(&str, Vec<(usize, String)>)> = Vec::new();
+    let mut copy_text = String::new();
     for d in &card.diffs {
         paths.insert(d.path.as_str());
-        if prev_path != Some(d.path.as_str()) {
-            rows.push(DiffRow::Path(d.path.clone()));
-            segs.push((d.path.as_str(), Vec::new()));
-        } else {
-            rows.push(DiffRow::Gap);
+        let old = d.old_text.as_deref().map(content_lines).unwrap_or_default();
+        let new = content_lines(&d.new_text);
+        removed += old.len();
+        added += new.len();
+        for line in &old {
+            copy_text.push_str("- ");
+            copy_text.push_str(line);
+            copy_text.push('\n');
         }
-        prev_path = Some(d.path.as_str());
-        if let Some((_, seg)) = segs.last_mut() {
-            if let Some(old) = &d.old_text {
-                for line in content_lines(old) {
-                    seg.push((rows.len(), line.to_string()));
-                    rows.push(DiffRow::Del(line.to_string(), None));
-                    removed += 1;
-                }
-            }
-            for line in content_lines(&d.new_text) {
-                seg.push((rows.len(), line.to_string()));
-                rows.push(DiffRow::Add(line.to_string(), None));
-                added += 1;
-            }
+        for line in &new {
+            copy_text.push_str("+ ");
+            copy_text.push_str(line);
+            copy_text.push('\n');
         }
     }
-    if rows.is_empty() {
+    if added + removed == 0 {
         return div().into_any_element();
     }
-    attach_diff_spans(key, &segs, &mut rows, theme::is_dark(cx));
+    let copy_text = copy_text.trim_end_matches('\n').to_string();
 
-    let ht = head_tail(rows.len(), CHAT_CARD_MAX_LINES, expanded);
-    let head_end = if ht.capped { ht.head } else { rows.len() };
-    let copy_text = rows
-        .iter()
-        .map(|r| match r {
-            DiffRow::Del(t, _) => format!("- {t}"),
-            DiffRow::Add(t, _) => format!("+ {t}"),
-            DiffRow::Path(t) => t.clone(),
-            DiffRow::Gap => "⋯".to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    // patch → 解析 → 缓存态(内容哈希哨兵:变即重建,滚动位归零可接受)。
+    // 渲染期只有 &App,缓存未命中时派一拍后台任务落 store,本帧以等高
+    // 占位顶住(工具结果流式多帧,占位一拍不可感知)
+    let patch = unified_patch(&card.diffs);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&patch, &mut hasher);
+    let content_hash = std::hash::Hasher::finish(&hasher);
+    let viewport_h = if expanded { px(480.) } else { px(200.) };
+    let cached = store
+        .read(cx)
+        .chat
+        .diff_states
+        .get(key)
+        .filter(|(h, _)| *h == content_hash)
+        .map(|(_, e)| e.clone());
+    let state = match cached {
+        Some(entity) => entity,
+        None => {
+            let store = store.clone();
+            let key = key.to_string();
+            let patch = patch.clone();
+            cx.spawn(async move |cx| {
+                cx.update(|cx| {
+                    store.update(cx, |st, cx| {
+                        let files = DiffFile::parse(&patch).unwrap_or_default();
+                        let entity = cx.new(|cx| DiffState::new(files, cx));
+                        // 护栏:纯加速面,超量全清重建(重建 = 一帧占位 +
+                        // 一次后台任务,廉价);防长会话多卡无界积累
+                        if st.chat.diff_states.len() >= DIFF_STATE_CACHE_CAP {
+                            st.chat.diff_states.clear();
+                        }
+                        st.chat.diff_states.insert(key, (content_hash, entity));
+                    });
+                });
+            })
+            .detach();
+            return placeholder_diff(ix, viewport_h);
+        }
+    };
 
     let files = paths.len();
     div()
@@ -890,31 +943,13 @@ pub(crate) fn render_diff(
         .rounded(px(12.))
         .bg(theme::code(cx))
         .overflow_hidden()
-        .font_family("Menlo")
-        .text_size(px(13.))
-        .line_height(px(22.))
         .child(
-            div()
-                .id(("diff-body", ix))
-                .overflow_scroll()
-                .px(px(14.))
-                .py(px(12.))
-                .child(
-                    div().v_flex().children(
-                        rows[..head_end]
-                            .iter()
-                            .map(|r| diff_row_el(r, cx))
-                            .chain(std::iter::once(diff_expand_row(
-                                store, cx, ix, key, ht.hidden,
-                            )))
-                            .chain(
-                                rows[rows.len() - if ht.capped { ht.tail } else { 0 }..]
-                                    .iter()
-                                    .map(|r| diff_row_el(r, cx)),
-                            )
-                            .collect::<Vec<_>>(),
-                    ),
-                ),
+            div().id(("diff-body", ix)).px(px(8.)).py(px(8.)).child(
+                Diff::new(&state)
+                    .header_visible(false)
+                    .line_number(false)
+                    .max_h(viewport_h),
+            ),
         )
         // footer:└ +A -R · N file(s)
         .child(
@@ -958,132 +993,12 @@ pub(crate) fn render_diff(
         .into_any_element()
 }
 
-/// diff 高亮回填:逐文件段(路径 + 行序号 + 文本)按「后缀 → lang」
-/// 整段喂行级高亮(highlight_window 有状态,跨行语法上下文正确;
-/// find_syntax_by_token 对扩展名亦认,未知名/无后缀回退纯文本——spans
-/// 恒 None),结果写回对应 row。key = 卡 key(`{key}·diff·{path}`),
-/// 缓存随内容哈希,重渲零重算。
-fn attach_diff_spans(
-    key: &str,
-    segs: &[(&str, Vec<(usize, String)>)],
-    rows: &mut [DiffRow],
-    dark: bool,
-) {
-    for (path, seg) in segs {
-        if seg.is_empty() {
-            continue;
-        }
-        let Some(lang) = std::path::Path::new(path)
-            .extension()
-            .and_then(|e| e.to_str())
-        else {
-            continue;
-        };
-        let texts: Vec<&str> = seg.iter().map(|(_, t)| t.as_str()).collect();
-        let Some(hl) = crate::kits::highlight::highlight_window(
-            &format!("{key}·diff·{path}"),
-            Some(lang),
-            &texts,
-            dark,
-        ) else {
-            continue;
-        };
-        for ((ri, _), spans) in seg.iter().zip(hl.iter()) {
-            match &mut rows[*ri] {
-                DiffRow::Del(_, s) | DiffRow::Add(_, s) => *s = Some(spans.clone()),
-                _ => {}
-            }
-        }
-    }
-}
-
-/// 一条 diff 行(Path 粗体 pr 56;Del 红 `+ Add 绿——前缀符号恒语义色,
-/// 内容段走高亮 spans(read 卡同款渲染),未知名回退单色;Gap ⋯)
-fn diff_row_el(row: &DiffRow, cx: &App) -> gpui_kit::AnyElement {
-    let el = match row {
-        DiffRow::Path(p) => div()
-            .min_h(px(22.))
-            .line_height(px(22.))
-            .pr(px(56.))
-            .font_weight(gpui_kit::FontWeight::BOLD)
-            .text_color(theme::label(cx))
-            .child(p.clone()),
-        DiffRow::Del(t, spans) => diff_code_line("-", theme::danger(cx), t, spans.as_deref(), cx),
-        DiffRow::Add(t, spans) => diff_code_line("+", theme::success(cx), t, spans.as_deref(), cx),
-        DiffRow::Gap => div()
-            .min_h(px(22.))
-            .line_height(px(22.))
-            .text_color(theme::label_3(cx))
-            .child("⋯"),
-    };
-    el.into_any_element()
-}
-
-/// diff 代码行:前缀符号(2 字符宽,恒语义色)+ 内容(spans 横排不折行
-/// ——与 read_line 同款;无 spans 回退单色文本)
-fn diff_code_line(
-    sign: &str,
-    sign_color: gpui_kit::Rgba,
-    text: &str,
-    spans: Option<&[Span]>,
-    cx: &App,
-) -> gpui_kit::Div {
-    let content = match spans {
-        Some(spans) if !spans.is_empty() => {
-            let mut el = div().flex();
-            for s in spans {
-                el = el.child(div().text_color(s.color).child(s.text.clone()));
-            }
-            el
-        }
-        _ => div().text_color(theme::label(cx)).child(text.to_string()),
-    };
+/// 缓存未命中帧的等高占位(DiffState 后台任务下一拍落 store,届时
+/// 本函数不再被走到;等高防卡片高度跳动)
+fn placeholder_diff(ix: usize, viewport_h: gpui_kit::Pixels) -> gpui_kit::AnyElement {
     div()
-        .flex()
-        .min_h(px(22.))
-        .line_height(px(22.))
-        .child(
-            div()
-                .flex_shrink_0()
-                .w(px(18.))
-                .text_color(sign_color)
-                .child(format!("{sign} ")),
-        )
-        .child(content)
-}
-
-/// diff 展开钮(无缩进;源 .expand padding 0)
-fn diff_expand_row(
-    store: &Entity<AppStore>,
-    cx: &App,
-    ix: usize,
-    key: &str,
-    hidden: usize,
-) -> gpui_kit::AnyElement {
-    if hidden == 0 {
-        return div().into_any_element();
-    }
-    let expanded = store.read(cx).chat.card_expanded.contains(key);
-    let s = store.clone();
-    let k = key.to_string();
-    div()
-        .id(("diff-expand", ix))
-        .min_h(px(22.))
-        .line_height(px(22.))
-        .cursor_pointer()
-        .text_color(theme::label_3(cx))
-        .hover(|st| st.text_color(theme::label_2(cx)))
-        .child(if expanded {
-            t!("common.collapse").to_string()
-        } else if hidden == 1 {
-            t!("chat.more_rows_one", hidden = hidden).into_owned()
-        } else {
-            t!("chat.more_rows_other", hidden = hidden).into_owned()
-        })
-        .on_click(move |_, _, cx| {
-            let k = k.clone();
-            s.update(cx, |st, cx| st.toggle_card_expanded(&k, cx));
-        })
+        .id(("diff-placeholder", ix))
+        .h(viewport_h)
         .into_any_element()
 }
 
@@ -1147,6 +1062,9 @@ fn copy_button(
 
 /// 聊天位卡体头尾上限(CHAT_*_MAX_LINES = 原语默认 16 的一半)
 pub(crate) const CHAT_CARD_MAX_LINES: usize = 8;
+
+/// diff 卡 `DiffState` 缓存条目上限(超量全清,见 render_diff 护栏)
+const DIFF_STATE_CACHE_CAP: usize = 256;
 
 // ── skill 卡────────────────────────────────────
 
@@ -1422,51 +1340,43 @@ mod tests {
         assert_eq!(content_lines("a\n\n"), vec!["a", ""]); // 内部空行保留
     }
 
-    /// diff 卡语法高亮锁:rust 代码行内容应携带高亮 spans(read 卡同款
-    /// 渲染面;此前 diff 卡恒纯色 +/- 行)。回归锚 = 2026-09-19 真机反馈
-    /// 「file_edit 语法高亮有问题」。
+    /// diff 卡 wire→patch 锁:整块替换语义直排 unified patch(旧全删/
+    /// 新全增),同文件连续 hunk 合并文件段、行号累计;空侧计 0。渲染面
+    /// 的行级高亮/虚拟滚动由库 `Diff` 承担(2026-10 迁库,手搓
+    /// attach_diff_spans 退役;回归锚 = 同前的「file_edit 语法高亮」真机
+    /// 反馈——高亮现由 gpui-kit syntax_highlight 提供)。
     #[test]
-    fn diff_card_highlights_code_lines() {
-        let mut rows = vec![
-            DiffRow::Path("src/lib.rs".into()),
-            DiffRow::Del("fn old() {}".into(), None),
-            DiffRow::Add("fn new() {".into(), None),
-            DiffRow::Add("    let s = \"字符串\";".into(), None),
-            DiffRow::Add("}".into(), None),
+    fn unified_patch_encodes_block_replacement() {
+        let hunks = vec![
+            DiffHunk {
+                path: "src/lib.rs".into(),
+                old_text: Some("fn old() {}".into()),
+                new_text: "fn new() {\n    let s = 1;\n}\n".into(),
+            },
+            DiffHunk {
+                path: "src/lib.rs".into(),
+                old_text: None,
+                new_text: "fn added() {}\n".into(),
+            },
+            DiffHunk {
+                path: "README".into(),
+                old_text: Some("a\n".into()),
+                new_text: String::new(),
+            },
         ];
-        let segs = vec![(
-            "src/lib.rs",
-            vec![
-                (1, "fn old() {}".to_string()),
-                (2, "fn new() {".to_string()),
-                (3, "    let s = \"字符串\";".to_string()),
-                (4, "}".to_string()),
-            ],
-        )];
-        attach_diff_spans("k", &segs, &mut rows, true);
-        // rust 后缀命中语法:代码行应回填非空 spans(字符串行应有样式段)
-        for row in rows.iter().skip(1) {
-            let ok = matches!(row, DiffRow::Del(_, Some(_)) | DiffRow::Add(_, Some(_)));
-            assert!(ok, "代码行应回填 spans");
-        }
-        // 字符串行 spans 覆盖内容文本(不丢行)
-        if let DiffRow::Add(t, Some(spans)) = &rows[3] {
-            let joined: String = spans.iter().map(|s| s.text.as_str()).collect();
-            assert_eq!(joined, t.as_str(), "spans 拼接应还原整行");
-        } else {
-            panic!("字符串行应为带 spans 的 Add 行");
-        }
-
-        // 无扩展名 / 未知名 → 回退纯文本(spans 恒 None),不崩
-        let mut plain = vec![
-            DiffRow::Path("README".into()),
-            DiffRow::Add("plain text".into(), None),
-        ];
-        let segs2 = vec![("README", vec![(1, "plain text".to_string())])];
-        attach_diff_spans("k2", &segs2, &mut plain, true);
+        let patch = unified_patch(&hunks);
+        // 同 path 两 hunk 合并一个文件段,README 新开 → 两个文件头
+        assert_eq!(patch.matches("--- a/").count(), 2);
+        assert!(patch.contains("@@ -1,1 +1,3 @@"), "首 hunk 头");
+        assert!(patch.contains("@@ -2,0 +4,1 @@"), "同行号累计:old 空侧计 0");
         assert!(
-            matches!(&plain[1], DiffRow::Add(_, None)),
-            "无后缀文件应回退纯文本"
+            patch.contains("@@ -1,1 +1,0 @@"),
+            "新文件段重置行号,new 空侧计 0"
         );
+        assert!(patch.lines().any(|l| l == "-fn old() {}"));
+        assert!(patch.lines().any(|l| l == "+fn added() {}"));
+        // 产物可被库解析,文件数正确
+        let files = DiffFile::parse(&patch).expect("patch 合法");
+        assert_eq!(files.len(), 2);
     }
 }
