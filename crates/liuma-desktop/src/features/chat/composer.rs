@@ -69,8 +69,8 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         .rounded(px(22.))
         .border_1()
         .border_color(theme::border(cx))
-        // 输入卡浮出画布一档(COMPOSER #272729,对照 deepseek harness
-        // 输入卡 39,39,41;曾与画布同底只靠描边分层,已废);工具卡等
+        // 输入卡浮出画布一档(COMPOSER #272729,即 39,39,41;
+        // 曾与画布同底只靠描边分层,已废);工具卡等
         // 其余卡面仍走 CARD,两族勿混
         .bg(theme::composer(cx))
         // 阴影:浮层面标配,与描边共同分层
@@ -644,7 +644,7 @@ fn commands_card(
 ) -> gpui_kit::AnyElement {
     let pop_rows = pop.clone();
     let mut rows: Vec<gpui_kit::AnyElement> = vec![];
-    // /goal 暂从 UI 隐藏:goal 域重定位立案(0.3.0,dsh 口径单目标 +
+    // /goal 暂从 UI 隐藏:goal 域重定位立案(0.3.0,口径单目标 +
     // 续轮驱动),命令面去留随定位拍板;host 执行器保留(手输仍生效)
     let cmds: Vec<_> = cmds.into_iter().filter(|c| c.name != "goal").collect();
     if !cmds.is_empty() {
@@ -1000,7 +1000,7 @@ fn model_card(
         .or_else(|| groups.iter().find(|(_, _, _, d)| *d))
         .map(|(_, n, ..)| n.clone())
         .unwrap_or_default();
-    // 路由可用性(dsh routable):生效 provider 不在注册表,或生效模型
+    // 路由可用性(routable):生效 provider 不在注册表,或生效模型
     // 不在其清单 = 不可用。选择保留不偷换(准入语义);回合若端点拒,
     // 错误明面呈现
     let provider_known = snap["providers"]

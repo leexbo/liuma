@@ -507,7 +507,7 @@ async fn anthropic_thinking_params_by_model() {
     let sent = case("glm-5.3-flash".into(), Some("max".into())).await;
     assert_eq!(sent["thinking"], json!({"type": "enabled"}), "{sent}");
     assert_eq!(sent["output_config"], json!({"effort": "max"}), "{sent}");
-    // deepseek:同形(dsh 一手实现)
+    // deepseek:同形
     let sent = case("deepseek-flash".into(), Some("high".into())).await;
     assert_eq!(sent["thinking"], json!({"type": "enabled"}), "{sent}");
     assert_eq!(sent["output_config"], json!({"effort": "high"}), "{sent}");
@@ -941,7 +941,7 @@ async fn real_glm_stream_decodes_end_to_end() {
 #[test]
 fn model_caps_resolution() {
     use liuma_llm::providers::model_caps;
-    // deepseek(Responses 面):flash 系图,其余纯文本(dsh 目录)
+    // deepseek(Responses 面):flash 系图,其余纯文本
     assert!(
         model_caps("deepseek-responses", "deepseek-flash")
             .unwrap()
@@ -978,7 +978,7 @@ fn model_caps_resolution() {
 
 /// anthropic 面 hosted 请求锁:通用 kind → 版本化 wire 形态
 /// (glm = web_search_20260209(ZCode,日期段不带下划线);
-/// deepseek = web_search_20250305(dsh));config 字段透传;
+/// deepseek = web_search_20250305);config 字段透传;
 /// function 工具同面共存
 #[tokio::test]
 async fn anthropic_hosted_web_search_wire() {

@@ -3345,7 +3345,7 @@ fn turn_tail(
             )
         });
     // 早轮操作行默认隐没,hover 整行显现(最新轮/中断轮恒显)。
-    // 交付卡片在统计行**上方**(dsh deliverables 同序:卡片网格 → 操作条)
+    // 交付卡片在统计行**上方**(同序:卡片网格 → 操作条)
     let cards = (!deliverables.is_empty()).then(|| deliverables_grid(store, key, deliverables, cx));
     if reveal_always {
         div()
@@ -3616,7 +3616,7 @@ fn tok_exact_raw(v: u64) -> String {
 }
 
 /// 产物行:basename chip + 完整路径 title,点击系统打开
-/// 交付呈现(dsh 双组形态):present 宣告 = 60px 交付卡(交付层,
+/// 交付呈现(双组形态):present 宣告 = 60px 交付卡(交付层,
 /// 带描述,>4 折叠);未宣告变更 = 单张聚合卡(变更层,>4 折叠)。
 /// 两组折叠状态独立(键 = turn 尾 key 与 key+「-ann」)。
 /// 整行/整卡点击 = 侧栏预览;分体钮交互全保留(hover 显现)
@@ -3733,7 +3733,7 @@ fn deliverables_toggle(
         })
 }
 
-/// 变更聚合卡(dsh ChangedFiles 形态):头 = 代码 tile + 「已编辑 N
+/// 变更聚合卡:头 = 代码 tile + 「已编辑 N
 /// 个文件」+ 合计统计(绿增红删);卡内文件行 = glyph + basename +
 /// 红绿统计 + 行尾分体钮(hover 显现,直开/reveal 保留);行点击 =
 /// 侧栏预览;卡内 >4 折叠
@@ -3967,7 +3967,7 @@ fn changes_row(store: &Entity<AppStore>, ix: usize, d: &Deliverable, cx: &App) -
         )
 }
 
-/// 单张交付卡(dsh 规格:60px / rounded 16 / hairline / 40px 类型
+/// 单张交付卡(规格:60px / rounded 16 / hairline / 40px 类型
 /// tile / 文件名 13px + 描述 10px 双行 / 右缘 opener 分体钮)。
 /// 整卡点击 = 侧栏预览(open_deliverable,chip 语义继承);分体钮
 /// 两半 mouse_down 断传播,点击不落入卡预览(D9 层叠)

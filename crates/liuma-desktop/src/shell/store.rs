@@ -1101,7 +1101,7 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 模型二级菜单选型(dsh selectModel 对应):set_route 成对切换
+    /// 模型二级菜单选型:set_route 成对切换
     /// provider+model——校验、route/selection 落档、默认跟随全在宿主
     /// 完成;hero 态(无会话)走 set_workspace_route 成对写工作区默认。
     /// 生效 provider 真变化时立即拉新账:计费徽标数据源跟切,不等 60s

@@ -109,7 +109,7 @@ impl AppStore {
         self.opener_open_app(id, cx);
     }
 
-    /// 菜单行点击 = 记住选择 + 打开工作区目录(dsh 语义);清单缺席静默
+    /// 菜单行点击 = 记住选择 + 打开工作区目录;清单缺席静默
     pub(crate) fn opener_open_app(&mut self, id: &'static str, cx: &mut Context<Self>) {
         self.opener.selected = Some(id);
         let Some(app) = self.opener.apps.iter().find(|a| a.id == id).cloned() else {

@@ -439,8 +439,8 @@ mod tests {
     }
 
     /// 模型面 pending 契约锁:超时 pending ≠ 跳过,描述必须载明
-    /// 「仍可答、继续独立工作、不得视为许可、迟到回复形状」(对齐 dsh
-    /// timed 描述;真机事故的同族风险:模型把「没答」读成默许)
+    /// 「仍可答、继续独立工作、不得视为许可、迟到回复形状」(对齐
+    /// timed 描述语义;真机事故的同族风险:模型把「没答」读成默许)
     #[test]
     fn description_carries_pending_contract() {
         let tool = AskQuestionTool::new(Arc::new(RecordingPort), "ws");

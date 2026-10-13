@@ -237,7 +237,7 @@ mod tests {
 
     /// SYSTEM 行哨兵文案 zh/en(回归锁:core 自产 "Initial System Prompt"
     /// 等线上哨兵曾逐字直显在中文台账/检查器头;渲染层经 record_title
-    /// 词典化,值对齐 dsh layout.*/record.*)
+    /// 走 trajectory.* 词典键)
     #[test]
     fn system_sentinel_copy_dispatch_both_langs() {
         let pairs = [

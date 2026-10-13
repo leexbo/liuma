@@ -1,13 +1,13 @@
-//! 会话「进行中」状态点:dsh 圆环 spinner——静默轨道环(0.2 透明度)
+//! 会话「进行中」状态点:圆环 spinner——静默轨道环(0.2 透明度)
 //! + 呼吸弧旋转,颜色 = 三级灰(theme::caption,静默非蓝)。
 //!
 //! 实现走组件库 `ProgressCircle::loading`(自带 1s 循环的弧呼吸动画,
-//! 「UI 先查组件库」;dsh 的整环旋转 + 弧长呼吸视觉近似,严格一致需自绘
+//! 「UI 先查组件库」;整环旋转 + 弧长呼吸视觉近似,严格一致需自绘
 //! 弧,后续有需要再换)。相位是元素各自的动画时钟,跨实例不钉同一
-//! 起点(dsh 钉文档时间零)——差异仅在多个会话同时运行时可感知,
+//! 起点——差异仅在多个会话同时运行时可感知,
 //! 接受该近似。
 //!
-//! 减弱动态(reduce_motion):静止为 1/4 弧段(对齐 dsh 的静态弧回退)。
+//! 减弱动态(reduce_motion):静止为 1/4 弧段(静态弧回退)。
 
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::progress::ProgressCircle;
@@ -35,7 +35,7 @@ pub fn ongoing_ring(size: f32, cx: &App) -> impl IntoElement {
         })
 }
 
-/// 待答实心点(琥珀;10px 槽内 6px 圆点,对齐 dsh warning 态)。
+/// 待答实心点(琥珀;10px 槽内 6px 圆点,警示色语义)。
 pub fn pending_dot(cx: &App) -> impl IntoElement {
     div()
         .flex()

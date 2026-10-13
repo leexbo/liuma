@@ -198,7 +198,7 @@ pub(crate) fn open_with_split(store: &Entity<AppStore>, cx: &App) -> impl IntoEl
 /// 应用菜单行(照 workspace_menu_rows 语言):32px 行、图标 + 名称、
 /// 选中项带「（默认）」后缀、hover dock 底;点击 = 收起 + 记住 + 打开
 /// (目标由 target 分化:顶栏开工作区目录,交付卡开该文件)。File 模式
-/// 尾部追加「显示文件位置」reveal 行(dsh 同款 footer,不改选中)
+/// 尾部追加「显示文件位置」reveal 行(footer,不改选中)
 fn app_menu_rows(
     store: &Entity<AppStore>,
     pop: Entity<gpui_kit::component::popover::PopoverState>,

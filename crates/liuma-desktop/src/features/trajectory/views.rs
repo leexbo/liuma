@@ -122,7 +122,7 @@ fn record_title(rec: &TrajectoryRecord) -> std::borrow::Cow<'static, str> {
 }
 
 /// 检查器头位置槽:SYSTEM 行显示记录标题(初始提示词在第一轮之前,
-/// 无轮次位置可言,dsh 同款「[SYSTEM] 标题」);其余 = 轮次/步位置。
+/// 无轮次位置可言,显示「[SYSTEM] 标题」);其余 = 轮次/步位置。
 fn inspector_header_location(r: &TrajectoryRecord) -> std::borrow::Cow<'static, str> {
     if r.kind == "system" {
         return record_title(r);
@@ -2674,7 +2674,7 @@ fn inspector(
             .into_any_element(),
         (_, Some(r), _) => {
             let (fg, bg) = kind_colors(&r.kind, cx);
-            // 位置槽对齐 dsh detailsLocation:11px 等宽/三级色,
+            // 位置槽样式:11px 等宽/三级色,
             // min_w(0)+truncate 防长标题顶飞关闭钮
             div()
                 .flex()
@@ -2781,7 +2781,7 @@ fn inspector(
                     }),
             )
             .child(
-                // 头行 chrome 对齐 dsh detailsHeader:padding 12/8、
+                // 头行 chrome:padding 12/8、
                 // 关闭钮 28px
                 div()
                     .flex()
@@ -2852,7 +2852,7 @@ fn inspector(
                     })),
             )
             .child(
-                // 检查器正文:整页滚动 + 滚动条(dsh 同款行为;此前裸
+                // 检查器正文:整页滚动 + 滚动条(此前裸
                 // overflow_y_scroll 无条,长内容不知可滚)
                 div()
                     .id("inspector-body")
@@ -4815,7 +4815,6 @@ fn source_tab_body(r: &TrajectoryRecord, cached: Option<&InspectorBody>, cx: &Ap
 
 /// System Prompt 页:头部复制钮 + Markdown 渲染(空则缺省文案)。
 /// 复制钮 = 正文拖选在 workspace 环境组合下失效时的可靠出路
-/// (dsh 检查器同款交互)
 fn system_body(store: &Entity<AppStore>, r: &TrajectoryRecord, cx: &App) -> Div {
     let mut col = div().v_flex();
     match &r.system_prompt {

@@ -156,7 +156,7 @@ pub fn file_type_tint(class: crate::kits::filetype::FileClass) -> Rgba {
     }
 }
 
-/// 交付卡 tile 家族染色:图片/视频走 dsh violet(139,118,246;设计
+/// 交付卡 tile 家族染色:图片/视频走紫罗兰(139,118,246;设计
 /// 平台无对应 token 的自定义值),其余沿用 [`file_type_tint`](图标
 /// 语义色,双盘同值)
 pub fn deliverable_tile_tint(class: crate::kits::filetype::FileClass) -> Rgba {
@@ -167,7 +167,7 @@ pub fn deliverable_tile_tint(class: crate::kits::filetype::FileClass) -> Rgba {
     }
 }
 
-/// 交付卡面:暗盘 = dsh 暗底 rgb(33,33,35)(与画布分层且不随主题
+/// 交付卡面:暗盘 = 暗底 rgb(33,33,35)(与画布分层且不随主题
 /// 深浅浮动),浅盘回落浮层面
 pub fn deliverable_surface(cx: &App) -> Rgba {
     if is_dark(cx) {

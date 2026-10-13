@@ -752,7 +752,7 @@ fn pinned_workspace_block(
         })
 }
 
-/// 工作区信息卡(参照 DSH 编辑卡):工作区名 + 置钉(点击 toggle
+/// 工作区信息卡:工作区名 + 置钉(点击 toggle
 /// 置顶)+ 会话数 + 路径 + 「编辑项目」行(点击打开重命名模态)。
 /// 根级渲染(见 shell/mod):库受控 Popover 的 set_open 抢窗口焦点,
 /// 与 hover 驱动开合不兼容,此卡单独回归手绘浮层
@@ -914,7 +914,7 @@ fn session_list(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
 
     // 单列表:全部会话平铺(subagent 仍隐藏)。最近更新 = 宿主清单序;
     // 手动排序 = session_order 全序快照(空 overlay 退化为 updated 序,
-    // 缺席 id 剪除)。行恒接拖拽重排(dsh:落拖即保存并切手动排序)
+    // 缺席 id 剪除)。行恒接拖拽重排(落拖即保存并切手动排序)
     if st.sessions.group_mode == GroupMode::Flat {
         let manual = st.sessions.order_mode == OrderMode::Manual;
         let ordered: Vec<(String, &SessionSummary)> = if manual {
@@ -988,7 +988,7 @@ fn session_list(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         groups.retain(|(_, v)| !v.is_empty());
     }
     // 手动排序:各组内成员按全序快照排名重排(排序与分组正交——
-    // dsh 双维口径;组员在快照中缺席时殿后)
+    // 双维口径;组员在快照中缺席时殿后)
     if st.sessions.order_mode == OrderMode::Manual {
         let rank: HashMap<String, usize> = manual_flat_order(
             &st.state.sessions,
@@ -1052,7 +1052,7 @@ fn session_list(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
         .collect();
 
     let mut children: Vec<gpui_kit::AnyElement> = vec![];
-    // 置顶节(参照 DSH 侧栏):置顶会话(气泡行)+ 置顶工作区(文件夹行,
+    // 置顶节:置顶会话(气泡行)+ 置顶工作区(文件夹行,
     // 行下嵌其会话清单,5 条预览纪律同组;清单已剔除置顶会话)。搜索
     // 时置顶项同样走过滤
     if !pinned_sessions.is_empty() || !pinned_ws.is_empty() {
@@ -1332,7 +1332,7 @@ fn session_row_in(
     let title = st.title_for(&s.session_id);
     let running = st.is_running(&s.session_id);
     // 待答角标(问答收起/超时转 continued 后的唯一全局痕迹;行首优先
-    // 于活动动画,对齐 dsh pendingInteraction > running)
+    // 于活动动画,行首优先级待答 > 运行)
     let pending = st.state.pending_by_session.contains_key(&s.session_id);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2110,8 +2110,8 @@ fn pending_leading(key: &str, cx: &App) -> gpui_kit::AnyElement {
         .into_any_element()
 }
 
-/// 行首状态槽选择:待答 > 运行 > 空闲(对齐 dsh pendingInteraction >
-/// running;优先级由单测锁死)
+/// 行首状态槽选择:待答 > 运行 > 空闲
+/// (优先级由单测锁死)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RowLeading {
     Pending,

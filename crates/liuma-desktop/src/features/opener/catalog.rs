@@ -1,15 +1,15 @@
-//! 「在编辑器中打开」应用清单与纯推导:编译期白名单(dsh open-in-app
-//! 的 macOS 目录面)+ bundle 候选/启动 argv/Info.plist 图标名解析的
+//! 「在编辑器中打开」应用清单与纯推导:编译期白名单(macOS
+//! 目录面)+ bundle 候选/启动 argv/Info.plist 图标名解析的
 //! 纯函数。子进程副作用层见 probe;bundle 名是宿主侧数据标识(文件
 //! 系统真名),非界面文案。
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-/// 启动语义(dsh 分型的 macOS 子集;argv 推导见 [`launch_argv`])
+/// 启动语义(macOS 子集;argv 推导见 [`launch_argv`])
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum LaunchKind {
-    /// `open <dir>`:访达不走 -a,目录交系统默认处理器(dsh shell-open)
+    /// `open <dir>`:访达不走 -a,目录交系统默认处理器
     Finder,
     /// `open -a <bundle> <dir>`
     OpenApp,
@@ -35,7 +35,7 @@ impl LaunchKind {
 }
 
 /// 编译期清单条目。菜单顺序 = 数组顺序(访达 → 编辑器/IDE → Git GUI
-/// → 终端,照 dsh catalog);探测只做存在性确认,不做全盘扫描。
+/// → 终端);探测只做存在性确认,不做全盘扫描。
 pub(crate) struct AppEntry {
     /// 稳定键:选中态 / 图标缓存 / 菜单行 selector
     pub id: &'static str,
@@ -57,7 +57,7 @@ const fn app(id: &'static str, bundles: &'static [&'static str]) -> AppEntry {
     }
 }
 
-/// macOS 应用清单(dsh catalog 的 darwin 面;顺序即菜单序)
+/// macOS 应用清单(顺序即菜单序)
 pub(crate) const CATALOG: &[AppEntry] = &[
     AppEntry {
         id: "finder",
@@ -119,7 +119,7 @@ pub(crate) const CATALOG: &[AppEntry] = &[
 ];
 
 /// 候选 bundle 绝对路径:`/Applications` 前于 `~/Applications`,
-/// bundle 名按声明序;首中即收(dsh 同序)
+/// bundle 名按声明序;首中即收(同声明序)
 pub(crate) fn bundle_candidates(entry: &AppEntry, home: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for root in [Path::new("/Applications"), &home.join("Applications")] {
@@ -158,7 +158,7 @@ pub(crate) fn launch_argv(
 }
 
 /// Info.plist JSON → icns 文件名:取 `CFBundleIconFile`,缺 `.icns`
-/// 后缀则补(dsh icons 同规);坏 JSON / 缺键 = None
+/// 后缀则补;坏 JSON / 缺键 = None
 pub(crate) fn icon_file_from_plist(plist_json: &str) -> Option<String> {
     let plist: serde_json::Value = serde_json::from_str(plist_json).ok()?;
     let name = plist.get("CFBundleIconFile")?.as_str()?;

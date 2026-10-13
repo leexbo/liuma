@@ -179,7 +179,7 @@ pub(crate) fn narrow(view: &serde_json::Value) -> Option<CardView> {
 
 /// 交付卡文案:(主名, 副标题)。副标题回退链 = 模型宣告描述(交付层
 /// 「是什么」)→ diff 统计 `+N -M`(变更层「改了多少」)→ 大写扩展名
-/// (dsh cardDescription 同款;无扩展名 "FILE")
+/// (无扩展名时 "FILE")
 pub(crate) fn deliverable_texts(
     path: &str,
     description: Option<&str>,

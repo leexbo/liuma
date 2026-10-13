@@ -22,7 +22,7 @@ pub(crate) struct ResolvedApp {
 
 /// 探测清单:非 macOS → 空。finder/terminal 为 fixed 条目恒在,
 /// macOS 上至少两项。每进程只跑一次(store 侧 probed 守卫;运行中
-/// 安装/改名的应用重启后可见,dsh 同口径)。
+/// 安装/改名的应用重启后可见,同口径)。
 pub(crate) fn detect_apps() -> Vec<ResolvedApp> {
     if !cfg!(target_os = "macos") {
         return Vec::new();
@@ -98,7 +98,7 @@ pub(crate) fn extract_icons(
         .collect()
 }
 
-/// 单 app 图标(dsh icons 管线):Info.plist → `CFBundleIconFile`
+/// 单 app 图标(icons 管线):Info.plist → `CFBundleIconFile`
 /// (.icns)→ 回落 Resources 首个 .icns → `sips` 转 128px PNG。
 /// image 0.25 解不了 icns,sips 须经临时文件中转;任一步失败 = None。
 fn extract_icon_png(id: &str, bundle: &Path) -> Option<Vec<u8>> {
@@ -144,8 +144,8 @@ fn icns_path(bundle: &Path) -> Option<PathBuf> {
     entries.into_iter().next()
 }
 
-/// 启动目标(目录或文件):spawn(stdio 全 null)+ 1s 退出码视窗(dsh
-/// 口径:窗口内退非零 = 失败,仍在跑 = 已启动且不追杀)。kind 由调
+/// 启动目标(目录或文件):spawn(stdio 全 null)+ 1s 退出码视窗
+/// (窗口内退非零 = 失败,仍在跑 = 已启动且不追杀)。kind 由调
 /// 用方分化(目录 = app.kind,文件 = app.kind.for_file());Xcode 主
 /// 命令 xed 失败(不存在/退非零)回退 `open -a <bundle>`。
 pub(crate) fn launch(app: &ResolvedApp, kind: LaunchKind, target: &Path) -> Result<(), String> {

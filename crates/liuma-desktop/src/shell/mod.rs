@@ -174,7 +174,7 @@ impl Element for SelectionRefreshDriver {
 /// gpui-base 的选择手势在 end() 后保留 anchor/cursor:真实世界的
 /// 单击几乎必含 1~2px 抖动,move 把 cursor 推离 anchor → 留下零字符
 /// 的「活选择」——右键 Copy 菜单/⌘C 随即激活(= 点开轨迹详情即进入
-/// 复制模式的根因)。原生语义(与 dsh 一致)是「单击不产生选择,
+/// 复制模式的根因)。原生语义是「单击不产生选择,
 /// 拖动才选择」。
 ///
 /// 判定取**手势几何**而非选择内容:mouse-down(捕获相)把按下点记入
@@ -550,7 +550,7 @@ impl Render for WorkspaceView {
             st.panel_px,
         );
         let settings_open = st.settings.settings_open;
-        // 计划评审接管输入区(dsh PlanReviewPanel 同构):当前会话待审时
+        // 计划评审接管输入区:当前会话待审时
         // 评审卡替换 composer——要说话先经 ✕ 取消评审(模型收「留在计划
         // 模式等待」指引),杜绝「待审悬置 + 自由输入」并行让「批准」类
         // 文本落进缝隙(失败会话实证:计划未提交,用户打「批准」无处可批)
@@ -687,7 +687,7 @@ impl Render for WorkspaceView {
                                                 )
                                                 // composer 附着组(gap 0):队列条贴入
                                                 // 输入卡顶(负 margin 塞 3px,输入卡
-                                                // 顶边收口),DSH QueueDock 同构;队列
+                                                // 顶边收口);队列
                                                 // 空时 dock 为空节点,组退化为裸
                                                 // composer。计划评审待审时整组让位
                                                 // (评审卡已替换输入面,见 plan_pending)

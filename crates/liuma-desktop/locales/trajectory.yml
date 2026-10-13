@@ -60,7 +60,7 @@ trajectory:
     zh-CN: "上下文已压缩"
     en: "Context compacted"
 
-  # core 自产 SYSTEM 行哨兵(渲染层词典化;值对齐 dsh layout.*/record.*)
+  # core 自产 SYSTEM 行哨兵(渲染层词典化)
   initial_system_prompt:
     zh-CN: "初始系统提示词"
     en: "Initial System Prompt"

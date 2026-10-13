@@ -187,7 +187,7 @@ pub struct LoopEngine {
     /// 载荷,见 turn_tail)。None = 无快照,turn/end data 恒空
     turn_tail_snapshot: Option<Arc<dyn crate::turn_tail::TurnTailSnapshotObj>>,
     /// 本会话生效路由 `{provider, model}`(宿主在 attach/切换时注入;
-    /// dsh request/header 的事实层最小面)。Some = 随每次 turn/start
+    /// 事实层最小面)。Some = 随每次 turn/start
     /// 落档,并作为 [model changed] 通告的对比目标;None = 不落路由
     turn_route: Option<Value>,
     /// 折叠价值裁定端口(宿主注入;None = 不咨询,零开销直通)。
@@ -241,7 +241,7 @@ fn uuid_random() -> f64 {
     (uuid::Uuid::now_v7().as_u128() >> 64) as f64 / (1u128 << 64) as f64
 }
 
-/// dsh routeLabel:同 provider 只显 model,跨 provider 显 provider/model
+/// 路由标签:同 provider 只显 model,跨 provider 显 provider/model
 /// (通告文案两侧各取指向对方视角的标签)
 fn route_label(route: &Value, other: &Value) -> String {
     let model = route
@@ -381,7 +381,7 @@ impl LoopEngine {
         self.turn_route = route;
     }
 
-    /// 日志内最近一条 `turn/start` 的 data.route(dsh request/header 基线;
+    /// 日志内最近一条 `turn/start` 的 data.route(路由基线;
     /// None = 该 turn 未落路由或无 turn)。通告对比的取数面
     fn last_turn_route(log: &Mutex<EventLog>) -> Option<Value> {
         let l = log.lock().ok()?;
@@ -392,9 +392,9 @@ impl LoopEngine {
     }
 
     /// 模式切换旁白文本:上个 `turn/start` 之前最近一条 `session/mode`
-    /// 对比当前最近一条,变化才给文案(dsh「最后一个请求头描述的是另一
-    /// 态才旁白」的同构;基线随回合自然推进,恰好一次;崩在 turn/start
-    /// 前则下回合重复通告,同款)。基线缺席 = 首回合,不注入——约束段
+    /// 对比当前最近一条,变化才给文案(最后一个请求头描述的是另一
+    /// 态才旁白;基线随回合自然推进,恰好一次;崩在 turn/start
+    /// 前则下回合重复通告)。基线缺席 = 首回合,不注入——约束段
     /// 自首请求即在 header,无从「告知变化」。
     fn mode_switch_notice(log: &Mutex<EventLog>) -> Option<&'static str> {
         let l = log.lock().unwrap_or_else(|p| p.into_inner());
@@ -913,12 +913,12 @@ impl LoopEngine {
             Some(id) => id.to_string(),
             None => uuid::Uuid::now_v7().to_string(),
         };
-        // 路由事实层 + [model changed] 通告(dsh model-selection 同语义):
+        // 路由事实层 + [model changed] 通告:
         // 基线 = 日志内最近一条已落档 turn/start 的 route,对比本回合生效
         // 路由——provider+model 变化才注入,首轮(基线缺席)= initial 不
         // 注入。基线随本回合 turn/start.route 自然推进,崩在 turn/start
-        // 前则下回合重复通告(dsh「failure before header persistence
-        // repeats the notice」同款)
+        // 前则下回合重复通告(failure before header persistence
+        // repeats the notice)
         let turn_route = self.turn_route.clone();
         let baseline_route = Self::last_turn_route(&self.log);
         let mut pending_notices: Vec<Value> = Vec::new();
@@ -934,7 +934,7 @@ impl LoopEngine {
                 "source": { "kind": "model-selection", "form": "notice" },
             }));
         }
-        // 模式切换通告(dsh plan-mode narrate 同语义):上个回合之后
+        // 模式切换通告:上个回合之后
         // session/mode 变过 → 一次性旁白,模型被准确告知约束面何时变化。
         // 文本必须走 content 数组:message_from_event 只投影 data["content"]
         // 进模型面,顶层 text 形状 = 模型收到 content:null(UI 预览同样空白)
@@ -1056,7 +1056,7 @@ impl LoopEngine {
                     EventEnvelope::new("user/message", clock(), user_payload),
                     sink,
                 )?;
-                // 路由/模式切换通告(一次性,紧跟用户输入;dsh 把它追加为
+                // 路由/模式切换通告(一次性,紧跟用户输入;追加为
                 // pre-step 末条,liuma 既有注入行形态落档,随日志回放)
                 for mut payload in std::mem::take(&mut pending_notices) {
                     payload["id"] = serde_json::json!(uuid::Uuid::now_v7().to_string());
@@ -2298,7 +2298,7 @@ mod tests {
         );
         assert_eq!(notices(), 0, "首轮无基线,不注入通告");
 
-        // 回合 2:路由切换 → 注入一次通告(from/to 标签按 routeLabel)
+        // 回合 2:路由切换 → 注入一次通告(from/to 标签按 route_label)
         engine.set_turn_route(Some(serde_json::json!({
             "provider": "glm", "model": "glm-5.3-flashx",
         })));
@@ -2449,7 +2449,7 @@ mod tests {
                 Some("The user switched this session back to the default mode.".into()),
                 Some("notice".into())
             ),
-            "文案逐字(dsh 同源)"
+            "文案逐字"
         );
 
         // 回合 3:再切到 plan → 一条正向旁白(累计两条)

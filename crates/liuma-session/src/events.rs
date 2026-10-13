@@ -147,7 +147,7 @@ pub struct ApprovalPolicy {
 
 /// route/selection 载荷:会话路由选择(provider+model 成对)。
 ///
-/// dsh ModelSelection 意图层同位:校验成对、写入成对、恢复成对——
+/// 意图层:校验成对、写入成对、恢复成对——
 /// 结构上不允许 provider 与 model 劈开。非 surface,不进模型
 /// transcript;读侧 fold 最后一条得会话路由(session_provider/
 /// session_model),缺席 = 工作区默认。
@@ -162,7 +162,7 @@ pub struct RouteSelection {
 
 /// title/set 载荷:会话标题落档(三源 latest-wins)。
 ///
-/// dsh session/title 同位:同一事件承载确定性回退/LLM 生成/手动
+/// 同一事件承载确定性回退/LLM 生成/手动
 /// rename 三源,findLast 折叠;`user` 源钉住(后续自动生成停摆)。
 /// 非 surface,不进模型 transcript。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -185,7 +185,7 @@ pub struct TitleSource {
 
 /// title/llm_request 载荷:标题辅助 LLM 请求的派发前审计。
 ///
-/// dsh session/title-llm-request 同位:标题调用从此在会话日志可见
+/// 标题调用从此在会话日志可见
 /// (路由/消息/token 上限),log-only 不进模型 transcript。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -588,7 +588,7 @@ pub const KNOWN_EVENT_TYPES: &[&str] = &[
     // 安全——旧日志无此类型,守卫只拒「未登记且非 ignorable」)
     "llm/retry",
     "llm/retry-started",
-    // 会话路由选择(dsh ModelSelection 意图层;log-only、非 surface;
+    // 会话路由选择(意图层;log-only、非 surface;
     // 新增类型对旧日志安全。漏登记会导致含路由选择的会话日志整体拒读)
     "route/selection",
     // 会话标题(三源 latest-wins)+ 标题辅助请求审计(log-only、

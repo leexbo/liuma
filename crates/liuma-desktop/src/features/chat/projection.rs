@@ -298,7 +298,7 @@ pub enum PlanStatus {
     Declined,
     /// 已取消/驳回
     Cancelled,
-    /// 提交失败(校验/模式拒绝;对齐 dsh:失败的提交计划正文仍可见)
+    /// 提交失败(校验/模式拒绝;失败的提交计划正文仍可见)
     Failed,
 }
 
@@ -841,9 +841,9 @@ impl ChatState {
                     output: None,
                     images: Vec::new(),
                 });
-                // 计划卡调用派生(dsh 口径):exit_plan_mode 的提交即出卡,
+                // 计划卡调用派生:exit_plan_mode 的提交即出卡,
                 // 失败路径计划正文不再只活在 80 字符摘要里。参数解析失败
-                // 不出卡(与 dsh submittedPlan 同判);正文以 plan/submitted
+                // 不出卡(与 plan/submitted 同判);正文以 plan/submitted
                 // 为权威,此处仅草稿态
                 if name == "exit_plan_mode"
                     && let Ok(args) = serde_json::from_str::<Value>(&arguments)
@@ -898,7 +898,7 @@ impl ChatState {
                     // (视图驱动,不 switch 工具名;失败 is_error 不收)。
                     // 两层语义正交:present 宣告 = 交付层(描述,后到
                     // 覆盖),diff 写入 = 变更层(+N -M 统计,后到覆盖;
-                    // dsh 改动卡的兜底角色)。字段各自动更新,相遇时
+                    // 兼作改动卡的兜底角色)。字段各自动更新,相遇时
                     // 互补而非互斥。
                     if is_error != Some(true)
                         && let Some(v) = &*view
@@ -2889,7 +2889,7 @@ mod tests {
         );
     }
 
-    /// 调用派生计划卡(dsh 口径):exit_plan_mode 的 tool/call 即出卡
+    /// 调用派生计划卡:exit_plan_mode 的 tool/call 即出卡
     /// (Draft);plan/submitted 就近转正不重复推卡,正文以事件为权威;
     /// 错误结果把未见 submitted 的草稿卡收口 Failed(提交失败的正文
     /// 仍可见);参数解析失败与非计划调用不出卡;旧日志兜底落新卡

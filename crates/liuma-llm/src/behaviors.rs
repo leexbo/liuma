@@ -300,7 +300,7 @@ fn body_error_top_level(body: &str) -> Option<TransportError> {
 mod tests {
     use super::*;
 
-    /// 能力解析:首条命中 / 未命中缺省(dsh 策略 text-only)
+    /// 能力解析:首条命中 / 未命中缺省(缺省策略 text-only)
     #[test]
     fn caps_first_match_then_default() {
         let table = [

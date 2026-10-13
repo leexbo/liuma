@@ -2,7 +2,7 @@
 //! 后,模型带 `sandbox_permissions` + `justification` 请求一次性加宽;
 //! 卡片信任锚 = **命令原文 + 目标模式**(justification 是模型写的不可信
 //! 文本)。交互 = 一步两钮(批准一次 / 拒绝),无关闭钮——审批强制
-//! 作答(对齐 dsh fail-closed);停止键中断是唯一取消路径。被拒
+//! 作答(fail-closed);停止键中断是唯一取消路径。被拒
 //! 对该命令终局,无反馈通道;批准只盖本次执行,不落 sandbox/mode。
 
 use gpui_kit::component::StyledExt;
@@ -68,8 +68,8 @@ pub fn render(store: &Entity<AppStore>, cx: &App) -> Option<impl IntoElement> {
             .border_color(theme::border(cx))
             .bg(theme::layer(cx))
             .p(px(14.))
-            // 标题行:工具名 + 模式迁移。无 ✕:审批强制作答(对齐 dsh,
-            // fail-closed;停止键中断是唯一取消路径,core 落 cancelled)
+            // 标题行:工具名 + 模式迁移。无 ✕:审批强制作答(fail-closed;
+            // 停止键中断是唯一取消路径,core 落 cancelled)
             .child(
                 div()
                     .flex()

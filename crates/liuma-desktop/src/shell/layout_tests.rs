@@ -3085,7 +3085,7 @@ fn first_message_title_collapses_newlines(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 会话路由(dsh ModelSelection):选型经 set_route 成对落档
+/// 会话路由:选型经 set_route 成对落档
 /// (cfg.provider/model 跟随 + 默认跟随工作区默认);目录漂移后入口行
 /// 标「路由不可用」(准入不偷换,routable: false 语义)
 #[gpui_kit::test]
@@ -5221,7 +5221,7 @@ fn plan_review_compact_card_two_options(cx: &mut TestAppContext) {
     seed_user(cx, &store);
     seed_plan(cx, &store);
     redraw(cx, &mut wcx);
-    // 评审接管输入区(dsh PlanReviewPanel 同构):待审期间 composer
+    // 评审接管输入区:待审期间 composer
     // 整体让位,「批准」类文本无法绕过评审直发
     assert!(
         wcx.debug_bounds("composer-card").is_none(),
@@ -9115,7 +9115,7 @@ fn sidebar_pinned_section_and_group_preview(cx: &mut TestAppContext) {
 }
 
 /// 视图选项菜单:滑块钮开菜单(分组/排序两组);单列表切换落 store、
-/// 选择即收菜单;分组与排序独立两维(照 dsh WorkspaceBrowser:选手
+/// 选择即收菜单;分组与排序独立两维(选手
 /// 动排序不改分组,切分组不改排序)
 #[gpui_kit::test]
 fn sidebar_view_options_menu(cx: &mut TestAppContext) {
@@ -9151,7 +9151,7 @@ fn sidebar_view_options_menu(cx: &mut TestAppContext) {
     );
 
     // 手动排序:选择即收菜单 + order_mode 落 store,**分组不动**
-    // (两维正交;dsh 同款)
+    // (两维正交)
     click_sel(&mut wcx, "view-item-view-order-manual");
     cx.run_until_parked();
     let (mode, group) = cx.update(|app| {
@@ -9413,7 +9413,7 @@ fn deliverable_chip_opens_preview_panel(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 交付卡片网格(dsh 形态):TurnTail 带交付宣告 → 卡片渲染
+/// 交付卡片网格:TurnTail 带交付宣告 → 卡片渲染
 /// (类型 tile + 文件名 + 描述 + 右缘分体钮);>4 折叠(幽灵格展开);
 /// 整卡点击开预览;chevron 菜单在场且不落入卡预览(层叠断言)。
 /// 主钮/菜单行不点击(会真启动应用)

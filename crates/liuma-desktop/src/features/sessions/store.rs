@@ -21,7 +21,7 @@ use crate::shell::store::AppStore;
 use liuma_core::proto::HistoryValue;
 
 /// 聊天历史尾窗条数(初始加载与「加载更早」页大小,按**消息**计数;
-/// dsh 参照取 50,liuma 轮内工具行密放宽到 200)
+/// 常规取 50,liuma 轮内工具行密放宽到 200)
 const CHAT_HISTORY_WINDOW: usize = 200;
 
 /// 导出保存对话框初始目录:`LIUMA_DOWNLOAD_DIR` 或 ~/Downloads(仅作
@@ -52,7 +52,7 @@ pub(crate) enum OrderMode {
     #[default]
     Updated,
     /// 手动排序(拖拽重排;与分组正交——单列表按全序快照排,分组
-    /// 视图按组内成员相对序排,照 dsh 双维正交口径)
+    /// 视图按组内成员相对序排,双维正交口径)
     Manual,
 }
 
@@ -214,7 +214,7 @@ impl AppStore {
         let store = cx.entity().clone();
         let host = self.bridge.host().clone();
         let sid = id.clone();
-        // 尾窗条数(dsh 参照取 50;liuma 轮内工具行密,放宽到 200)
+        // 尾窗条数(常规取 50;liuma 轮内工具行密,放宽到 200)
         let rx = self
             .bridge
             .call(async move { host.history(&sid, None, CHAT_HISTORY_WINDOW).await });
@@ -285,7 +285,7 @@ impl AppStore {
     }
 
     /// 「加载更早」:以已载窗口首截断 seq 为 `before_seq` 前插一页。
-    /// 断缝守卫(dsh 参照同款):页尾 seq + 1 ≠ before 即 fail-loud 停页,
+    /// 断缝守卫:页尾 seq + 1 ≠ before 即 fail-loud 停页,
     /// 不静默拼接(拼接错缝 = 时间线错序)
     pub fn load_more_chat_history(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.state.current_id.clone() else {
@@ -618,7 +618,7 @@ impl AppStore {
     }
 
     /// 切换列表分组方式(菜单项选择即收菜单)。与排序方式独立两维
-    /// (照 dsh WorkspaceBrowser:分组管组构形,排序管成员序)
+    /// (分组管组构形,排序管成员序)
     pub fn set_group_mode(&mut self, mode: GroupMode, cx: &mut Context<Self>) {
         self.sessions.group_mode = mode;
         cx.notify();
@@ -631,7 +631,7 @@ impl AppStore {
         cx.notify();
     }
 
-    /// 手动排序拖拽提交(dsh 语义 = 保存顺序并切手动排序):全序上
+    /// 手动排序拖拽提交(语义 = 保存顺序并切手动排序):全序上
     /// 落槽位,变化才写 host(失败静默——本次会话渲染序仍生效,同
     /// toggle_pinned 纪律)并本地同步;置顶块与普通块不互通(拖拽起
     /// 点与落点置顶态不同即忽略)。不 refresh_list(清单成员未变)
@@ -647,8 +647,8 @@ impl AppStore {
         if pinned_drag != pinned_target {
             return;
         }
-        // 当前空会话不可拖(照 dsh sessionDragOrder 的 source.blank
-        // 守卫:它由置顶规则恒排首位,拖动必被重钉回顶,无意义;
+        // 当前空会话不可拖(blank 会话由置顶规则恒排首位,
+        // 拖动必被重钉回顶,无意义;
         // liuma 空会话行全员可见,非当前的空白行照常可拖)
         if self.current_blank_id().as_deref() == Some(drag) {
             return;
@@ -661,7 +661,7 @@ impl AppStore {
             blank.as_deref(),
         );
         let mut next = apply_session_move(full, drag, target, after);
-        // 新建空会话恒置顶(照 dsh pinCurrentBlank:拖拽产物同样重钉)
+        // 新建空会话恒置顶(拖拽产物同样重钉)
         if let Some(b) = blank
             && let Some(pos) = next.iter().position(|v| v == &b)
             && pos > 0
@@ -1174,7 +1174,7 @@ fn single_line(title: &str) -> String {
     title.replace(['\n', '\r'], " ").trim().to_string()
 }
 
-/// 手动排序渲染序(照 dsh reconcileManualOrder:置顶块前导 + 已存
+/// 手动排序渲染序(置顶块前导 + 已存
 /// 相对序 + 缺席成员按最近更新殿后,另加当前空会话恒置顶):当前
 /// 空会话 → 已置顶(pinned_sessions 序)→ overlay 写入序 → 其余按
 /// 最近更新。各段均剪除清单缺席 id;空 overlay + 无置顶 = 退化为
@@ -1260,7 +1260,7 @@ mod tests {
         assert_eq!(single_line("甲　乙 丙"), "甲　乙 丙");
     }
 
-    /// 手动排序渲染序(dsh reconcileManualOrder 口径):当前空会话
+    /// 手动排序渲染序(manual_flat_order 口径):当前空会话
     /// 恒置顶 → 置顶块 → overlay 保序 → 缺席成员按最近更新;各段
     /// 剪除清单外 id;空 overlay + 无置顶 = 退化为 updated 降序
     #[test]

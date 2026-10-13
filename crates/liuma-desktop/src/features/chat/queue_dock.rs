@@ -1,4 +1,4 @@
-//! 队列条带:composer 输入卡顶部的附着面(DSH QueueDock 同构)——
+//! 队列条带:composer 输入卡顶部的附着面——
 //! 宽 = 输入卡宽 − 两侧 12px inset,底部负 margin 塞进输入卡下 3px,
 //! 只圆上角、无下边框(输入卡顶边收口),与输入卡读作一个面。
 //! 空队列不渲染;单条直显行(自带队列图标);多条 = 「N 条排队消息」
@@ -9,7 +9,7 @@
 //! `steering` 落位不在本组件(消息流尾部的插队气泡,见
 //! chat_pane)。立即投递仅在会话运行中渲染:空闲时 queued 条目本就
 //! 会被驱动立即认领,steer 窗口已关,徒行只会收到 steer-unavailable
-//! 死胡同(DSH 同规:动作仅 running 时可用)。
+//! 死胡同(动作仅 running 时可用)。
 
 use gpui_kit::component::IconName;
 use gpui_kit::component::Sizable;
@@ -68,7 +68,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
     let collapsed = collapsed && queued.len() > 1;
     let is_editing = editing.as_deref().is_some();
     // 附着面:负 margin 塞进 composer 卡下 3px(后绘者覆盖),只圆上角,
-    // 下边由 composer 卡顶边收口(DSH:panel + input card 同一面)
+    // 下边由 composer 卡顶边收口(panel + input card 同一面)
     let mut dock = div()
         .debug_selector(|| "queue-dock".to_string())
         .v_flex()
@@ -175,7 +175,7 @@ fn queue_row(
         .pr(px(5.))
         .rounded(px(8.));
     if ix > 0 {
-        // 行间发丝分隔(DSH:inset hairline)
+        // 行间发丝分隔(inset hairline)
         row = row.border_t_1().border_color(theme::border(cx));
     }
     if lead {
@@ -241,8 +241,8 @@ fn action_button(
 
 /// 行内动作钮组(编辑态 = 保存/取消;常态 = 编辑/[立即投递]/移除)。
 /// 槽位序:0 编辑(编辑态 = 保存)/ 1 立即投递(编辑态 = 取消)/
-/// 2 移除;立即投递仅运行中渲染。编辑态只保留保存/取消(DSH 同规:
-/// 编辑中的行不外露其他动作)。
+/// 2 移除;立即投递仅运行中渲染。编辑态只保留保存/取消
+/// (编辑中的行不外露其他动作)。
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
 fn queue_actions(

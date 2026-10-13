@@ -3,7 +3,7 @@
 //! (reducer 侧),本域应答后经 host.respond 回填。
 //!
 //! 收起(hide)不 respond:请求原地站立,工具继续阻塞,消息流 ask 行的
-//! 「回答」入口可重开(对齐 dsh keyed 卡的 dismissal=hide 语义)。
+//! 「回答」入口可重开(keyed 卡的 dismissal=hide 语义)。
 
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::component::questionnaire::{
@@ -202,7 +202,7 @@ impl AppStore {
     }
 
     /// 收起问答卡(✕):只撤卡不 respond——请求站立、工具继续阻塞,
-    /// 消息流 ask 行的「回答」入口可重开(对齐 dsh keyed 卡 hide 语义)。
+    /// 消息流 ask 行的「回答」入口可重开(keyed 卡 hide 语义)。
     /// 侧栏角标与行状态不受影响
     pub fn hide_ask(&mut self, cx: &mut Context<Self>) {
         self.ask.ask_hidden = true;

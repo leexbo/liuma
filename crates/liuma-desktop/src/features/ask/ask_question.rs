@@ -2,7 +2,7 @@
 //! 模型 `ask_user_question` 抛出的问题集,分页一题一答(单选/多选),
 //! 可自定义文本;整批提交。应答经 host.respond 回填,工具结果作为同一
 //! tool-call 的 tool/result。✕ 只收起不取消:请求站立、工具继续阻塞,
-//! 消息流 ask 行的「回答」入口可重开(对齐 dsh keyed 卡 hide 语义);
+//! 消息流 ask 行的「回答」入口可重开(keyed 卡 hide 语义);
 //! 停止键中断是唯一取消路径(core 落点名取消文案)。计时问询(带
 //! deadline)卡头有倒计时,超时由 core 收口转 continued(仍可答)。
 //!
