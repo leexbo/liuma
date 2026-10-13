@@ -302,25 +302,41 @@ fn parse_svg_natural_size(svg: &str) -> Option<(f32, f32)> {
 fn render_svg(source: &str, rt: RenderTheme) -> Option<String> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let renderer = merman::svg::HeadlessRenderer::new()
-        .with_site_config(liuma_mermaid_config(rt))
-        .with_vendored_text_measurer()
-        .with_diagram_id(&format!("merman-{id}"));
-    // resvg_safe:foreignObject 折叠/非法 CSS/无效属性清理(usvg 直读);
-    // 再剥 merman 自带 !important,宿主注入样式优先级唯一
-    // RootBackground:merman 把根元素写死 `background-color:white`
-    // (themeVariables.background 不达根样式),usvg 直读该样式 →
-    // 白底。改写为 BASE 合成色(不透明)。
-    let pipeline = merman::svg::SvgPipeline::resvg_safe()
-        .with_postprocessor(merman::svg::CssOverridePostprocessor::strip_existing_important())
-        .with_postprocessor(merman::svg::RootBackgroundPostprocessor::new(hex_in(
-            rt.pal.code,
-            rt.pal.base,
-        )));
-    renderer
-        .render_svg_with_pipeline_sync(source, &pipeline)
-        .ok()
-        .flatten()
+    // merman 0.9:Engine 承载站点配置(theme/themeVariables),Renderer 复用
+    // 引擎默认(SvgEnvironment::deterministic 的确定性文本测量,替代旧
+    // vendored measurer);diagram_id 移入渲染 options(marker id 去重)
+    let engine = merman::Engine::new().with_site_config(liuma_mermaid_config(rt));
+    let renderer = merman::Renderer::new().with_engine(engine);
+    let svg_request = merman::SvgRequest {
+        options: merman::svg::SvgRenderOptions {
+            diagram_id: Some(format!("merman-{id}")),
+            ..Default::default()
+        },
+        pipeline: Some(pipeline_for(rt)),
+        ..Default::default()
+    };
+    let request =
+        merman::RenderRequest::svg(source, merman::OperationControl::default(), svg_request);
+    match renderer.render(request) {
+        Ok(merman::RenderOutput::Svg(Some(output))) => Some(output.into_parts().0),
+        _ => None,
+    }
+}
+
+/// resvg_safe 预设:foreignObject 折叠/非法 CSS/无效属性清理(usvg 直读);
+/// 剥 merman 自带 !important,宿主注入样式优先级唯一
+/// RootBackground:mermaid 把根元素写死 `background-color:white`
+/// (themeVariables.background 不达根样式),usvg 直读该样式 →
+/// 白底。改写为 BASE 合成色(不透明)。0.9 的 ResvgSafe 预设还自动附
+/// GitGraph 分支标签基线后处理(上游 #180 线修复)。
+fn pipeline_for(rt: RenderTheme) -> merman::svg::SvgPipeline {
+    merman::svg::SvgOutputPolicy {
+        preset: merman::svg::SvgPipelinePreset::ResvgSafe,
+        css_override_policy: merman::svg::CssOverridePolicy::StripExistingImportant,
+        root_background_color: Some(hex_in(rt.pal.code, rt.pal.base)),
+        ..Default::default()
+    }
+    .pipeline()
 }
 
 // ── 主题映射(liuma 纯暗色板 → mermaid themeVariables)─────────────

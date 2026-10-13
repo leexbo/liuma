@@ -102,9 +102,13 @@ gpui-kit = { version = "0.7.3", features = ["gpui-fast"] }
 # 终端仿真(VT 状态机/网格/scrollback;桌面右侧终端面板)。0.x 无 semver
 # 承诺,按 merman 先例锁死;vte 解析器由其重导出,不直依赖
 alacritty_terminal = "=0.26.0"
-# Mermaid → SVG(引擎选型见 kits/mermaid.rs);alpha 锁死防漂移
-merman = { version = "=0.8.0-alpha.5", default-features = false, features = ["svg", "layout-cytoscape"] }
-# Mermaid 查看器视口裁剪光栅(与 gpui 锁同版去重)
+# Mermaid → SVG(引擎选型见 kits/mermaid.rs);精确锁死防漂移。
+# 0.8 起家族选择器是独立维度(output/layout feature 不再隐含语言解析),
+# default-features 关掉是为了避开默认集里的 ELK 编译(EPL-2.0);
+# 布局锁 cytoscape。usvg ^0.47(merman 必依赖)与自家 0.48 并存:
+# gpui 生态自身就 resvg 0.45.1/0.46.0 两版,SVG 仅字符串交换无类型冲突
+merman = { version = "=0.9.0", default-features = false, features = ["all-diagrams", "svg", "layout-cytoscape"] }
+# Mermaid 查看器视口裁剪光栅(自家光栅档;gpui 链自带 0.45/0.46,并存)
 resvg = "0.48.1"
 usvg = "0.48.1"
 # macOS Dock 图标运行时绘制(objc2 系与 gpui 同源锁定)
