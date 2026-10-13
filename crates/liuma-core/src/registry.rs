@@ -2,7 +2,7 @@
 //!
 //! 会话模型:sessionId = 会话目录名;日志文件位于
 //! `<LIUMA_HOME|~/.liuma>/sessions/<projectKey(workspace)>/<id>/session.jsonl`
-//! (沿用 ~/.dsh/sessions 布局,独立目录防冲突)。**冷会话**(仅文件)
+//! (独立目录防冲突)。**冷会话**(仅文件)
 //! 在首次 `history` / `prompt` 时懒装配——装配配方与
 //! `liuma chat` 同源(`Resolved::resolve` → `InvariantGate` →
 //! `build_tools` → [`liuma_app::Session`])。每个附着会话一个 worker
@@ -665,7 +665,7 @@ pub struct AppHost {
     workspace: PathBuf,
     /// 工作区清单(默认 + 添加;名称 = basename)
     workspaces: std::sync::RwLock<Vec<PathBuf>>,
-    /// 会话根(~/.liuma/sessions;源 ~/.dsh/sessions 同构)
+    /// 会话根(~/.liuma/sessions)
     sessions_root: PathBuf,
     fake: bool,
     api_key: String,
@@ -867,11 +867,7 @@ fn mermaid_demo_segment() -> Vec<LlmEvent> {
 /// 仅为存量会话的回落显示层保留
 const TITLES_FILE: &str = ".liuma/titles.json";
 
-/// 添加工作区持久化文件(默认工作区顶层;路径数组)
-const WORKSPACES_FILE: &str = ".dsh-workspaces.json";
-
-/// liuma 会话根(env `LIUMA_HOME` 覆盖;默认 `~/.liuma`,与 `DSH_HOME`/
-/// `~/.dsh` 约定同构,独立目录名防止两宿主会话混存)
+/// liuma 会话根(env `LIUMA_HOME` 覆盖;默认 `~/.liuma`)
 fn default_liuma_root() -> PathBuf {
     if let Some(h) = std::env::var_os("LIUMA_HOME") {
         return PathBuf::from(h);
@@ -880,26 +876,6 @@ fn default_liuma_root() -> PathBuf {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .unwrap_or_default();
     PathBuf::from(home).join(".liuma")
-}
-
-/// 一次性搬迁改名前会话根:旧 `~/.dshrs` 在场而新根缺席 → 整体 rename
-/// (幂等;两者并存以新根为准,旧根原样保留;`LIUMA_HOME` 覆盖时不动
-/// 真实 HOME——测试/多实例注入不得触碰用户数据)。宿主装配时调用。
-pub fn migrate_legacy_home_root() {
-    if std::env::var_os("LIUMA_HOME").is_some() {
-        return;
-    }
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .unwrap_or_default();
-    if home.is_empty() {
-        return;
-    }
-    let legacy = PathBuf::from(&home).join(".dshrs");
-    let root = PathBuf::from(home).join(".liuma");
-    if !root.exists() && legacy.is_dir() {
-        let _ = std::fs::rename(&legacy, &root);
-    }
 }
 
 /// provider 传输面指纹表(provider id → api_key/base_url/dialect 快照;
@@ -1307,62 +1283,6 @@ fn sync_trajectory_from_log(
     let _ = mux.send(trajectory_delta_frame(session_id, &merged, total, last_seq));
 }
 
-/// 迁移旧布局会话文件到 `~/.liuma/sessions/<key>/<id>/session.jsonl`
-/// (幂等:目标已存在跳过):
-/// - 旧布局 A:工作区根 `s-*.jsonl` + 根 `.archive/`
-/// - 旧布局 B:工作区 `.dshrs/s-*.jsonl` + `.dshrs/.archive/`(改名前中间态)
-fn migrate_legacy_layout(ws: &Path, sessions_root: &Path) {
-    let proj = sessions_root.join(project_key(&ws.display().to_string()));
-    for base in [ws.to_path_buf(), ws.join(".dshrs")] {
-        if let Ok(entries) = std::fs::read_dir(&base) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_none_or(|x| x != "jsonl") {
-                    continue;
-                }
-                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                    continue;
-                };
-                let dst = proj.join(stem).join("session.jsonl");
-                if !dst.exists() {
-                    std::fs::create_dir_all(dst.parent().unwrap_or(&proj)).ok();
-                    let _ = std::fs::rename(&path, &dst);
-                }
-            }
-        }
-    }
-    for base in [ws.join(".archive"), ws.join(".dshrs").join(".archive")] {
-        if !base.is_dir() {
-            continue;
-        }
-        if let Ok(entries) = std::fs::read_dir(&base) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_none_or(|x| x != "jsonl") {
-                    continue;
-                }
-                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                    continue;
-                };
-                let dst = proj.join(".archive").join(stem).join("session.jsonl");
-                if !dst.exists() {
-                    std::fs::create_dir_all(dst.parent().unwrap_or(&proj)).ok();
-                    let _ = std::fs::rename(&path, &dst);
-                }
-            }
-        }
-    }
-    // 改名遗留:工作区旧 `.dshrs/.dsh-titles.json` → `.liuma/titles.json`(幂等)
-    let legacy_titles = ws.join(".dshrs").join(".dsh-titles.json");
-    let titles = ws.join(TITLES_FILE);
-    if !titles.exists() && legacy_titles.exists() {
-        if let Some(dir) = titles.parent() {
-            std::fs::create_dir_all(dir).ok();
-        }
-        let _ = std::fs::rename(&legacy_titles, &titles);
-    }
-}
-
 /// 会话标题派生:首条 user/message 内容取回退标题
 /// (`fallbackSessionTitle`:5 词 / 40 字节)。无消息 → None
 /// (空串会遮蔽客户端的清单摘录投影——标题仅在真实存在时下发)。
@@ -1435,7 +1355,6 @@ fn title_from_events(events: &[LlmEvent]) -> String {
 impl AppHost {
     /// 构建宿主(fake = 假 provider,自检/测试)。装配失败即拒(fail-fast)
     pub fn new(workspace: PathBuf, fake: bool, api_key: &str) -> anyhow::Result<Self> {
-        migrate_legacy_home_root();
         Self::new_at(workspace, fake, api_key, default_liuma_root())
     }
 
@@ -1473,22 +1392,8 @@ impl AppHost {
         // 设置先行:工作区注册表存于 settings.yaml
         let settings = SettingsStore::open(sessions_root.join("settings.yaml"));
         let reg_paths = settings.read().workspace_paths.clone();
-        let workspaces: Vec<PathBuf> = if reg_paths.is_empty() {
-            // 未初始化:一次性导入旧 `.dsh-workspaces.json`(旧格式)
-            let added: Vec<PathBuf> =
-                std::fs::read_to_string(workspace_clone.join(WORKSPACES_FILE))
-                    .ok()
-                    .and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(PathBuf::from)
-                    .filter(|p| p.is_dir())
-                    .collect();
-            let mut ws = vec![workspace_clone.clone()];
-            ws.extend(added);
-            ws
-        } else {
-            // 注册表顺序即显示顺序;缺席目录剔除,默认工作区保底在列
+        // 注册表顺序即显示顺序;缺席目录剔除,默认工作区保底在列
+        let workspaces: Vec<PathBuf> = {
             let mut ws: Vec<PathBuf> = reg_paths
                 .into_iter()
                 .map(PathBuf::from)
@@ -1524,11 +1429,7 @@ impl AppHost {
                 (h, Some(rt))
             }
         };
-        // 迁移旧布局(工作区根/工作区 .liuma)到 ~/.liuma(幂等)
         std::fs::create_dir_all(&sessions_root).ok();
-        for ws in &workspaces {
-            migrate_legacy_layout(ws, &sessions_root);
-        }
         let app = Self {
             workspace: workspace_clone,
             workspaces: std::sync::RwLock::new(workspaces),
@@ -2487,10 +2388,10 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         .flatten()
     }
 
-    /// 会话生效 provider(dsh ModelSelection 的 provider 域):路由事件
+    /// 会话生效 provider(路由三元组的 provider 域):路由事件
     /// 命中且条目在册 → 返回;条目已被移除(悬空)→ 装配无路可走,
     /// 回落工作区默认 + 诊断(UI 据清单把该选择标为不可用,选择本身
-    /// 不改写——dsh 准入语义);无路由事件 → 工作区默认
+    /// 不改写);无路由事件 → 工作区默认
     pub fn session_provider(&self, id: &str) -> ProviderEntry {
         if let Some((pid, _)) = self.session_route(id) {
             let entry = self.settings.read().provider(Some(&pid));
@@ -2505,13 +2406,13 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         self.provider_for(&ws_root)
     }
 
-    /// 会话生效模型(dsh ModelSelection 的 model 域):路由事件命中 →
+    /// 会话生效模型(路由三元组的 model 域):路由事件命中 →
     /// 该选择(准入不改写,清单漂移不换轨);否则遗留侧车覆盖回落
     /// (按工作区清单判一次,不合法弃用)→ liuma.toml 钉选 → 设置层
     /// 工作区默认 → 出厂默认
     pub fn session_model(&self, id: &str) -> String {
         self.load_session_overrides(id);
-        // 路由事件模型(准入不改写——dsh 语义:已存选择照常执行,
+        // 路由事件模型(准入不改写:已存选择照常执行,
         // 清单漂移不换轨,错误明面呈现)
         if let Some((_, m)) = self.session_route(id) {
             return m;
@@ -2767,12 +2668,12 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         Ok(())
     }
 
-    /// 切换会话路由(provider + model 成对;dsh selectModel 同语义)。
+    /// 切换会话路由(provider + model 成对)。
     /// 校验:provider 注册在案 + model 在该 provider 清单(不过 =
-    /// bad-request,对应 dsh session/model-unavailable)。通过:落
+    /// bad-request「路由不可用」)。通过:落
     /// `route/selection` 事件(意图层)+ 注入引擎事实层(下回合
-    /// turn/start.route + 通告对比目标)+ 顺带写工作区默认(dsh
-    /// agentDefaultModel 跟随:新会话从新路由起步,已存路由的会话不受
+    /// turn/start.route + 通告对比目标)+ 顺带写工作区默认(默认
+    /// 跟随:新会话从新路由起步,已存路由的会话不受
     /// 影响)+ detach 空闲会话(驻留装配的传输面还是旧 provider 的,
     /// 下次 prompt 重装配;运行中拒绝)
     pub async fn set_route(
@@ -2825,7 +2726,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         self.detach_if_idle(id)
     }
 
-    /// 切换会话模型(单拨;dsh 三元组的 model 域):路由保持,仅换
+    /// 切换会话模型(单拨;路由三元组的 model 域):路由保持,仅换
     /// model——校验基准 = 会话当前 provider(路由事件命中其清单)。
     /// 运行中拒绝,语义同 [`Self::set_route`]
     pub async fn set_model(self: &Arc<Self>, id: &str, model: &str) -> Result<(), RpcError> {
@@ -4064,7 +3965,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
 
     /// 会话标题(三源 latest-wins 读面):title/set 事件 > 遗留
     /// titles.json > None。派生回退(首条 user 投影)由消费侧 title_of
-    /// 叠加。dsh session/title 同位;user 源钉住 = 事件序天然成立,
+    /// 叠加。user 源钉住 = 事件序天然成立,
     /// 折叠不辨来源
     pub fn session_title(&self, id: &str) -> Option<String> {
         if let Some(t) = with_session_events(self, id, |log| {
@@ -4163,15 +4064,15 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 Some(Arc::new(host.attachments.clone())),
             )
             .map_err(|e| format!("title transport 构建失败:{e}"))?;
-            // 派发前审计(title/llm_request;dsh session/title-llm-request
-            // 同位——标题调用从此在会话日志可见)。失败不阻生成主流程
+            // 派发前审计(title/llm_request——标题调用从此在会话日志
+            // 可见)。失败不阻生成主流程
             let route = json!({
                 "provider": provider.id,
                 "model": host.session_model(&id_owned),
             });
             host.append_title_llm_request(&id_owned, route, std::slice::from_ref(&messages))
                 .await;
-            // 60s 超时:部署旋钮非机制(dsh 部署样例 5s;国内端点首字
+            // 60s 超时:部署旋钮非机制,取值倾向保守(国内端点首字
             // 延迟现实,liuma 保持宽窗)
             let events = tokio::time::timeout(
                 Duration::from_secs(60),
@@ -4216,7 +4117,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         self.append_title_event(id, title, "provider").await
     }
 
-    /// 会话标题是否被用户钉住(任一 title/set 的 source=user;dsh pin
+    /// 会话标题是否被用户钉住(任一 title/set 的 source=user;钉住
     /// 语义:自动生成在钉住后停摆)
     fn title_pinned(&self, id: &str) -> bool {
         with_session_events(self, id, |log| {
@@ -13392,7 +13293,7 @@ mod tests {
         assert_eq!(assemblies, 1, "并发冷附着必须单飞装配恰一次");
     }
 
-    /// session.list:扫描会话根项目目录 + blank 判定 + 旧布局迁移
+    /// session.list:扫描会话根项目目录 + blank 判定
     #[tokio::test]
     async fn list_sessions_scans_files() {
         let host = temp_host("list");
@@ -13414,28 +13315,6 @@ mod tests {
         let blank_of = |id: &str| items.iter().find(|s| s.session_id == id).unwrap().blank;
         assert!(blank_of("a"));
         assert!(!blank_of("b"));
-
-        // 旧布局迁移:工作区根遗留 s-*.jsonl 在 AppHost 构建时迁入会话根
-        let ws2 = std::env::temp_dir().join(format!(
-            "liuma-core-list-migrate-{}",
-            Uuid::new_v4().simple()
-        ));
-        std::fs::create_dir_all(&ws2).unwrap();
-        std::fs::write(ws2.join("s-legacy.jsonl"), "").unwrap();
-        let sroot = std::env::temp_dir().join(format!(
-            "liuma-core-list-migrate-sroot-{}",
-            Uuid::new_v4().simple()
-        ));
-        let host2 =
-            Arc::new(AppHost::new_at(ws2.clone(), true, "test-key", sroot.clone()).unwrap());
-        let items2 = host2.list_sessions();
-        assert!(items2.iter().any(|s| s.session_id == "s-legacy"));
-        let migrated = sroot
-            .join(project_key(&ws2.display().to_string()))
-            .join("s-legacy")
-            .join("session.jsonl");
-        assert!(migrated.exists());
-        assert!(!ws2.join("s-legacy.jsonl").exists());
     }
 
     /// 清单派生事实缓存(list_cache):stat 未变复用同值;文件变化
@@ -13732,7 +13611,7 @@ mod tests {
         assert_eq!(host.session_model("s1"), valid[0], "清单内覆盖不受守卫影响");
     }
 
-    /// 设置层工作区默认模型原样准入(读侧不改写,dsh 宿主默认同语义;
+    /// 设置层工作区默认模型原样准入(读侧不改写,宿主默认同语义;
     /// 成对校验在 set_workspace_route 写侧)
     #[tokio::test]
     async fn workspace_default_model_admitted_as_is() {
@@ -13758,7 +13637,7 @@ mod tests {
         p
     }
 
-    /// 会话路由三元组(dsh ModelSelection 对齐):成对校验成对落档;
+    /// 会话路由三元组:成对校验成对落档;
     /// 默认跟随(工作区默认随选择移动,新会话从新路由起步);重启后
     /// 日志回放沿用;fork 子会话经日志种子继承;运行中拒绝
     #[tokio::test]
@@ -14407,7 +14286,7 @@ mod tests {
         let id = host.create_session(None, None, None);
 
         // 目录拉取(含名字/描述/hint);/model 已砍(模型切换唯一入口
-        // = composer 级联菜单,dsh 同款无命令面)
+        // = composer 级联菜单,无命令面)
         let cmds = host.command_list();
         let names: Vec<&str> = cmds.iter().map(|c| c.name).collect();
         assert!(names.contains(&"plan"));
@@ -16122,8 +16001,8 @@ mod tests {
         );
     }
 
-    /// 会话路由隔离 + 默认跟随(dsh 语义):切换顺带移动工作区默认
-    /// (无选择会话跟随默认 = dsh agentDefaultModel 跟随);持显式路由
+    /// 会话路由隔离 + 默认跟随:切换顺带移动工作区默认
+    /// (无选择会话跟随默认);持显式路由
     /// 的会话不受默认/兄弟切换影响;路由事件与 sidecar 各自跨重启保留
     #[tokio::test]
     async fn session_cfg_switches_are_session_scoped_and_persist() {
@@ -16212,37 +16091,6 @@ mod tests {
             ids.contains(&keep) && ids.contains(&alive),
             "活父及其子代理不受清扫影响"
         );
-    }
-
-    /// 旧 `.dsh-workspaces.json` 一次性导入 settings(导入后旧文件
-    /// 删除不影响后续重启)
-    #[test]
-    fn workspace_legacy_import() {
-        let dir =
-            std::env::temp_dir().join(format!("liuma-core-wsleg-{}", Uuid::new_v4().simple()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let other =
-            std::env::temp_dir().join(format!("liuma-core-wsleg-b-{}", Uuid::new_v4().simple()));
-        std::fs::create_dir_all(&other).unwrap();
-        // 经 serde 序列化而非字符串拼接:Windows 路径带 `\`,直接拼会产出
-        // 非法 JSON 转义(`\U`),读回失败 —— 那是夹具缺陷,不是导入逻辑
-        std::fs::write(
-            dir.join(WORKSPACES_FILE),
-            serde_json::to_string(&[other.display().to_string()]).unwrap(),
-        )
-        .unwrap();
-        let sroot = std::env::temp_dir().join(format!(
-            "liuma-core-wsleg-sroot-{}",
-            Uuid::new_v4().simple()
-        ));
-        let host = AppHost::new_at(dir.clone(), true, "test-key", sroot.clone()).unwrap();
-        let names = host.workspace_names();
-        assert_eq!(names.len(), 2, "旧格式导入");
-        // 导入已固化到 settings:旧文件删除后重启仍双工作区
-        std::fs::remove_file(dir.join(WORKSPACES_FILE)).unwrap();
-        let host2 = AppHost::new_at(dir, true, "test-key", sroot).unwrap();
-        assert_eq!(host2.workspace_names().len(), 2, "settings 注册表接管");
-        let _ = std::fs::remove_dir_all(&other);
     }
 
     /// 手工给子会话落档(测试造恢复现场):EventLog 赋 seq 后取回信封持久化

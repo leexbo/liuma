@@ -56,18 +56,6 @@ pub struct LiumaConfig {
     pub context_window: Option<u64>,
 }
 
-/// 旧名 `dsh.toml` 一次性接管:目标名恰为 `liuma.toml` 且缺席、同目录旧名
-/// 在场 → rename 后加载(用户工作区配置保全,非持久双读)。
-fn adopt_legacy_name(path: &std::path::Path) -> std::path::PathBuf {
-    if path.file_name().is_some_and(|n| n == "liuma.toml") && !path.exists() {
-        let legacy = path.with_file_name("dsh.toml");
-        if legacy.exists() && std::fs::rename(&legacy, path).is_ok() {
-            return path.to_path_buf();
-        }
-    }
-    path.to_path_buf()
-}
-
 impl LiumaConfig {
     /// 从 TOML 文本解析(纯数据;类型即校验)
     pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
@@ -77,8 +65,7 @@ impl LiumaConfig {
     /// 加载配置文件:文件不存在 = 空配置(非错误);存在但解析失败 = 错误。
     /// 合并优先级由调用方决定(CLI 参数 > 配置文件 > 默认)。
     pub fn load(path: &std::path::Path) -> Result<Self, ConfigError> {
-        let path = adopt_legacy_name(path);
-        match std::fs::read_to_string(&path) {
+        match std::fs::read_to_string(path) {
             Ok(text) => Self::from_toml(&text),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(ConfigError::Io(e.to_string())),

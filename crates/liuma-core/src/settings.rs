@@ -315,8 +315,8 @@ pub struct SettingsFile {
     pub providers: Vec<ProviderEntry>,
     /// 工作区默认(projectKey → 默认;缺失键 = 空默认)
     pub workspaces: HashMap<String, WorkspaceDefaults>,
-    /// 工作区注册表:显示顺序的路径数组(默认工作区恒在列。
-    /// 空数组 = 未初始化,宿主构造时导入旧 `.dsh-workspaces.json`)
+    /// 工作区注册表:显示顺序的路径数组(默认工作区恒在列;
+    /// 空数组 = 未初始化,宿主构造时默认工作区保底)
     #[serde(default)]
     pub workspace_paths: Vec<String>,
     /// 工作区显示名覆盖(键 = basename;缺席 = 用 basename。
