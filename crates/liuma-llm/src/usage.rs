@@ -36,15 +36,15 @@ mod tests {
     /// 全键平移(GLM 真机流的键形;真实流终裁夹具同源)
     #[test]
     fn full_key_translation() {
-        let u = RigUsage {
-            input_tokens: Some(22),
-            output_tokens: Some(68),
-            total_tokens: Some(90),
-            cached_input_tokens: Some(0),
-            cache_creation_input_tokens: Some(4),
-            tool_use_prompt_tokens: Some(9),
-            reasoning_tokens: Some(60),
-        };
+        // Usage 为 #[non_exhaustive],经 default + 字段赋值构造
+        let mut u = RigUsage::default();
+        u.input_tokens = Some(22);
+        u.output_tokens = Some(68);
+        u.total_tokens = Some(90);
+        u.cached_input_tokens = Some(0);
+        u.cache_creation_input_tokens = Some(4);
+        u.tool_use_prompt_tokens = Some(9);
+        u.reasoning_tokens = Some(60);
         assert_eq!(
             canonical_from_rig(&u),
             json!({

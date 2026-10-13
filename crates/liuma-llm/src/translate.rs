@@ -12,8 +12,9 @@
 
 use liuma_agent_loop::RequestHeader;
 use rig_core::completion::message::{
-    AdditionalParams, AssistantContent, CallId, DocumentSourceKind, Image, ImageMediaType, Message,
-    Text, ToolFunction, ToolName, ToolResult, ToolResultContent, UserContent,
+    Api, AssistantContent, AssistantMessage, CallId, DocumentSourceKind, Image, ImageMediaType,
+    Message, Opaque, Origin, Text, ToolFunction, ToolName, ToolResult, ToolResultContent,
+    UserContent,
 };
 use serde_json::Value;
 
@@ -34,7 +35,7 @@ fn media_type_of(m: &str) -> Option<ImageMediaType> {
 }
 
 /// 工具名构造(空名回落 "unknown";内部方言 tool 名非空为既有不变式)
-fn tool_name(name: &str) -> ToolName {
+pub(crate) fn tool_name(name: &str) -> ToolName {
     // 字面量 "unknown" 非空,构造必 Ok(AGENTS.md §1 ①)
     #[allow(clippy::expect_used)]
     ToolName::new(name)
@@ -55,7 +56,7 @@ fn rig_image(block: &Value, source: &dyn AttachmentSource) -> Option<Image> {
         data: DocumentSourceKind::Url(url),
         media_type,
         detail: None,
-        additional_params: None,
+        native: None,
     })
 }
 
@@ -125,6 +126,7 @@ pub(crate) fn to_rig_messages(
             call: CallId::from_wire(call_id),
             name: tool_name(&name),
             content,
+            is_error: false,
         })
     };
 
@@ -145,25 +147,6 @@ pub(crate) fn to_rig_messages(
                 if let Some(text) = m["content"].as_str().filter(|s| !s.is_empty()) {
                     content.push(AssistantContent::Text(Text::new(text)));
                 }
-                // hosted 工具结果块回放(engine 收集进 server_tools 的
-                // anthropic 原始块):经 rig Text 元数据通道重建,rig
-                // 校验器恰允许 server_tool_use/web_search_tool_result/
-                // code_execution_tool_result 三类。键为 rig pub(crate)
-                // 稳定 wire 键,liuma 侧硬编码(值不匹配时 rig 回放侧
-                // 自行报错,不静默)。responses 面无回放通道(rig
-                // InputContent 缺 hosted 变体),仅 anthropic 面回放。
-                if adapter.family() == crate::adapters::RigFamily::Anthropic {
-                    for block in m["server_tools"].as_array().into_iter().flatten() {
-                        if let Some(params) =
-                            AdditionalParams::from_entries([("anthropic_content", block.clone())])
-                        {
-                            content.push(AssistantContent::Text(Text {
-                                text: String::new(),
-                                additional_params: Some(params),
-                            }));
-                        }
-                    }
-                }
                 for call in m["tool_calls"].as_array().into_iter().flatten() {
                     let arguments = call["arguments"]
                         .as_str()
@@ -173,16 +156,38 @@ pub(crate) fn to_rig_messages(
                     content.push(AssistantContent::ToolCall(
                         rig_core::completion::message::ToolCall {
                             id: CallId::from_wire(call["id"].as_str().unwrap_or_default()),
-                            function: ToolFunction {
-                                name: tool_name(name),
-                                arguments,
-                            },
-                            signature: None,
-                            additional_params: None,
+                            // 0.44 起 arguments 为对象 Map;非对象/畸形串
+                            // 由 rig 收进 invalid_arguments,不再失败轮次
+                            function: ToolFunction::new(tool_name(name), arguments),
+                            native: None,
                         },
                     ));
                 }
-                out.push(Message::Assistant { id: None, content });
+                // hosted 工具结果块回放(engine 收集进 server_tools 的
+                // 原始块):0.44 起 rig 以 AssistantContent::Opaque 承载
+                // hosted 项,replay=true 时 anthropic wire 按
+                // `*_tool_use`/`*_tool_result` 配对原样回传(provider
+                // 项不匹配时 rig 回放侧自行报错,不静默)。rig 只回放
+                // origin 与目标 wire 同源的轮次,手工轮次须携带与
+                // rig AnthropicConfig 一致的 Origin(api 名为 rig 公开
+                // 文档约定的稳定 wire 名;provider/model 即当前请求面)。
+                // responses 面的 hosted 项仅记录,不回放。
+                let mut turn = AssistantMessage::new(content);
+                if adapter.family() == crate::adapters::RigFamily::Anthropic {
+                    for block in m["server_tools"].as_array().into_iter().flatten() {
+                        turn.content.push(AssistantContent::Opaque(Opaque {
+                            item: block.clone(),
+                            replay: true,
+                        }));
+                    }
+                    turn.origin = Some(Origin::new(
+                        // rig anthropic wire 的 MESSAGES_API(pub(crate))
+                        Api::from_static("anthropic.messages"),
+                        "anthropic",
+                        header.model.clone(),
+                    ));
+                }
+                out.push(Message::Assistant(turn));
             }
             Some("tool") => {
                 // 连续 tool 消息合并为**一条** User(多 ToolResult 块):

@@ -1,4 +1,4 @@
-//! LLM 接入(liuma-llm):rig 0.43 provider 层 + 方言声明 + 传输桥 + 不变式闸门。
+//! LLM 接入(liuma-llm):rig 0.44 provider 层 + 方言声明 + 传输桥 + 不变式闸门。
 //!
 //! llm 缝 + provider 实现分离:端口
 //! [`liuma_agent_loop::LlmTransport`] 定义在组件侧(liuma-agent-loop,对应
@@ -6,7 +6,7 @@
 //! provider 方言/实现 = 换 crate 依赖,不触碰宿主核心
 //! (「一切皆插件」在 crate 层的落地)。
 //!
-//! 引擎内部为 rig-core 0.43(四评 + spike 后切换,见
+//! 引擎内部为 rig-core 0.44(四评 + spike 后切换,见
 //! docs/plans/dialect-first-class.md):请求编码/流解码/组帧归 rig wire
 //! 层;liuma 侧只留四条边界——
 //! - [`adapters`] — 方言差异声明(六方言 → rig 家族/路由、思考注入、

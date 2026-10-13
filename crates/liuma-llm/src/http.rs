@@ -1,4 +1,4 @@
-//! 真实 LLM HTTP transport:rig 0.43 provider 层 + 自有传输桥。
+//! 真实 LLM HTTP transport:rig 0.44 provider 层 + 自有传输桥。
 //!
 //! 本层组装「方言声明 + rig provider + [`crate::bridge`] 传输桥」:
 //! 请求编码/流解码在 rig-core(连接语义之外的全部 wire 知识归 rig,
@@ -530,7 +530,10 @@ mod tests {
     /// user 消息收尾
     #[tokio::test]
     async fn summarize_replays_system_tools_and_appends_instruction() {
+        // 官方完整形态收尾(rig 0.44 起 reply 结束必须带 finish_reason,
+        // 与 tests/adapters.rs 夹具哲学一致)
         let body = "data: {\"choices\":[{\"delta\":{\"content\":\"ckpt\"}}]}\n\n\
+                    data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n\
                     data: [DONE]\n\n";
         let (base_url, captured) = spawn_sse_server(body).await;
 
@@ -567,7 +570,8 @@ mod tests {
         assert_eq!(sent["tools"][0]["function"]["name"], "bash");
         // 消息 = 逐字前缀 + 指令尾注(最终 user 消息)
         assert_eq!(sent["messages"][1]["content"], "old question");
-        assert_eq!(sent["messages"][2]["content"][0]["text"], "old answer");
+        // rig 0.44 起 chat 面 assistant 纯文本轮编为字符串 content
+        assert_eq!(sent["messages"][2]["content"], "old answer");
         assert_eq!(sent["messages"][3]["role"], "user");
         assert_eq!(
             sent["messages"][3]["content"],

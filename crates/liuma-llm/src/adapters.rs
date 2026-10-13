@@ -2,7 +2,7 @@
 //!
 //! 方言 struct 与行为数据在 [`crate::providers`](每厂商一个文件);
 //! 本文件只留契约面与共享辅助。引擎内部为
-//! rig-core 0.43(四评 + spike,见 docs/plans/dialect-first-class.md):
+//! rig-core 0.44(四评 + spike,见 docs/plans/dialect-first-class.md):
 //! 请求编码/流解码经 rig wire 层,差异全部是 [`crate::behaviors`] 数据。
 //!
 //! 内部消息方言(日志派生)在 [`crate::translate`] 翻译为 rig 核心
@@ -150,10 +150,9 @@ pub(crate) fn partition_tools(
     for t in &header.tools {
         if t["type"] == "function" {
             functions.push(rig_core::completion::ToolDefinition {
-                name: t["function"]["name"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
+                name: crate::translate::tool_name(
+                    t["function"]["name"].as_str().unwrap_or_default(),
+                ),
                 description: t["function"]["description"]
                     .as_str()
                     .unwrap_or_default()

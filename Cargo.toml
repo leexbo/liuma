@@ -58,9 +58,9 @@ notify = "8"
 # notify 回调线程 → 主循环 async 通道(与 gpui 运行时同源)
 smol = "2"
 futures = "0.3"
-# rig provider 层(0.43 传输架构;四评+spike 后转生产,自有 HttpClientExt 传输)
-rig-core = "0.43.0"
-rig-http = "0.43.0"
+# rig provider 层(0.44;四评+spike 后转生产,自有 HttpClientExt 传输,hosted 工具回放走 rig Opaque)
+rig-core = "0.44.0"
+rig-http = "0.44.0"
 bytes = "1"
 async-stream = "0.3"
 libc = "0.2"

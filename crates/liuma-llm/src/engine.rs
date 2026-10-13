@@ -138,23 +138,22 @@ macro_rules! rig_drive {
         for part in &response.choice {
             match part {
                 rig_core::completion::AssistantContent::Text(t) => {
-                    // anthropic 面:hosted 块经 rig 折为空文本部件 +
-                    // 元数据(键为 rig pub(crate) 稳定 wire 键,此处
-                    // 硬编码取原始块)
-                    if let Some(params) = &t.additional_params
-                        && let Some(raw) = params.get("anthropic_content")
-                    {
-                        server_tools.push(raw.clone());
-                        continue;
-                    }
                     content.push_str(&t.text);
                 }
                 rig_core::completion::AssistantContent::ToolCall(c) => {
                     tool_calls.push(serde_json::json!({
                         "id": c.id.to_string(),
                         "name": c.function.name.to_string(),
-                        "arguments": c.function.arguments.to_string(),
+                        // 内部方言 arguments 为 JSON 串;0.44 起 rig 侧
+                        // 是对象 Map(畸形参数在 invalid_arguments,不
+                        // 入此面)
+                        "arguments": Value::Object(c.function.arguments.clone()).to_string(),
                     }));
+                }
+                // hosted 项(rig 0.44 以 Opaque 块入 choice):原始
+                // provider 项收集进 server_tools,日志可见/可回放
+                rig_core::completion::AssistantContent::Opaque(o) => {
+                    server_tools.push(o.item.clone());
                 }
                 _ => {}
             }
