@@ -128,6 +128,10 @@ ask:
     zh-CN: "%{n}/%{total} 已回答"
     en: "%{n}/%{total} answered"
 
+  review_skipped:
+    zh-CN: "已跳过"
+    en: "Skipped"
+
   row_cancelled:
     zh-CN: "已取消"
     en: "Cancelled"

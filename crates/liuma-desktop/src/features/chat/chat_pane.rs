@@ -2517,8 +2517,11 @@ fn tool_block(
     col
 }
 
-/// ask 已答只读卡:题面 + 所选标签 + 自定义文本(答案按 id 与题对齐;
-/// 缺答/多答按事件原样呈现,不猜不补)
+/// ask 已答只读卡(review 形态,不折叠):题面 + 完整选项列表
+/// 只读回看——选中行悬停色提亮 + 描边,未选中行素底;单选指示座显
+/// 序号、多选显勾选框;自定义答案 = 同形状行(用过才出现),跳过题 =
+/// note 行。答案按 id 与题对齐,缺答/多答按事件原样呈现,不猜不补
+/// (wire 契约:selected 空 = 用户跳过)
 fn ask_answers_card(row: &AskRowState, cx: &App) -> AnyElement {
     let answers_by_id: std::collections::HashMap<&str, &serde_json::Value> = row
         .answers
@@ -2539,8 +2542,23 @@ fn ask_answers_card(row: &AskRowState, cx: &App) -> AnyElement {
                     let ans = q["id"]
                         .as_str()
                         .and_then(|id| answers_by_id.get(id).copied());
+                    let options = q["options"]
+                        .as_array()
+                        .map(|os| {
+                            os.iter()
+                                .map(|o| {
+                                    (
+                                        o["label"].as_str().unwrap_or_default().to_string(),
+                                        o["description"].as_str().map(str::to_string),
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
                     (
                         q["question"].as_str().unwrap_or_default().to_string(),
+                        options,
+                        q["multi_select"].as_bool().unwrap_or(false),
                         ans.and_then(|a| a["selected"].as_array().cloned()),
                         ans.and_then(|a| a["custom"].as_str().map(str::to_string)),
                     )
@@ -2556,29 +2574,185 @@ fn ask_answers_card(row: &AskRowState, cx: &App) -> AnyElement {
         .bg(theme::dock(cx))
         .p(px(10.))
         .v_flex()
+        .gap(px(10.))
+        .children(
+            items
+                .into_iter()
+                .map(|(question, options, multi, selected, custom)| {
+                    let chosen = |label: &str| {
+                        selected
+                            .as_ref()
+                            .is_some_and(|s| s.iter().any(|v| v.as_str() == Some(label)))
+                    };
+                    let custom_text = custom.as_deref().map(str::trim).unwrap_or("");
+                    let skipped = custom_text.is_empty()
+                        && selected.as_ref().is_none_or(|s| {
+                            s.iter()
+                                .all(|v| v.as_str().map(str::trim).unwrap_or("").is_empty())
+                        });
+                    div()
+                        .v_flex()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .debug_selector(|| "ask-answers-q".to_string())
+                                .text_size(px(12.))
+                                .font_weight(gpui_kit::FontWeight::MEDIUM)
+                                .text_color(theme::label_2(cx))
+                                .child(question),
+                        )
+                        // 选项列表:行间 1px,行自体带圆角与 min-height
+                        .child(
+                            div()
+                                .debug_selector(|| "ask-answer-opts".to_string())
+                                .v_flex()
+                                .gap(px(1.))
+                                .children(options.iter().enumerate().map(|(oi, (label, desc))| {
+                                    ask_answer_option(
+                                        oi + 1,
+                                        multi,
+                                        label,
+                                        desc.as_deref(),
+                                        chosen(label),
+                                        cx,
+                                    )
+                                })),
+                        )
+                        .children(
+                            (!custom_text.is_empty()).then(|| ask_answer_custom(custom_text, cx)),
+                        )
+                        .when(skipped, |el| {
+                            el.child(
+                                div()
+                                    .debug_selector(|| "ask-answer-skipped".to_string())
+                                    .px(px(6.))
+                                    .text_size(px(12.))
+                                    .text_color(theme::caption(cx))
+                                    .child(t!("ask.review_skipped").to_string()),
+                            )
+                        })
+                }),
+        )
+        .into_any_element()
+}
+
+/// 已答选项行:指示座(单选 = 序号方块,多选 = 勾选
+/// 框)+ 文案列;选中行 = 悬停色底 + 描边,未选中 = 素底。行间 1px
+/// 归容器,行自体只管形状
+fn ask_answer_option(
+    ix: usize,
+    multi: bool,
+    label: &str,
+    desc: Option<&str>,
+    chosen: bool,
+    cx: &App,
+) -> AnyElement {
+    div()
+        .debug_selector(move || format!("ask-answer-opt-{ix}"))
+        .flex()
+        .items_start()
         .gap(px(8.))
-        .children(items.into_iter().map(|(question, selected, custom)| {
+        .w_full()
+        .min_h(px(30.))
+        .px(px(6.))
+        .py(px(5.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(if chosen {
+            theme::border(cx)
+        } else {
+            theme::border(cx).opacity(0.)
+        })
+        .when(chosen, |el| el.bg(theme::bubble(cx)))
+        .child(ask_answer_seat(ix, multi, chosen, cx))
+        .child(
             div()
                 .v_flex()
-                .gap(px(3.))
+                .flex_1()
+                .min_w(px(0.))
+                .gap(px(1.))
                 .child(
                     div()
-                        .text_size(px(12.))
-                        .font_weight(gpui_kit::FontWeight::MEDIUM)
+                        .text_size(px(13.))
                         .text_color(theme::label(cx))
-                        .child(question),
+                        .child(label.to_string()),
                 )
-                .children(
-                    selected
-                        .map(|sel| {
-                            sel.iter()
-                                .filter_map(|s| s.as_str().map(str::to_string))
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default(),
-                )
-                .children(custom.filter(|c| !c.trim().is_empty()))
-        }))
+                .children(desc.map(|d| {
+                    div()
+                        .text_size(px(12.))
+                        .text_color(theme::caption(cx))
+                        .child(d.to_string())
+                })),
+        )
+        .into_any_element()
+}
+
+/// 指示座(18×18,首行对齐补 2px):单选 = 序号方块(layer 底 +
+/// caption 序号,恒定不变——选中态由行底承载);多选 = 12×12
+/// 勾选框,选中 brand 填充 + on_brand 勾,未选素底描边
+fn ask_answer_seat(ix: usize, multi: bool, chosen: bool, cx: &App) -> AnyElement {
+    let brand = gpui_kit::Hsla::from(theme::brand(cx));
+    div()
+        .flex_shrink_0()
+        .mt(px(2.))
+        .size(px(18.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(if multi {
+            div()
+                .size(px(12.))
+                .rounded(px(3.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(chosen, |el| {
+                    el.bg(brand)
+                        .child(fixed(IconName::Check, 9.).text_color(theme::on_brand(cx)))
+                })
+                .when(!chosen, |el| {
+                    el.border_1().border_color(theme::border_2(cx))
+                })
+                .into_any_element()
+        } else {
+            div()
+                .size_full()
+                .rounded(px(4.))
+                .bg(theme::layer(cx))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(11.))
+                .font_weight(gpui_kit::FontWeight::MEDIUM)
+                .text_color(theme::caption(cx))
+                .child(ix.to_string())
+                .into_any_element()
+        })
+        .into_any_element()
+}
+
+/// 自定义答案行(用过才出现):选项形状 + 勾选款
+/// 指示座镜像「这里答的是文本」
+fn ask_answer_custom(text: &str, cx: &App) -> AnyElement {
+    div()
+        .debug_selector(|| "ask-answer-custom".to_string())
+        .flex()
+        .items_start()
+        .gap(px(8.))
+        .w_full()
+        .min_h(px(30.))
+        .px(px(6.))
+        .py(px(5.))
+        .rounded(px(6.))
+        .child(ask_answer_seat(0, true, true, cx))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .text_size(px(13.))
+                .text_color(theme::label(cx))
+                .child(text.to_string()),
+        )
         .into_any_element()
 }
 

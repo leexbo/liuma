@@ -14,6 +14,7 @@
 
 use gpui_kit::component::IconName;
 use gpui_kit::component::Sizable as _;
+use gpui_kit::component::Size;
 use gpui_kit::component::StyledExt;
 use gpui_kit::component::progress::ProgressCircle;
 use gpui_kit::component::questionnaire::{
@@ -151,12 +152,11 @@ pub fn render(
             .p(px(14.))
             .gap(px(10.))
             .child(
-                // small 是全卡唯一的尺寸来源(根节点发布,各部按 state id
-                // 取回):库档位驱动选项/圆点/输入/按钮的整套 metric——
-                // small 落到选项 14px、圆点与输入比 12px 档大一号,与本仓
-                // 13px 正文同体量。xsmall 曾用于整体压字号,但其控件层
-                // (12px 圆点/输入)与题面失衡;题面是自定义子元素不吃库
-                // 档,压档实际只压小了控件。
+                // small 是全卡的根档(根节点发布,各部按 state id 取回,
+                // 题面是唯一例外,见下):库档位驱动选项/圆点/输入/按钮
+                // 的整套 metric——选项 14px、描述 12px,与本仓 13px 正文
+                // 同体量。整卡压到 xsmall 会让选项与描述同落 12px,选项
+                // 行内两层文字失去层次。
                 Questionnaire::new(&state)
                     .small()
                     .gap(px(10.))
@@ -190,10 +190,16 @@ pub fn render(
                                                 )
                                             })
                                             .child(
-                                                // 题面经子元素给定(库的回落文本即
-                                                // accessibility_label,二者同源);
-                                                // 包一层带 selector 的壳供测试寻址
+                                                // 题面钉 xsmall 档(sm = 14px/行高20,
+                                                // medium 字重保留):根档 small 的题面
+                                                // 是 md = 16px/24,在 13px 正文的界面
+                                                // 里独大一档;与选项同 14px,层次交给
+                                                // 字重。经子元素给定题面文本(库的回
+                                                // 落文本即 accessibility_label,二者
+                                                // 同源),包一层带 selector 的壳供测试
+                                                // 寻址
                                                 QuestionnaireTitle::new(&state, name.clone())
+                                                    .with_size(Size::XSmall)
                                                     .child(
                                                         div()
                                                             .debug_selector(|| {

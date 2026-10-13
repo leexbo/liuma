@@ -6499,13 +6499,13 @@ fn ask_card_header_states_never_fall_back_to_question(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 问答卡的尺寸档:库 `Questionnaire` 的排版走 token 基准(md = 16px),而
-/// 本仓正文是 11–13px —— 根节点不显式收档就按默认 Medium,题面 18px、选项
-/// 行 44px,整卡比同级卡片大一圈。
+/// 问答卡的尺寸档:库 `Questionnaire` 的排版走 token 基准,而本仓正文是
+/// 11–13px —— 根档不显式收档就按默认 Medium,整卡比同级卡片大一圈。现
+/// 状:根档 small(选项 14px、选项行最小高 38),题面单独钉 xsmall(14px,
+/// 行高 20;随根档则是 md = 16px/24,在消息流里独大一档)。
 ///
 /// 锁在**绝对几何**上:同卡其余断言都是相对的(长文比短文高),对尺寸档
-/// 无感,档位回退时一律照绿。题面行高 20 = xs..sm 档的 14px 文本,28 = 选项
-/// 行最小高;Medium 分别是 28 与 44。
+/// 无感,档位回退时一律照绿。
 #[gpui_kit::test]
 fn ask_card_stays_at_the_app_text_scale(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "ask-scale");
@@ -6543,8 +6543,8 @@ fn ask_card_stays_at_the_app_text_scale(cx: &mut TestAppContext) {
     assert!(popped, "问答卡应弹出");
     let title = wcx.debug_bounds("ask-title").expect("题面在场");
     assert!(
-        f32::from(title.size.height) <= 26.,
-        "题面行高 {} 超出本仓正文体量(small 档 = 24;库默认 Medium 是 28)",
+        f32::from(title.size.height) <= 22.,
+        "题面行高 {} 超出本仓正文体量(题面钉 xsmall 档 = 20;随根档 small 是 24)",
         f32::from(title.size.height)
     );
     let opt = wcx.debug_bounds("ask-opt-0").expect("选项壳在场");
@@ -6552,6 +6552,79 @@ fn ask_card_stays_at_the_app_text_scale(cx: &mut TestAppContext) {
         f32::from(opt.size.height) <= 40.,
         "选项行高 {} 超出本仓正文体量(small 档 = 38;库默认 Medium 是 44)",
         f32::from(opt.size.height)
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// ask 已答结果卡(review 形态):完整选项列表只读回看,四种
+/// 形态各锁在场——选中行(悬停色 + 描边)、未选中行(素底)、自定义
+/// 行、跳过 note;选项行锁体量上限(min_h 30 的圆角行,撑破即漂移)。
+#[gpui_kit::test]
+fn ask_answers_card_lines_stay_at_app_text_scale(cx: &mut TestAppContext) {
+    use crate::features::chat::projection::{AskPhase, AskRowState, ChatNode, ToolState};
+    let (store, mut wcx, root) = menu_harness(cx, "ask-answers-scale");
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            let mut chat = ChatState::default();
+            chat.nodes.push(ChatNode::Tool {
+                key: "call:9".into(),
+                name: "ask_user_question".into(),
+                summary: "2/2 已回答".into(),
+                state: ToolState::Done,
+                arguments: "{}".into(),
+                output: None,
+                view: None,
+                images: Vec::new(),
+            });
+            chat.asks.insert(
+                "call:9".into(),
+                AskRowState {
+                    rpc_id: "rpc-9".into(),
+                    phase: AskPhase::Answered,
+                    questions: serde_json::json!([
+                        { "id": "q1", "question": "单选哪条?", "multi_select": false,
+                          "options": [{ "label": "甲", "description": "甲的说明" }, { "label": "乙" }] },
+                        { "id": "q2", "question": "跳过这题?", "multi_select": true,
+                          "options": [{ "label": "丙" }] }
+                    ]),
+                    deadline_ms: None,
+                    answers: Some(serde_json::json!([
+                        { "id": "q1", "selected": ["甲"], "custom": "走快照对比" },
+                        { "id": "q2", "selected": [], "custom": "" }
+                    ])),
+                },
+            );
+            st.state.chats.insert(id, chat);
+            st.chat.expanded_tools.insert("call:9".into());
+        });
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+    wcx.update(|_, _| ());
+    assert!(
+        wcx.debug_bounds("ask-answers-card").is_some(),
+        "已答结果卡应渲染"
+    );
+    assert!(wcx.debug_bounds("ask-answers-q").is_some(), "题面行应在场");
+    for sel in ["ask-answer-opt-1", "ask-answer-opt-2"] {
+        let opt = wcx
+            .debug_bounds(sel)
+            .unwrap_or_else(|| panic!("{sel} 选项行应在场"));
+        assert!(
+            f32::from(opt.size.height) <= 40.,
+            "{sel} 选项行高 {} 超出体量(min_h 30 的圆角行)",
+            f32::from(opt.size.height)
+        );
+    }
+    assert!(
+        wcx.debug_bounds("ask-answer-custom").is_some(),
+        "自定义答案行应在场(用过才出现)"
+    );
+    assert!(
+        wcx.debug_bounds("ask-answer-skipped").is_some(),
+        "selected 空的题应出跳过 note"
     );
     let _ = std::fs::remove_dir_all(root);
 }
