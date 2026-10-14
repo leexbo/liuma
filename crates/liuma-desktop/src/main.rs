@@ -6,7 +6,8 @@
 //! 桌面为唯一 UI)。关窗即退出。
 //!
 //! 用法:`liuma-desktop [--workspace <dir>] [--fake]`
-//! - workspace 默认当前目录(api key 从环境变量解析);
+//! - workspace 默认最近注册工作区(首运行 home;进程 cwd 不可作 GUI
+//!   默认——Finder/Dock 启动时为 `/`;api key 从环境变量解析);
 //! - fake 用假 provider 驱动(自检/演示)。
 
 // Windows release 下不弹控制台
@@ -53,11 +54,21 @@ fn parse_args() -> Args {
     args
 }
 
+/// home 目录(HOME/USERPROFILE;缺席回落 `.`)
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 fn main() {
     let args = parse_args();
-    let workspace = args
-        .workspace
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    // GUI 进程 cwd 不可作工作区默认(Finder/Dock 启动 = `/`):优先
+    // 最近注册工作区,首运行回落 home
+    let workspace = args.workspace.unwrap_or_else(|| {
+        liuma_core::registry::recent_registered_workspace().unwrap_or_else(home_dir)
+    });
     // 真实模式凭据:环境变量有则注入(最高优先);缺席不拒启——
     // 凭据链还可在运行时从设置(provider api_key)解析,首运行
     // onboarding 也依赖「无 key 可进应用」

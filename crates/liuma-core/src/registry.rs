@@ -868,7 +868,7 @@ fn mermaid_demo_segment() -> Vec<LlmEvent> {
 const TITLES_FILE: &str = ".liuma/titles.json";
 
 /// liuma 会话根(env `LIUMA_HOME` 覆盖;默认 `~/.liuma`)
-fn default_liuma_root() -> PathBuf {
+pub fn default_liuma_root() -> PathBuf {
     if let Some(h) = std::env::var_os("LIUMA_HOME") {
         return PathBuf::from(h);
     }
@@ -876,6 +876,38 @@ fn default_liuma_root() -> PathBuf {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .unwrap_or_default();
     PathBuf::from(home).join(".liuma")
+}
+
+/// 根目录不可为工作区:GUI 进程 cwd 不可控(Finder/Dock 启动 = `/`,
+/// Windows 盘根同理),根作工作区即全盘可写沙箱。检测特征为
+/// `parent() == None`(posix `/` 与 Windows 盘根一致),命中回落 home。
+pub fn sanitize_workspace_root(ws: PathBuf) -> PathBuf {
+    if ws.parent().is_some() {
+        return ws;
+    }
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .unwrap_or_default();
+    let home = PathBuf::from(home);
+    eprintln!("workspace 根目录不可用作工作区,回落 {}", home.display());
+    home
+}
+
+/// 最近注册的工作区(settings 工作区注册表首个存在目录;GUI 启动默认)。
+/// 进程 cwd 不可作 GUI 默认(Finder/Dock 启动时为 `/`)。注册表空或
+/// 目录缺席 = `None`,调用方回落 home。
+pub fn recent_registered_workspace() -> Option<PathBuf> {
+    recent_registered_workspace_at(&default_liuma_root())
+}
+
+/// [`recent_registered_workspace`] 的会话根注入变体(测试隔离 ~/.liuma)
+pub fn recent_registered_workspace_at(sessions_root: &Path) -> Option<PathBuf> {
+    SettingsStore::open(sessions_root.join("settings.yaml"))
+        .read()
+        .workspace_paths
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|p| p.is_dir() && p.parent().is_some())
 }
 
 /// provider 传输面指纹表(provider id → api_key/base_url/dialect 快照;
@@ -1365,6 +1397,7 @@ impl AppHost {
         api_key: &str,
         sessions_root: PathBuf,
     ) -> anyhow::Result<Self> {
+        let workspace = sanitize_workspace_root(workspace);
         let workspace_clone = workspace.clone();
         // workspace 目录缺失时创建(否则后续建会话/写日志全部静默失败)
         std::fs::create_dir_all(&workspace_clone).map_err(|e| {
@@ -1392,12 +1425,13 @@ impl AppHost {
         // 设置先行:工作区注册表存于 settings.yaml
         let settings = SettingsStore::open(sessions_root.join("settings.yaml"));
         let reg_paths = settings.read().workspace_paths.clone();
-        // 注册表顺序即显示顺序;缺席目录剔除,默认工作区保底在列
+        // 注册表顺序即显示顺序;缺席目录剔除,默认工作区保底在列。
+        // 根目录不入册(sanitize 已回落,注册表残留项同样拦)
         let workspaces: Vec<PathBuf> = {
             let mut ws: Vec<PathBuf> = reg_paths
                 .into_iter()
                 .map(PathBuf::from)
-                .filter(|p| p.is_dir())
+                .filter(|p| p.is_dir() && p.parent().is_some())
                 .collect();
             if !ws.contains(&workspace_clone) {
                 ws.insert(0, workspace_clone.clone());
@@ -17582,5 +17616,72 @@ for line in sys.stdin:
             warm,
             page.events.len()
         );
+    }
+
+    /// 回归锁:根目录不可为工作区(Finder/Dock 启动 cwd=/ 曾成默认
+    /// 工作区,agent 获全盘可写沙箱)。new_at 入口闸回落 home
+    #[test]
+    fn root_directory_is_never_a_workspace() {
+        let tag = "ws-root-guard";
+        let sroot =
+            std::env::temp_dir().join(format!("liuma-core-{tag}-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&sroot).unwrap();
+        let host = AppHost::new_at(PathBuf::from("/"), true, "test-key", sroot).unwrap();
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from)
+            .unwrap();
+        // 工作区清单不含根目录,且默认工作区 = 回落的 home
+        let names = host.workspace_names();
+        assert!(!names.is_empty(), "回落后默认工作区保底在列");
+        assert!(names.iter().all(|n| n != "/"), "根目录不得入册: {names:?}");
+        assert_eq!(host.workspace, home, "默认工作区应回落 home");
+    }
+
+    /// 回归锁:注册表中的根目录残留项同样被拦(历史中毒 settings 不再
+    /// 复活为工作区)
+    #[test]
+    fn root_directory_entries_are_filtered_from_registry() {
+        let tag = "ws-root-reg";
+        let ws = std::env::temp_dir().join(format!("liuma-core-{tag}-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&ws).unwrap();
+        let sroot = std::env::temp_dir().join(format!(
+            "liuma-core-{tag}-sroot-{}",
+            Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&sroot).unwrap();
+        // 预置中毒注册表:根目录 + 合法目录
+        let settings = SettingsStore::open(sroot.join("settings.yaml"));
+        settings
+            .update(|s| s.workspace_paths = vec!["/".to_string(), ws.display().to_string()])
+            .unwrap();
+        let host = AppHost::new_at(ws.clone(), true, "test-key", sroot).unwrap();
+        let names = host.workspace_names();
+        assert!(
+            names.iter().all(|n| n != "/"),
+            "注册表残留根目录须被过滤: {names:?}"
+        );
+        assert!(!names.is_empty(), "合法工作区仍在列: {names:?}");
+    }
+
+    /// recent_registered_workspace_at:注册表取首个存在目录;空表 = None
+    #[test]
+    fn recent_registered_workspace_takes_first_existing() {
+        let tag = "ws-recent";
+        let sroot =
+            std::env::temp_dir().join(format!("liuma-core-{tag}-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&sroot).unwrap();
+        assert_eq!(recent_registered_workspace_at(&sroot), None);
+        let wanted = sroot.join("proj");
+        let ghost = sroot.join("ghost");
+        std::fs::create_dir_all(&wanted).unwrap();
+        let settings = SettingsStore::open(sroot.join("settings.yaml"));
+        settings
+            .update(|s| {
+                s.workspace_paths = vec![ghost.display().to_string(), wanted.display().to_string()]
+            })
+            .unwrap();
+        // 缺席目录跳过,首个存在目录胜出
+        assert_eq!(recent_registered_workspace_at(&sroot), Some(wanted));
     }
 }

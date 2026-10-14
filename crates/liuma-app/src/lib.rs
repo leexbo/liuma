@@ -418,6 +418,19 @@ impl Resolved {
             .unwrap_or_else(|| {
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
             });
+        // 根目录不可为工作区(进程 cwd 在 Finder/Dock/盘根启动时为根,
+        // 根作工作区 = 全盘可写沙箱)。与 liuma-core 的
+        // sanitize_workspace_root 同源——两 crate 无依赖边
+        let workspace = if workspace.parent().is_none() {
+            let home = std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            eprintln!("workspace 根目录不可用作工作区,回落 {}", home.display());
+            home
+        } else {
+            workspace
+        };
         let preset_id = args
             .preset
             .clone()
@@ -1599,5 +1612,27 @@ mod tests {
             "compaction/summary 恰一份"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 回归锁:根目录不可为工作区(CLI 在 `/` 下启动、或显式传 `/`,
+    /// 同样回落 home——全盘可写沙箱不成立)
+    #[test]
+    fn resolve_never_accepts_root_workspace() {
+        let dir = std::env::temp_dir().join(format!("liuma-app-root-ws-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let resolved = crate::Resolved::resolve(
+            crate::ResolveArgs {
+                workspace: Some("/".to_string()),
+                ..Default::default()
+            },
+            &dir.join("liuma.toml"),
+        )
+        .unwrap();
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(std::path::PathBuf::from)
+            .unwrap();
+        assert_eq!(resolved.workspace, home, "根目录须回落 home");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
