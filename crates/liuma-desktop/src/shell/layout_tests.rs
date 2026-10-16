@@ -680,6 +680,85 @@ fn tool_read_expanded_keeps_collapse_and_inspect_jumps(cx: &mut TestAppContext) 
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 回归锁(diff 卡 body 塌陷):库 Diff 外壳 size_full + flex_1 依赖
+/// 有界父级,max_h 不构成确定高度——卡体在 auto 祖先链里塌 0 高,只剩
+/// footer 与孤立复制钮。diff-body 必须持有 viewport 档位的确定高度
+/// (展开 480 / 折叠 200),两档都锁。
+#[gpui_kit::test]
+fn diff_card_body_holds_bounded_height(cx: &mut TestAppContext) {
+    use crate::features::chat::projection::{ChatNode, ToolState};
+    let (store, mut wcx, root) = menu_harness(cx, "diff-body-height");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
+        wcx.update(|_, _| ());
+    };
+
+    let diff_view = serde_json::json!({
+        "card": "diff",
+        "diffs": [ {
+            "path": "src/lib.rs",
+            "oldText": "fn old() {}\n",
+            "newText": "fn new() {\n    let s = 1;\n}\n",
+        } ],
+    });
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            let mut chat = ChatState::default();
+            chat.nodes.push(ChatNode::Tool {
+                key: "call:d1".into(),
+                name: "edit_file".into(),
+                summary: "src/lib.rs".into(),
+                state: ToolState::Done,
+                arguments: "{}".into(),
+                output: None,
+                view: Some(diff_view),
+                images: Vec::new(),
+            });
+            st.state.chats.insert(id.clone(), chat);
+            st.chat.expanded_tools.insert("call:d1".into());
+            // 在场 = 展开档(viewport 480px)
+            st.chat.card_expanded.insert("call:d1".into());
+        });
+    });
+
+    // DiffState 走后台任务下一拍落 store,首帧是 diff-placeholder-* 占位,
+    // 轮询等 diff-body 真实帧
+    let body_sel: &'static str = "diff-body-call:d1";
+    let mut height = 0.;
+    for _ in 0..150 {
+        redraw(cx, &mut wcx);
+        if let Some(b) = wcx.debug_bounds(body_sel) {
+            height = b.size.height.into();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        height >= 400.,
+        "展开档 diff-body 应持有 480px 档确定高度,实测 {height}"
+    );
+
+    // 收起卡内视口 → 折叠档 200px(修复前两档同塌 ≈16px)
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            st.chat.card_expanded.remove("call:d1");
+        });
+    });
+    redraw(cx, &mut wcx);
+    let collapsed = wcx
+        .debug_bounds(body_sel)
+        .expect("折叠档 diff-body 应仍在场");
+    let h: f32 = collapsed.size.height.into();
+    assert!(
+        (150. ..=260.).contains(&h),
+        "折叠档 diff-body 应持有 200px 档确定高度,实测 {h}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 fn send_roundtrip(
     cx: &mut TestAppContext,
     fake: bool,

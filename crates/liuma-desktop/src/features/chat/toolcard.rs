@@ -913,24 +913,33 @@ pub(crate) fn render_diff(
         Some(entity) => entity,
         None => {
             let store = store.clone();
-            let key = key.to_string();
+            let cache_key = key.to_string();
             let patch = patch.clone();
             cx.spawn(async move |cx| {
                 cx.update(|cx| {
                     store.update(cx, |st, cx| {
-                        let files = DiffFile::parse(&patch).unwrap_or_default();
-                        let entity = cx.new(|cx| DiffState::new(files, cx));
+                        // 解析失败建空实体并照常入缓存:失败结果随 content_hash
+                        // 哨兵稳定,重试无意义且日志会逐帧刷屏
+                        let entity = match DiffFile::parse(&patch) {
+                            Ok(files) => cx.new(|cx| DiffState::new(files, cx)),
+                            Err(err) => {
+                                eprintln!("[diff] patch 解析失败 key={cache_key}: {err}");
+                                cx.new(|cx| DiffState::new(Vec::new(), cx))
+                            }
+                        };
                         // 护栏:纯加速面,超量全清重建(重建 = 一帧占位 +
                         // 一次后台任务,廉价);防长会话多卡无界积累
                         if st.chat.diff_states.len() >= DIFF_STATE_CACHE_CAP {
                             st.chat.diff_states.clear();
                         }
-                        st.chat.diff_states.insert(key, (content_hash, entity));
+                        st.chat
+                            .diff_states
+                            .insert(cache_key, (content_hash, entity));
                     });
                 });
             })
             .detach();
-            return placeholder_diff(ix, viewport_h);
+            return placeholder_diff(ix, key, viewport_h);
         }
     };
 
@@ -944,12 +953,15 @@ pub(crate) fn render_diff(
         .bg(theme::code(cx))
         .overflow_hidden()
         .child(
-            div().id(("diff-body", ix)).px(px(8.)).py(px(8.)).child(
-                Diff::new(&state)
-                    .header_visible(false)
-                    .line_number(false)
-                    .max_h(viewport_h),
-            ),
+            // 库 Diff 外壳 size_full + flex_1 依赖有界父级:max_h 不构成
+            // 确定高度,虚拟列表在 auto 祖先链里塌 0 高,故这里给死高
+            div()
+                .id(("diff-body", ix))
+                .debug_selector(|| format!("diff-body-{key}"))
+                .h(viewport_h)
+                .px(px(8.))
+                .py(px(8.))
+                .child(Diff::new(&state).header_visible(false).line_number(false)),
         )
         // footer:└ +A -R · N file(s)
         .child(
@@ -995,9 +1007,10 @@ pub(crate) fn render_diff(
 
 /// 缓存未命中帧的等高占位(DiffState 后台任务下一拍落 store,届时
 /// 本函数不再被走到;等高防卡片高度跳动)
-fn placeholder_diff(ix: usize, viewport_h: gpui_kit::Pixels) -> gpui_kit::AnyElement {
+fn placeholder_diff(ix: usize, key: &str, viewport_h: gpui_kit::Pixels) -> gpui_kit::AnyElement {
     div()
         .id(("diff-placeholder", ix))
+        .debug_selector(|| format!("diff-placeholder-{key}"))
         .h(viewport_h)
         .into_any_element()
 }
