@@ -961,13 +961,27 @@ pub(crate) fn render_diff(
                 .h(viewport_h)
                 .px(px(8.))
                 .py(px(8.))
-                .child(Diff::new(&state).header_visible(false).line_number(false)),
+                .child(
+                    // 库 root 自带 bg(background)+ border_1,叠进卡框是
+                    // 第二层边框;refine_style 在其后生效,这里抹平,
+                    // 边界交给卡片自身框架(底色同源防双底)
+                    Diff::new(&state)
+                        .header_visible(false)
+                        .line_number(false)
+                        .bg(theme::code(cx))
+                        .border_0(),
+                ),
         )
-        // footer:└ +A -R · N file(s)
+        // footer:└ +A -R · N file(s)。字号钉 11px 等宽 = 折叠行尾
+        // stats 的同款字体(chat_pane row-suffix)——不设则继承环境
+        // 16px,同屏重复信息两档字号
         .child(
             div()
+                .debug_selector(|| "diff-card-footer".to_string())
                 .px(px(14.))
                 .pb(px(12.))
+                .text_size(px(11.))
+                .font_family("Menlo")
                 .text_color(theme::label_3(cx))
                 // 复数为手动键对(库无 CLDR):中文不随数变形,英文
                 // file/files 分列——旧的 `%{s}` 后缀把英文复数形态漏进了中文档

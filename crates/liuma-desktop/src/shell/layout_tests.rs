@@ -756,6 +756,17 @@ fn diff_card_body_holds_bounded_height(cx: &mut TestAppContext) {
         (150. ..=260.).contains(&h),
         "折叠档 diff-body 应持有 200px 档确定高度,实测 {h}"
     );
+
+    // footer 字号锁:stats 行钉 11px 等宽(与折叠行尾 stats 同款),
+    // 不设则继承环境 16px(行盒 ≈38px),同屏重复信息两档字号
+    let footer = wcx
+        .debug_bounds("diff-card-footer")
+        .expect("diff footer 应在场");
+    let fh: f32 = footer.size.height.into();
+    assert!(
+        fh <= 32.,
+        "diff footer 应为 11px 小字行盒(≈29px 含 pb12),实测 {fh}"
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 
