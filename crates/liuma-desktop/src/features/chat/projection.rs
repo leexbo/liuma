@@ -218,6 +218,9 @@ impl ChatNode {
     }
 }
 
+/// 队列预览单行化截断上限(展示面防巨型排队文本逐帧全量整形)
+const QUEUE_PREVIEW_MAX_CHARS: usize = 240;
+
 /// session/queue 帧 items → 队列投影(preview = text 块拼接;
 /// 全部块均为文本才可编辑)
 pub fn parse_queue_items(items: Vec<Value>) -> Vec<QueueEntry> {
@@ -233,15 +236,19 @@ pub fn parse_queue_items(items: Vec<Value>) -> Vec<QueueEntry> {
                 .as_array()
                 .cloned()
                 .unwrap_or_default();
-            let mut preview = String::new();
+            let mut raw = String::new();
             let mut all_text = true;
             for b in &blocks {
                 match b["type"].as_str() {
-                    Some("text") => preview.push_str(b["text"].as_str().unwrap_or_default()),
+                    Some("text") => raw.push_str(b["text"].as_str().unwrap_or_default()),
                     _ => all_text = false,
                 }
             }
-            let text = all_text.then_some(preview.clone());
+            // 显示面单行化:queue dock 行是固定单行设计,truncate 对硬换行
+            // 失效(逐 \n 出行、各行皆短则不截断),多行原文会溢出行框被相邻
+            // 层盖住;编辑面 text 保留原文不动
+            let preview = one_line(&raw, QUEUE_PREVIEW_MAX_CHARS);
+            let text = all_text.then_some(raw);
             Some(QueueEntry {
                 id,
                 placement,
@@ -259,10 +266,18 @@ pub struct QueueEntry {
     pub id: String,
     /// queued = 待运行(next-turn)/ steering = 中途插队(立即投递)
     pub placement: QueuePlacement,
-    /// 文本预览(块数组内 text 块拼接;图片块不参与)
+    /// 文本预览(单行化:空白折叠 + 截断;展示面专用)
     pub preview: String,
     /// 纯文本(可编辑;含非文本块 = 不可编辑)
     pub text: Option<String>,
+}
+
+impl QueueEntry {
+    /// 展示面完整文本:text(原始拼接)优先;含非文本块的条目不可编辑,
+    /// 回落单行 preview(此类条目本就无完整原文可展)
+    pub fn full_text(&self) -> &str {
+        self.text.as_deref().unwrap_or(&self.preview)
+    }
 }
 
 /// 乐观用户消息(prompt RPC 回执落地、`user/message` 事件未到)。
@@ -1709,6 +1724,46 @@ mod tests {
         assert_eq!(entries[1].placement, QueuePlacement::Steering);
         assert_eq!(entries[1].preview, "插队的");
         assert_eq!(entries[1].text, None, "含图片块 = 不可编辑");
+    }
+
+    /// 回归锁(queue dock 多行预览溢出):多行消息的 preview 必须单行化
+    /// (空白折叠 + 截断)——truncate 对硬换行失效,多行原文会溢出 36px
+    /// 行框被 composer 盖住;编辑面 text 保留原文不受归一化污染
+    #[test]
+    fn parse_queue_items_normalizes_preview_to_single_line() {
+        let items = serde_json::json!([
+            {
+                "id": "q1",
+                "placement": "queued",
+                "message": { "role": "user", "content": [ { "type": "text",
+                    "text": "  第一行\n第二行\r\n\t第三行\u{3000}末行  " } ] }
+            },
+            {
+                "id": "s1",
+                "placement": "steering",
+                "message": { "role": "user", "content": [
+                    { "type": "text", "text": "a\n\nb" },
+                    { "type": "image", "url": "x" }
+                ] }
+            }
+        ]);
+        let entries = parse_queue_items(items.as_array().cloned().unwrap());
+        assert_eq!(entries.len(), 2);
+        // 纯文本条目:preview 单行化,text 保留原文(编辑链路回填输入框)
+        assert_eq!(entries[0].preview, "第一行 第二行 第三行 末行");
+        assert_eq!(
+            entries[0].text.as_deref(),
+            Some("  第一行\n第二行\r\n\t第三行\u{3000}末行  ")
+        );
+        assert_eq!(entries[0].full_text(), entries[0].text.as_deref().unwrap());
+        // 含非文本块条目:不可编辑,full_text 回落单行 preview
+        assert_eq!(entries[1].preview, "a b");
+        assert_eq!(entries[1].text, None);
+        assert_eq!(entries[1].full_text(), "a b");
+        // 任何条目的展示面都不再携带换行
+        for e in &entries {
+            assert!(!e.preview.contains('\n'), "preview 必须单行");
+        }
     }
 
     use liuma_core::proto::SurfaceOp;

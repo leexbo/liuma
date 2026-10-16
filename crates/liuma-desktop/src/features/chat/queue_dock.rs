@@ -173,7 +173,10 @@ fn queue_row(
         .h(px(36.))
         .pl(px(12.))
         .pr(px(5.))
-        .rounded(px(8.));
+        .rounded(px(8.))
+        // 单行设计兜底:病理输入(手构 entry 等)裁在行框内,
+        // 不外溢进 composer 的绘制矩形
+        .overflow_hidden();
     if ix > 0 {
         // 行间发丝分隔(inset hairline)
         row = row.border_t_1().border_color(theme::border(cx));

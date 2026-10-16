@@ -203,7 +203,8 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                         &item_store,
                         cx,
                         &entry.id,
-                        &entry.preview,
+                        // 完整原文(preview 已单行化,仅供 dock 展示面)
+                        entry.full_text(),
                         "pending-steering",
                         col_w,
                     ))
