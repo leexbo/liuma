@@ -98,7 +98,7 @@ uuid = { version = "1", features = ["v4", "v7"] }
 # features = ["gpui-fast"](官方 #3375)把核心切到 gpui-fast 族(retained-mode
 # 布局引擎),门面与宏不变;缺该 feature 会静默回退 gpui-pre 后端——守卫见
 # AGENTS.md §1 [Deps]。
-gpui-kit = { version = "0.7.3", features = ["gpui-fast"] }
+gpui-kit = { version = "0.8.0", features = ["gpui-fast"] }
 # 终端仿真(VT 状态机/网格/scrollback;桌面右侧终端面板)。0.x 无 semver
 # 承诺,按 merman 先例锁死;vte 解析器由其重导出,不直依赖
 alacritty_terminal = "=0.26.0"

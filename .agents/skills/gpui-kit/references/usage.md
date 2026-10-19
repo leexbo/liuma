@@ -10,7 +10,7 @@ Use the [tested application recipe](recipes.md) for complete examples and their 
 
 ```toml
 [dependencies]
-gpui-kit = "0.6" # re-exports GPUI, platform, base, component and the default icons; Shell is a separate host dependency
+gpui-kit = "0.7" # re-exports GPUI, platform, base, component and the default icons; Shell is a separate host dependency
 ```
 
 ### 2. Initialization
@@ -280,6 +280,11 @@ div()
 
 // Or on a Button directly:
 Button::new("btn").icon(IconName::Trash).tooltip("Delete")
+
+// Component tooltips open after 500 ms; override per trigger,
+// or install `tooltip::TooltipDefaults` to change it app-wide:
+Button::new("help").icon(IconName::Info).tooltip("Help")
+    .tooltip_show_delay(Duration::ZERO)
 ```
 
 ### Form
