@@ -1393,6 +1393,32 @@ fn title_from_events(events: &[LlmEvent]) -> String {
     crate::title::normalize_session_title(text, 80)
 }
 
+/// FTS 索引损坏家族的错误文案指纹(turso Corrupt 语义的稳定子串):
+/// 覆盖旧版建库、外来毒行(registry/tombstone 扫描)、控制行缺失、
+/// 行解码三态、chunk 序号异常与重复、段数据/identity 列缺失、段读取
+/// 失败。升级 turso 后若新增损坏文案须同步扩列。
+const FTS_CORRUPT_MARKERS: [&str; 13] = [
+    "older version of Turso",
+    "unrecognized row",
+    "no control row",
+    "no control record",
+    "no record payload",
+    "row path is not text",
+    "row chunk number is not an integer",
+    "row payload is not a blob",
+    "malformed file ordinal",
+    "duplicate FTS chunk",
+    "has a registry row but no loaded data",
+    "no document identity",
+    "FTS segment reader",
+];
+
+/// 错误是否属于 FTS 索引损坏家族(检索全链路的任何阶段都可能炸:
+/// 同步/清理/查询;turso 错误经文本包装后子串仍原样保留)
+fn is_fts_corrupt(message: &str) -> bool {
+    FTS_CORRUPT_MARKERS.iter().any(|m| message.contains(m))
+}
+
 /// job 生命周期事件 → 呈现行(latest-wins fold;基线合并与落档种子
 /// 共用)。行 shape 与 shell_job_rows 对齐(桌面整体替换帧直接吃);
 /// spawned 无后续 settled/lost = 开放行(running),lost 归 failed——
@@ -5379,20 +5405,25 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         limit: usize,
         session: Option<&str>,
     ) -> Result<Value, RpcError> {
-        // 旧版 turso 的 FTS 索引格式不被当前版本识别(CREATE INDEX IF
-        // NOT EXISTS 跳过校验,首次写入/查询才炸):索引是纯派生物
-        //(事实源 = 各会话 JSONL),删库重建一次再检索
+        // FTS 索引损坏(turso 的 Corrupt 家族,含旧版建库/外来毒行/
+        // 段数据缺失)一律删库重建一次:索引是纯派生物(事实源 = 各会话
+        // JSONL),重建零损失;再败则原样上抛,不循环
         match self.search_sessions_inner(query, limit, session).await {
             Ok(v) => Ok(v),
-            Err(e) if e.message.contains("older version of Turso") => {
-                *self.search.lock().await = None;
-                let path = self.sessions_root.join("search.db");
-                for suffix in ["", "-wal", "-shm"] {
-                    let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
-                }
+            Err(e) if is_fts_corrupt(&e.message) => {
+                self.reset_search_index().await;
                 self.search_sessions_inner(query, limit, session).await
             }
             Err(e) => Err(e),
+        }
+    }
+
+    /// 丢弃索引连接并删除索引库三件套,下次检索懒重建
+    async fn reset_search_index(&self) {
+        *self.search.lock().await = None;
+        let path = self.sessions_root.join("search.db");
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }
     }
 
@@ -15796,6 +15827,69 @@ mod tests {
                 .any(|h| h["kind"] == "user"),
             "用户输入引号应剥除后照常命中: {out}"
         );
+    }
+
+    /// FTS 自愈匹配面:损坏家族全指纹命中(含经 RPC 前缀包装的复合
+    /// 形态),非家族错误一律不触发——过宽会让持续性故障每轮检索都
+    /// 付出整库重建。
+    ///
+    /// 回归锁:自愈曾只认旧版建库单串,外来毒行(FTS registry scan
+    /// hit an unrecognized row)不命中导致搜索永久硬失败。
+    #[test]
+    fn fts_corruption_predicate_matches_whole_family() {
+        let family = [
+            "turso: FTS index search.db was created by an older version of Turso and cannot be opened",
+            "turso: FTS registry scan hit an unrecognized row: meta.json",
+            "turso: FTS tombstone scan hit an unrecognized row: meta.json",
+            "turso: FTS index docs_fts has a backing store with no control row",
+            "turso: FTS v2 store has rows but no control record",
+            "turso: FTS cursor has no record payload",
+            "turso: FTS row path is not text",
+            "turso: FTS row chunk number is not an integer",
+            "turso: FTS row payload is not a blob",
+            "turso: FTS chunk row has malformed file ordinal: seg/0001",
+            "turso: duplicate FTS chunk seg/0001:0",
+            "turso: FTS segment 9f has a registry row but no loaded data",
+            "turso: FTS segment 9f has no document identity high column; rebuild the index: bad",
+            "turso: FTS segment reader: io error",
+        ];
+        for msg in family {
+            assert!(is_fts_corrupt(msg), "家族文案应命中: {msg}");
+        }
+        // 真实毒报形态:同步/清理/查询三处前缀都不影响判定
+        for prefixed in [
+            "索引同步失败:turso: FTS registry scan hit an unrecognized row: meta.json",
+            "索引清理失败:turso: FTS registry scan hit an unrecognized row: meta.json",
+            "检索失败:turso: FTS tombstone scan hit an unrecognized row: tomb/9",
+        ] {
+            assert!(is_fts_corrupt(prefixed), "前缀复合串应命中: {prefixed}");
+        }
+        for outsider in [
+            "检索索引打开失败:unable to open database file",
+            "检索失败:no such table: docs",
+            "索引同步失败:行解析失败 0: 损坏的 JSON",
+            "sql parser error: near \"FROM\"",
+        ] {
+            assert!(!is_fts_corrupt(outsider), "非家族错误不得命中: {outsider}");
+        }
+    }
+
+    /// FTS 自愈清库:三件套(search.db/-wal/-shm)全部移除,连接句柄
+    /// 先丢弃——下次检索从空库懒重建。
+    #[tokio::test]
+    async fn reset_search_index_removes_db_files() {
+        let host = temp_host("searchreset");
+        let db = host.sessions_root.join("search.db");
+        for suffix in ["", "-wal", "-shm"] {
+            std::fs::write(format!("{}{suffix}", db.display()), b"poison").unwrap();
+        }
+        host.reset_search_index().await;
+        for suffix in ["", "-wal", "-shm"] {
+            assert!(
+                !std::fs::exists(format!("{}{suffix}", db.display())).unwrap(),
+                "{suffix} 应被删除"
+            );
+        }
     }
 
     /// 通用区偏好:busy_enter 落盘 + 校验 + 重启保留 + view 携带
