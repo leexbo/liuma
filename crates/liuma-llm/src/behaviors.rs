@@ -52,10 +52,19 @@ impl ThinkingRule {
 }
 
 /// 按规则表解析思考注入(键经 rig `#[serde(flatten)]` additional_params
-/// 落 body 顶层;`None` = 表内无命中,不发)
+/// 落 body 顶层;`None` = 表内无命中,不发)。effort `"off"` = 显式关
+/// 思考:仅「有思考开关字段」的规则可表达(thinking:{type:"disabled"}、
+/// 不发档位);档位-only 形态无开关可关 → None 回落模型默认;矩阵外
+/// (官方 claude 等)本就不发 → None
 pub fn thinking_params(rules: &[ThinkingRule], model: &str, effort: &str) -> Option<Value> {
     let m = model.to_ascii_lowercase();
     let rule = rules.iter().find(|r| m.contains(r.model_match))?;
+    if effort == "off" {
+        return rule
+            .thinking_type
+            .is_some()
+            .then(|| json!({ "thinking": { "type": "disabled" } }));
+    }
     let mut o = serde_json::Map::new();
     if let Some(t) = rule.thinking_type {
         let t = match t {
@@ -387,5 +396,27 @@ mod tests {
             r#"{"code":1308,"msg":"配额窗口"}"#,
         );
         assert!(kept.retryable(), "未命中码原分类透传");
+    }
+
+    /// 「off」档表达:有思考开关的规则 → thinking:disabled 且不发档位;
+    /// 档位-only 规则与矩阵外 → None(无法表达,回落服务端默认);
+    /// 非 off 档位走原形态(回归锚)
+    #[test]
+    fn off_effort_disables_thinking_only_when_switch_exists() {
+        use crate::providers::anthropic::ANTHROPIC_THINKING_RULES;
+        let p = thinking_params(ANTHROPIC_THINKING_RULES, "deepseek-flash", "off").unwrap();
+        assert_eq!(p, serde_json::json!({ "thinking": { "type": "disabled" } }));
+        // kimi:档位-only 规则,无开关可关 → None
+        assert!(thinking_params(ANTHROPIC_THINKING_RULES, "kimi-k2", "off").is_none());
+        // 矩阵外(官方 claude):本就不发 → None
+        assert!(thinking_params(ANTHROPIC_THINKING_RULES, "claude-sonnet", "off").is_none());
+        let p = thinking_params(ANTHROPIC_THINKING_RULES, "deepseek-flash", "high").unwrap();
+        assert_eq!(
+            p,
+            serde_json::json!({
+                "thinking": { "type": "enabled" },
+                "output_config": { "effort": "high" },
+            })
+        );
     }
 }

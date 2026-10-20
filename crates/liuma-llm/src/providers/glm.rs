@@ -39,6 +39,10 @@ impl ProviderAdapter for GlmResponsesAdapter {
         &self.behaviors
     }
     fn effort_params(&self, _model: &str, effort: &str) -> Option<serde_json::Value> {
+        // off 无可表达形态(reasoning 只收档位)→ None,回落服务端默认
+        if effort == "off" {
+            return None;
+        }
         Some(serde_json::json!({ "reasoning": { "effort": effort } }))
     }
 }

@@ -1340,12 +1340,14 @@ Aim for about 5 words in non-CJK languages or 10 CJK characters."
 }
 
 /// 4b:一次性零工具请求 header(零历史;仅模型与 system,temp 0)。
+/// 思考档 off:标题是辅助一次性调用,推理无人消费纯增延迟——「off」
+/// 表达层只对「有思考开关」的模型/方言生效,其余 no-op(不发字段)
 fn title_request_header(model: &str) -> RequestHeader {
     RequestHeader {
         model: model.to_string(),
         system: title_system_prompt(),
         temperature: 0.0,
-        reasoning_effort: None,
+        reasoning_effort: Some("off".into()),
         tools: Vec::new(),
     }
 }
@@ -10099,6 +10101,17 @@ async fn driver_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 标题请求 header:思考档 off(辅助一次性调用,推理无人消费;
+    /// 「off」表达层只对有思考开关的模型生效,其余 no-op)+ 零工具 +
+    /// temp 0
+    #[test]
+    fn title_header_uses_off_effort_without_tools() {
+        let h = title_request_header("deepseek-flash");
+        assert_eq!(h.reasoning_effort.as_deref(), Some("off"));
+        assert!(h.tools.is_empty());
+        assert_eq!(h.temperature, 0.0);
+    }
 
     /// mock 服务器在回环:清环境代理再起(reqwest 吃 http_proxy 系变量
     /// 且不豁免回环,带代理的 CI/开发机会把 mock 流量送进代理全红;

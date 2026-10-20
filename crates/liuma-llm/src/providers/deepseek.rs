@@ -28,8 +28,12 @@ impl ProviderAdapter for DeepSeekResponsesAdapter {
         &self.behaviors
     }
     /// OpenAI Responses 家族契约:`reasoning:{effort}`(DeepSeek 与
-    /// OpenAI 同形;方言级表达,不经模型矩阵)
+    /// OpenAI 同形;方言级表达,不经模型矩阵)。`off` 无可表达形态
+    /// (reasoning 只收档位)→ None,回落服务端默认
     fn effort_params(&self, _model: &str, effort: &str) -> Option<serde_json::Value> {
+        if effort == "off" {
+            return None;
+        }
         Some(serde_json::json!({ "reasoning": { "effort": effort } }))
     }
 }
@@ -59,6 +63,11 @@ impl ProviderAdapter for DeepSeekChatAdapter {
         &self.behaviors
     }
     fn effort_params(&self, _model: &str, effort: &str) -> Option<serde_json::Value> {
+        // off = 显式关思考:只发开关字段(档位值域 low/high/max,off
+        // 非法 → 不带 reasoning_effort;8d1e722 两字段形态保持)
+        if effort == "off" {
+            return Some(serde_json::json!({ "thinking": { "type": "disabled" } }));
+        }
         Some(serde_json::json!({
             "thinking": { "type": "enabled" },
             "reasoning_effort": effort,
@@ -120,5 +129,31 @@ impl Default for DeepSeekChatAdapter {
         Self {
             behaviors: behaviors(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::adapters::adapter_by_name;
+
+    /// off 档按面分叉:chat 面只发开关字段不带档位(8d1e722 形态的
+    /// 第三态);responses 面 reasoning 只收档位 → None 回落默认
+    #[test]
+    fn off_effort_shapes_per_family() {
+        let chat = adapter_by_name("deepseek-chat").unwrap();
+        let p = chat.effort_params("deepseek-flash", "off").unwrap();
+        assert_eq!(p, serde_json::json!({ "thinking": { "type": "disabled" } }));
+        let p = chat.effort_params("deepseek-flash", "high").unwrap();
+        assert_eq!(
+            p,
+            serde_json::json!({
+                "thinking": { "type": "enabled" },
+                "reasoning_effort": "high",
+            })
+        );
+        let responses = adapter_by_name("deepseek-responses").unwrap();
+        assert!(responses.effort_params("deepseek-flash", "off").is_none());
+        let p = responses.effort_params("deepseek-flash", "low").unwrap();
+        assert_eq!(p, serde_json::json!({ "reasoning": { "effort": "low" } }));
     }
 }
