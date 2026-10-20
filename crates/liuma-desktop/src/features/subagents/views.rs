@@ -83,12 +83,16 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
     let anchor = st.subagent_anchor_of(&current);
     let viewing_child = anchor != current;
     let rows = st.lineage_rows(&anchor);
-    // 集合:运行中全部 + 驻留待命(idle 可继续;对等寻址面:待命代理
-    // 仍可收消息,行副行摘要的价值恰在空闲期)+ 当前查看的子会话补位
-    // 高亮。shell job 无续话语义,维持仅运行中(D48d 原语义)
+    // 集合:运行中全部 + shell job 全生命周期(终态行保留可见——磁盘
+    // 日志是持久事实,任务条是它的唯一 UI 面;落定即消失曾是 D48d
+    // 语义,因「桌面看不到任何 job 运行记录」被否)+ 驻留待命(idle
+    // 可继续;对等寻址面:待命代理仍可收消息,行副行摘要的价值恰在
+    // 空闲期)+ 当前查看的子会话补位高亮
     let mut chips: Vec<LineageRow> = rows
         .iter()
-        .filter(|r| r.running || (r.kind != "shell" && r.dot == Some("completed")))
+        .filter(|r| {
+            r.running || r.kind == "shell" || (r.kind != "shell" && r.dot == Some("completed"))
+        })
         .cloned()
         .collect();
     if viewing_child
@@ -184,6 +188,10 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
             let s_chip = store.clone();
             let chip = chip.clone();
             let chip_id = chip.session_id.clone();
+            let is_shell = chip.kind == "shell";
+            // shell 行选择器带 id(终态可见性断言按行定位);子代理行
+            // 保持裸 "task-chip"(既有测试按它点击切换)
+            let sel_id = chip.session_id.clone();
             let running = chip.running;
             let viewing = chip.session_id == current;
             let timing = duration_text(&chip);
@@ -193,7 +201,13 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                     "task-row-{}",
                     chip.session_id
                 )))
-                .debug_selector(|| "task-chip".to_string())
+                .debug_selector(move || {
+                    if is_shell {
+                        format!("task-chip-{sel_id}")
+                    } else {
+                        "task-chip".to_string()
+                    }
+                })
                 .flex()
                 .items_center()
                 .gap(px(8.))

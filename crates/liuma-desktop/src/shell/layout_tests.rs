@@ -12985,6 +12985,65 @@ fn collapse_strips_toggle_their_panels(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// 任务条终态可见:已落定 shell job 行保留在场(磁盘日志是持久事实,
+/// 任务条是其唯一 UI 面;D48d「仅运行中」语义已废)。completed/failed
+/// 两终态行 + 无打断钮(仅运行中行才有)一并锁
+#[gpui_kit::test]
+fn settled_shell_jobs_stay_visible_in_task_bar(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "shell-ended");
+    let session = cx
+        .update(|app| store.read(app).state.current_id.clone())
+        .expect("当前会话");
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            use crate::features::chat::projection::{ChatNode, ChatState};
+            let id = st.state.current_id.clone().expect("当前会话");
+            let mut chat = ChatState::default();
+            chat.nodes.push(ChatNode::User {
+                key: "user:1".into(),
+                text: "后台跑一个构建".into(),
+                images: vec![],
+                files: Vec::new(),
+                time: 0,
+            });
+            st.state.chats.insert(id, chat);
+            st.state.jobs_by_id.insert(
+                session,
+                vec![
+                    serde_json::json!({
+                        "id": "job-7", "kind": "shell", "label": "cargo build",
+                        "status": "completed", "startedAt": 1_000, "finishedAt": 9_000,
+                    }),
+                    serde_json::json!({
+                        "id": "job-8", "kind": "shell", "label": "cargo test",
+                        "status": "failed", "startedAt": 2_000, "finishedAt": 3_000,
+                    }),
+                ],
+            );
+            cx.notify();
+        })
+    });
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("task-bar").is_some(),
+        "终态 shell job 未撑起任务条"
+    );
+    assert!(
+        wcx.debug_bounds("task-chip-job-7").is_some(),
+        "completed shell 行不可见"
+    );
+    assert!(
+        wcx.debug_bounds("task-chip-job-8").is_some(),
+        "failed shell 行不可见"
+    );
+    assert!(
+        wcx.debug_bounds("task-stop").is_none(),
+        "终态行不应出现打断钮(仅运行中行持有)"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 权限下拉锚在触发行上方、盖过输入卡体(模型/上下文已同迁根级,
 /// 分别见 model_menu_root_card_anchors_above_trigger /
 /// context_meter_renders_and_opens)。
