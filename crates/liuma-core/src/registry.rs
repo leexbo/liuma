@@ -679,8 +679,12 @@ pub struct AppHost {
     /// 子代理注册表 jobs 源(父会话 id → 弱引用;registry 随工具释放)
     jobs_sources: Mutex<HashMap<String, liuma_tools::subagent::WeakRegistry>>,
     /// shell job 注册表源(父会话 id → 弱引用;状态变化 → 重广播
-    /// 合并 session/jobs 帧)
+    /// 合并 session/jobs 帧)。单注册表化后所有条目指向同一宿主级
+    /// 实例([`Self::jobs`]),本表仅承担「哪些父会话在场」的登记
     shell_job_sources: Mutex<HashMap<String, liuma_tools::WeakJobsRegistry>>,
+    /// 宿主级唯一 shell job 注册表(父与子代理的 bash/jobs 工具共享;
+    /// 记录带 owner 归属,子代理后台任务由此入宿主帧桥)
+    jobs: liuma_tools::JobsRegistry,
     /// 子会话事件翻译器(按子会话持计数器状态,translate→mux 实时流)
     subagent_translators: Mutex<HashMap<String, Translator>>,
     /// 用户级设置(~/.liuma/settings.yaml;setter 落盘与冷装配读取)
@@ -1480,6 +1484,7 @@ impl AppHost {
             live_children: Mutex::new(std::collections::HashSet::new()),
             jobs_sources: Mutex::new(HashMap::new()),
             shell_job_sources: Mutex::new(HashMap::new()),
+            jobs: liuma_tools::JobsRegistry::new(),
             subagent_translators: Mutex::new(HashMap::new()),
             model_overrides: std::sync::RwLock::new(HashMap::new()),
             preset_overrides: std::sync::RwLock::new(HashMap::new()),
@@ -5158,6 +5163,9 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                             AppHost::bind_shell_jobs(&host, pid, reg);
                         })
                     },
+                    // 宿主级唯一注册表:父与子代理的 bash/jobs 工具共享,
+                    // 记录带 owner——子代理后台任务由此接入宿主帧桥
+                    jobs_registry: self_arc.jobs.clone(),
                 })),
                 extra_tools,
             )
@@ -7199,22 +7207,37 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             .insert(parent_id.to_string(), registry.downgrade());
     }
 
-    /// 接线 shell job 注册表为某父会话的 jobs 源(与 [`Self::bind_jobs`]
-    /// 同构):挂状态变更弱引用回调,任何登记/收尾/stop 变化即重广播
-    /// 合并 session/jobs 帧(shell 行与子代理行同帧呈现)
+    /// 接线 shell job 注册表为某父会话的 jobs 源:登记弱引用并挂观察
+    /// 回调——单注册表化后所有父指向同一宿主实例,回调不锚定单一父,
+    /// 任一变化即对全部在册父会话重广播(谱系过滤后各得各的行)
     pub fn bind_shell_jobs(self: &Arc<Self>, parent_id: &str, registry: liuma_tools::JobsRegistry) {
         registry.set_on_change(Some(Arc::new({
             let host = Arc::downgrade(self);
-            let parent = parent_id.to_string();
             move || {
                 if let Some(host) = host.upgrade() {
-                    host.broadcast_jobs(&parent);
+                    host.broadcast_all_jobs();
                 }
             }
         })));
         self.shell_job_sources
             .lock_recover()
             .insert(parent_id.to_string(), registry.downgrade());
+    }
+
+    /// 对全部在册父会话重广播 jobs 帧(单注册表的变更回调;锁内只
+    /// 收集父 id——回调会重入 [`Self::jobs_snapshot`] 再取两源锁,
+    /// 持锁调用 = 死锁)
+    pub fn broadcast_all_jobs(&self) {
+        let mut parents: Vec<String> = {
+            let shell = self.shell_job_sources.lock_recover();
+            let subs = self.jobs_sources.lock_recover();
+            shell.keys().chain(subs.keys()).cloned().collect()
+        };
+        parents.sort();
+        parents.dedup();
+        for parent in parents {
+            self.broadcast_jobs(&parent);
+        }
     }
 
     /// 宿主侧停止后台 shell job(任务面板行直呼;与 jobs 工具 stop
@@ -7394,7 +7417,10 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             match sources.get(parent_id).and_then(|w| w.upgrade()) {
                 Some(registry) => {
                     alive = true;
-                    jobs.extend(Self::shell_job_rows(&registry));
+                    // 谱系先行(jobs_sources 锁与 shell 锁不嵌套):shell
+                    // 行只带本谱系的 owner(父自身 + 驻留子)与无主记录
+                    let lineage = self.job_lineage(parent_id);
+                    jobs.extend(Self::shell_job_rows(&registry, &lineage));
                 }
                 None => {
                     sources.remove(parent_id);
@@ -7404,13 +7430,38 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         alive.then_some(jobs)
     }
 
+    /// 父会话的任务谱系:父自身 + 其驻留子会话 id(单注册表下 shell
+    /// job 的 owner 归属判定;子 job 由此归入父帧,任务条呈全谱系)
+    fn job_lineage(&self, parent_id: &str) -> std::collections::HashSet<String> {
+        let mut set: std::collections::HashSet<String> =
+            std::iter::once(parent_id.to_string()).collect();
+        if let Some(registry) = self
+            .jobs_sources
+            .lock_recover()
+            .get(parent_id)
+            .and_then(|w| w.upgrade())
+        {
+            set.extend(
+                registry
+                    .background_records()
+                    .iter()
+                    .map(|r| r.session_id.clone()),
+            );
+        }
+        set
+    }
+
     /// shell job 注册表记录 → SessionJob 行(id 加 job- 前缀防与
     /// 子会话槽位 id 撞名;done→completed、stopped→killed 映射与
-    /// 子代理侧对齐)
-    fn shell_job_rows(registry: &liuma_tools::JobsRegistry) -> Vec<Value> {
+    /// 子代理侧对齐)。谱系外 owner 的记录不出行(他会的任务)
+    fn shell_job_rows(
+        registry: &liuma_tools::JobsRegistry,
+        lineage: &std::collections::HashSet<String>,
+    ) -> Vec<Value> {
         let records = registry.lock().unwrap_or_else(|p| p.into_inner());
         records
             .iter()
+            .filter(|r| r.owner.is_empty() || lineage.contains(&r.owner))
             .map(|r| {
                 let status = match r.status.as_str() {
                     "running" => "running",
@@ -7423,6 +7474,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                     "kind": "shell",
                     "label": r.command,
                     "status": status,
+                    "owner": r.owner,
                     "startedAt": r.started_at,
                 });
                 if let Some(ended) = r.ended_at {
@@ -11405,6 +11457,7 @@ mod tests {
         {
             let mut records = registry.lock().unwrap();
             records.push(liuma_tools::JobRecord {
+                owner: String::new(),
                 id: 7,
                 command: "sleep 30".into(),
                 status: "running".into(),
@@ -16640,6 +16693,7 @@ mod tests {
         {
             let mut records = registry.lock().unwrap();
             records.push(liuma_tools::JobRecord {
+                owner: String::new(),
                 id: 1,
                 command: "cargo build".into(),
                 status: "running".into(),
@@ -16698,6 +16752,99 @@ mod tests {
                         .is_some_and(|jobs| jobs.iter().any(|j| j["id"] == "job-1"))
             }),
             "基线应含 shell jobs 快照"
+        );
+    }
+
+    /// 单注册表谱系归属:父帧只带本谱系(父自身 + 驻留子 owner + 无主)
+    /// 的 shell 行,他谱系记录不出行。
+    ///
+    /// 回归锁:子代理后台任务此前在独立注册表且从不接宿主帧桥,桌面
+    /// 永远不可见;单注册表化后子 job 必须以 owner 归入父帧
+    #[tokio::test]
+    async fn shell_jobs_frame_scopes_rows_by_owner_lineage() {
+        let host = temp_host("job-lineage");
+        host.set_fake_script(script(&["ok"]));
+        let mut mux = host.mux_subscribe();
+        let id = host.create_session(None, None, None);
+        host.prompt(&id, &[json!({ "type": "text", "text": "hi" })], "queue")
+            .await
+            .unwrap();
+        let _ = recv_until(&mut mux, |f| {
+            f.method == "session/event" && f.payload["event"]["type"] == "turn/end"
+        })
+        .await;
+
+        // 驻留子代理登记(谱系展开源):s-child 属于本父
+        let subs = liuma_tools::subagent::SubagentRegistry::default();
+        subs.lock().unwrap().push(liuma_tools::SubagentRecord {
+            id: 1,
+            task: "research".into(),
+            status: "running".into(),
+            session_id: "s-child".into(),
+            session_path: "/tmp/s-child".into(),
+            background: true,
+            tx: None,
+            steer: None,
+            stop: None,
+            prompt: "p".into(),
+            started_at: 1,
+            ended_at: None,
+            last_message: None,
+        });
+        AppHost::bind_jobs(&host, &id, subs.clone());
+
+        // 单注册表:四条记录 = 父 own / 子 own / 他谱系 / 无主
+        let registry = liuma_tools::JobsRegistry::new();
+        AppHost::bind_shell_jobs(&host, &id, registry.clone());
+        for (job_id, owner) in [
+            (1, id.as_str()),
+            (2, "s-child"),
+            (3, "s-elsewhere"),
+            (4, ""),
+        ] {
+            let mut records = registry.lock().unwrap();
+            records.push(liuma_tools::JobRecord {
+                owner: owner.into(),
+                id: job_id,
+                command: format!("cmd {job_id}"),
+                status: "running".into(),
+                log_path: PathBuf::from(format!("/tmp/j{job_id}.log")),
+                killer: None,
+                grace: Duration::from_secs(1),
+                started_at: 100 + job_id as i64,
+                ended_at: None,
+                exit_code: None,
+                signal: None,
+                notice_suppressed: false,
+            });
+        }
+        registry.changed();
+        let frame = recv_until(&mut mux, |f| {
+            f.method == "session/jobs" && f.payload["sessionId"] == serde_json::json!(id)
+        })
+        .await
+        .expect("jobs 帧应到达");
+        let jobs = frame.payload["jobs"].as_array().unwrap();
+        let shell_ids: Vec<&str> = jobs
+            .iter()
+            .filter(|j| j["kind"] == "shell")
+            .filter_map(|j| j["id"].as_str())
+            .collect();
+        assert!(
+            shell_ids.contains(&"job-1"),
+            "父 own 任务应在帧内: {shell_ids:?}"
+        );
+        assert!(
+            shell_ids.contains(&"job-2"),
+            "驻留子 own 任务应归入父帧(缺口②的锁): {shell_ids:?}"
+        );
+        assert!(
+            shell_ids.contains(&"job-4"),
+            "无主任务所有谱系可见: {shell_ids:?}"
+        );
+        assert!(
+            !shell_ids.contains(&"job-3"),
+            "他谱系任务不得入帧: {shell_ids:?}"
         );
     }
 

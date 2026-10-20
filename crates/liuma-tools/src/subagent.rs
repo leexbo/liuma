@@ -316,6 +316,9 @@ pub struct SubagentBridge {
     pub events: SubagentEventSink,
     /// shell job 注册表登记(状态变化 → session/jobs 帧合并广播)
     pub shell_jobs: ShellJobsBinding,
+    /// 宿主级唯一 shell job 注册表(单注册表化:父与子代理的 bash/jobs
+    /// 工具复用同一实例,记录带 owner 归属;帧按谱系过滤后仍按父聚合)
+    pub jobs_registry: crate::JobsRegistry,
 }
 
 /// 注册表弱引用(宿主持有;upgrade 失败 = 工具已随会话释放)
@@ -335,7 +338,8 @@ struct ChildParts {
     child_root: std::path::PathBuf,
     header: RequestHeader,
     log: Arc<Mutex<EventLog>>,
-    /// 子代理自己的后台任务注册表(bash 后台 + jobs 工具共享)
+    /// 后台任务注册表(bash 后台 + jobs 工具共享;单注册表化后 =
+    /// 宿主级唯一实例的克隆,记录 owner 指向本子会话)
     jobs: crate::JobsRegistry,
     /// 子代理 job 结算通知路由(驻留形态在场;前台一次性 = None,
     /// turn 结束后无会话可投,job 静默落定)
@@ -414,6 +418,7 @@ async fn prepare_child_parts(
     handle: &SubagentSessionHandle,
     model: &str,
     parent_id: Option<&str>,
+    jobs: Option<crate::JobsRegistry>,
 ) -> Result<ChildParts, String> {
     let child_root = handle
         .session_path
@@ -482,7 +487,7 @@ async fn prepare_child_parts(
         child_root,
         header,
         log,
-        jobs: crate::JobsRegistry::new(),
+        jobs: jobs.unwrap_or_default(),
         job_notify: None,
     })
 }
@@ -509,7 +514,9 @@ struct ChildToolContext<'a> {
 fn build_child_tools(ctx: ChildToolContext) -> Result<liuma_agent_loop::ToolSet, String> {
     let child_bash =
         crate::BashTool::new(&ctx.parts.child_root).with_cancel(ctx.turn_token.clone());
-    let child_bash = child_bash.with_jobs(ctx.parts.jobs.clone());
+    let child_bash = child_bash
+        .with_jobs(ctx.parts.jobs.clone())
+        .with_job_owner(ctx.session_id);
     // job 结算通知投回子代理自己(驻留形态;发起会话 = 本子代理)
     let child_bash = match &ctx.parts.job_notify {
         Some(port) => child_bash.with_job_notify(Arc::clone(port), ctx.session_id),
@@ -520,7 +527,7 @@ fn build_child_tools(ctx: ChildToolContext) -> Result<liuma_agent_loop::ToolSet,
         Box::new(crate::FileTools::new(&ctx.parts.child_root)),
         Box::new(crate::TodoWriteTool::new(Arc::clone(&ctx.parts.log))),
         Box::new(crate::GoalTool::new(Arc::clone(&ctx.parts.log))),
-        Box::new(crate::JobTool::new(ctx.parts.jobs.clone())),
+        Box::new(crate::JobTool::new(ctx.parts.jobs.clone()).with_owner(ctx.session_id)),
     ];
     if let Some(port) = ctx.query_port {
         tools.push(Box::new(crate::session_query::SessionQueryTool::new(
@@ -837,6 +844,8 @@ pub struct SubagentCore<T> {
     pub query_port: Option<Arc<dyn crate::session_query::SessionQueryPort>>,
     /// 对等寻址 port(驻留子面 AgentMessageTool 的背端;缺 = 子面无寻址)
     pub addressing: Option<Arc<dyn AddressingPort>>,
+    /// 宿主级 jobs 注册表(单注册表化;None = 每 child 新建,CLI/测试)
+    pub jobs_registry: Option<crate::JobsRegistry>,
 }
 
 impl<T> Clone for SubagentCore<T> {
@@ -853,6 +862,7 @@ impl<T> Clone for SubagentCore<T> {
             event_sink: self.event_sink.clone(),
             query_port: self.query_port.clone(),
             addressing: self.addressing.clone(),
+            jobs_registry: self.jobs_registry.clone(),
         }
     }
 }
@@ -894,6 +904,7 @@ where
                 event_sink: None,
                 query_port: None,
                 addressing: None,
+                jobs_registry: None,
             }),
         }
     }
@@ -934,6 +945,12 @@ where
     /// 注入通知 port(注入后模型面切后台默认形态)
     pub fn with_notify(self, notify: Arc<dyn SettlementNotificationPort>) -> Self {
         self.with_core(|c| c.notify = Some(notify))
+    }
+
+    /// 注入宿主级 jobs 注册表(单注册表化;子 bash/jobs 工具复用同一
+    /// 实例,job 记录 owner 指向子会话)
+    pub fn with_jobs_registry(self, registry: crate::JobsRegistry) -> Self {
+        self.with_core(|c| c.jobs_registry = Some(registry))
     }
 
     /// 注入会话检索 port(子代理工具面扩装)
@@ -983,16 +1000,18 @@ where
     pub(crate) async fn run_foreground(&self, prompt: &str) -> ToolOutput {
         let (id, handle) = self.make_session();
         let path_str = handle.session_path.display().to_string();
-        let parts = match prepare_child_parts(&handle, &self.model, None).await {
-            Ok(parts) => parts,
-            Err(msg) => {
-                return ToolOutput {
-                    output: msg,
-                    success: false,
-                    ..Default::default()
-                };
-            }
-        };
+        let parts =
+            match prepare_child_parts(&handle, &self.model, None, self.jobs_registry.clone()).await
+            {
+                Ok(parts) => parts,
+                Err(msg) => {
+                    return ToolOutput {
+                        output: msg,
+                        success: false,
+                        ..Default::default()
+                    };
+                }
+            };
         let started_at = now_ms();
         self.registry
             .lock()
@@ -1148,6 +1167,7 @@ where
             rx,
             query_port: self.query_port.clone(),
             addressing: self.addressing.clone(),
+            jobs_registry: self.jobs_registry.clone(),
             release: Arc::new(|| ()),
             first: Some(ChildMsg::Prompt {
                 text: prompt.to_string(),
@@ -1219,6 +1239,7 @@ where
                 rx,
                 query_port: self.query_port.clone(),
                 addressing: self.addressing.clone(),
+                jobs_registry: self.jobs_registry.clone(),
                 release: Arc::new(move || release_factory.release_child(&release_id)),
                 first: None,
                 resumed_interrupted: interrupted,
@@ -1247,6 +1268,8 @@ struct ResidentChild<T> {
     query_port: Option<Arc<dyn crate::session_query::SessionQueryPort>>,
     /// 对等寻址 port(子面 AgentMessageTool 背端;None = 子面无寻址)
     addressing: Option<Arc<dyn AddressingPort>>,
+    /// 宿主级 jobs 注册表(单注册表化;None = 每 child 新建)
+    jobs_registry: Option<crate::JobsRegistry>,
     /// 驻留退出释放认领(重挂形态必持;新建为 no-op)
     release: Arc<dyn Fn() + Send + Sync>,
     /// 初始 prompt(委派即带;与续话统一走消息循环)
@@ -1290,21 +1313,23 @@ where
         mut rx,
         query_port,
         addressing,
+        jobs_registry,
         release: _,
         mut first,
         resumed_interrupted,
     } = child;
 
-    let mut parts = match prepare_child_parts(&handle, &model, Some(&parent_id)).await {
-        Ok(parts) => parts,
-        Err(_) => {
-            // 装配失败:记录 failed 并以失败通知收口(父会话必须知道委派没成)
-            set_status(&registry, &handle.session_id, "failed");
-            let (text, source) = settlement_notice(&handle.session_id, "error", None);
-            notify.notify(&parent_id, text, source).await;
-            return;
-        }
-    };
+    let mut parts =
+        match prepare_child_parts(&handle, &model, Some(&parent_id), jobs_registry).await {
+            Ok(parts) => parts,
+            Err(_) => {
+                // 装配失败:记录 failed 并以失败通知收口(父会话必须知道委派没成)
+                set_status(&registry, &handle.session_id, "failed");
+                let (text, source) = settlement_notice(&handle.session_id, "error", None);
+                notify.notify(&parent_id, text, source).await;
+                return;
+            }
+        };
     // 子代理自己发起的 shell job 结算通知投回自己(运行中 steer /
     // 空闲续话;steer/tx 已随驻留记录登记,路由按注册表现场判定)
     parts.job_notify = Some(Arc::new(ChildJobNotify {
@@ -1447,6 +1472,7 @@ where
                     set_status(&registry, &handle.session_id, "failed");
                     let (text, source) = settlement_notice(&handle.session_id, "error", None);
                     notify.notify(&parent_id, text, source).await;
+                    parts.jobs.stop_owner(&handle.session_id).await;
                     return;
                 }
             };
@@ -1533,6 +1559,9 @@ where
             }
         }
     }
+    // 驻留终结(owner 退出):名下后台任务一并收口——会话已逝,
+    // 无人能 read/wait 它们的产出
+    parts.jobs.stop_owner(&handle.session_id).await;
 }
 
 impl<T> ToolPort for SubagentTool<T>

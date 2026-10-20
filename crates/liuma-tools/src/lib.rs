@@ -129,6 +129,9 @@ pub struct BashTool {
     pub approval: Option<std::sync::Arc<dyn ApprovalPort>>,
     /// job 结算通知口(None = 此装配不投通知;schema 文案与承诺据此分支)
     pub job_notify: Option<JobNotify>,
+    /// 发起会话 id(单注册表多会话共享下,记录归属与 jobs 工具围栏、
+    /// 帧谱系过滤的判据;None = 无主记录)
+    pub job_owner: Option<String>,
 }
 
 impl BashTool {
@@ -147,6 +150,7 @@ impl BashTool {
             mode_source: None,
             approval: None,
             job_notify: None,
+            job_owner: None,
         }
     }
 
@@ -251,6 +255,12 @@ impl BashTool {
         session_id: impl Into<String>,
     ) -> Self {
         self.job_notify = Some((port, session_id.into()));
+        self
+    }
+
+    /// 标注发起会话(登记 JobRecord.owner;与 jobs 工具围栏同 id 源)
+    pub fn with_job_owner(mut self, owner: impl Into<String>) -> Self {
+        self.job_owner = Some(owner.into());
         self
     }
 
@@ -452,6 +462,7 @@ impl BashTool {
             &registry,
             &self.cwd,
             command,
+            self.job_owner.as_deref(),
             killer,
             Duration::from_secs(1),
         )
@@ -649,6 +660,7 @@ impl BashTool {
             &registry,
             &self.cwd,
             command,
+            self.job_owner.as_deref(),
             killer,
             Duration::from_secs(1),
         )
@@ -715,7 +727,15 @@ impl BashTool {
         };
         let killer = JobKiller::Pty(killer);
         // PTY 无宽限语义,grace 仅占位(killer 即杀)
-        let started = start_job(&registry, &self.cwd, command, killer, Duration::ZERO).await;
+        let started = start_job(
+            &registry,
+            &self.cwd,
+            command,
+            self.job_owner.as_deref(),
+            killer,
+            Duration::ZERO,
+        )
+        .await;
         match started {
             Ok((id, log_path)) => {
                 let notify = self.job_notify.clone();
@@ -754,12 +774,13 @@ impl BashTool {
     }
 }
 
-/// 后台 job 登记:目录就绪 + 注册表 push + 变更通知。
-/// `run_in_background` 启动与前台超时移交共用
+/// 后台 job 登记:目录就绪 + 原子登记(锁内分配 + push,并发不撞号)
+/// + 变更通知。`run_in_background` 启动与前台超时移交共用
 async fn start_job(
     registry: &JobsRegistry,
     cwd: &std::path::Path,
     command: &str,
+    owner: Option<&str>,
     killer: JobKiller,
     grace: Duration,
 ) -> Result<(u64, PathBuf), String> {
@@ -769,27 +790,7 @@ async fn start_job(
     tokio::fs::create_dir_all(&jobs_dir)
         .await
         .map_err(|e| format!("jobs dir create failed: {e}"))?;
-    let floor = max_disk_job_id(&jobs_dir);
-    let id = next_job_id(registry, floor);
-    let log_path = jobs_dir.join(format!("{id}.log"));
-    registry
-        .lock()
-        .map(|mut r| {
-            r.push(JobRecord {
-                id,
-                command: command.to_string(),
-                status: "running".into(),
-                log_path: log_path.clone(),
-                killer: Some(killer),
-                grace,
-                started_at: jobs::now_ms(),
-                ended_at: None,
-                exit_code: None,
-                signal: None,
-                notice_suppressed: false,
-            })
-        })
-        .map_err(|_| "jobs registry unavailable".to_string())?;
+    let (id, log_path) = registry.register_start(&jobs_dir, command, owner, killer, grace)?;
     registry.changed();
     Ok((id, log_path))
 }

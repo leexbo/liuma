@@ -32,6 +32,9 @@ pub const JOB_WAIT_MAX_MS: u64 = 600_000;
 pub struct JobRecord {
     /// 任务标识(单调递增)
     pub id: u64,
+    /// 归属会话(发起任务的 agent session id;空 = 无主,对所有谱系
+    /// 可见)。单注册表下 jobs 工具围栏与帧谱系过滤的判据
+    pub owner: String,
     /// 命令行
     pub command: String,
     /// 状态:running / done / failed / stopped
@@ -185,6 +188,105 @@ impl JobsRegistry {
             None => false,
         }
     }
+
+    /// 原子登记:磁盘 floor 播种 + id 分配 + push 占位记录收进同一把
+    /// records 锁——单注册表多会话并发 start 不撞号、log 路径不互截
+    /// (id 计算与可见性同临界区,后到者必见先到者的记录)。磁盘扫描
+    /// 在锁内(目录条目 = 历史任务数,量级远小于撞号截断的代价)
+    pub fn register_start(
+        &self,
+        jobs_dir: &std::path::Path,
+        command: &str,
+        owner: Option<&str>,
+        killer: JobKiller,
+        grace: std::time::Duration,
+    ) -> Result<(u64, PathBuf), String> {
+        let mut r = self
+            .lock()
+            .map_err(|_| "jobs registry unavailable".to_string())?;
+        let id = next_id_locked(&r, max_disk_job_id(jobs_dir));
+        let log_path = jobs_dir.join(format!("{id}.log"));
+        r.push(JobRecord {
+            id,
+            owner: owner.unwrap_or_default().to_string(),
+            command: command.to_string(),
+            status: "running".into(),
+            log_path: log_path.clone(),
+            killer: Some(killer),
+            grace,
+            started_at: now_ms(),
+            ended_at: None,
+            exit_code: None,
+            signal: None,
+            notice_suppressed: false,
+        });
+        Ok((id, log_path))
+    }
+
+    /// 全记录轻量快照(宿主帧投影;锁内取值、锁外使用)
+    pub fn snapshot(&self) -> Vec<JobSummary> {
+        self.lock()
+            .map(|r| {
+                r.iter()
+                    .map(|j| JobSummary {
+                        id: j.id,
+                        owner: j.owner.clone(),
+                        command: j.command.clone(),
+                        status: j.status.clone(),
+                        started_at: j.started_at,
+                        ended_at: j.ended_at,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 取消 owner 名下全部运行中任务(owner 会话退出清理):锁内置位
+    /// stopped + 摘句柄(fail-closed,与 stop 同纪律——半置位会让
+    /// watcher 的退出收尾覆盖语义失真),锁外分离终止;watcher 感知
+    /// 退出自然收尾。返回取消数
+    pub async fn stop_owner(&self, owner: &str) -> usize {
+        let pending: Vec<(JobKiller, std::time::Duration)> = {
+            let Ok(mut r) = self.lock() else {
+                return 0;
+            };
+            let mut out = Vec::new();
+            for job in r.iter_mut().filter(|j| j.owner == owner) {
+                if job.status == "running"
+                    && let Some(killer) = job.killer.take()
+                {
+                    job.status = "stopped".into();
+                    out.push((killer, job.grace));
+                }
+            }
+            out
+        };
+        let n = pending.len();
+        if n > 0 {
+            self.changed();
+        }
+        for (killer, grace) in pending {
+            let _ = killer.kill_detached(grace).await;
+        }
+        n
+    }
+}
+
+/// 帧投影快照行(宿主按谱系过滤后铸 session/jobs 帧)
+#[derive(Clone)]
+pub struct JobSummary {
+    pub id: u64,
+    pub owner: String,
+    pub command: String,
+    pub status: String,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+}
+
+/// 锁内 id 分配:内存峰值与磁盘 floor 取大者再 +1(语义见
+/// [`next_job_id`])
+fn next_id_locked(records: &[JobRecord], floor: u64) -> u64 {
+    records.iter().map(|j| j.id).max().unwrap_or(0).max(floor) + 1
 }
 
 /// 活等待者守卫:drop 即注销(超时/提前返回路径的自动退场——注销后
@@ -233,7 +335,7 @@ impl std::ops::Deref for JobsRegistry {
 pub fn next_job_id(registry: &JobsRegistry, floor: u64) -> u64 {
     registry
         .lock()
-        .map(|r| r.iter().map(|j| j.id).max().unwrap_or(0).max(floor) + 1)
+        .map(|r| next_id_locked(&r, floor))
         .unwrap_or(floor + 1)
 }
 
@@ -293,12 +395,33 @@ pub fn job_settlement_notice(
 pub struct JobTool {
     /// 注册表(与 BashTool 后台路径共享)
     pub registry: JobsRegistry,
+    /// 围栏 owner(发起会话 id;None = 不设围栏,可见全部——CLI/测试
+    /// 单注册表形态)。单注册表多会话共享下,list 只见自己 + 无主记录,
+    /// read/wait/stop 拒绝他人记录
+    owner: Option<String>,
 }
 
 impl JobTool {
     /// 以共享注册表构建
     pub fn new(registry: JobsRegistry) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            owner: None,
+        }
+    }
+
+    /// 设围栏 owner(发起会话 id)
+    pub fn with_owner(mut self, owner: impl Into<String>) -> Self {
+        self.owner = Some(owner.into());
+        self
+    }
+
+    /// 围栏判据:设了 owner 且记录有主非己 → 拒(无主记录对所有人生效)
+    fn denied(&self, job_owner: &str) -> bool {
+        match &self.owner {
+            Some(o) => !job_owner.is_empty() && job_owner != o,
+            None => false,
+        }
     }
 
     /// 尾读日志(最后 8KB → 解码 → 截 4096 字符)。流式落盘后文件
@@ -388,6 +511,9 @@ impl ToolPort for JobTool {
                 let Some(job) = registry.iter_mut().find(|j| j.id == id) else {
                     return fail(format!("job {id} not found"));
                 };
+                if self.denied(&job.owner) {
+                    return fail(format!("job {id} belongs to another session"));
+                }
                 if job.status != "running" {
                     return fail(format!("job {id} is not running ({})", job.status));
                 }
@@ -429,6 +555,9 @@ impl ToolPort for JobTool {
                 };
                 match registry.iter().find(|j| j.id == id) {
                     None => return fail(format!("job {id} not found")),
+                    Some(job) if self.denied(&job.owner) => {
+                        return fail(format!("job {id} belongs to another session"));
+                    }
                     Some(job) if job.status != "running" => WaitLane::Settled,
                     Some(_) => {
                         let (notify, guard) = self.registry.register_waiter(id);
@@ -521,6 +650,9 @@ impl ToolPort for JobTool {
                 let Some(job) = registry.iter().find(|j| j.id == id) else {
                     return fail(format!("job {id} not found"));
                 };
+                if self.denied(&job.owner) {
+                    return fail(format!("job {id} belongs to another session"));
+                }
                 (
                     job.status.clone(),
                     job.command.clone(),
@@ -540,17 +672,18 @@ impl ToolPort for JobTool {
         };
         match action {
             "list" => {
-                if registry.is_empty() {
+                let lines: Vec<String> = registry
+                    .iter()
+                    .filter(|j| !self.denied(&j.owner))
+                    .map(|j| format!("{}. [{}] {}", j.id, j.status, j.command))
+                    .collect();
+                if lines.is_empty() {
                     return ToolOutput {
                         output: "(no jobs)".into(),
                         success: true,
                         ..Default::default()
                     };
                 }
-                let lines: Vec<String> = registry
-                    .iter()
-                    .map(|j| format!("{}. [{}] {}", j.id, j.status, j.command))
-                    .collect();
                 ToolOutput {
                     output: lines.join("\n"),
                     success: true,
@@ -576,6 +709,7 @@ mod tests {
         assert_eq!(next_job_id(&registry, 0), 1);
         registry.lock().unwrap().push(JobRecord {
             id: 1,
+            owner: String::new(),
             command: "x".into(),
             status: "done".into(),
             log_path: PathBuf::from("/tmp/x.log"),
@@ -611,6 +745,7 @@ mod tests {
         // 内存峰值与磁盘取大者
         fresh.lock().unwrap().push(JobRecord {
             id: 9,
+            owner: String::new(),
             command: "x".into(),
             status: "running".into(),
             log_path: PathBuf::from("/tmp/x.log"),
@@ -648,6 +783,7 @@ mod tests {
         })));
         registry.lock().unwrap().push(JobRecord {
             id: 1,
+            owner: String::new(),
             command: "x".into(),
             status: "running".into(),
             log_path: PathBuf::from("/tmp/x.log"),
@@ -734,6 +870,7 @@ mod tests {
     fn push_record(registry: &JobsRegistry, id: u64, status: &str, log_path: PathBuf) {
         registry.lock().unwrap().push(JobRecord {
             id,
+            owner: String::new(),
             command: "cargo build".into(),
             status: status.into(),
             log_path,
@@ -745,6 +882,42 @@ mod tests {
             signal: None,
             notice_suppressed: false,
         });
+    }
+
+    fn push_record_owned(registry: &JobsRegistry, id: u64, status: &str, owner: &str) {
+        registry.lock().unwrap().push(JobRecord {
+            id,
+            owner: owner.into(),
+            command: "cargo build".into(),
+            status: status.into(),
+            log_path: PathBuf::from(format!("/tmp/liuma-jobs-owned-{id}.log")),
+            killer: None,
+            grace: std::time::Duration::from_secs(1),
+            started_at: 0,
+            ended_at: None,
+            exit_code: None,
+            signal: None,
+            notice_suppressed: false,
+        });
+    }
+
+    /// 真进程终止句柄(sleep 30 经平台 shell;stop_owner 语义测试用——
+    /// 无句柄不置位的 fail-closed 纪律要求句柄真实在场)
+    async fn live_killer() -> JobKiller {
+        let (program, args) = liuma_sandbox::shell::shell_argv("sleep 30").unwrap();
+        let child = liuma_sandbox::spawn(
+            &program,
+            &args,
+            &liuma_sandbox::SpawnOptions {
+                cwd: None,
+                env: Default::default(),
+                sandbox: None,
+                stdin: None,
+            },
+        )
+        .await
+        .unwrap();
+        JobKiller::Group(child.group_killer())
     }
 
     fn wait_call(id: u64, timeout_ms: Option<u64>) -> ToolCallRequest {
@@ -877,5 +1050,138 @@ mod tests {
         assert_eq!(calls.len(), 1, "超时注销后结算必须照常通知");
         assert!(calls[0].contains("exited with code 2"), "{}", calls[0]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 单注册表原子分配:并发 register_start 不撞号(分配与 push 同
+    /// 临界区 = 后到者必见先到者记录;撞号即 log 互截 + 记录互覆,
+    /// 是多会话共享注册表的头号风险)
+    #[tokio::test]
+    async fn concurrent_register_start_never_reuses_id() {
+        let registry = JobsRegistry::new();
+        let dir = std::env::temp_dir().join(format!("liuma-jobs-race-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let killer = live_killer().await;
+        let mut handles = Vec::new();
+        for i in 0..16 {
+            let registry = registry.clone();
+            let dir = dir.clone();
+            let killer = killer.clone();
+            handles.push(tokio::spawn(async move {
+                registry
+                    .register_start(
+                        &dir,
+                        &format!("cmd {i}"),
+                        Some("s-x"),
+                        killer,
+                        std::time::Duration::from_secs(1),
+                    )
+                    .unwrap()
+                    .0
+            }));
+        }
+        let mut ids = Vec::new();
+        for h in handles {
+            ids.push(h.await.unwrap());
+        }
+        ids.sort();
+        assert_eq!(ids.len(), 16, "并发登记全部成功");
+        ids.dedup();
+        assert_eq!(ids.len(), 16, "并发登记不得撞号: {ids:?}");
+        assert_eq!(registry.snapshot().len(), 16);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// owner 围栏:list 只见自己 + 无主;read/wait/stop 拒他人记录;
+    /// 无 owner 的工具(旧装配形态)不设围栏
+    #[tokio::test]
+    async fn owner_fence_scopes_list_and_denies_foreign_records() {
+        let registry = JobsRegistry::new();
+        push_record_owned(&registry, 1, "running", "s-parent");
+        push_record_owned(&registry, 2, "done", "s-child");
+        push_record_owned(&registry, 3, "done", "");
+        let mut fenced = JobTool::new(registry.clone()).with_owner("s-parent");
+        let call = |action: &str, id: Option<u64>| ToolCallRequest {
+            name: "jobs".into(),
+            arguments: match id {
+                Some(v) => json!({ "action": action, "id": v }),
+                None => json!({ "action": action }),
+            },
+            id: String::new(),
+        };
+        let out = fenced.execute(&call("list", None)).await;
+        assert!(out.output.contains("1. [running]"), "{}", out.output);
+        assert!(
+            out.output.contains("3. [done]"),
+            "无主记录可见: {}",
+            out.output
+        );
+        assert!(
+            !out.output.contains("2. [done]"),
+            "他人记录不得可见: {}",
+            out.output
+        );
+        for action in ["read", "wait", "stop"] {
+            let out = fenced.execute(&call(action, Some(2))).await;
+            assert!(!out.success, "{action} 他人记录必须拒绝: {}", out.output);
+            assert!(
+                out.output.contains("belongs to another session"),
+                "{action}: {}",
+                out.output
+            );
+        }
+        let out = fenced.execute(&call("read", Some(1))).await;
+        assert!(out.success, "自己的记录照常可读: {}", out.output);
+        let mut open_tool = JobTool::new(registry);
+        let out = open_tool.execute(&call("list", None)).await;
+        assert!(
+            out.output.contains("2. [done]"),
+            "无围栏形态全见: {}",
+            out.output
+        );
+    }
+
+    /// owner 退出清理:stop_owner 只取消该 owner 的运行中任务(句柄
+    /// 摘除 + 置位 stopped),他人任务与终态记录原样保留;幂等
+    #[tokio::test]
+    async fn stop_owner_cancels_only_that_owner() {
+        let registry = JobsRegistry::new();
+        let killer_a = live_killer().await;
+        let killer_b = live_killer().await;
+        registry.lock().unwrap().push(JobRecord {
+            id: 1,
+            owner: "s-a".into(),
+            command: "sleep a".into(),
+            status: "running".into(),
+            log_path: PathBuf::from("/tmp/liuma-jobs-stop-owner-1.log"),
+            killer: Some(killer_a),
+            grace: std::time::Duration::from_secs(1),
+            started_at: 0,
+            ended_at: None,
+            exit_code: None,
+            signal: None,
+            notice_suppressed: false,
+        });
+        registry.lock().unwrap().push(JobRecord {
+            id: 2,
+            owner: "s-b".into(),
+            command: "sleep b".into(),
+            status: "running".into(),
+            log_path: PathBuf::from("/tmp/liuma-jobs-stop-owner-2.log"),
+            killer: Some(killer_b),
+            grace: std::time::Duration::from_secs(1),
+            started_at: 0,
+            ended_at: None,
+            exit_code: None,
+            signal: None,
+            notice_suppressed: false,
+        });
+        push_record_owned(&registry, 3, "done", "s-a");
+        let killed = registry.stop_owner("s-a").await;
+        assert_eq!(killed, 1, "只取消 s-a 的运行中任务");
+        let snap = registry.snapshot();
+        assert_eq!(snap.iter().find(|j| j.id == 1).unwrap().status, "stopped");
+        assert_eq!(snap.iter().find(|j| j.id == 2).unwrap().status, "running");
+        assert_eq!(snap.iter().find(|j| j.id == 3).unwrap().status, "done");
+        assert_eq!(registry.stop_owner("s-a").await, 0, "幂等:无再可取消");
     }
 }

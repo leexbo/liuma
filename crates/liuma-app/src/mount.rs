@@ -318,8 +318,15 @@ fn mount_bash(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPortOb
         bash = bash.with_approval_port(Arc::clone(port));
     }
     if ctx.present("jobs") {
-        let registry = ctx.jobs_registry();
-        bash = bash.with_jobs(registry.clone());
+        // 单注册表:宿主桥在场 = 复用宿主级唯一实例(帧按 owner 谱系
+        // 过滤后仍按父聚合);缺 = 逐装配新建(CLI/测试,单会话进程)
+        let registry = match &ctx.subagent_bridge {
+            Some(bridge) => bridge.jobs_registry.clone(),
+            None => ctx.jobs_registry(),
+        };
+        bash = bash
+            .with_jobs(registry.clone())
+            .with_job_owner(ctx.session_id_for_ports());
         // job 结算通知口在场才挂(投给发起会话;schema 文案的
         // 「结算会通知」承诺据此成立)
         if let Some(port) = &ctx.notify_port {
@@ -406,6 +413,10 @@ fn make_subagent(
     if with_notify && let Some(n) = &ctx.notify_port {
         t = t.with_notify(n.clone());
     }
+    // 宿主级 jobs 注册表(单注册表化:子代理的后台任务入宿主帧桥)
+    if let Some(bridge) = &ctx.subagent_bridge {
+        t = t.with_jobs_registry(bridge.jobs_registry.clone());
+    }
     // 会话检索 port:子代理工具面扩装
     if let Some(port) = &ctx.query_port {
         t = t.with_query_port(port.clone());
@@ -446,11 +457,16 @@ fn mount_subagent(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPo
     Ok(tools)
 }
 
-/// jobs:后台任务工具(与 bash 共享注册表)
+/// jobs:后台任务工具(与 bash 共享注册表;围栏 = 发起会话 id,
+/// 单注册表下只见自己 + 无主记录)
 fn mount_jobs(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPortObj>>> {
-    Ok(vec![Box::new(liuma_tools::JobTool::new(
-        ctx.jobs_registry(),
-    ))])
+    let registry = match &ctx.subagent_bridge {
+        Some(bridge) => bridge.jobs_registry.clone(),
+        None => ctx.jobs_registry(),
+    };
+    Ok(vec![Box::new(
+        liuma_tools::JobTool::new(registry).with_owner(ctx.session_id_for_ports()),
+    )])
 }
 
 /// workflow:工作流编排(workflow + ralph,各持独立子代理传输;前台编排
