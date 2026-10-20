@@ -12328,7 +12328,10 @@ mod tests {
         let zip_bytes = host.export_session_zip(&id, false).unwrap();
         let cursor = std::io::Cursor::new(&zip_bytes);
         let archive = zip::ZipArchive::new(cursor).unwrap();
-        let names: Vec<String> = archive.file_names().map(String::from).collect();
+        let names: Vec<String> = archive
+            .file_names()
+            .map(|n| n.expect("条目名由本测自产,解码不可能失败").into_owned())
+            .collect();
         assert!(names.contains(&"session.jsonl".to_string()));
         assert!(
             names.contains(&format!("media/{attachment_id}.png")),
@@ -14517,13 +14520,19 @@ mod tests {
         // 仅根
         let bytes = host.export_session_zip(&parent, false).unwrap();
         let zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
-        let names: Vec<String> = zip.file_names().map(String::from).collect();
+        let names: Vec<String> = zip
+            .file_names()
+            .map(|n| n.expect("条目名由本测自产,解码不可能失败").into_owned())
+            .collect();
         assert_eq!(names, vec!["session.jsonl"]);
 
         // 全血缘
         let bytes = host.export_session_zip(&parent, true).unwrap();
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
-        let mut names: Vec<String> = zip.file_names().map(String::from).collect();
+        let mut names: Vec<String> = zip
+            .file_names()
+            .map(|n| n.expect("条目名由本测自产,解码不可能失败").into_owned())
+            .collect();
         names.sort();
         assert_eq!(names.len(), 3, "{names:?}");
         assert!(names.contains(&format!("descendants/{child}/session.jsonl")));

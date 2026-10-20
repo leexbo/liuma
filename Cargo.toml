@@ -45,13 +45,13 @@ jsonpath-rust = "1.0"
 thiserror = "2"
 toml = "1"
 clap = { version = "4", features = ["derive"] }
-wit-parser = "0.261.0"
+wit-parser = "0.262.0"
 tokio = { version = "1", features = ["full"] }
 wasmtime = { version = "49", features = ["async"] }
 wasmtime-wasi = "49"
 turso = { version = "0.8.1", features = ["fts"] }
 # /export ZIP 打包(stored 条目 + deflate)
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 # 用户主题目录监听(kits/theme:init_user_themes;与 gpui-component 的
 # notify 依赖保持同大版,锁单一实例 = 单一 watcher 栈)
 notify = "8"
@@ -71,7 +71,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # preset manifest 解析(serde_yaml 的接棒 fork)
 yaml_serde = "0.10"
-wit-bindgen = "0.62"
+wit-bindgen = "0.63.0"
 liuma-app = { path = "crates/liuma-app" }
 liuma-attachment = { path = "crates/liuma-attachment" }
 liuma-core = { path = "crates/liuma-core" }
