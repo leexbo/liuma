@@ -11400,6 +11400,9 @@ mod tests {
                 grace: Duration::from_secs(1),
                 started_at: 1,
                 ended_at: None,
+                exit_code: None,
+                signal: None,
+                notice_suppressed: false,
             });
         }
         assert!(!host.stop_shell_job("job-8").await, "未命中 id");
@@ -16632,6 +16635,9 @@ mod tests {
                 grace: Duration::from_secs(1),
                 started_at: 123,
                 ended_at: None,
+                exit_code: None,
+                signal: None,
+                notice_suppressed: false,
             });
         }
         registry.changed();

@@ -9,6 +9,7 @@
 //! 不整读进内存——dev server 类日志大小无界)。注册表带状态变更回调:
 //! 登记/收尾后触发,宿主接线广播帧用(不设回调则零开销)。
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 
@@ -22,6 +23,10 @@ pub(crate) fn now_ms() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
+
+/// job 阻塞等待缺省预算(60000ms)与上限(600000ms;对齐前台 timeout_ms 上限)
+pub const JOB_WAIT_DEFAULT_MS: u64 = 60_000;
+pub const JOB_WAIT_MAX_MS: u64 = 600_000;
 
 /// 单条后台任务记录(瞬态活体;输出文件才是持久事实)
 pub struct JobRecord {
@@ -41,6 +46,13 @@ pub struct JobRecord {
     pub started_at: i64,
     /// 落定时刻(epoch ms;running 期为 None)
     pub ended_at: Option<i64>,
+    /// 退出码(被信号杀死时为 None;watcher 收尾记录)
+    pub exit_code: Option<i32>,
+    /// 终止信号(Unix;自然退出为 None)
+    pub signal: Option<i32>,
+    /// 结算瞬间有活等待者(wait 结果即终态交付)→ 端口通知抑制。
+    /// 判定在收尾同步段一次性完成,无 await 竞态
+    pub notice_suppressed: bool,
 }
 
 /// 后台任务终止句柄(pipes 组信号 / PTY killer 按 spawn 路径分派)
@@ -68,9 +80,17 @@ impl JobKiller {
 /// 状态变更回调(登记/状态收尾后触发;宿主广播帧接线用)
 pub type JobsChangeHook = Arc<dyn Fn() + Send + Sync>;
 
-/// 注册表内部:records 互斥 + 变更回调(分锁,回调内可再锁 records)
+/// 等待者表项:单 job 唤醒源 + 活等待计数(live>0 结算才算「已被
+/// wait 交付」;超时守卫注销后计数归零,结算照常走端口通知)
+struct WaitState {
+    notify: Arc<tokio::sync::Notify>,
+    live: usize,
+}
+
+/// 注册表内部:records / waiters / 变更回调(各自分锁,回调内可再锁 records)
 struct JobsInner {
     records: Mutex<Vec<JobRecord>>,
+    waiters: Mutex<HashMap<u64, WaitState>>,
     on_change: Mutex<Option<JobsChangeHook>>,
 }
 
@@ -96,6 +116,7 @@ impl JobsRegistry {
         Self {
             inner: Arc::new(JobsInner {
                 records: Mutex::new(Vec::new()),
+                waiters: Mutex::new(HashMap::new()),
                 on_change: Mutex::new(None),
             }),
         }
@@ -120,6 +141,73 @@ impl JobsRegistry {
     /// 弱引用(宿主广播源持有)
     pub fn downgrade(&self) -> WeakJobsRegistry {
         WeakJobsRegistry(Arc::downgrade(&self.inner))
+    }
+
+    /// 注册活等待者,返回(唤醒源,守卫)。调用方必须「先注册后复查
+    /// 状态」:注册与结算之间的窗口由 Notify 补齐——结算方
+    /// notify_waiters 唤醒注册在其之前的全部等待者,复查兜住更早的落定
+    pub fn register_waiter(&self, id: u64) -> (Arc<tokio::sync::Notify>, JobWaitGuard) {
+        let notify = {
+            let mut w = self.inner.waiters.lock().unwrap_or_else(|p| p.into_inner());
+            let st = w.entry(id).or_insert_with(|| WaitState {
+                notify: Arc::new(tokio::sync::Notify::new()),
+                live: 0,
+            });
+            st.live += 1;
+            st.notify.clone()
+        };
+        (
+            notify,
+            JobWaitGuard {
+                registry: self.clone(),
+                id,
+            },
+        )
+    }
+
+    /// 结算唤醒:唤醒该 job 的全部活等待者,返回「结算瞬间有活等待者」
+    /// (true = 终态已随 wait 结果交付,端口通知应抑制)。表项由守卫
+    /// 注销清理,此处不摘除——唤醒后等待者还要读 records 终态
+    pub fn wake_waiters(&self, id: u64) -> bool {
+        let notify = self
+            .inner
+            .waiters
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&id)
+            .filter(|st| st.live > 0)
+            .map(|st| st.notify.clone());
+        match notify {
+            Some(n) => {
+                n.notify_waiters();
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// 活等待者守卫:drop 即注销(超时/提前返回路径的自动退场——注销后
+/// 结算瞬间无活等待者,通知照常投递)
+pub struct JobWaitGuard {
+    registry: JobsRegistry,
+    id: u64,
+}
+
+impl Drop for JobWaitGuard {
+    fn drop(&mut self) {
+        let mut w = self
+            .registry
+            .inner
+            .waiters
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(st) = w.get_mut(&self.id) {
+            st.live = st.live.saturating_sub(1);
+            if st.live == 0 {
+                w.remove(&self.id);
+            }
+        }
     }
 }
 
@@ -250,12 +338,13 @@ impl ToolPort for JobTool {
             "type": "function",
             "function": {
                 "name": "jobs",
-                "description": "Manage background jobs started with bash run_in_background. list: show all jobs with status; read: show a job's output (tail; streamed live while the job runs); stop: terminate a running job.",
+                "description": "Manage background jobs started with bash run_in_background. list: show all jobs with status; read: show a job's output (tail; streamed live while the job runs); wait: block until a job settles or the timeout elapses (prefer this over sleeping in a shell command); stop: terminate a running job.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "action": { "type": "string", "enum": ["list", "read", "stop"], "description": "Operation to perform" },
-                        "id": { "type": "integer", "description": "Job id (action=read/stop)" }
+                        "action": { "type": "string", "enum": ["list", "read", "wait", "stop"], "description": "Operation to perform" },
+                        "id": { "type": "integer", "description": "Job id (action=read/wait/stop)" },
+                        "timeout_ms": { "type": "integer", "description": "Max wait in milliseconds for action=wait (default 60000, max 600000). A timed-out wait returns the current output and leaves the job running." }
                     },
                     "required": ["action"],
                 },
@@ -282,7 +371,7 @@ impl ToolPort for JobTool {
             call.arguments.clone()
         };
         let Some(action) = arguments["action"].as_str() else {
-            return fail("jobs requires arguments.action (list/read/stop)".into());
+            return fail("jobs requires arguments.action (list/read/wait/stop)".into());
         };
         let id = arguments["id"].as_u64();
         // stop 先行处理(锁内取句柄,锁外 await——guard 不可跨 await)
@@ -314,6 +403,108 @@ impl ToolPort for JobTool {
             let killed = killer.kill_detached(grace).await;
             return ToolOutput {
                 output: format!("stopping job {id} (signal sent: {killed})"),
+                success: true,
+                ..Default::default()
+            };
+        }
+        // wait:阻塞等待结算(先注册后复查防丢唤醒;Notify 等待在
+        // 锁外,超时守卫注销后结算照常走端口通知)
+        if action == "wait" {
+            let Some(id) = id else {
+                return fail("jobs wait requires arguments.id (integer)".into());
+            };
+            let timeout_ms = arguments["timeout_ms"]
+                .as_u64()
+                .unwrap_or(JOB_WAIT_DEFAULT_MS)
+                .clamp(1, JOB_WAIT_MAX_MS);
+            enum WaitLane {
+                /// 已结算(调用前或注册复查窗口内落定)
+                Settled,
+                /// 运行中:挂唤醒源阻塞
+                Blocked(Arc<tokio::sync::Notify>, JobWaitGuard),
+            }
+            let lane = {
+                let Ok(registry) = self.registry.lock() else {
+                    return fail("jobs registry unavailable".into());
+                };
+                match registry.iter().find(|j| j.id == id) {
+                    None => return fail(format!("job {id} not found")),
+                    Some(job) if job.status != "running" => WaitLane::Settled,
+                    Some(_) => {
+                        let (notify, guard) = self.registry.register_waiter(id);
+                        // 先注册后复查:注册与结算之间的窗口在此兜住
+                        if registry
+                            .iter()
+                            .find(|j| j.id == id)
+                            .is_none_or(|j| j.status != "running")
+                        {
+                            WaitLane::Settled
+                        } else {
+                            WaitLane::Blocked(notify, guard)
+                        }
+                    }
+                }
+            };
+            if let WaitLane::Blocked(notify, guard) = lane {
+                if tokio::time::timeout(
+                    std::time::Duration::from_millis(timeout_ms),
+                    notify.notified(),
+                )
+                .await
+                .is_err()
+                {
+                    // 超时:守卫就地注销(此后结算瞬间无活等待者 →
+                    // 通知照常)。返回运行中快照,不是错误——是否再等
+                    // 由模型决定
+                    let (_status, command, log_path) = {
+                        let Ok(registry) = self.registry.lock() else {
+                            return fail("jobs registry unavailable".into());
+                        };
+                        match registry.iter().find(|j| j.id == id) {
+                            Some(job) => (
+                                job.status.clone(),
+                                job.command.clone(),
+                                job.log_path.clone(),
+                            ),
+                            None => return fail(format!("job {id} not found")),
+                        }
+                    };
+                    let text = self.read_log(&log_path).await;
+                    return ToolOutput {
+                        output: format!(
+                            "[status: running] {command}\n{text}\n[wait timed out after {timeout_ms}ms; the job keeps running — wait again or read it later]"
+                        ),
+                        success: true,
+                        ..Default::default()
+                    };
+                }
+                drop(guard); // 已唤醒 = 已结算:守卫使命完成
+            }
+            // 终态快照 + 输出(watcher 收尾已 flush;锁内取字段锁外读)
+            let (status, command, log_path, exit_code, signal) = {
+                let Ok(registry) = self.registry.lock() else {
+                    return fail("jobs registry unavailable".into());
+                };
+                match registry.iter().find(|j| j.id == id) {
+                    Some(job) => (
+                        job.status.clone(),
+                        job.command.clone(),
+                        job.log_path.clone(),
+                        job.exit_code,
+                        job.signal,
+                    ),
+                    None => return fail(format!("job {id} not found")),
+                }
+            };
+            let text = self.read_log(&log_path).await;
+            let mut output = format!("[{status}] {command}\n{text}");
+            if let Some(code) = exit_code {
+                output.push_str(&format!("\n[exit code: {code}]"));
+            } else if let Some(sig) = signal {
+                output.push_str(&format!("\n[terminated by signal {sig}]"));
+            }
+            return ToolOutput {
+                output,
                 success: true,
                 ..Default::default()
             };
@@ -374,6 +565,10 @@ impl ToolPort for JobTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{JobNotify, SettlementNotificationPort};
+    use liuma_sandbox::process::ExitStatus;
+    use std::future::Future;
+    use std::pin::Pin;
 
     #[test]
     fn next_id_is_monotonic() {
@@ -388,6 +583,9 @@ mod tests {
             grace: std::time::Duration::from_secs(1),
             started_at: 0,
             ended_at: None,
+            exit_code: None,
+            signal: None,
+            notice_suppressed: false,
         });
         assert_eq!(next_job_id(&registry, 0), 2);
     }
@@ -420,6 +618,9 @@ mod tests {
             grace: std::time::Duration::from_secs(1),
             started_at: 0,
             ended_at: None,
+            exit_code: None,
+            signal: None,
+            notice_suppressed: false,
         });
         assert_eq!(next_job_id(&fresh, max_disk_job_id(&dir)), 10);
 
@@ -454,6 +655,9 @@ mod tests {
             grace: std::time::Duration::from_secs(1),
             started_at: 0,
             ended_at: None,
+            exit_code: None,
+            signal: None,
+            notice_suppressed: false,
         });
         registry.changed();
         {
@@ -504,5 +708,174 @@ mod tests {
 
         let (text, _) = job_settlement_notice(11, "x", "weird", None, None, "");
         assert!(text.contains("ended abnormally (weird)"));
+    }
+
+    /// 结算通知录制口(wait 去重断言用)
+    #[derive(Default)]
+    struct RecordingPort {
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl SettlementNotificationPort for RecordingPort {
+        fn notify(
+            &self,
+            _parent_session: &str,
+            text: String,
+            _source: Value,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(async move {
+                if let Ok(mut c) = self.calls.lock() {
+                    c.push(text);
+                }
+            })
+        }
+    }
+
+    fn push_record(registry: &JobsRegistry, id: u64, status: &str, log_path: PathBuf) {
+        registry.lock().unwrap().push(JobRecord {
+            id,
+            command: "cargo build".into(),
+            status: status.into(),
+            log_path,
+            killer: None,
+            grace: std::time::Duration::from_secs(1),
+            started_at: 0,
+            ended_at: None,
+            exit_code: None,
+            signal: None,
+            notice_suppressed: false,
+        });
+    }
+
+    fn wait_call(id: u64, timeout_ms: Option<u64>) -> ToolCallRequest {
+        let mut args = json!({ "action": "wait", "id": id });
+        if let Some(t) = timeout_ms {
+            args["timeout_ms"] = json!(t);
+        }
+        ToolCallRequest {
+            name: "jobs".into(),
+            arguments: args,
+            id: String::new(),
+        }
+    }
+
+    /// wait 快路径:已结算立即返回终态(退出码尾标 / 信号尾标)
+    #[tokio::test]
+    async fn wait_returns_settled_job_immediately() {
+        let registry = JobsRegistry::new();
+        let dir = std::env::temp_dir().join(format!("liuma-jobs-wait-done-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("1.log"), b"built ok\n").unwrap();
+        std::fs::write(dir.join("2.log"), b"killed\n").unwrap();
+        push_record(&registry, 1, "done", dir.join("1.log"));
+        push_record(&registry, 2, "failed", dir.join("2.log"));
+        {
+            let mut r = registry.lock().unwrap();
+            r[0].exit_code = Some(0);
+            r[1].signal = Some(9);
+        }
+        let mut tool = JobTool::new(registry);
+        let out = tool.execute(&wait_call(1, None)).await;
+        assert!(out.success, "{}", out.output);
+        assert!(out.output.contains("[done] cargo build"), "{}", out.output);
+        assert!(out.output.contains("built ok"));
+        assert!(out.output.contains("[exit code: 0]"), "{}", out.output);
+        let out = tool.execute(&wait_call(2, None)).await;
+        assert!(
+            out.output.contains("[failed] cargo build"),
+            "{}",
+            out.output
+        );
+        assert!(
+            out.output.contains("[terminated by signal 9]"),
+            "{}",
+            out.output
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 去重:结算瞬间有活等待者 → 等待者被唤醒、终态经 wait 交付、
+    /// 端口通知抑制(判定在收尾同步段一次性完成,无 await 竞态)
+    #[tokio::test]
+    async fn settle_with_live_waiter_suppresses_notice() {
+        let registry = JobsRegistry::new();
+        let dir =
+            std::env::temp_dir().join(format!("liuma-jobs-wait-dedup-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("1.log"), b"partial\n").unwrap();
+        push_record(&registry, 1, "running", dir.join("1.log"));
+        let port = Arc::new(RecordingPort::default());
+        let notify: JobNotify = (port.clone(), "s-parent".into());
+        // 模拟 wait 动作:注册等待者并持有守卫(活等待)
+        let (woken, _guard) = registry.register_waiter(1);
+        let reg = registry.clone();
+        let status = ExitStatus {
+            code: Some(0),
+            signal: None,
+        };
+        let settle = tokio::spawn(async move {
+            crate::finish_job(&reg, 1, Some(status));
+            crate::notify_job_settled(
+                &reg,
+                1,
+                "cargo build",
+                Some(status),
+                b"done text\n",
+                Some(&notify),
+            )
+            .await;
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), woken.notified())
+            .await
+            .expect("活等待者未被结算唤醒");
+        settle.await.unwrap();
+        assert!(
+            port.calls.lock().unwrap().is_empty(),
+            "终态已随 wait 交付,端口通知不得重复"
+        );
+        assert!(registry.lock().unwrap()[0].notice_suppressed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// wait 超时:返回运行中快照(success=true 不是错误);守卫注销后
+    /// 结算 → 端口通知照常(不丢)
+    #[tokio::test]
+    async fn wait_timeout_keeps_notice_path_alive() {
+        let registry = JobsRegistry::new();
+        let dir =
+            std::env::temp_dir().join(format!("liuma-jobs-wait-timeout-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("1.log"), b"still going\n").unwrap();
+        push_record(&registry, 1, "running", dir.join("1.log"));
+        let port = Arc::new(RecordingPort::default());
+        let mut tool = JobTool::new(registry.clone());
+        let out = tool.execute(&wait_call(1, Some(30))).await;
+        assert!(out.success, "{}", out.output);
+        assert!(out.output.contains("[status: running]"), "{}", out.output);
+        assert!(
+            out.output.contains("[wait timed out after 30ms"),
+            "{}",
+            out.output
+        );
+        // 守卫已随超时注销:结算走端口通知,不丢
+        let notify: JobNotify = (port.clone(), "s-parent".into());
+        let status = ExitStatus {
+            code: Some(2),
+            signal: None,
+        };
+        crate::finish_job(&registry, 1, Some(status));
+        crate::notify_job_settled(
+            &registry,
+            1,
+            "cargo build",
+            Some(status),
+            b"boom\n",
+            Some(&notify),
+        )
+        .await;
+        let calls = port.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "超时注销后结算必须照常通知");
+        assert!(calls[0].contains("exited with code 2"), "{}", calls[0]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

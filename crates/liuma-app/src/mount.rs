@@ -201,10 +201,10 @@ fn component_prompt(name: &str) -> &'static str {
         "files" => {
             "Use the file_read tool — not shell commands like cat — to inspect text files. Results include line numbers. Use offset and limit to continue reading large files.\n\nUse the file_edit tool for targeted changes to existing UTF-8 text files. It replaces literal old_text with new_text; by default old_text must appear exactly once. If old_text appears multiple times, provide a more specific old_text. Read the file first (the default fs-observation-policy requires it), unless you just created or edited it in this session.\n\nUse the file_search tool — not shell find or grep — to discover files by path pattern or to search file contents. Use file_read on a matched file when you need surrounding context.\n\nEach file announced with the present tool adds a card below the reply, with preview and native-open actions. Use present when a separate file card helps the user open the complete deliverable — images, documents, spreadsheets, and slide decks. Do not call present just to list edited source files, and do not present intermediate scratch files. Outside commands and code blocks, link every mention of an existing file, including repeats and tables, to its path relative to the working directory; use the filename as the label and keep full paths out of labels."
         }
-        // jobs 静态节 = 无通知形态的轮询指引;通知口在场时由
+        // jobs 静态节 = 无通知形态的轮询替代指引;通知口在场时由
         // JOBS_NOTIFY_SECTION 替换(见 [`tool_prompt_sections_with`])
         "jobs" => {
-            "Track every background job id you start; keep working on independent steps and do not duplicate a running job's work. Before giving a final answer, read every still-relevant job with the jobs tool (action read), and stop jobs that stopped mattering."
+            "Track every background job id you start; keep working on independent steps and do not duplicate a running job's work. When a job's result gates your next step, block on it with the jobs tool (action wait) instead of sleeping in a shell command. Before giving a final answer, read every still-relevant job with the jobs tool (action read), and stop jobs that stopped mattering."
         }
         // RS goal 为单工具(add/complete/list),无 goal_id/revision/
         // resume/blocked 语义 → 按接口适配保留骨架
@@ -230,8 +230,9 @@ fn component_prompt(name: &str) -> &'static str {
 pub const SUBAGENT_BACKGROUND_SECTION: &str = "Use subagent in the background by default. Start independent delegations together in one assistant message and continue useful work while they run. Set `run_in_background: false` only when your next action depends on that subagent's result. When a background run settles, the runtime sends you a notice containing its outcome and any final assistant message.";
 
 /// jobs 通知形态使用指南节(结算通知口在场时替换静态节):承诺
-/// run_in_background / 超时转后台 / 结算通知,并明令不轮询
-pub const JOBS_NOTIFY_SECTION: &str = "Start background jobs with bash `run_in_background` for anything long-running; a foreground command that outlives its `timeout_ms` budget is moved to the background the same way. When a job settles (finishes, fails, or is stopped), the runtime sends you a notice with its exit code and an output tail — do not poll. Use the jobs tool (action read) only when you need more of a job's output, and stop jobs that stopped mattering. Every job id you start is reported exactly once.";
+/// run_in_background / 超时转后台 / 结算通知,给出「结果阻塞下一步」
+/// 的两条正道(结束 turn 等通知 / jobs wait 阻塞),明令禁 sleep 轮询
+pub const JOBS_NOTIFY_SECTION: &str = "Start background jobs with bash `run_in_background` for anything long-running; a foreground command that outlives its `timeout_ms` budget is moved to the background the same way. When a job settles (finishes, fails, or is stopped), the runtime sends you a notice with its exit code and an output tail. When a job's result gates your next step, either end your turn and act on that notice, or block on it with the jobs tool (action wait) — never sleep or poll for a job with shell commands. Use the jobs tool (action read) only when you need more of a job's output, and stop jobs that stopped mattering. Every job id you start is reported exactly once.";
 
 /// 条件 prompt 节的装配形态(结构化传递,防布尔参数膨胀):
 /// 各条件节只在对应接口承诺成立时挂(行为承诺必须与接口一致)
@@ -860,6 +861,10 @@ mod tests {
             poll_text.contains("Before giving a final answer, read every still-relevant job"),
             "缺省形态 = 轮询指引:{poll_text}"
         );
+        assert!(
+            poll_text.contains("action wait") && poll_text.contains("instead of sleeping"),
+            "缺省形态须教 wait 替代 sleep:{poll_text}"
+        );
         let notified = tool_prompt_sections_with(
             &resolved.preset,
             PromptConditions {
@@ -868,7 +873,16 @@ mod tests {
             },
         );
         assert_eq!(notified.len(), 1, "通知形态是替换,不是加节");
-        assert!(notified[0].contains("do not poll"), "{}", notified[0]);
+        assert!(
+            notified[0].contains("never sleep or poll for a job with shell commands"),
+            "{}",
+            notified[0]
+        );
+        assert!(
+            notified[0].contains("action wait"),
+            "通知形态须给阻塞等待正道:{}",
+            notified[0]
+        );
         assert!(notified[0].contains("timeout_ms"), "{}", notified[0]);
         assert!(
             notified[0].contains("reported exactly once"),

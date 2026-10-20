@@ -262,9 +262,9 @@ impl BashTool {
     pub fn spec(&self) -> Value {
         let notices = self.job_notify.is_some();
         let bg_desc = if notices {
-            "Run detached; returns a job id immediately. You are notified when the job settles (finishes, fails, or is stopped) — do not poll; use the jobs tool only to read more output or to stop it."
+            "Run detached; returns a job id immediately. You are notified when the job settles (finishes, fails, or is stopped) — do not poll; use the jobs tool only to read more output, to block on it (action wait), or to stop it."
         } else {
-            "Run detached; returns a job id immediately (manage via the jobs tool)"
+            "Run detached; returns a job id immediately (collect with the jobs tool — action wait blocks until it settles)"
         };
         let timeout_desc = if notices {
             "Wall-clock budget for this foreground command in milliseconds (default 120000, max 600000). When it elapses the command is moved to a background job — nothing is killed, the output keeps streaming to the job log, and you will be notified when it settles."
@@ -483,7 +483,7 @@ impl BashTool {
         };
         ToolOutput {
             output: format!(
-                "started job {id} (log: {}; jobs tool: list/read/stop{settle_note})",
+                "started job {id} (log: {}; jobs tool: list/read/wait/stop{settle_note})",
                 log_path.display()
             ),
             success: true,
@@ -607,6 +607,30 @@ impl BashTool {
         }
     }
 
+    /// 移交结果附带的「已产出输出」段:解码截尾 4KB 字符(与 jobs read
+    /// 尾窗同风格);空输出省略整段——前台转后台零工作丢失,模型不必
+    /// 事后 read 就能看到超时前已打印的内容
+    fn output_so_far(prefix: &[u8]) -> String {
+        if prefix.is_empty() {
+            return String::new();
+        }
+        let text = liuma_sandbox::text::decode_output(prefix)
+            .trim()
+            .to_string();
+        if text.is_empty() {
+            return String::new();
+        }
+        let mut chars: Vec<char> = text.chars().collect();
+        if chars.len() > 4096 {
+            let tail = chars.split_off(chars.len() - 4096);
+            return format!(
+                "\n\nOutput so far:\n{}",
+                tail.into_iter().collect::<String>()
+            );
+        }
+        format!("\n\nOutput so far:\n{text}")
+    }
+
     /// 前台超时移交:pipes 形态。登记 job + 流式 watcher(携带已读
     /// 前缀),进程原样继续(沙箱/审批上下文已在 spawn 时生效,无需迁移)
     async fn handover_to_background(
@@ -633,10 +657,11 @@ impl BashTool {
             Ok((id, log_path)) => {
                 let notify = self.job_notify.clone();
                 let settle_note = if notify.is_some() {
-                    "the command keeps running and you will be notified when it settles (jobs tool: read/list/stop)"
+                    "the command keeps running and you will be notified when it settles (jobs tool: read/wait/list/stop)"
                 } else {
-                    "the command keeps running; manage it with the jobs tool: read/list/stop"
+                    "the command keeps running; manage it with the jobs tool: read/wait/list/stop"
                 };
+                let so_far = Self::output_so_far(&prefix);
                 tokio::spawn(run_job_watcher(
                     child,
                     stdout,
@@ -651,7 +676,7 @@ impl BashTool {
                 ));
                 ToolOutput {
                     output: format!(
-                        "moved to background: job {id} after {timeout_ms}ms ({settle_note})\nlog: {}",
+                        "moved to background: job {id} after {timeout_ms}ms ({settle_note})\nlog: {}{so_far}",
                         log_path.display()
                     ),
                     success: true,
@@ -695,10 +720,11 @@ impl BashTool {
             Ok((id, log_path)) => {
                 let notify = self.job_notify.clone();
                 let settle_note = if notify.is_some() {
-                    "the command keeps running and you will be notified when it settles (jobs tool: read/list/stop)"
+                    "the command keeps running and you will be notified when it settles (jobs tool: read/wait/list/stop)"
                 } else {
-                    "the command keeps running; manage it with the jobs tool: read/list/stop"
+                    "the command keeps running; manage it with the jobs tool: read/wait/list/stop"
                 };
+                let so_far = Self::output_so_far(&prefix);
                 tokio::spawn(run_pty_job_watcher(
                     session,
                     rx,
@@ -713,7 +739,7 @@ impl BashTool {
                 ));
                 ToolOutput {
                     output: format!(
-                        "moved to background: job {id} after {timeout_ms}ms ({settle_note})\nlog: {}",
+                        "moved to background: job {id} after {timeout_ms}ms ({settle_note})\nlog: {}{so_far}",
                         log_path.display()
                     ),
                     success: true,
@@ -758,6 +784,9 @@ async fn start_job(
                 grace,
                 started_at: jobs::now_ms(),
                 ended_at: None,
+                exit_code: None,
+                signal: None,
+                notice_suppressed: false,
             })
         })
         .map_err(|_| "jobs registry unavailable".to_string())?;
@@ -829,7 +858,7 @@ async fn run_job_watcher(
         }
         let _ = f.flush().await;
     }
-    finish_job(&watch.registry, watch.id, status.map(|s| s.success()));
+    finish_job(&watch.registry, watch.id, status);
     notify_job_settled(
         &watch.registry,
         watch.id,
@@ -869,7 +898,7 @@ async fn run_pty_job_watcher(
         let _ = f.flush().await;
     }
     let status = session.wait().await.ok();
-    finish_job(&watch.registry, watch.id, status.map(|s| s.success()));
+    finish_job(&watch.registry, watch.id, status);
     notify_job_settled(
         &watch.registry,
         watch.id,
@@ -881,11 +910,17 @@ async fn run_pty_job_watcher(
     .await;
 }
 
-/// job 收尾(两形态 watcher 共用):状态落定 + 变更通知。
+/// job 收尾(两形态 watcher 共用):唤醒等待者(有活等待者 = wait
+/// 已交付终态,通知抑制)→ 状态落定 + 精确退出信息 + 变更通知。
 /// stop 抢先置位 stopped、收尾只改 running 的竞争机制保持;
-/// ok = None 表示退出状态不可知(按失败落定)
-fn finish_job(registry: &JobsRegistry, id: u64, ok: Option<bool>) {
-    let status_label = if ok == Some(true) { "done" } else { "failed" };
+/// status = None 表示退出状态不可知(按失败落定)
+fn finish_job(registry: &JobsRegistry, id: u64, status: Option<ExitStatus>) {
+    let status_label = if status.as_ref().is_some_and(|s| s.success()) {
+        "done"
+    } else {
+        "failed"
+    };
+    let suppressed = registry.wake_waiters(id);
     if let Ok(mut r) = registry.lock()
         && let Some(job) = r.iter_mut().find(|j| j.id == id)
     {
@@ -894,6 +929,9 @@ fn finish_job(registry: &JobsRegistry, id: u64, ok: Option<bool>) {
         }
         job.killer = None;
         job.ended_at = Some(jobs::now_ms());
+        job.exit_code = status.as_ref().and_then(|s| s.code);
+        job.signal = status.as_ref().and_then(|s| s.signal);
+        job.notice_suppressed = suppressed;
     }
     registry.changed();
 }
@@ -901,7 +939,8 @@ fn finish_job(registry: &JobsRegistry, id: u64, ok: Option<bool>) {
 /// 结算通知:按注册表终态措辞(stop 先置位的 stopped 与自然收尾的
 /// done/failed 都投),携带退出码/信号与输出尾部,投给发起会话。
 /// 自然退出与 stop 置位的竞争按终态标签措辞(用户确实请求了 stop)。
-/// 通知口缺席 = 此装配不投(静默,不是错误)
+/// 通知口缺席 = 此装配不投(静默,不是错误);结算瞬间有活等待者
+/// (wait 已交付终态)→ 抑制,防同一终态双份到达
 async fn notify_job_settled(
     registry: &JobsRegistry,
     id: u64,
@@ -913,11 +952,18 @@ async fn notify_job_settled(
     let Some((port, session)) = notify else {
         return;
     };
-    let label = registry
+    let (label, suppressed) = registry
         .lock()
         .ok()
-        .and_then(|r| r.iter().find(|j| j.id == id).map(|j| j.status.clone()))
-        .unwrap_or_else(|| "failed".into());
+        .and_then(|r| {
+            r.iter()
+                .find(|j| j.id == id)
+                .map(|j| (j.status.clone(), j.notice_suppressed))
+        })
+        .unwrap_or_else(|| ("failed".into(), false));
+    if suppressed {
+        return;
+    }
     let (exit_code, signal) = match status {
         Some(s) => (s.code, s.signal.map(signal_name)),
         None => (None, None),
@@ -1344,6 +1390,51 @@ mod tests {
         )
         .await;
         assert!(ok.success, "{}", ok.output);
+    }
+
+    /// 前台超时移交:已产出输出随结果交还(promote 语义),命令继续
+    /// 在后台跑并由注册表接管
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn foreground_timeout_hands_back_partial_output() {
+        let dir = std::env::temp_dir().join(format!("liuma-bash-handover-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let registry = JobsRegistry::new();
+        let mut tool = BashTool::new(&dir).with_jobs(registry.clone());
+        let out = ToolPort::execute(
+            &mut tool,
+            &ToolCallRequest {
+                name: shell::tool_name().into(),
+                arguments: json!({
+                    "command": "echo promoted-prefix; sleep 30",
+                    "description": "Promote check",
+                    "timeout_ms": 1000
+                }),
+                id: String::new(),
+            },
+        )
+        .await;
+        assert!(out.success, "{}", out.output);
+        assert!(out.output.contains("moved to background"), "{}", out.output);
+        assert!(
+            out.output.contains("Output so far:\npromoted-prefix"),
+            "已产出输出必须随移交结果交还:{}",
+            out.output
+        );
+        // 清理:停掉仍在后台跑的 sleep,不给测试进程留尾巴
+        let id = registry.lock().unwrap()[0].id;
+        let mut jobs_tool = JobTool::new(registry);
+        let stop = ToolPort::execute(
+            &mut jobs_tool,
+            &ToolCallRequest {
+                name: "jobs".into(),
+                arguments: json!({ "action": "stop", "id": id }),
+                id: String::new(),
+            },
+        )
+        .await;
+        assert!(stop.success, "{}", stop.output);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 动态模式源:execute 时实时解析——read-only 下写 workspace 根被
