@@ -685,6 +685,9 @@ pub struct AppHost {
     /// 宿主级唯一 shell job 注册表(父与子代理的 bash/jobs 工具共享;
     /// 记录带 owner 归属,子代理后台任务由此入宿主帧桥)
     jobs: liuma_tools::JobsRegistry,
+    /// job 生命周期落档种子(父会话 id → jobId → 帧状态;diff 基线,
+    /// 缺省从日志 fold 播种——host 重启后首帧不得把历史任务重记 spawned)
+    job_frame_seeds: Mutex<HashMap<String, HashMap<String, String>>>,
     /// 子会话事件翻译器(按子会话持计数器状态,translate→mux 实时流)
     subagent_translators: Mutex<HashMap<String, Translator>>,
     /// 用户级设置(~/.liuma/settings.yaml;setter 落盘与冷装配读取)
@@ -1390,6 +1393,64 @@ fn title_from_events(events: &[LlmEvent]) -> String {
     crate::title::normalize_session_title(text, 80)
 }
 
+/// job 生命周期事件 → 呈现行(latest-wins fold;基线合并与落档种子
+/// 共用)。行 shape 与 shell_job_rows 对齐(桌面整体替换帧直接吃);
+/// spawned 无后续 settled/lost = 开放行(running),lost 归 failed——
+/// 随宿主重启丢失,不伪造 finishedAt
+fn fold_job_rows(log: &Mutex<EventLog>) -> Vec<Value> {
+    let events = log
+        .lock_recover()
+        .collect_of_types(&["job/spawned", "job/settled", "job/lost"]);
+    let mut order: Vec<String> = Vec::new();
+    let mut rows: HashMap<String, Value> = HashMap::new();
+    for ev in events {
+        let Some(job) = ev.data["jobId"].as_str().map(str::to_string) else {
+            continue;
+        };
+        match ev.r#type.as_str() {
+            "job/spawned" => {
+                order.push(job.clone());
+                rows.insert(
+                    job,
+                    json!({
+                        "id": ev.data["jobId"],
+                        "kind": "shell",
+                        "label": ev.data["label"],
+                        "status": "running",
+                        "startedAt": ev.data["startedAt"],
+                    }),
+                );
+            }
+            "job/settled" => {
+                if let Some(row) = rows.get_mut(&job) {
+                    row["status"] = ev.data["status"].clone();
+                    row["finishedAt"] = ev.data["finishedAt"].clone();
+                }
+            }
+            "job/lost" => {
+                if let Some(row) = rows.get_mut(&job) {
+                    row["status"] = json!("failed");
+                }
+            }
+            _ => {}
+        }
+    }
+    order.into_iter().filter_map(|k| rows.remove(&k)).collect()
+}
+
+/// job/settled 信封(状态 + 落定时刻都取自帧行,不经注册表二次查)
+fn job_settled_event(job_id: &str, row: &Value) -> EventEnvelope {
+    EventEnvelope::new_ignorable(
+        "job/settled",
+        now_ms() as i64,
+        json!({
+            "jobId": job_id,
+            "status": row["status"],
+            "finishedAt": row["finishedAt"],
+        }),
+    )
+}
+
 impl AppHost {
     /// 构建宿主(fake = 假 provider,自检/测试)。装配失败即拒(fail-fast)
     pub fn new(workspace: PathBuf, fake: bool, api_key: &str) -> anyhow::Result<Self> {
@@ -1485,6 +1546,7 @@ impl AppHost {
             jobs_sources: Mutex::new(HashMap::new()),
             shell_job_sources: Mutex::new(HashMap::new()),
             jobs: liuma_tools::JobsRegistry::new(),
+            job_frame_seeds: Mutex::new(HashMap::new()),
             subagent_translators: Mutex::new(HashMap::new()),
             model_overrides: std::sync::RwLock::new(HashMap::new()),
             preset_overrides: std::sync::RwLock::new(HashMap::new()),
@@ -5001,6 +5063,10 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         // 只归驻留引擎写,attach 侧合成 = 双写(seq 冲突,装载治愈丢事件)
         if !self.live_children.lock_recover().contains(id) {
             repair_dangling_calls(&log);
+            // job 生命周期补账:spawned 无后续 settled/lost = 上进程遗留,
+            // 补 job/lost(重启即事实,不伪造 finishedAt);活注册表在场的
+            // id 跳过(detach 重挂形态任务还活着)
+            self.mark_lost_jobs(&log);
         }
         let cancel = CancelToken::new();
         // 决策模型运行面(设置文件 decision 区启用才有;唯一配置面):
@@ -5273,6 +5339,20 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         let inner0 = slot.inner()?;
         if !queue_items(inner0).is_empty() {
             let _ = self.mux.send(queue_frame(id, inner0));
+        }
+        // jobs 基线(活体 ∪ 历史折叠):打开历史会话即恢复任务条视图,
+        // 不必等下一次 job 状态变化
+        let mut attach_jobs = self.jobs_snapshot(id).unwrap_or_default();
+        for row in self.replay_job_rows(id) {
+            if !attach_jobs.iter().any(|j| j["id"] == row["id"]) {
+                attach_jobs.push(row);
+            }
+        }
+        if !attach_jobs.is_empty() {
+            let _ = self.mux.send(frame(
+                "session/jobs",
+                json!({ "sessionId": id, "jobs": attach_jobs }),
+            ));
         }
         // 轨迹暖机:装配即把既有日志喂入驻留折叠器(此后驱动 sink 直播
         // 增量;漏喂由 RPC 读快照前的兜底 sync 自愈)
@@ -7342,6 +7422,8 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         let Some(jobs) = self.jobs_snapshot(parent_id) else {
             return;
         };
+        // 先落日志再广播(因果序:订阅方据帧看到的状态必已落档)
+        self.record_job_events(parent_id, &jobs);
         let _ = self.mux.send(frame(
             "session/jobs",
             json!({ "sessionId": parent_id, "jobs": jobs.clone() }),
@@ -7359,6 +7441,120 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                     .unwrap_or(Value::Null),
                 ))
                 .ok();
+        }
+    }
+
+    /// job 生命周期落档:对父会话帧做 diff——新任务落 `job/spawned`,
+    /// 离开 running 落 `job/settled`(只记有主 shell 行;子代理行有
+    /// 自身日志的子代理/结算标记,无主记录无谱系锚)。种子缺省从日志
+    /// fold 播种:host 重启后首帧不得把历史任务重记 spawned。落档失败
+    /// 不阻断呈现(尽力而为;下次状态变化再补)
+    fn record_job_events(&self, parent_id: &str, jobs: &[Value]) {
+        let relevant: Vec<&Value> = jobs
+            .iter()
+            .filter(|j| j["kind"] == "shell" && j["owner"].as_str().is_some_and(|o| !o.is_empty()))
+            .collect();
+        if relevant.is_empty() {
+            return;
+        }
+        let slots = self.sessions.read_recover();
+        let Some(inner) = slots.get(parent_id).and_then(|s| s.inner.get()) else {
+            return;
+        };
+        let mut events: Vec<EventEnvelope> = Vec::new();
+        {
+            let mut seeds = self.job_frame_seeds.lock_recover();
+            let seed_map = seeds.entry(parent_id.to_string()).or_insert_with(|| {
+                fold_job_rows(&inner.log)
+                    .into_iter()
+                    .filter_map(|row| {
+                        Some((
+                            row["id"].as_str()?.to_string(),
+                            row["status"].as_str()?.to_string(),
+                        ))
+                    })
+                    .collect()
+            });
+            for j in relevant {
+                let job_id = j["id"].as_str().unwrap_or_default().to_string();
+                let status = j["status"].as_str().unwrap_or_default().to_string();
+                match seed_map.get(&job_id).map(String::as_str) {
+                    None => {
+                        events.push(EventEnvelope::new_ignorable(
+                            "job/spawned",
+                            now_ms() as i64,
+                            json!({
+                                "jobId": job_id,
+                                "owner": j["owner"],
+                                "label": j["label"],
+                                "startedAt": j["startedAt"],
+                            }),
+                        ));
+                        if status != "running" {
+                            // 首见即终态:补记 spawned+settled 成对
+                            events.push(job_settled_event(&job_id, j));
+                        }
+                    }
+                    Some("running") if status != "running" => {
+                        events.push(job_settled_event(&job_id, j));
+                    }
+                    _ => {}
+                }
+                seed_map.insert(job_id, status);
+            }
+        }
+        for ev in events {
+            let _ = inner.log.lock_recover().append(ev);
+        }
+    }
+
+    /// job 生命周期回放:日志事件 → 呈现行(latest-wins fold;基线与
+    /// 落档种子共用)。行 shape 与 shell_job_rows 一致,重启后历史任务
+    /// 以终态行留存;lost = 随宿主重启丢失(不伪造 finishedAt)
+    fn replay_job_rows(&self, parent_id: &str) -> Vec<Value> {
+        let slots = self.sessions.read_recover();
+        let Some(inner) = slots.get(parent_id).and_then(|s| s.inner.get()) else {
+            return Vec::new();
+        };
+        fold_job_rows(&inner.log)
+    }
+
+    /// job 生命周期补账(attach 冷加载窗口,与 dangling 修复同守卫):
+    /// spawned 无后续 settled/lost = 上进程遗留,补 job/lost(重启即
+    /// 事实,不伪造 finishedAt);活注册表在场的 id 跳过——detach 后
+    /// 重挂的会话,任务可能仍在宿主注册表里跑
+    fn mark_lost_jobs(&self, log: &Arc<Mutex<EventLog>>) {
+        let events =
+            log.lock_recover()
+                .collect_of_types(&["job/spawned", "job/settled", "job/lost"]);
+        let live: std::collections::HashSet<String> = self
+            .jobs
+            .snapshot()
+            .iter()
+            .map(|j| format!("job-{}", j.id))
+            .collect();
+        let mut open: Vec<String> = Vec::new();
+        let mut closed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for ev in events {
+            let Some(job) = ev.data["jobId"].as_str().map(str::to_string) else {
+                continue;
+            };
+            if ev.r#type == "job/spawned" {
+                open.push(job);
+            } else {
+                closed.insert(job);
+            }
+        }
+        for job in open {
+            if closed.contains(&job) || live.contains(&job) {
+                continue;
+            }
+            let ev = EventEnvelope::new_ignorable(
+                "job/lost",
+                now_ms() as i64,
+                json!({ "jobId": job, "reason": "host-restart" }),
+            );
+            let _ = log.lock_recover().append(ev);
         }
     }
 
@@ -7525,11 +7721,16 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 if let Some(f) = mode_terminal_frame(&provider, &inner.log, &id) {
                     out.push(f);
                 }
-                // 后台任务清单基线(子代理 + shell 合并):直播帧只在
-                // 变化时发,重连/重订阅后任务条由基线恢复
-                if let Some(jobs) = self.jobs_snapshot(&id)
-                    && !jobs.is_empty()
-                {
+                // 后台任务清单基线(子代理 + shell 合并,活体 ∪ 历史折叠:
+                // 重启后历史任务以终态行留存,活体行覆盖同 id;重连/重订阅
+                // 后任务条由基线恢复)
+                let mut jobs = self.jobs_snapshot(&id).unwrap_or_default();
+                for row in self.replay_job_rows(&id) {
+                    if !jobs.iter().any(|j| j["id"] == row["id"]) {
+                        jobs.push(row);
+                    }
+                }
+                if !jobs.is_empty() {
                     out.push(frame(
                         "session/jobs",
                         json!({ "sessionId": id, "jobs": jobs }),
@@ -16846,6 +17047,147 @@ mod tests {
             !shell_ids.contains(&"job-3"),
             "他谱系任务不得入帧: {shell_ids:?}"
         );
+    }
+
+    /// job 生命周期落档:spawned/settled 随帧 diff 先落日志再广播;
+    /// 无变化的重广播不补记;基线 = 活体 ∪ 历史折叠(重启后终态行留存)
+    #[tokio::test]
+    async fn job_lifecycle_events_record_spawn_and_settle() {
+        let host = temp_host("job-log");
+        host.set_fake_script(script(&["ok"]));
+        let id = host.create_session(None, None, None);
+        host.prompt(&id, &[json!({ "type": "text", "text": "hi" })], "queue")
+            .await
+            .unwrap();
+        let registry = liuma_tools::JobsRegistry::new();
+        AppHost::bind_shell_jobs(&host, &id, registry.clone());
+        {
+            let mut records = registry.lock().unwrap();
+            records.push(liuma_tools::JobRecord {
+                owner: id.clone(),
+                id: 9,
+                command: "cargo build".into(),
+                status: "running".into(),
+                log_path: PathBuf::from("/tmp/j9.log"),
+                killer: None,
+                grace: Duration::from_secs(1),
+                started_at: 111,
+                ended_at: None,
+                exit_code: None,
+                signal: None,
+                notice_suppressed: false,
+            });
+        }
+        registry.changed();
+        let types = |host: &Arc<AppHost>, id: &str| {
+            let slots = host.sessions.read_recover();
+            let inner = slots.get(id).and_then(|s| s.inner.get()).unwrap();
+            inner
+                .log
+                .lock_recover()
+                .collect_of_types(&["job/spawned", "job/settled", "job/lost"])
+                .iter()
+                .map(|e| e.r#type.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(types(&host, &id), vec!["job/spawned"], "登记即落 spawned");
+        {
+            let mut records = registry.lock().unwrap();
+            records[0].status = "done".into();
+            records[0].ended_at = Some(222);
+        }
+        registry.changed();
+        assert_eq!(
+            types(&host, &id),
+            vec!["job/spawned", "job/settled"],
+            "离开 running 即落 settled"
+        );
+        // 无变化重广播:不补记
+        registry.changed();
+        assert_eq!(types(&host, &id).len(), 2, "种子 diff 幂等");
+        // 历史折叠:终态行(带 finishedAt;值来自真实落定)
+        let rows = host.replay_job_rows(&id);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], "job-9");
+        assert_eq!(rows[0]["status"], "completed");
+        assert_eq!(rows[0]["finishedAt"], 222);
+        // 基线携带历史行
+        let baseline = host.mux_baseline();
+        assert!(baseline.iter().any(|f| {
+            f.method == "session/jobs"
+                && f.payload["sessionId"] == serde_json::json!(id)
+                && f.payload["jobs"]
+                    .as_array()
+                    .is_some_and(|jobs| jobs.iter().any(|j| j["id"] == "job-9"))
+        }));
+    }
+
+    /// 重启补账:上进程 spawned 无 settled → attach 补 job/lost(不伪造
+    /// finishedAt),基线以 failed 行留存——任务不得在重启后永远显示
+    /// running
+    #[tokio::test]
+    async fn job_lost_marked_on_reattach_and_replayed_in_baseline() {
+        let host1 = temp_host("job-restart");
+        host1.set_fake_script(script(&["ok"]));
+        let id = host1.create_session(None, None, None);
+        host1
+            .prompt(&id, &[json!({ "type": "text", "text": "hi" })], "queue")
+            .await
+            .unwrap();
+        let registry = liuma_tools::JobsRegistry::new();
+        AppHost::bind_shell_jobs(&host1, &id, registry.clone());
+        {
+            let mut records = registry.lock().unwrap();
+            records.push(liuma_tools::JobRecord {
+                owner: id.clone(),
+                id: 5,
+                command: "sleep long".into(),
+                status: "running".into(),
+                log_path: PathBuf::from("/tmp/j5.log"),
+                killer: None,
+                grace: Duration::from_secs(1),
+                started_at: 111,
+                ended_at: None,
+                exit_code: None,
+                signal: None,
+                notice_suppressed: false,
+            });
+        }
+        registry.changed(); // spawned 落档,无 settled —— 模拟进程死亡
+
+        // 新 host 复用同一会话根(重启形态):attach 补 lost,基线折叠为 failed
+        let host2 = Arc::new(
+            AppHost::new_at(
+                host1.workspace.clone(),
+                true,
+                "test-key",
+                host1.sessions_root.clone(),
+            )
+            .unwrap(),
+        );
+        host2.attach(&id).unwrap();
+        let slots = host2.sessions.read_recover();
+        let inner = slots.get(&id).and_then(|s| s.inner.get()).unwrap();
+        let types: Vec<String> = inner
+            .log
+            .lock_recover()
+            .collect_of_types(&["job/spawned", "job/settled", "job/lost"])
+            .iter()
+            .map(|e| e.r#type.clone())
+            .collect();
+        assert_eq!(types, vec!["job/spawned", "job/lost"], "attach 补账 lost");
+        let baseline = host2.mux_baseline();
+        let frame = baseline
+            .iter()
+            .find(|f| f.method == "session/jobs" && f.payload["sessionId"] == serde_json::json!(id))
+            .expect("基线应含 jobs 帧");
+        let jobs = frame.payload["jobs"].as_array().unwrap();
+        let row = jobs
+            .iter()
+            .find(|j| j["id"] == "job-5")
+            .expect("历史行留存");
+        assert_eq!(row["status"], "failed", "lost 行以 failed 终态呈现");
+        assert!(row.get("finishedAt").is_none(), "不伪造 finishedAt: {row}");
     }
 
     /// 子会话实时流:驻留子代理的引擎事件经 relay 翻译后,以

@@ -602,6 +602,12 @@ pub const KNOWN_EVENT_TYPES: &[&str] = &[
     "ask/answered",
     "ask/timed-out",
     "ask/cancelled",
+    // 后台任务生命周期三件(spawned/settled/lost;谱系锚会话的 log-only
+    // 状态事实,桌面任务条重启回放的 fold 源;写侧标 ignorable,此处
+    // 登记保证读取方守卫放行。漏登记会整体拒读)
+    "job/spawned",
+    "job/settled",
+    "job/lost",
 ];
 
 /// surface 事件类型(携带 surfaceOp 的类别:用户面三件 + 注入上下文)
