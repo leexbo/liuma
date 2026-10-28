@@ -1421,8 +1421,9 @@ fn is_fts_corrupt(message: &str) -> bool {
 
 /// job 生命周期事件 → 呈现行(latest-wins fold;基线合并与落档种子
 /// 共用)。行 shape 与 shell_job_rows 对齐(桌面整体替换帧直接吃);
-/// spawned 无后续 settled/lost = 开放行(running),lost 归 failed——
-/// 随宿主重启丢失,不伪造 finishedAt
+/// spawned 无后续 settled/lost = 开放行(running),lost 归 failed,
+/// finishedAt 取补账事件时刻(重启发现 = 任务终止的事实边界,
+/// 缺它桌面计时会按 now 差一直走表)
 fn fold_job_rows(log: &Mutex<EventLog>) -> Vec<Value> {
     let events = log
         .lock_recover()
@@ -1456,6 +1457,9 @@ fn fold_job_rows(log: &Mutex<EventLog>) -> Vec<Value> {
             "job/lost" => {
                 if let Some(row) = rows.get_mut(&job) {
                     row["status"] = json!("failed");
+                    // 丢失行必须在补账时刻定格:缺 finishedAt 时桌面计时
+                    // 回落 now 差,死任务会一直走表
+                    row["finishedAt"] = json!(ev.time);
                 }
             }
             _ => {}
@@ -5090,7 +5094,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         if !self.live_children.lock_recover().contains(id) {
             repair_dangling_calls(&log);
             // job 生命周期补账:spawned 无后续 settled/lost = 上进程遗留,
-            // 补 job/lost(重启即事实,不伪造 finishedAt);活注册表在场的
+            // 补 job/lost(事件时刻 = 终止的事实边界);活注册表在场的
             // id 跳过(detach 重挂形态任务还活着)
             self.mark_lost_jobs(&log);
         }
@@ -5366,15 +5370,11 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         if !queue_items(inner0).is_empty() {
             let _ = self.mux.send(queue_frame(id, inner0));
         }
-        // jobs 基线(活体 ∪ 历史折叠):打开历史会话即恢复任务条视图,
-        // 不必等下一次 job 状态变化
-        let mut attach_jobs = self.jobs_snapshot(id).unwrap_or_default();
-        for row in self.replay_job_rows(id) {
-            if !attach_jobs.iter().any(|j| j["id"] == row["id"]) {
-                attach_jobs.push(row);
-            }
-        }
-        if !attach_jobs.is_empty() {
+        // jobs 基线 = 纯活体快照:注册表不跨进程存活,重启后任务条为空
+        // (历史任务只留在日志事件里,面板不重放);活体源未绑定则不发帧
+        if let Some(attach_jobs) = self.jobs_snapshot(id)
+            && !attach_jobs.is_empty()
+        {
             let _ = self.mux.send(frame(
                 "session/jobs",
                 json!({ "sessionId": id, "jobs": attach_jobs }),
@@ -7360,8 +7360,12 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             return false;
         };
         // 锁内取句柄并置位,锁外 kill:guard 非 Send,跨 await 会剥掉
-        // future 的 Send 界(UI 经 spawn_on_host 在宿主 runtime 上跑)
-        let taken = {
+        // future 的 Send 界(UI 经 spawn_on_host 在宿主 runtime 上跑)。
+        // changed() 必须等 sources 锁全放再触发:变更回调走
+        // broadcast_all_jobs,会重入 shell_job_sources——std Mutex 不可
+        // 重入,持锁触发 = 自锁死(帧广播不出、进程等不到 kill,
+        // 任务条永远显示运行中)
+        let taken: Option<(liuma_tools::JobsRegistry, liuma_tools::JobKiller, Duration)> = {
             let sources = self.shell_job_sources.lock_recover();
             let mut found = None;
             for weak in sources.values() {
@@ -7387,15 +7391,15 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                     }
                 };
                 if let Some((killer, grace)) = hit {
-                    registry.changed();
-                    found = Some((killer, grace));
+                    found = Some((registry, killer, grace));
                     break;
                 }
             }
             found
         };
         match taken {
-            Some((killer, grace)) => {
+            Some((registry, killer, grace)) => {
+                registry.changed();
                 killer.kill_detached(grace).await;
                 true
             }
@@ -7539,21 +7543,10 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         }
     }
 
-    /// job 生命周期回放:日志事件 → 呈现行(latest-wins fold;基线与
-    /// 落档种子共用)。行 shape 与 shell_job_rows 一致,重启后历史任务
-    /// 以终态行留存;lost = 随宿主重启丢失(不伪造 finishedAt)
-    fn replay_job_rows(&self, parent_id: &str) -> Vec<Value> {
-        let slots = self.sessions.read_recover();
-        let Some(inner) = slots.get(parent_id).and_then(|s| s.inner.get()) else {
-            return Vec::new();
-        };
-        fold_job_rows(&inner.log)
-    }
-
     /// job 生命周期补账(attach 冷加载窗口,与 dangling 修复同守卫):
-    /// spawned 无后续 settled/lost = 上进程遗留,补 job/lost(重启即
-    /// 事实,不伪造 finishedAt);活注册表在场的 id 跳过——detach 后
-    /// 重挂的会话,任务可能仍在宿主注册表里跑
+    /// spawned 无后续 settled/lost = 上进程遗留,补 job/lost(事件时刻
+    /// = 终止的事实边界,回放行据此定格时长);活注册表在场的 id 跳过
+    /// ——detach 后重挂的会话,任务可能仍在宿主注册表里跑
     fn mark_lost_jobs(&self, log: &Arc<Mutex<EventLog>>) {
         let events =
             log.lock_recover()
@@ -7752,16 +7745,12 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
                 if let Some(f) = mode_terminal_frame(&provider, &inner.log, &id) {
                     out.push(f);
                 }
-                // 后台任务清单基线(子代理 + shell 合并,活体 ∪ 历史折叠:
-                // 重启后历史任务以终态行留存,活体行覆盖同 id;重连/重订阅
-                // 后任务条由基线恢复)
-                let mut jobs = self.jobs_snapshot(&id).unwrap_or_default();
-                for row in self.replay_job_rows(&id) {
-                    if !jobs.iter().any(|j| j["id"] == row["id"]) {
-                        jobs.push(row);
-                    }
-                }
-                if !jobs.is_empty() {
+                // 后台任务清单基线 = 纯活体快照(子代理 + shell 合并):
+                // 重连/重订阅后任务条由基线恢复;不重放日志历史行,
+                // 注册表不跨进程存活,重启后基线为空
+                if let Some(jobs) = self.jobs_snapshot(&id)
+                    && !jobs.is_empty()
+                {
                     out.push(frame(
                         "session/jobs",
                         json!({ "sessionId": id, "jobs": jobs }),
@@ -11712,6 +11701,75 @@ mod tests {
             "无句柄不得半置位 stopped"
         );
         assert!(!host.stop_shell_job("abc").await, "非 id 形态");
+    }
+
+    /// 回归锁:stop 命中后的变更回调必须在 sources 锁全放后触发——
+    /// 回调(broadcast_all_jobs)重入 shell_job_sources,std Mutex 不可
+    /// 重入,持锁触发 = 自锁死:帧广播不出、进程等不到 kill,任务条
+    /// 永远显示运行中。超时壳让死锁形态以断言失败呈现而非挂死 CI;
+    /// 真进程句柄 = kill_detached 需要活体
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stop_shell_job_broadcasts_kill_without_self_deadlock() {
+        let host = temp_host("job-stop-broadcast");
+        let registry = liuma_tools::JobsRegistry::new();
+        let mut mux = host.mux_subscribe();
+        AppHost::bind_shell_jobs(&host, "s-parent", registry.clone());
+        let (program, args) = liuma_sandbox::shell::shell_argv("sleep 30").unwrap();
+        let child = liuma_sandbox::spawn(
+            &program,
+            &args,
+            &liuma_sandbox::SpawnOptions {
+                cwd: None,
+                env: Default::default(),
+                sandbox: None,
+                stdin: None,
+            },
+        )
+        .await
+        .unwrap();
+        {
+            let mut records = registry.lock().unwrap();
+            records.push(liuma_tools::JobRecord {
+                owner: String::new(),
+                id: 7,
+                command: "sleep 30".into(),
+                status: "running".into(),
+                log_path: PathBuf::from("/tmp/x.log"),
+                killer: Some(liuma_tools::JobKiller::Group(child.group_killer())),
+                grace: Duration::from_secs(1),
+                started_at: 1,
+                ended_at: None,
+                exit_code: None,
+                signal: None,
+                notice_suppressed: false,
+            });
+        }
+        registry.changed(); // running 行先广播一帧
+
+        let host2 = host.clone();
+        let stop = tokio::spawn(async move { host2.stop_shell_job("job-7").await });
+        let stopped = tokio::time::timeout(Duration::from_secs(5), stop)
+            .await
+            .expect("stop_shell_job 自锁死:changed() 持 sources 锁触发回调")
+            .unwrap();
+        assert!(stopped, "命中且有句柄 = true");
+        assert_eq!(registry.lock().unwrap()[0].status, "stopped");
+        // 变更帧必须真正出闸:stopped 行以 killed 状态到达任务条
+        let mut saw_killed = false;
+        for _ in 0..5 {
+            let f = recv_until(&mut mux, |f| f.method == "session/jobs")
+                .await
+                .expect("变更帧未广播");
+            let jobs = f.payload["jobs"].as_array().cloned().unwrap_or_default();
+            if jobs
+                .iter()
+                .any(|j| j["id"] == "job-7" && j["status"] == "killed")
+            {
+                saw_killed = true;
+                break;
+            }
+        }
+        assert!(saw_killed, "stopped 行必须以 killed 状态广播到任务条");
     }
 
     /// 连续多轮的帧内 turn 号必须连续:直播翻译器每认领重建,若预热窗
@@ -17208,13 +17266,14 @@ mod tests {
         // 无变化重广播:不补记
         registry.changed();
         assert_eq!(types(&host, &id).len(), 2, "种子 diff 幂等");
-        // 历史折叠:终态行(带 finishedAt;值来自真实落定)
-        let rows = host.replay_job_rows(&id);
+        // 同进程内 settled 记录留存:活体快照即取终态行(带 finishedAt;
+        // 值来自真实落定)
+        let rows = host.jobs_snapshot(&id).expect("shell 源在绑即活");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["id"], "job-9");
         assert_eq!(rows[0]["status"], "completed");
         assert_eq!(rows[0]["finishedAt"], 222);
-        // 基线携带历史行
+        // 基线携带活体终态行(不重放日志历史,同运行行来自注册表)
         let baseline = host.mux_baseline();
         assert!(baseline.iter().any(|f| {
             f.method == "session/jobs"
@@ -17225,11 +17284,11 @@ mod tests {
         }));
     }
 
-    /// 重启补账:上进程 spawned 无 settled → attach 补 job/lost(不伪造
-    /// finishedAt),基线以 failed 行留存——任务不得在重启后永远显示
-    /// running
+    /// 重启补账:上进程 spawned 无 settled → attach 补 job/lost 落日志
+    /// (历史事实),但活体注册表已空——基线与面板**不重放**历史任务行,
+    /// 重启后任务条为空;任务不得在重启后永远显示 running
     #[tokio::test]
-    async fn job_lost_marked_on_reattach_and_replayed_in_baseline() {
+    async fn job_lost_marked_on_reattach_but_never_replayed_in_baseline() {
         let host1 = temp_host("job-restart");
         host1.set_fake_script(script(&["ok"]));
         let id = host1.create_session(None, None, None);
@@ -17271,26 +17330,26 @@ mod tests {
         host2.attach(&id).unwrap();
         let slots = host2.sessions.read_recover();
         let inner = slots.get(&id).and_then(|s| s.inner.get()).unwrap();
-        let types: Vec<String> = inner
+        let events: Vec<(String, i64)> = inner
             .log
             .lock_recover()
             .collect_of_types(&["job/spawned", "job/settled", "job/lost"])
             .iter()
-            .map(|e| e.r#type.clone())
+            .map(|e| (e.r#type.clone(), e.time))
             .collect();
+        let types: Vec<String> = events.iter().map(|(t, _)| t.clone()).collect();
         assert_eq!(types, vec!["job/spawned", "job/lost"], "attach 补账 lost");
+        // 补账只落日志(历史事实):活体注册表已空,基线不重放历史任务行,
+        // 重启后任务条为空
         let baseline = host2.mux_baseline();
-        let frame = baseline
-            .iter()
-            .find(|f| f.method == "session/jobs" && f.payload["sessionId"] == serde_json::json!(id))
-            .expect("基线应含 jobs 帧");
-        let jobs = frame.payload["jobs"].as_array().unwrap();
-        let row = jobs
-            .iter()
-            .find(|j| j["id"] == "job-5")
-            .expect("历史行留存");
-        assert_eq!(row["status"], "failed", "lost 行以 failed 终态呈现");
-        assert!(row.get("finishedAt").is_none(), "不伪造 finishedAt: {row}");
+        let stale = baseline.iter().any(|f| {
+            f.method == "session/jobs"
+                && f.payload["sessionId"] == serde_json::json!(id)
+                && f.payload["jobs"]
+                    .as_array()
+                    .is_some_and(|jobs| jobs.iter().any(|j| j["id"] == "job-5"))
+        });
+        assert!(!stale, "重启后的基线不得重放历史任务行: {baseline:?}");
     }
 
     /// 子会话实时流:驻留子代理的引擎事件经 relay 翻译后,以
