@@ -458,14 +458,17 @@ fn mount_subagent(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPo
 }
 
 /// jobs:后台任务工具(与 bash 共享注册表;围栏 = 发起会话 id,
-/// 单注册表下只见自己 + 无主记录)
+/// 单注册表下只见自己 + 无主记录)。取消令牌与 bash 同源:
+/// wait 阻塞段经它即刻收束,会话打断才不被自家 wait 挂死
 fn mount_jobs(ctx: &MountContext, _cfg: &Value) -> Result<Vec<Box<dyn ToolPortObj>>> {
     let registry = match &ctx.subagent_bridge {
         Some(bridge) => bridge.jobs_registry.clone(),
         None => ctx.jobs_registry(),
     };
     Ok(vec![Box::new(
-        liuma_tools::JobTool::new(registry).with_owner(ctx.session_id_for_ports()),
+        liuma_tools::JobTool::new(registry)
+            .with_owner(ctx.session_id_for_ports())
+            .with_cancel(ctx.cancel.clone()),
     )])
 }
 

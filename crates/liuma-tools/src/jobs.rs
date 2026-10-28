@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 
-use liuma_agent_loop::{ToolCallRequest, ToolOutput, ToolPort};
+use liuma_agent_loop::{CancelToken, ToolCallRequest, ToolOutput, ToolPort};
 use serde_json::{Value, json};
 
 /// epoch 毫秒(时间戳字段同源;与 subagent 侧一致)
@@ -399,6 +399,8 @@ pub struct JobTool {
     /// 单注册表形态)。单注册表多会话共享下,list 只见自己 + 无主记录,
     /// read/wait/stop 拒绝他人记录
     owner: Option<String>,
+    /// 软取消令牌(与会话令牌共享;wait 阻塞段与之竞速)
+    cancel: CancelToken,
 }
 
 impl JobTool {
@@ -407,12 +409,19 @@ impl JobTool {
         Self {
             registry,
             owner: None,
+            cancel: CancelToken::new(),
         }
     }
 
     /// 设围栏 owner(发起会话 id)
     pub fn with_owner(mut self, owner: impl Into<String>) -> Self {
         self.owner = Some(owner.into());
+        self
+    }
+
+    /// 设置软取消令牌(与会话令牌共享)
+    pub fn with_cancel(mut self, token: CancelToken) -> Self {
+        self.cancel = token;
         self
     }
 
@@ -575,39 +584,59 @@ impl ToolPort for JobTool {
                 }
             };
             if let WaitLane::Blocked(notify, guard) = lane {
-                if tokio::time::timeout(
-                    std::time::Duration::from_millis(timeout_ms),
-                    notify.notified(),
-                )
-                .await
-                .is_err()
-                {
-                    // 超时:守卫就地注销(此后结算瞬间无活等待者 →
-                    // 通知照常)。返回运行中快照,不是错误——是否再等
-                    // 由模型决定
-                    let (_status, command, log_path) = {
-                        let Ok(registry) = self.registry.lock() else {
-                            return fail("jobs registry unavailable".into());
-                        };
-                        match registry.iter().find(|j| j.id == id) {
-                            Some(job) => (
-                                job.status.clone(),
-                                job.command.clone(),
-                                job.log_path.clone(),
-                            ),
-                            None => return fail(format!("job {id} not found")),
-                        }
-                    };
-                    let text = self.read_log(&log_path).await;
-                    return ToolOutput {
-                        output: format!(
-                            "[status: running] {command}\n{text}\n[wait timed out after {timeout_ms}ms; the job keeps running — wait again or read it later]"
-                        ),
-                        success: true,
-                        ..Default::default()
-                    };
+                /// 阻塞段收束相(结算 / 会话取消 / 预算耗尽)
+                enum WaitPhase {
+                    Settled,
+                    Cancelled,
+                    Deadline,
                 }
-                drop(guard); // 已唤醒 = 已结算:守卫使命完成
+                let phase = tokio::select! {
+                    _ = notify.notified() => WaitPhase::Settled,
+                    // 会话取消在阻塞等待内即刻生效(与前台 bash 读循环
+                    // 同纪律):守卫注销后温和返回。job 本体是分离任务,
+                    // 不受影响,仍经任务条 / jobs stop 管理
+                    _ = self.cancel.cancelled() => WaitPhase::Cancelled,
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)) => {
+                        WaitPhase::Deadline
+                    }
+                };
+                match phase {
+                    WaitPhase::Cancelled => {
+                        drop(guard);
+                        return ToolOutput {
+                            output: "cancelled".into(),
+                            success: false,
+                            ..Default::default()
+                        };
+                    }
+                    WaitPhase::Deadline => {
+                        // 超时:守卫就地注销(此后结算瞬间无活等待者 →
+                        // 通知照常)。返回运行中快照,不是错误——是否再等
+                        // 由模型决定
+                        let (_status, command, log_path) = {
+                            let Ok(registry) = self.registry.lock() else {
+                                return fail("jobs registry unavailable".into());
+                            };
+                            match registry.iter().find(|j| j.id == id) {
+                                Some(job) => (
+                                    job.status.clone(),
+                                    job.command.clone(),
+                                    job.log_path.clone(),
+                                ),
+                                None => return fail(format!("job {id} not found")),
+                            }
+                        };
+                        let text = self.read_log(&log_path).await;
+                        return ToolOutput {
+                            output: format!(
+                                "[status: running] {command}\n{text}\n[wait timed out after {timeout_ms}ms; the job keeps running — wait again or read it later]"
+                            ),
+                            success: true,
+                            ..Default::default()
+                        };
+                    }
+                    WaitPhase::Settled => drop(guard), // 已唤醒 = 已结算:守卫使命完成
+                }
             }
             // 终态快照 + 输出(watcher 收尾已 flush;锁内取字段锁外读)
             let (status, command, log_path, exit_code, signal) = {
@@ -963,6 +992,35 @@ mod tests {
             out.output.contains("[terminated by signal 9]"),
             "{}",
             out.output
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 回归锁:wait 阻塞段必须随会话取消即刻收束——此前 select 只有
+    /// 结算/超时两臂,预算内(可到 10 分钟)的打断对挂死的 wait 无效
+    #[tokio::test]
+    async fn wait_breaks_on_session_cancel() {
+        let registry = JobsRegistry::new();
+        let dir =
+            std::env::temp_dir().join(format!("liuma-jobs-wait-cancel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("7.log"), b"partial\n").unwrap();
+        push_record(&registry, 7, "running", dir.join("7.log"));
+        let token = CancelToken::new();
+        let mut tool = JobTool::new(registry).with_cancel(token.clone());
+        let canceller = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            token.cancel();
+        });
+        let t0 = std::time::Instant::now();
+        let out = tool.execute(&wait_call(7, Some(60_000))).await;
+        canceller.await.unwrap();
+        assert!(!out.success, "{}", out.output);
+        assert_eq!(out.output, "cancelled");
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(5),
+            "wait 未随取消即刻收束:{:?}",
+            t0.elapsed()
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
