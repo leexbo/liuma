@@ -625,6 +625,9 @@ fn tool_read_expanded_keeps_collapse_and_inspect_jumps(cx: &mut TestAppContext) 
         });
     });
     redraw(cx, &mut wcx);
+    // 组体默认收拢成一行组头:展开后再断言组内件
+    open_all_groups(cx, &store);
+    redraw(cx, &mut wcx);
 
     // 展开后收起按钮 + Inspect 药丸都在场
     assert!(
@@ -723,6 +726,9 @@ fn diff_card_body_holds_bounded_height(cx: &mut TestAppContext) {
             st.chat.card_expanded.insert("call:d1".into());
         });
     });
+
+    // 组体默认收拢成一行组头:展开后再断言组内件
+    open_all_groups(cx, &store);
 
     // DiffState 走后台任务下一拍落 store,首帧是 diff-placeholder-* 占位,
     // 轮询等 diff-body 真实帧
@@ -1815,6 +1821,33 @@ fn press_enter(wcx: &mut gpui_kit::VisualTestContext) {
     wcx.simulate_event(gpui_kit::KeyUpEvent { keystroke });
 }
 
+/// 展开当前行槽里的**全部过程组**(测试便利)。
+///
+/// 组默认收拢成一行组头,组体(工具行/思考行/卡内件)在展开前不建
+/// 节点。凡是断言组内件几何/交互的用例,先调它
+/// 把组体放出来,别去改产品默认。
+fn open_all_groups(cx: &mut TestAppContext, store: &Entity<AppStore>) {
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            let keys: Vec<String> = st
+                .chat
+                .row_slots
+                .iter()
+                .filter_map(|s| match s {
+                    chat::RowSlot::Group { key, .. } => Some(key.clone()),
+                    _ => None,
+                })
+                .collect();
+            for key in keys {
+                st.chat.open_groups.insert(key);
+            }
+            st.chat.open_turns_ver += 1;
+            st.ensure_row_slots();
+            cx.notify();
+        });
+    });
+}
+
 /// 按 debug selector 点击元素中心
 fn click_sel(wcx: &mut gpui_kit::VisualTestContext, sel: &'static str) {
     let b = wcx
@@ -1987,14 +2020,22 @@ fn composer_menu_open_select_permission(cx: &mut TestAppContext) {
     cx.run_until_parked();
     // 回归锁(真机取证):确认单击即生效——乐观更新就地写
     // 缓存。旧实现成功回调 refresh 折叠磁盘日志,driver 落档前读到旧值
-    // 把标签刷回去(真机 6 击成对同值=首击已切但界面不动,被迫补点)
-    let cached = cx.update(|app| {
-        store
-            .read(app)
-            .session_cfg_by_id
-            .get(&id)
-            .map(|c| c.permission.clone())
-    });
+    // 把标签刷回去(真机 6 击成对同值=首击已切但界面不动,被迫补点)。
+    // 满载下点击事件排空可能慢一拍,轮询等值(点击没命中则照旧红)
+    let mut cached: Option<String> = None;
+    for _ in 0..100 {
+        cached = cx.update(|app| {
+            store
+                .read(app)
+                .session_cfg_by_id
+                .get(&id)
+                .map(|c| c.permission.clone())
+        });
+        if cached.as_deref() == Some("full-access") {
+            break;
+        }
+        cx.run_until_parked();
+    }
     assert_eq!(
         cached.as_deref(),
         Some("full-access"),
@@ -2980,16 +3021,24 @@ fn mermaid_source_selected_across_block_edge(cx: &mut TestAppContext) {
         gpui_kit::Modifiers::default(),
     );
     cx.run_until_parked();
-    wcx.simulate_mouse_move(
-        gpui_kit::Point {
-            x: b.origin.x + px(20.),
-            y: card_b.origin.y - px(40.),
-        },
-        MouseButton::Left,
-        gpui_kit::Modifiers::default(),
-    );
-    cx.run_until_parked();
-    let selected = wcx.update(gpui_kit::base::TextSelection::selected_text);
+    // 满载下拖选事件偶发被并帧吞掉,重发移动直至选区含图源(拖选逻辑
+    // 本身坏则照旧红)
+    let mut selected = String::new();
+    for _ in 0..50 {
+        wcx.simulate_mouse_move(
+            gpui_kit::Point {
+                x: b.origin.x + px(20.),
+                y: card_b.origin.y - px(40.),
+            },
+            MouseButton::Left,
+            gpui_kit::Modifiers::default(),
+        );
+        cx.run_until_parked();
+        selected = wcx.update(gpui_kit::base::TextSelection::selected_text);
+        if selected.contains("WASM 组件") {
+            break;
+        }
+    }
     assert!(
         selected.contains("WASM 组件"),
         "跨块边界拖选应把图源并入选区,实际 {selected:?}"
@@ -6693,6 +6742,11 @@ fn ask_answers_card_lines_stay_at_app_text_scale(cx: &mut TestAppContext) {
     cx.run_until_parked();
     // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
     wcx.update(|_, _| ());
+    // 组体默认收拢成一行组头:展开后再断言组内件
+    open_all_groups(cx, &store);
+    wcx.refresh().expect("刷新失败");
+    cx.run_until_parked();
+    wcx.update(|_, _| ());
     assert!(
         wcx.debug_bounds("ask-answers-card").is_some(),
         "已答结果卡应渲染"
@@ -7400,6 +7454,16 @@ fn textview_views_are_limited_to_the_visible_window(cx: &mut TestAppContext) {
                         usage: None,
                         message_id: format!("m{i}"),
                     });
+                    // 每条独立成轮(正常收尾):轮轮皆有定稿答案,不产生
+                    // 过程组,保持「全部平铺」的纯窗口场景
+                    chat.nodes.push(ChatNode::TurnTail {
+                        key: format!("turn-end:{i}"),
+                        aborted: false,
+                        turn: i as u64,
+                        ended_ms: 0,
+                        run_ms: 0,
+                        deliverables: vec![],
+                    });
                 }
                 st.state.chats.insert(id, chat);
                 st.chat.row_slots_sig = None;
@@ -7446,6 +7510,8 @@ fn streaming_remeasure_touches_only_changed_rows(cx: &mut TestAppContext) {
                     usage: None,
                     message_id: format!("m{i}"),
                 });
+                // 回复正文恒在过程组外平铺(无收口轮 = 直播段,组只为
+                // 过程项而存在),保持逐行重测的观测面
             }
             st.state.chats.insert(id, chat);
             // 行槽 + key→槽位映射建齐(经生产路径);连跑两帧让 TextView 视图
@@ -7474,7 +7540,7 @@ fn streaming_remeasure_touches_only_changed_rows(cx: &mut TestAppContext) {
         });
         rows
     });
-    assert_eq!(rows, TAIL, "行槽数应等于节点数");
+    assert_eq!(rows, TAIL, "行槽数应等于节点数(回复正文逐行平铺)");
 
     // ② 帧内后续重测(异步 markdown 解析落地)同样不得触碰远端:落地只发生
     //    在「已挂载过的可视行」上,故区间应全落在可视窗内(头节点除外)
@@ -11422,7 +11488,9 @@ fn chat_scroll_survives_window_width_change(cx: &mut TestAppContext) {
             .clone()
             .expect("启动后有当前会话");
         let mut chat = ChatState::default();
-        // 足够高的会话:总高 ≫ 宽变后带区(视口+600px overdraw)+ 1500px
+        // 足够高的会话:总高 ≫ 宽变后带区(视口+600px overdraw)+ 1500px。
+        // 每条消息独立成轮(正常收尾)——轮轮皆有定稿答案,不产生过程组,
+        // 全部平铺保证纯滚动场景
         for i in 0..14usize {
             if i % 4 == 0 {
                 chat.nodes.push(ChatNode::User {
@@ -11441,6 +11509,14 @@ fn chat_scroll_survives_window_width_change(cx: &mut TestAppContext) {
                 streaming: false,
                 usage: None,
                 message_id: format!("mid-{i}"),
+            });
+            chat.nodes.push(ChatNode::TurnTail {
+                key: format!("turn-end:{i}"),
+                aborted: false,
+                turn: i as u64,
+                ended_ms: 0,
+                run_ms: 0,
+                deliverables: vec![],
             });
         }
         store.update(cx, |s, _| {
@@ -11578,6 +11654,9 @@ fn streaming_entrance_gate_and_tool_sweep(cx: &mut TestAppContext) {
         })
     });
     redraw(cx, &mut wcx);
+    // 组体默认收拢成一行组头:展开后再断言组内件
+    open_all_groups(cx, &store);
+    redraw(cx, &mut wcx);
     let enter = "node-enter-user:1";
     assert!(
         wcx.debug_bounds(enter).is_some(),
@@ -11623,6 +11702,9 @@ fn streaming_entrance_gate_and_tool_sweep(cx: &mut TestAppContext) {
             cx.notify();
         })
     });
+    redraw(cx, &mut wcx);
+    // 组体默认收拢成一行组头:展开后再断言组内件
+    open_all_groups(cx, &store);
     redraw(cx, &mut wcx);
     assert!(
         wcx.debug_bounds("tool-sweep-1").is_some(),
@@ -11739,6 +11821,9 @@ fn todo_write_row_summary_from_call_args(cx: &mut TestAppContext) {
             {"content":"任务三","status":"in_progress"}]}"#,
     );
     redraw(cx, &mut wcx);
+    // 组体默认收拢成一行组头:展开后再断言组内件
+    open_all_groups(cx, &store);
+    redraw(cx, &mut wcx);
     assert!(
         wcx.debug_bounds("row-suffix").is_some(),
         "并行进行中应有 +N 后缀"
@@ -11776,16 +11861,16 @@ fn todo_write_row_summary_from_call_args(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 轮过程组折叠:已收口轮的过程项(think-only/工具)默认收成一行
-/// 组摘要,穿插内容节点与收尾行在外;点击组头展开 → 成员原序平铺,
-/// 再点收拢。行号走锚定 reset(记账不经 splice)。
+/// 两级折叠(参照流 standard 档):
+/// 1. 已收口轮默认收拢 → 只留轮控制行 + 回复正文,过程组整段不在场;
+/// 2. 点控制行 → 过程组露出(仍是一行组头,成员不在场);
+/// 3. 点组头 → 组体展开(成员原序、同左缘、同骨架),再点收回。
 #[gpui_kit::test]
 fn turn_group_collapse_expand_roundtrip(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "turn-group");
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
-        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
         wcx.update(|_, _| ());
     };
 
@@ -11794,7 +11879,7 @@ fn turn_group_collapse_expand_roundtrip(cx: &mut TestAppContext) {
             let id = st.state.current_id.clone().expect("当前会话");
             let mut chat = ChatState::default();
             // user(0) / think-only(1) / tool(2) / 答复步(3,带答前思考)
-            // / turn-end(4):过程项 1..=2 折进组,最终答复与收尾在外
+            // / turn-end(4)
             chat.nodes.push(ChatNode::User {
                 key: "user:1".into(),
                 text: "hi".into(),
@@ -11843,35 +11928,40 @@ fn turn_group_collapse_expand_roundtrip(cx: &mut TestAppContext) {
     });
     redraw(cx, &mut wcx);
 
-    // 折叠态:组行在场,user/答复/收尾在外,过程项被折(bounds 缺席)
+    // ① 收拢:控制行 + 回复正文在场,过程组整段不在场
     assert!(
-        wcx.debug_bounds("turn-group-turn-end:99").is_some(),
-        "组摘要行应在场"
+        wcx.debug_bounds("turn-head-turn-end:99").is_some(),
+        "轮控制行应在场"
+    );
+    assert!(
+        wcx.debug_bounds("turn-group-1").is_none(),
+        "收拢态不渲染过程组"
     );
     assert!(
         wcx.debug_bounds("node-0").is_some() && wcx.debug_bounds("node-4").is_some(),
         "用户消息与收尾行不应折叠"
     );
-    assert!(wcx.debug_bounds("node-3").is_some(), "最终答复应平铺在外");
+    assert!(
+        wcx.debug_bounds("node-3").is_some(),
+        "最终答复正文应平铺在外"
+    );
     assert!(
         wcx.debug_bounds("node-1").is_none() && wcx.debug_bounds("node-2").is_none(),
-        "think-only 与工具行应收进组"
+        "think-only 与工具行收进组"
     );
-    // 答前内嵌思考随组折叠一并隐藏(组收起时不漏答前思考)
     assert!(
         wcx.debug_bounds("think-row-a:1:2").is_none(),
-        "折叠轮的答前思考应一并隐藏"
+        "答前思考随过程折叠一并隐藏"
     );
-    // 行槽数(5 节点 − 2 过程项 + 1 组行)与列表记账一致
     cx.update(|app| {
         store.update(app, |st, _| {
-            assert_eq!(st.chat.row_slots.len(), 4);
+            assert_eq!(st.chat.row_slots.len(), 4, "n0 + 控制行 + 答复 + 收尾");
             assert_eq!(st.chat.chat_list.item_count(), 4);
         });
     });
 
-    // 展开:组头 + 成员原序平铺
-    click_sel(&mut wcx, "turn-group-turn-end:99");
+    // ② 点控制行 → 过程组露出,但仍是收拢的一行组头
+    click_sel(&mut wcx, "turn-head-turn-end:99");
     redraw(cx, &mut wcx);
     cx.update(|app| {
         store.update(app, |st, _| {
@@ -11879,15 +11969,31 @@ fn turn_group_collapse_expand_roundtrip(cx: &mut TestAppContext) {
         });
     });
     assert!(
+        wcx.debug_bounds("turn-group-1").is_some(),
+        "展开轮后组头应在场"
+    );
+    assert!(
+        wcx.debug_bounds("node-1").is_none() && wcx.debug_bounds("node-2").is_none(),
+        "组默认收拢:成员不在场"
+    );
+
+    // ③ 点组头 → 组体展开(成员原序)
+    click_sel(&mut wcx, "turn-group-1");
+    redraw(cx, &mut wcx);
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            assert!(st.chat.open_groups.contains("g:1"), "组展开态登记");
+        });
+    });
+    assert!(
         wcx.debug_bounds("node-1").is_some() && wcx.debug_bounds("node-2").is_some(),
-        "展开后 think/工具行应平铺在场"
+        "展开后 think/工具行随组体在场"
     );
     assert!(
         wcx.debug_bounds("think-row-a:1:2").is_some(),
-        "展开后答前思考应可见"
+        "展开后答前思考可见"
     );
-    // 左缘对齐(成员行/答前思考/正文同一左缘——缩进与左引导线
-    // 已废)
+    // 左缘对齐(成员行/答前思考/正文同一左缘——缩进与左引导线已废)
     let member = wcx.debug_bounds("node-2").expect("成员行应在场");
     let answer_think = wcx.debug_bounds("think-row-a:1:2").expect("答前思考应在场");
     assert_eq!(
@@ -11895,9 +12001,7 @@ fn turn_group_collapse_expand_roundtrip(cx: &mut TestAppContext) {
         answer_think.left(),
         "组成员行应与答前思考同左缘(无缩进)"
     );
-
-    // 骨架一致:组成员行同高(统一 member_row 骨架,min_h24 单行,
-    // 长短不一的旧行家族已废)
+    // 骨架一致:组成员行同高(统一 member_row 骨架 min_h24 单行)
     let think = wcx.debug_bounds("think-row-a:1:1").expect("think 行应在场");
     let tool = wcx.debug_bounds("tool-row-call:8").expect("工具行应在场");
     assert_eq!(
@@ -11906,28 +12010,26 @@ fn turn_group_collapse_expand_roundtrip(cx: &mut TestAppContext) {
         "成员行应同高(统一 member_row 骨架)"
     );
 
-    // 再点收拢:成员折回,答前思考一并隐藏
-    click_sel(&mut wcx, "turn-group-turn-end:99");
+    // ④ 再点组头 → 收回组体,成员再次缺席
+    click_sel(&mut wcx, "turn-group-1");
     redraw(cx, &mut wcx);
-    assert!(wcx.debug_bounds("node-1").is_none(), "再点组头应收回成员");
     assert!(
-        wcx.debug_bounds("think-row-a:1:2").is_none(),
-        "收拢后答前思考应再次隐藏"
+        wcx.debug_bounds("node-1").is_none(),
+        "再点组头应收起组体(成员不占行)"
     );
+    assert!(wcx.debug_bounds("turn-group-1").is_some(), "组头本身仍在场");
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// 中断轮不折叠(折叠门槛 = 有定稿答案):aborted 收口段
-/// 恒平铺——无组行,过程/正文/收尾全部平铺;未落定的调用已翻成
-/// Stopped(行在场、扫光撤除),半截正文尾挂「已停止」pill,轮尾
-/// 不再双标「已中断」徽标。
+/// 中断轮:过程照常成组、恒展开(不折叠),未落定的调用翻成 Stopped
+/// (行在场、扫光撤除),半截正文尾挂「已停止」pill,轮尾不双标。
+/// 组本身仍是参照流的默认形态:一行组头,点开才铺成员。
 #[gpui_kit::test]
-fn aborted_turn_stays_flat_with_stopped_tool(cx: &mut TestAppContext) {
+fn aborted_turn_groups_but_never_folds(cx: &mut TestAppContext) {
     let (store, mut wcx, root) = menu_harness(cx, "aborted-flat");
     let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
         wcx.refresh().expect("刷新失败");
         cx.run_until_parked();
-        // gpui-fast:换帧在 update 边界落地,补一拍访问再断言
         wcx.update(|_, _| ());
     };
 
@@ -11984,24 +12086,36 @@ fn aborted_turn_stays_flat_with_stopped_tool(cx: &mut TestAppContext) {
     });
     redraw(cx, &mut wcx);
 
-    // 无组行,全部平铺
+    // 中断轮:控制行 + 过程组(组头在场,成员默认收在组里)
     assert!(
-        wcx.debug_bounds("turn-group-turn-end:98").is_none(),
-        "中断轮不得生成组行"
+        wcx.debug_bounds("turn-head-turn-end:98").is_some(),
+        "中断轮应有轮控制行"
     );
-    for i in 0..=4 {
-        let name = format!("node-{i}").leak() as &'static str;
-        assert!(wcx.debug_bounds(name).is_some(), "中断轮应平铺 node-{i}");
-    }
+    assert!(
+        wcx.debug_bounds("turn-group-1").is_some(),
+        "中断轮过程须成组(不得回退成平铺)"
+    );
+    assert!(
+        wcx.debug_bounds("node-1").is_none(),
+        "组默认收拢:think 行不在场"
+    );
+    assert!(
+        wcx.debug_bounds("node-3").is_some(),
+        "半截正文在组外,照常在场"
+    );
     cx.update(|app| {
         store.update(app, |st, _| {
-            assert_eq!(st.chat.row_slots.len(), 5, "中断轮 5 节点全平铺");
+            // user + 控制行 + 组 + 半截正文 + 收尾
+            assert_eq!(st.chat.row_slots.len(), 5, "控制行 + 组 + 正文 + 收尾");
         });
     });
-    // Stopped 工具行:在场且不残留扫光
+
+    // 展开组:Stopped 工具行在场且不残留扫光
+    click_sel(&mut wcx, "turn-group-1");
+    redraw(cx, &mut wcx);
     assert!(
         wcx.debug_bounds("tool-row-call:8").is_some(),
-        "中断的工具行应平铺在场"
+        "展开后中断的工具行应在场"
     );
     assert!(
         wcx.debug_bounds("tool-sweep-2").is_none(),
@@ -12105,31 +12219,46 @@ fn collapsed_turn_reset_pins_tail_visible(cx: &mut TestAppContext) {
                 .row_slots
                 .iter()
                 .map(|s| match s {
-                    chat::RowSlot::Node(n) | chat::RowSlot::GroupMember(n) => format!("n{n}"),
-                    chat::RowSlot::Group { first, last, .. } => {
-                        format!("g[{first}..={last}]")
-                    }
-                    chat::RowSlot::GroupOpen { first, last, .. } => {
-                        format!("G[{first}..={last}]")
+                    chat::RowSlot::Node { ix, .. } => format!("n{ix}"),
+                    chat::RowSlot::TurnHead { .. } => "t".to_string(),
+                    chat::RowSlot::Group {
+                        first, last, open, ..
+                    } => {
+                        let head = if *open { "G" } else { "g" };
+                        format!("{head}[{first}..={last}]")
                     }
                 })
                 .collect();
-            assert_eq!(shapes, vec!["n0", "g[1..=60]", "n61", "n62", "n63"]);
+            // 收拢态:用户 + 控制行 + 各步回复正文(中途叙述不折)+ 轮尾
+            // | 轮 2 控制行 + 通告
+            let mut want = vec!["n0".to_string(), "t".to_string()];
+            want.extend((1..=60).step_by(2).map(|i| format!("n{i}")));
+            want.push("n61".to_string());
+            want.push("n62".to_string());
+            // 轮 2 只有一条通告 = 空轮:不产控制行(没有可收的过程)
+            want.push("n63".to_string());
+            assert_eq!(shapes, want);
         });
     });
 
-    // 钉底可见性 + 相邻间隙(remeasure 前后都成立:测试时钟不走真实
-    // 时间,advance_clock 推过 250ms settle 才触发 measure_all)。
-    // 组行与通告之间隔着答复 + 轮尾两行,上限放宽到 160
+    // 钉底可见性(remeasure 前后都成立:测试时钟不走真实时间,
+    // advance_clock 推过 250ms settle 才触发 measure_all)。折叠后过程
+    // 收走、回复正文仍平铺,内容高度超出视口 → 断言的是**钉底**:
+    // 末尾通告行应贴在列表视口底缘,而不是被空白顶开。
     let assert_tail = |wcx: &mut gpui_kit::VisualTestContext, phase: &str| {
-        let group = wcx
-            .debug_bounds("turn-group-turn-end:8")
-            .unwrap_or_else(|| panic!("{phase}: 组行应在场(滚动位不得悬挂)"));
+        let viewport = wcx
+            .debug_bounds("content-card")
+            .expect("聊天列表视口应在场");
         let notice = wcx
             .debug_bounds("turn-notice")
             .unwrap_or_else(|| panic!("{phase}: 通告行应钉底在场"));
-        let gap = notice.top() - group.bottom();
-        assert!(gap < px(160.), "{phase}: 组行与通告之间间隙异常:{gap:?}");
+        // 视口底缘与末行之间只允许输入区预留(约 125px 档),不允许
+        // 出现「内容缩走后留下大片空白」式的悬挂滚动位
+        let gap = bounds_bottom(viewport) - bounds_bottom(notice);
+        assert!(
+            gap < px(200.),
+            "{phase}: 通告行应贴视口底(余 {gap:?}),滚动位不得悬挂"
+        );
     };
     assert_tail(&mut wcx, "reset 后");
     cx.executor()
@@ -12612,11 +12741,14 @@ fn subagent_tool_expand_body_stays_in_viewport(cx: &mut TestAppContext) {
         })
     });
     redraw(cx, &mut wcx);
+    // 组体默认收拢成一行组头:展开后再断言组内件
+    open_all_groups(cx, &store);
+    redraw(cx, &mut wcx);
 
-    // 折叠态:展开体不在场
+    // 工具行展开体在组体展开后仍默认收起
     assert!(
         wcx.debug_bounds("io-card-1").is_none(),
-        "折叠态不应渲染展开体"
+        "工具行未点开时不应渲染展开体"
     );
 
     // 展开 subagent 工具行
@@ -12644,6 +12776,116 @@ fn subagent_tool_expand_body_stays_in_viewport(cx: &mut TestAppContext) {
         && io.origin.y < bounds_bottom(user)
         && user.origin.y < bounds_bottom(io);
     assert!(!overlap, "展开体叠绘到用户气泡: io={io:?} user={user:?}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 任务条「已结束」折叠区:有运行中行时默认收起(仅计数行,终态行
+/// 不渲染),手动展开可见;全部结束后自动展开。终态行按终态时刻
+/// 新→旧排序——面板不许随终态行无限平铺
+#[gpui_kit::test]
+fn task_bar_settled_zone_collapses_while_running_and_expands_when_idle(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "task-settled");
+    // 空会话处于 hero 态(聊天栈不渲染):注入一条用户消息进入对话视图
+    cx.update(|app| {
+        store.update(app, |st, cx| {
+            use crate::features::chat::projection::{ChatNode, ChatState};
+            let id = st.state.current_id.clone().expect("当前会话");
+            let mut chat = ChatState::default();
+            chat.nodes.push(ChatNode::User {
+                key: "user:1".into(),
+                text: "后台跑两个任务".into(),
+                images: vec![],
+                files: Vec::new(),
+                time: 0,
+            });
+            st.state.chats.insert(id, chat);
+            cx.notify();
+        })
+    });
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        cx.run_until_parked();
+        wcx.refresh().expect("刷新失败");
+        cx.update(|_: &mut App| {});
+        cx.run_until_parked();
+    };
+    let set_jobs = |cx: &mut TestAppContext, jobs: serde_json::Value| {
+        cx.update(|app| {
+            store.update(app, |st, _| {
+                let id = st.state.current_id.clone().expect("当前会话");
+                st.state
+                    .jobs_by_id
+                    .insert(id, jobs.as_array().cloned().unwrap());
+            });
+        });
+    };
+    set_jobs(
+        cx,
+        serde_json::json!([
+            { "id": "job-1", "kind": "shell", "label": "跑长任务",
+              "status": "running", "startedAt": 1_000 },
+            { "id": "job-2", "kind": "shell", "label": "先跑完的",
+              "status": "completed", "startedAt": 500, "finishedAt": 900 },
+            { "id": "job-3", "kind": "shell", "label": "后跑完的",
+              "status": "completed", "startedAt": 600, "finishedAt": 950 },
+        ]),
+    );
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("task-bar").is_some(),
+        "条在场: {:?}",
+        wcx.debug_bounds("task-bar")
+    );
+    assert!(
+        wcx.debug_bounds("task-chip-job-1").is_some(),
+        "运行中行置顶可见: toggle={:?} bar={:?}",
+        wcx.debug_bounds("task-settled-toggle"),
+        wcx.debug_bounds("task-bar")
+    );
+    assert!(
+        wcx.debug_bounds("task-settled-toggle").is_some(),
+        "已结束计数行在场"
+    );
+    assert!(
+        wcx.debug_bounds("task-chip-job-2").is_none()
+            && wcx.debug_bounds("task-chip-job-3").is_none(),
+        "运行中在场时折叠区默认收起,终态行不渲染"
+    );
+    // 手动展开:终态行按 finishedAt 新→旧。手风琴入场弹簧在测试时钟里
+    // 冻结(progress=0,面板 0 高被 overflow_hidden 裁掉),先推帧展开
+    advance_spring(&mut wcx, 60);
+    click_sel(&mut wcx, "task-settled-toggle");
+    redraw(cx, &mut wcx);
+    let clicked = cx.update(|app| store.read(app).subagents.settled_open);
+    assert!(clicked == Some(true), "点击后开态: {clicked:?}");
+    let b2 = wcx
+        .debug_bounds("task-chip-job-2")
+        .expect("展开后终态行可见");
+    let b3 = wcx
+        .debug_bounds("task-chip-job-3")
+        .expect("展开后终态行可见");
+    assert!(
+        b3.origin.y < b2.origin.y,
+        "已结束区按终态时刻新→旧排序(job-3 在上)"
+    );
+    // 全部结束:无运行中行 → 折叠区自动展开(清掉手动覆盖,回归自动规则)
+    set_jobs(
+        cx,
+        serde_json::json!([
+            { "id": "job-2", "kind": "shell", "label": "先跑完的",
+              "status": "completed", "startedAt": 500, "finishedAt": 900 },
+            { "id": "job-3", "kind": "shell", "label": "后跑完的",
+              "status": "completed", "startedAt": 600, "finishedAt": 950 },
+        ]),
+    );
+    cx.update(|app| {
+        store.update(app, |st, _| st.subagents.settled_open = None);
+    });
+    redraw(cx, &mut wcx);
+    assert!(
+        wcx.debug_bounds("task-chip-job-2").is_some()
+            && wcx.debug_bounds("task-chip-job-3").is_some(),
+        "无运行中行时折叠区自动展开"
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -14301,8 +14543,8 @@ fn real_log_full_load_direct_anchor_and_stable_scrollbar(cx: &mut TestAppContext
                 .row_slots
                 .iter()
                 .position(|slot| match slot {
-                    chat::RowSlot::Node(n) | chat::RowSlot::GroupMember(n) => {
-                        s.current_nodes().get(*n).map(|nd| nd.key()) == Some(target.as_str())
+                    chat::RowSlot::Node { ix, .. } => {
+                        s.current_nodes().get(*ix).map(|nd| nd.key()) == Some(target.as_str())
                     }
                     _ => false,
                 })
@@ -14317,8 +14559,8 @@ fn real_log_full_load_direct_anchor_and_stable_scrollbar(cx: &mut TestAppContext
         let st = store.read(app);
         let top = st.chat.chat_list.logical_scroll_top().item_ix;
         st.chat.row_slots.get(top).is_some_and(|s| match s {
-            chat::RowSlot::Node(n) | chat::RowSlot::GroupMember(n) => {
-                st.current_nodes().get(*n).map(|nd| nd.key()) == Some(target.as_str())
+            chat::RowSlot::Node { ix, .. } => {
+                st.current_nodes().get(*ix).map(|nd| nd.key()) == Some(target.as_str())
             }
             _ => false,
         })
@@ -14337,7 +14579,7 @@ fn real_log_full_load_direct_anchor_and_stable_scrollbar(cx: &mut TestAppContext
             .skip(top)
             .take(8)
             .filter_map(|slot| match slot {
-                chat::RowSlot::Node(n) => match st.current_nodes().get(*n) {
+                chat::RowSlot::Node { ix: n, .. } => match st.current_nodes().get(*n) {
                     Some(ChatNode::Assistant { key, text, .. }) if !text.is_empty() => {
                         Some((key.clone(), *n))
                     }
@@ -14714,7 +14956,33 @@ fn compaction_progress_row_and_settle(cx: &mut TestAppContext) {
             cx.notify();
         });
     });
-    assert!(poll(cx, &mut wcx, "compact-settle"), "落档应带完成闪");
+    // 落档:标记行 + 完成闪在场(键 = 刚落档的标记行)。完成闪按
+    // 400ms 年龄门控,而置位→首帧走的是墙钟——测试机负载会把它拖过
+    // 窗口,闪在首次渲染前就被摘除。时间戳随轮询逐次刷新,门控窗口
+    // 相对每次渲染恒新,断言不与墙钟赛跑
+    let store_refresh = store.clone();
+    let refresh_settle = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        cx.update(|app| {
+            store_refresh.update(app, |st, _| {
+                let id = st.state.current_id.clone().unwrap();
+                let chat = st.state.chats.get_mut(&id).unwrap();
+                if let Some((k, _)) = &chat.compact_settled {
+                    chat.compact_settled = Some((k.clone(), std::time::Instant::now()));
+                }
+            });
+        });
+        redraw(cx, wcx);
+    };
+    let mut settle_shown = false;
+    for _ in 0..100 {
+        refresh_settle(cx, &mut wcx);
+        if wcx.debug_bounds("compact-settle").is_some() {
+            settle_shown = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(settle_shown, "落档应带完成闪");
     assert!(
         wcx.debug_bounds("compact-progress").is_none(),
         "落档后进度行即退场"
@@ -14729,6 +14997,9 @@ fn compaction_progress_row_and_settle(cx: &mut TestAppContext) {
             && f32::from(flash.size.width) >= f32::from(row.size.width) - 1.,
         "完成闪应与进行中同几何(整行覆盖)"
     );
+    // 点击落在闪窗口内:先刷新时间戳再点,「覆盖层不吞点击」的断言
+    // 不被墙钟扰动
+    refresh_settle(cx, &mut wcx);
     click_sel(&mut wcx, "compact-done-1");
     redraw(cx, &mut wcx);
     cx.update(|app| {
@@ -16169,5 +16440,112 @@ fn archived_list_refreshes_after_sidebar_archive(cx: &mut TestAppContext) {
     // 刷新钮:显式加载态闪过(旧清单不闪是静默档的事),行仍在
     click_sel(&mut wcx, "archived-refresh");
     wait_bounds_state(cx, &mut wcx, row_sel, true);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 行节奏对齐参照流:过程组内成员行 pitch = 24(行高)+ 6(间隙)= 30px,
+/// 组头与首成员之间 4px,组外的答复正文按 12px 节奏落在组体之后。
+/// 回归锁:旧实现把过程行平铺成 pt8/pb8(40px pitch),整屏比参照流松
+/// 三分之一——「完全没对齐」的第一观感来源。
+#[gpui_kit::test]
+fn chat_rows_follow_group_rhythm(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "row-rhythm");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.run_until_parked();
+        wcx.update(|_, _| ());
+    };
+
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            let mut chat = ChatState::default();
+            // 0 user / 1 注入 / 2 think-only / 3 tool / 4 中途正文 / 5 tool
+            // / 6 aborted 收尾
+            chat.nodes.push(ChatNode::User {
+                key: "user:1".into(),
+                text: "当前工作状态".into(),
+                images: vec![],
+                files: Vec::new(),
+                time: 0,
+            });
+            chat.nodes.push(ChatNode::Context {
+                key: "ctx:2".into(),
+                content: "AGENTS.md 基线".into(),
+                source: serde_json::json!({ "kind": "agent-instructions" }),
+            });
+            chat.nodes.push(ChatNode::Assistant {
+                key: "a:1:1".into(),
+                text: String::new(),
+                text_ver: 0,
+                reasoning: "先看状态".into(),
+                streaming: false,
+                usage: None,
+                message_id: String::new(),
+            });
+            for (ix, call) in ["call:3", "call:5"].into_iter().enumerate() {
+                chat.nodes.push(ChatNode::Tool {
+                    key: call.into(),
+                    name: "bash".into(),
+                    summary: "git status".into(),
+                    state: ToolState::Done,
+                    arguments: "{\"command\":\"git status\"}".into(),
+                    output: None,
+                    view: None,
+                    images: Vec::new(),
+                });
+                if ix == 0 {
+                    chat.nodes.push(ChatNode::Assistant {
+                        key: "a:1:2".into(),
+                        text: "我先看看仓库状态。".into(),
+                        text_ver: 1,
+                        reasoning: String::new(),
+                        streaming: false,
+                        usage: None,
+                        message_id: String::new(),
+                    });
+                }
+            }
+            chat.nodes.push(ChatNode::TurnTail {
+                key: "turn-end:7".into(),
+                aborted: true,
+                turn: 1,
+                ended_ms: 0,
+                run_ms: 0,
+                deliverables: vec![],
+            });
+            st.state.chats.insert(id, chat);
+        });
+    });
+    redraw(cx, &mut wcx);
+    // 组默认收拢成一行组头:展开后量成员行节奏
+    open_all_groups(cx, &store);
+    redraw(cx, &mut wcx);
+
+    // 中断轮:控制行 + 过程组都在场(不再平铺)
+    let head = wcx
+        .debug_bounds("turn-head-turn-end:7")
+        .expect("控制行在场");
+    let _ = head;
+    // 注入行不进聊天流(参照实现 isVisibleChatNode 对 context 一律不产行)
+    assert!(
+        wcx.debug_bounds("node-1").is_none(),
+        "注入行不得出现在聊天流里"
+    );
+    let think = wcx.debug_bounds("node-2").expect("think 行在组体内");
+    let tool = wcx.debug_bounds("node-3").expect("工具行在组体内");
+    let reply = wcx.debug_bounds("node-4").expect("答复正文在组外");
+    // 组内成员行 pitch:24 + 6
+    let pitch = tool.top() - think.top();
+    assert_eq!(
+        pitch,
+        px(30.),
+        "组内成员行距应为 30px(24 + 6),实得 {pitch:?}"
+    );
+    // 组外答复正文仍在过程组之后,且行距不再是旧平铺的 pt8/pb8 双档
+    // (16px + 行高 = 40px pitch)——组体底(含 4px 下边距)到答复正文
+    // 之间应短于旧节奏
+    let gap = reply.top() - tool.bottom();
+    assert!(gap < px(16.), "答复正文应紧贴过程组(12px 档),实得 {gap:?}");
     let _ = std::fs::remove_dir_all(root);
 }
