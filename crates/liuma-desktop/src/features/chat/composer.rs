@@ -5,9 +5,11 @@
 
 use gpui_kit::component::Icon;
 use gpui_kit::component::IconName;
+use gpui_kit::component::Sizable as _;
 use gpui_kit::component::StyledExt;
 use gpui_kit::component::input::Textarea;
 use gpui_kit::component::popover::{Popover, PopoverState};
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Anchor, App, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement,
@@ -135,7 +137,13 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 .child(input);
             input
         }))
-        .child(bottom_row(store, running && !has_draft, window, cx))
+        .child(bottom_row(
+            store,
+            running,
+            running && !has_draft,
+            window,
+            cx,
+        ))
         // @ 引用补全菜单(锚在输入卡上缘;后绘制在上层)
         .children(has_at.then(|| at_completion_anchor(store, cx)))
         // @ 补全键盘导航:capture 阶段拦截 ↑↓/Enter/Esc(有补全时),
@@ -305,10 +313,12 @@ fn composer_h(chat: &crate::features::chat::ChatStore) -> f32 {
 }
 
 /// 底排(左:+ 指令菜单 / Plan chip / 权限;右:模型·等级 / 上下文
-/// 圆环 / 发送)
+/// 圆环 / 发送)。`running` = 回合进行中(驱动旋转圆环),`stop_mode`
+/// = 运行中且无草稿(按钮呈停止;有草稿呈插话箭头)
 fn bottom_row(
     store: &Entity<AppStore>,
     running: bool,
+    stop_mode: bool,
     _window: &mut Window,
     cx: &mut App,
 ) -> impl IntoElement {
@@ -467,7 +477,7 @@ fn bottom_row(
                 })
                 .into_any_element()
         }))
-        .child(send_or_stop(store, running, cx))
+        .child(send_or_stop(store, running, stop_mode, cx))
 }
 
 /// @ 引用补全菜单:文件/Session 分组候选,高亮 +
@@ -1292,48 +1302,62 @@ fn menu_separator(cx: &App) -> impl IntoElement {
     div().h(px(1.)).my(px(2.)).bg(theme::border(cx))
 }
 
-/// 发送/停止圆钮(running → 停止方块)
-fn send_or_stop(store: &Entity<AppStore>, running: bool, cx: &App) -> impl IntoElement {
+/// 发送/停止圆钮,三态同一语言:26px 品牌填充圆 + 白色中心字形,
+/// 回合进行中细描边旋转圆环**套在圆外**(40px 图标 ≈ 31.7px 弧外
+/// 沿、描边 ~1.7px,与圆缘留 ~1.6px 气隙;排版面 32px,三态同尺寸
+/// 不跳版)。环用自有 loader-ring 资产——组件库 LoaderCircle 描边
+/// 恒为视窗 2/24,放大后粗于中心笔画。字形随态切换——空闲/插话 =
+/// 上箭头 14px,停止 = 自绘终止方块 8px;点按判定用 `stop_mode`
+/// (运行中且无草稿)
+fn send_or_stop(
+    store: &Entity<AppStore>,
+    running: bool,
+    stop_mode: bool,
+    cx: &App,
+) -> impl IntoElement {
     let s = store.clone();
-    // 停止态用自绘小方块(确定性优于字形;发送态箭头图标随文字色)。
-    // 填充面前景随主题定义走(ON_BRAND/ON_DANGER):浅色 primary 的
-    // 主题(如 Default Dark 的 #FAFAFA)下恒白符号不可见
-    let (id, bg, fg, child) = if running {
+    let bg = theme::brand(cx);
+    let fg = theme::on_brand(cx);
+    let (id, glyph) = if stop_mode {
         (
             "stop",
-            theme::danger(cx),
-            theme::on_danger(cx),
-            div()
-                .size(px(10.))
-                .rounded(px(2.))
-                .bg(theme::on_danger(cx))
-                .into_any_element(),
+            div().size(px(8.)).rounded(px(2.)).bg(fg).into_any_element(),
         )
     } else {
-        (
-            "send",
-            theme::brand(cx),
-            theme::on_brand(cx),
-            fixed(IconName::ArrowUp, 16.).into_any_element(),
-        )
+        ("send", fixed(IconName::ArrowUp, 14.).into_any_element())
     };
     div()
         .id(id)
         .debug_selector(move || id.to_string())
+        .relative()
         .flex()
-        .size(px(34.))
+        .size(px(32.))
         .flex_shrink_0()
         .items_center()
         .justify_center()
-        .rounded_full()
-        .bg(bg)
+        .text_color(fg)
         .cursor_pointer()
         .hover(|s| s.opacity(0.85))
-        .text_color(fg)
-        .child(child)
+        .children(running.then(|| {
+            Spinner::new()
+                .icon(LiumaIcon::LoaderRing)
+                .with_size(px(40.))
+                .color(fg.into())
+        }))
+        .child(
+            div()
+                .absolute()
+                .size(px(26.))
+                .rounded_full()
+                .bg(bg)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(glyph),
+        )
         .on_click(move |_, _, cx| {
             s.update(cx, |st, cx| {
-                if running {
+                if stop_mode {
                     st.cancel_current(cx);
                 } else {
                     // 与 Enter 订阅同一条路径:读值发送 + 延迟清空;

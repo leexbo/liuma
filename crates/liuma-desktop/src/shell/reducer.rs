@@ -194,8 +194,46 @@ pub fn apply_frame(state: &mut StoreState, frame: ServerRequest) -> Vec<Effect> 
             let Ok(f) = serde_json::from_value::<SessionEventFrame>(frame.payload) else {
                 return vec![];
             };
+            // 运行态从 turn 起止帧派生:turn 不一定由 UI 发起(外部经
+            // host.prompt 注入的 turn 同样要亮状态行/侧栏点),UI 发送
+            // 路径已先行置 true,此处上升沿幂等(不重置计时时钟)。
+            // **边沿须补发 StatusRefresh**:宿主随后到达的
+            // host/session-status 同值即非边沿,若此处吞掉边沿,结束时的
+            // 清单刷新(标题摘录/统计回填)不再触发(实测标题恒「新会话」)
+            let mut effects = Vec::new();
+            match f.event.ty.as_str() {
+                "turn/start" => {
+                    let was = state.running_by_id.insert(f.session_id.clone(), true);
+                    // 记时起点**按「有没有时钟」补**,不按运行态上升沿:
+                    // UI 发送路径会先乐观置 running=true,轮到 turn/start
+                    // 时已非上升沿——只按边沿记账会让时钟永不存在,状态
+                    // 行恒显「用时 0 秒」。已有起点不重置(不把长轮清零)
+                    if !state.running_since_by_id.contains_key(&f.session_id) {
+                        state
+                            .running_since_by_id
+                            .insert(f.session_id.clone(), std::time::Instant::now());
+                    }
+                    if !was.unwrap_or(false) {
+                        effects.push(Effect::StatusRefresh {
+                            id: f.session_id.clone(),
+                            delay_ms: 1500,
+                        });
+                    }
+                }
+                "turn/end" => {
+                    let was = state.running_by_id.insert(f.session_id.clone(), false);
+                    state.running_since_by_id.remove(&f.session_id);
+                    if was.unwrap_or(false) {
+                        effects.push(Effect::StatusRefresh {
+                            id: f.session_id.clone(),
+                            delay_ms: 300,
+                        });
+                    }
+                }
+                _ => {}
+            }
             state.chats.entry(f.session_id).or_default().apply(&f.event);
-            vec![]
+            effects
         }
         // 投影增量(4b:LLM 标题生成成功后推送;全量兜底在 history/list)
         "session/projection" => {
@@ -342,6 +380,39 @@ pub fn format_run_duration_l(d: std::time::Duration, locale: &str) -> String {
     }
 }
 
+/// 运行时长宽排格式(数字与单位空格分隔、不零填充;时位仅 >0 出,
+/// 分位总秒 ≥60 出,秒恒出)。
+/// 例:`0 秒`、`15 秒`、`1 分 58 秒`、`1 时 2 分 3 秒`。
+pub fn format_run_duration_wide(d: std::time::Duration) -> String {
+    format_run_duration_wide_l(d, crate::kits::i18n::current_locale())
+}
+
+/// [`format_run_duration_wide`] 显式档核(测试双语言断言用)
+pub fn format_run_duration_wide_l(d: std::time::Duration, locale: &str) -> String {
+    use crate::kits::i18n::t;
+    let secs = d.as_secs();
+    if secs < 60 {
+        return t!("time.duration_wide_s", locale = locale, v = secs).into_owned();
+    }
+    if secs < 3600 {
+        return t!(
+            "time.duration_wide_ms",
+            locale = locale,
+            mins = secs / 60,
+            secs = secs % 60
+        )
+        .into_owned();
+    }
+    t!(
+        "time.duration_wide_hms",
+        locale = locale,
+        hours = secs / 3600,
+        mins = (secs % 3600) / 60,
+        secs = secs % 60
+    )
+    .into_owned()
+}
+
 /// 相对时间(侧栏行;now 注入以便测试)
 pub fn relative_time(now_ms: u64, ts_ms: u64) -> String {
     relative_time_l(now_ms, ts_ms, crate::kits::i18n::current_locale())
@@ -412,6 +483,35 @@ mod tests {
         assert_eq!(
             format_run_duration_l(std::time::Duration::from_secs(125), "en"),
             "2m 05s"
+        );
+    }
+
+    /// 宽排运行时长:不零填充、空格分隔、时位仅 >0 出
+    #[test]
+    fn format_run_duration_wide_spaced_no_padding() {
+        assert_eq!(
+            format_run_duration_wide(std::time::Duration::from_secs(0)),
+            "0 秒"
+        );
+        assert_eq!(
+            format_run_duration_wide(std::time::Duration::from_secs(59)),
+            "59 秒"
+        );
+        assert_eq!(
+            format_run_duration_wide(std::time::Duration::from_secs(118)),
+            "1 分 58 秒"
+        );
+        assert_eq!(
+            format_run_duration_wide_l(std::time::Duration::from_secs(3600), "zh-CN"),
+            "1 时 0 分 0 秒"
+        );
+        assert_eq!(
+            format_run_duration_wide_l(std::time::Duration::from_secs(118), "en"),
+            "1m 58s"
+        );
+        assert_eq!(
+            format_run_duration_wide_l(std::time::Duration::from_secs(3661), "en"),
+            "1h 1m 1s"
         );
     }
 
@@ -623,6 +723,74 @@ mod tests {
         );
         // 形状残缺:静默忽略
         assert!(apply_frame(&mut st, frame("session/stats", json!({}))).is_empty());
+    }
+
+    /// 运行态从 turn 起止帧派生:turn 非 UI 发起(外部 host.prompt)
+    /// 时也须亮起——否则状态行/侧栏点全盲(探针直发 turn 实测事故)
+    #[test]
+    fn turn_frames_drive_running_state_for_external_turns() {
+        let mut st = state();
+        let ev = |ty: &str, seq: u64| {
+            frame(
+                "session/event",
+                json!({
+                    "sessionId": "s1",
+                    "event": { "type": ty, "seq": seq, "time": 1000 + seq as i64, "data": {} },
+                }),
+            )
+        };
+        assert_eq!(st.running_by_id.get("s1"), None);
+        // 外部 turn:上升沿补发延迟清单刷新(与 host/session-status
+        // 同款;宿主的同值帧随后不再构成边沿,刷新不能丢)
+        assert_eq!(
+            apply_frame(&mut st, ev("turn/start", 1)),
+            vec![Effect::StatusRefresh {
+                id: "s1".into(),
+                delay_ms: 1500
+            }],
+        );
+        assert_eq!(st.running_by_id.get("s1"), Some(&true));
+        assert!(st.running_since_by_id.contains_key("s1"), "起跑记时");
+        // UI 发送路径已先置 true:重复 turn/start 幂等,不重置记时时钟
+        let since = *st.running_since_by_id.get("s1").expect("记时在场");
+        assert!(apply_frame(&mut st, ev("turn/start", 2)).is_empty());
+        assert_eq!(
+            st.running_since_by_id.get("s1"),
+            Some(&since),
+            "上升沿不得重置计时"
+        );
+        assert_eq!(
+            apply_frame(&mut st, ev("turn/end", 3)),
+            vec![Effect::StatusRefresh {
+                id: "s1".into(),
+                delay_ms: 300
+            }],
+            "收尾下降沿补发清单刷新(标题摘录依赖)",
+        );
+        assert_eq!(st.running_by_id.get("s1"), Some(&false));
+        assert!(!st.running_since_by_id.contains_key("s1"), "收尾清记时");
+        // UI 发送路径先乐观置 running=true(此时还没有 turn/start):
+        // 轮到 turn/start 已经不是上升沿,但仍必须补上记时起点
+        // —— 否则「工作中，用时 0 秒」会永远停在 0。
+        let mut optimistic = state();
+        optimistic.running_by_id.insert("s1".into(), true);
+        assert!(!optimistic.running_since_by_id.contains_key("s1"));
+        apply_frame(&mut optimistic, ev("turn/start", 1));
+        assert!(
+            optimistic.running_since_by_id.contains_key("s1"),
+            "非上升沿的 turn/start 也要补记时起点"
+        );
+        // 宿主同值帧随后到达:已非边沿,零效果
+        assert!(
+            apply_frame(
+                &mut st,
+                frame(
+                    "host/session-status",
+                    json!({ "sessionId": "s1", "running": false }),
+                ),
+            )
+            .is_empty()
+        );
     }
 
     #[test]

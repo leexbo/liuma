@@ -21,7 +21,7 @@ pub enum LiumaIcon {
     Sparkles,
     /// preset 非 `standard` / flash 系模型
     Zap,
-    /// pro·reasoner 系模型 / Think 折叠行
+    /// pro·reasoner 系模型
     Brain,
     /// 其余模型
     Gauge,
@@ -147,6 +147,12 @@ pub enum LiumaIcon {
     Box,
     /// 设置侧栏常规项
     General,
+    /// 命令类工具行 / 直播组头 commands 活动(`>_`)
+    CommandPrompt,
+    /// 思考折叠行 / 直播组头 thinking 活动
+    Think,
+    /// 运行态旋转环(细描边;大尺寸下与界面笔画同量级)
+    LoaderRing,
 }
 
 impl IconNamed for LiumaIcon {
@@ -214,6 +220,9 @@ impl IconNamed for LiumaIcon {
             Self::Models => "box",
             Self::Box => "box",
             Self::General => "sliders-horizontal",
+            Self::CommandPrompt => "command-prompt",
+            Self::Think => "think",
+            Self::LoaderRing => "loader-ring",
         };
         format!("icons/_liuma/{name}.svg").into()
     }
@@ -469,6 +478,18 @@ const LIUMA_ICONS: &[(&str, &[u8])] = &[
         "icons/_liuma/sliders-horizontal.svg",
         include_bytes!("../../assets/icons/sliders-horizontal.svg"),
     ),
+    (
+        "icons/_liuma/command-prompt.svg",
+        include_bytes!("../../assets/icons/command-prompt.svg"),
+    ),
+    (
+        "icons/_liuma/think.svg",
+        include_bytes!("../../assets/icons/think.svg"),
+    ),
+    (
+        "icons/_liuma/loader-ring.svg",
+        include_bytes!("../../assets/icons/loader-ring.svg"),
+    ),
 ];
 
 impl AssetSource for MergedAssets {
@@ -510,7 +531,7 @@ pub fn tool_icon(name: &str) -> Icon {
 fn tool_path(name: &str) -> SharedString {
     // shell 工具的模型面名字随平台走,图标不跟着分两次写
     if name == liuma_sandbox::shell::tool_name() {
-        return IconName::SquareTerminal.path();
+        return LiumaIcon::CommandPrompt.path();
     }
     match name {
         "file_read" | "read" | "web_fetch" => IconName::BookOpen.path(),
@@ -571,7 +592,7 @@ mod tests {
     /// 枚举全变体的 path 必须命中 LIUMA_ICONS 静态表(防加枚举忘加 SVG)
     #[test]
     fn liuma_icon_paths_all_embedded() {
-        const ALL: [LiumaIcon; 62] = [
+        const ALL: [LiumaIcon; 65] = [
             LiumaIcon::Sparkles,
             LiumaIcon::Zap,
             LiumaIcon::Brain,
@@ -634,6 +655,9 @@ mod tests {
             LiumaIcon::Models,
             LiumaIcon::Box,
             LiumaIcon::General,
+            LiumaIcon::CommandPrompt,
+            LiumaIcon::Think,
+            LiumaIcon::LoaderRing,
         ];
         for icon in ALL {
             let p = icon.path();
@@ -661,7 +685,7 @@ mod tests {
         let expected: &[(&str, &str)] = &[
             (
                 liuma_sandbox::shell::tool_name(),
-                "icons/square-terminal.svg",
+                "icons/_liuma/command-prompt.svg",
             ),
             ("file_read", "icons/book-open.svg"),
             ("file_edit", "icons/_liuma/file-pen.svg"),

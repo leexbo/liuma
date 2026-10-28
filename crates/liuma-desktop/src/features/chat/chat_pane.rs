@@ -19,14 +19,15 @@ use gpui_kit::{
 };
 
 use super::projection::{
-    AskPhase, AskRowState, ChatNode, CompactProgress, Deliverable, NavAnchor, PlanStatus,
-    RetryState, RowSlot, ToolState,
+    AskPhase, AskRowState, ChatNode, CompactProgress, Deliverable, NavAnchor, NodePart, PlanStatus,
+    ProcessActivity, RetryState, RowSlot, ToolState, TurnEnd, group_categories, live_header,
+    process_title, settled_think_summary, streaming_think_summary,
 };
 use crate::kits::filetype::class_icon;
 use crate::kits::icons::{self, LiumaIcon, fixed};
 use crate::kits::popup::PopTrigger;
 use crate::kits::theme;
-use crate::shell::metrics::{H_PAD, NAV_GUTTER_W, RUN_CLOCK_AFTER_SECS, SCROLLBAR_GUTTER_W};
+use crate::shell::metrics::{H_PAD, NAV_GUTTER_W, SCROLLBAR_GUTTER_W};
 
 use crate::kits::i18n::t;
 use crate::shell::store::AppStore;
@@ -118,27 +119,17 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
     // 轨道几何(paint 捕获),供刻度带等距居中
     let nav_track = store.read(cx).chat.nav_track;
 
-    // 转写区进行中指示:running 恒显示
-    // 「深入探索中…」+ shimmer 呼吸,时长时钟仅 ≥15s 出现(<15s 短回合
-    // 只出纯标签)。
-    let run_status = {
+    // 转写区进行中指示 = 列表流尾伪行(run_status_row,随内容滚动);
+    // 这里只留运行布尔(回底钮弧光耦合)
+    let has_run_status = {
         let st = store.read(cx);
         st.state
             .current_id
-            .clone()
-            .and_then(|id| st.is_running(&id).then_some(id))
-            .map(|id| {
-                let dur = st
-                    .run_elapsed(&id)
-                    .filter(|d| *d >= std::time::Duration::from_secs(RUN_CLOCK_AFTER_SECS))
-                    .map(crate::shell::reducer::format_run_duration);
-                (dur, st.state.current_id.clone())
-            })
+            .as_deref()
+            .is_some_and(|id| st.is_running(id))
     };
-
     // 手动压缩状态行(/compact 受理 → 终局事件清位;瞬态不入节点):
     // 排队(回合进行中受理,驱动等 turn 间隙)与进行两态
-    let has_run_status = run_status.is_some();
     let (compact_queued, compact_running, compact_progress) = {
         let st = store.read(cx);
         match st
@@ -173,11 +164,13 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
     // 恒定于可视项数)。列 gap(16)由每项包裹容器 py(8) 承担。
     // 行源 = 行槽(Node 平铺 / 轮过程组行),非 nodes 原始序
     let item_store = store.clone();
+    let vh = window.viewport_size().height;
     let list = gpui_kit::list(list_state.clone(), move |ix, _window, cx| {
         let st = item_store.read(cx);
         // 流尾伪行:插队待投递气泡(session/queue 权威快照)+ 乐观用户
-        // 气泡(RPC 回执即显,user/message 帧到达按 id 替换);
-        // 行号 = 行槽之后,steering 先于 optimistic
+        // 气泡(RPC 回执即显,user/message 帧到达按 id 替换)+ 运行状态
+        // 行(running 即在,恒为流尾最后一行);
+        // 行号 = 行槽之后,steering 先于 optimistic 先于状态行
         let Some(slot) = st.chat.row_slots.get(ix) else {
             let off = ix - st.chat.row_slots.len();
             let Some(id) = st.state.current_id.as_deref() else {
@@ -211,7 +204,27 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                     .into_any_element();
             }
             let Some(p) = chat.pending_user.get(off - entries.len()) else {
-                return div().into_any_element();
+                // 运行状态行:running 即在,用时恒显(<1s 显示 0 秒)
+                let running = st
+                    .state
+                    .current_id
+                    .as_deref()
+                    .is_some_and(|sid| st.is_running(sid));
+                if !running {
+                    return div().into_any_element();
+                }
+                let elapsed = st
+                    .state
+                    .current_id
+                    .as_deref()
+                    .and_then(|sid| st.run_elapsed(sid))
+                    .unwrap_or_default();
+                return div()
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .child(div().w(col_w).child(run_status_row(elapsed, cx)))
+                    .into_any_element();
             };
             return div()
                 .w_full()
@@ -232,19 +245,19 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         // (release 下 node_ix 无消费者)
         #[cfg_attr(not(test), allow(unused_variables))]
         let (el, node_ix) = match slot {
-            // 展开态成员与平铺节点同构(**无缩进/引导线**):
-            // 成员行与答前思考/正文同一左缘,列内不出现多级缩进
-            RowSlot::Node(n) | RowSlot::GroupMember(n) => {
+            // 平铺节点:成员行与答前思考/正文同一左缘(无缩进/引导线)。
+            // `part = Body` 的助手槽只出正文半边(思考行已归前一组),
+            // 折叠轮同理只露最终答复
+            RowSlot::Node { ix: n, part } => {
                 let Some(node) = st.current_nodes().get(*n) else {
                     return div().into_any_element();
                 };
-                // 零高节点不占行距:统一 py(8) 会留下 16px 空隙,行间
-                // 疏密不均(实测展开组 16/32px 两档交替)
+                // 零高节点不占行距:统一 py 会留下空隙,行间疏密不均
                 if crate::features::chat::projection::invisible_node(node) {
                     return div().into_any_element();
                 }
                 let settled = st.current_chat().and_then(|c| c.compact_settled.clone());
-                let el = render_node(
+                let el = render_node_part(
                     &item_store,
                     cx,
                     &st.chat.open_reasoning,
@@ -254,38 +267,60 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                     &st.chat.open_retries,
                     *n,
                     node,
+                    *part,
                     col_w,
                 )
                 .into_any_element();
                 (el, Some(*n))
             }
-            RowSlot::Group {
+            RowSlot::TurnHead {
                 turn_key,
-                first,
-                last,
-            }
-            | RowSlot::GroupOpen {
-                turn_key,
-                first,
-                last,
+                end,
+                run_ms,
             } => {
-                let open = matches!(slot, RowSlot::GroupOpen { .. });
-                let el = turn_group_row(&item_store, cx, turn_key, *first, *last, open)
+                let el = turn_head_row(&item_store, cx, turn_key, *end, *run_ms, vh, col_w)
                     .into_any_element();
+                (el, None)
+            }
+            RowSlot::Group {
+                key,
+                first,
+                last,
+                closed,
+                open,
+                ..
+            } => {
+                let el = group_seat(
+                    &item_store,
+                    cx,
+                    key,
+                    *first,
+                    *last,
+                    *closed,
+                    *open,
+                    vh,
+                    col_w,
+                )
+                .into_any_element();
                 (el, None)
             }
         };
         let anim_key = slot_key_for_anim(slot, st.current_nodes());
         let el = enter_anim(el, &anim_key, st.current_chat());
-        // 行距:全部行槽 pt8/pb8(兄弟行隙 16px);唯一例外是紧跟
-        // 折叠组头的答案行 pt0——组头自带 pb8,合 8px(组摘要即
-        // 答案的开场,不另留整档行距)
-        let prev_slot = ix.checked_sub(1).and_then(|p| st.chat.row_slots.get(p));
+        // 行距(参照流的 top-margin 节奏,折进上内边距):
+        // 过程行 6px、助手正文前后 12px、轮控制行前 16px(其下自带发丝
+        // 分隔线),其余行沿用 8/8。组座位自身不带下边距(body 自带 mt)
         let (row_pt, row_pb) = match slot {
-            RowSlot::Node(_) if prev_slot.is_some_and(|s| matches!(s, RowSlot::Group { .. })) => {
-                (px(0.), px(8.))
-            }
-            _ => (px(8.), px(8.)),
+            RowSlot::TurnHead { .. } => (px(16.), px(0.)),
+            RowSlot::Group { .. } => (px(6.), px(4.)),
+            RowSlot::Node {
+                part: NodePart::Body,
+                ..
+            } => (px(6.), px(6.)),
+            RowSlot::Node { ix, .. } => match st.current_nodes().get(*ix) {
+                Some(ChatNode::Assistant { .. }) => (px(6.), px(6.)),
+                _ => (px(8.), px(8.)),
+            },
         };
         // 布局回归测试钩子:节点 bounds 可经 debug_bounds 检索(release 无操作)
         #[cfg(test)]
@@ -404,50 +439,6 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
                 )
             },
         )
-        .when_some(run_status, |el, (dur, _sid)| {
-            el.child(
-                div()
-                    // 列对齐容器同款槽 padding(与列表容器同中心线)
-                    .pl(px(H_PAD + NAV_GUTTER_W))
-                    .pr(px(H_PAD + SCROLLBAR_GUTTER_W))
-                    .child(
-                        div()
-                            .mx_auto()
-                            .w(col_w)
-                            .px(px(4.))
-                            .pb(px(8.))
-                            .text_size(px(13.))
-                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                            .text_color(theme::brand(cx))
-                            .child(
-                                div()
-                                    .debug_selector(|| "turn-status".to_string())
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(4.))
-                                    .child(t!("chat.exploring"))
-                                    .when_some(dur, |el, label| {
-                                        el.child(
-                                            div()
-                                                .text_size(px(12.))
-                                                .font_weight(gpui_kit::FontWeight::NORMAL)
-                                                .text_color(theme::caption(cx))
-                                                .child(label),
-                                        )
-                                    })
-                                    // 进行中 shimmer(1.8s 透明度呼吸;running
-                                    // 消失即元素卸载,动画随停)
-                                    .with_animation(
-                                        "liuma-turn-status",
-                                        Animation::new(std::time::Duration::from_millis(1800))
-                                            .repeat()
-                                            .with_easing(gpui_kit::pulsating_between(0.45, 0.95)),
-                                        |el, delta| el.opacity(delta),
-                                    ),
-                            ),
-                    ),
-            )
-        })
         .when(show_nav_rail, |el| {
             let s = store.read(cx);
             let ui = NavUiState {
@@ -467,15 +458,14 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         // 列)。可见性读
         // 权威的 at_bottom()(实时);at_bottom_ui 只是滚动回调的
         // notify 去重缓存,初排瞬态事件翻转它时不代表真实位置
-        // 运行态上移让位「深入探索中…」状态行(它在下方正常流中)。
+        // 运行状态行已入流(随内容滚动),常态悬浮位即可。
         // 输出中在外圈叠品牌色旋转弧光,收尾即退回常态钮
         .when(!store.read(cx).at_bottom(), |el| {
             let s = store.clone();
-            let lift = if has_run_status { 44. } else { 16. };
             el.child(
                 div()
                     .absolute()
-                    .bottom(px(lift))
+                    .bottom(px(16.))
                     // 右下角:离卡片右缘留出呼吸间隙
                     .right(px(28.))
                     .flex()
@@ -631,32 +621,37 @@ fn enter_anim(
 /// 工具行扫光周期(2.6s)
 const TOOL_SWEEP_MS: std::time::Duration = std::time::Duration::from_millis(2600);
 
-/// 工具行运行中扫光(2.6s/轮、90% 后停右的呼吸节拍;
-/// 与前导 ongoing_dot 共存 = 「状态点 + 扫光」双要素)。gpui 渐变仅
-/// 两止点,以「透明→低透明白」近似 300px 三止带;`left(relative(..))`
-/// 相对行宽位移无需知道行宽;repeat 动画元素卸载即停(同 state_dot)。
-fn tool_sweep(ix: usize, cx: &App) -> impl IntoElement {
+/// 扫光带(110px「透明→低透明白」渐变,2.6s/轮、90% 后停右的呼吸
+/// 节拍;`left(relative(..))` 相对行宽位移无需知道行宽;repeat 动画
+/// 元素卸载即停)。运行中的行(工具/思考/组座位头/状态行)共用
+fn sweep_band(id: (&'static str, usize), sel: Option<String>, cx: &App) -> AnyElement {
     div()
-        .debug_selector(move || format!("tool-sweep-{ix}"))
         .absolute()
         .top_0()
         .bottom_0()
         .w(px(110.))
+        .when_some(sel, |el, s| el.debug_selector(move || s.clone()))
         .bg(gpui_kit::linear_gradient(
             90.,
             gpui_kit::linear_color_stop(gpui_kit::transparent_black(), 0.),
             gpui_kit::linear_color_stop(theme::sweep(cx), 1.),
         ))
-        .with_animation(
-            ("liuma-tool-sweep", ix),
-            Animation::new(TOOL_SWEEP_MS).repeat(),
-            |band, delta| {
-                // 0..90% 行程(二次缓出),90%..100% 停右留白
-                let f = (delta / 0.9).min(1.0);
-                let f = 1.0 - (1.0 - f) * (1.0 - f);
-                band.left(relative(f * 1.3 - 0.2))
-            },
-        )
+        .with_animation(id, Animation::new(TOOL_SWEEP_MS).repeat(), |band, delta| {
+            // 0..90% 行程(二次缓出),90%..100% 停右留白
+            let f = (delta / 0.9).min(1.0);
+            let f = 1.0 - (1.0 - f) * (1.0 - f);
+            band.left(relative(f * 1.3 - 0.2))
+        })
+        .into_any_element()
+}
+
+/// 工具行运行中扫光(与前导状态点共存 = 「状态点 + 扫光」双要素)
+fn tool_sweep(ix: usize, cx: &App) -> AnyElement {
+    sweep_band(
+        ("liuma-tool-sweep", ix),
+        Some(format!("tool-sweep-{ix}")),
+        cx,
+    )
 }
 
 /// 刻度长度表(hover 渐变,逐像素实测:激活 26,邻线随距离
@@ -1349,21 +1344,65 @@ fn compaction_block(
         })
 }
 
-/// 成员行摘要槽内容:纯文本 / 可点文件链接(路径渲染为下划线
-/// 链接,点击开侧栏预览,行内空白区仍是展开热区)
+/// 成员行摘要槽内容:纯文本 / 流式思考摘要(左锚定增长 + 右缘渐隐)/
+/// 可点文件链接(路径渲染为下划线链接,点击开侧栏预览,行内空白区
+/// 仍是展开热区)
 enum MemberSummary {
     Text(String),
-    File { text: String, path: String },
+    /// 流式思考摘要:左锚定、不省略,溢出从右缘 48px 渐隐
+    Streaming(String),
+    File {
+        text: String,
+        path: String,
+    },
+}
+
+/// leading 图标盒(16px;折叠态 hover 图标→chevron-down 交叉淡化,
+/// 展开态常显 chevron-up)。think/tool 行与组座位头共用
+fn leading_swap_box(group: &str, leading: AnyElement, open: bool, cx: &App) -> Div {
+    let caption = theme::caption(cx);
+    let g = SharedString::from(group.to_string());
+    div()
+        .flex_shrink_0()
+        .size(px(16.))
+        .relative()
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(open, |el| el.opacity(0.))
+                .when(!open, |el| el.group_hover(g.clone(), |st| st.opacity(0.)))
+                .child(leading),
+        )
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(open, |el| {
+                    el.child(fixed(IconName::ChevronUp, 14.).text_color(caption))
+                })
+                .when(!open, |el| {
+                    el.opacity(0.)
+                        .group_hover(g, |st| st.opacity(1.))
+                        .child(fixed(IconName::ChevronDown, 14.).text_color(caption))
+                }),
+        )
 }
 
 /// 成员行统一骨架(与 `compact_row` 同几何):
-/// min_h24 = [leading 14px] gap6 [标题 13px LABEL_2 不收缩] [2×2 圆点]
-/// [摘要 13px LABEL_3 flex_1 + min_w(0) 单行省略——**恒显**
-/// (展开态不换空占位)] [suffix 不收缩]
-/// [chevron 14(折叠态 hover 才淡入)]。素色行:无底色,hover 铺 LAYER;
-/// summary=None 时圆点连摘要一起消失;follow_end = 流式右跟随(新文本
-/// 自右进入,旧行从左缘推出,不 truncate)。点击区/展开体归各块自有
-/// (id + on_click 由调用方链上)。
+/// min_h24 = [leading 16px 盒] gap6 [标题 13px 不收缩] [2×2 圆点]
+/// [摘要 13px flex_1 + min_w(0) 单行省略——**恒显**(展开态不换空
+/// 占位)] [suffix 不收缩] ([chevron 14] 仅非 leading 模式)。
+/// 素色行:无底色,hover 铺 LAYER;行文字三档灰、hover 升二档灰;
+/// summary=None 时圆点连摘要一起消失。chevron_leading = 图标↔chevron
+/// 在 leading 位交叉淡化(think/tool 行),否 = 尾随 chevron(context/
+/// retry 行)。点击区/展开体归各块自有(id + on_click 由调用方链上)。
 #[allow(clippy::too_many_arguments)]
 fn member_row(
     store: &Entity<AppStore>,
@@ -1374,7 +1413,7 @@ fn member_row(
     summary_color: Option<Rgba>,
     suffix: Option<AnyElement>,
     open: bool,
-    follow_end: bool,
+    chevron_leading: bool,
     selector: Option<String>,
     cx: &App,
 ) -> Div {
@@ -1386,101 +1425,119 @@ fn member_row(
         .w_full()
         .items_center()
         .gap(px(6.))
-        .rounded(px(6.))
         .cursor_pointer()
         .group(group.clone())
-        .hover(|s| s.bg(theme::layer(cx)))
         .when_some(selector, |el, sel: String| {
             el.debug_selector(move || sel.clone())
-        })
-        .child(leading)
-        .child(
-            div()
-                .flex_shrink_0()
-                .text_size(px(13.))
-                .text_color(theme::label_2(cx))
-                .child(title),
-        );
+        });
+    row = if chevron_leading {
+        row.child(leading_swap_box(&group, leading, open, cx))
+    } else {
+        row.child(leading)
+    };
+    row = row.child(
+        div()
+            .flex_shrink_0()
+            .text_size(px(13.))
+            .text_color(theme::label_3(cx))
+            .group_hover(group.clone(), |s| s.text_color(theme::label_2(cx)))
+            .child(title),
+    );
     row = match summary {
         Some(summary) => {
-            let summary_color = summary_color.unwrap_or_else(|| theme::label_3(cx));
-            let text = |el: Div, summary: String| {
-                el.text_size(px(13.))
-                    .text_color(summary_color)
-                    .child(summary)
+            let (summary_color, hover_upgrade) = match summary_color {
+                Some(c) => (c, false),
+                None => (theme::label_3(cx), true),
             };
-            let (slot, fill): (AnyElement, bool) = match summary {
-                MemberSummary::Text(summary) => (
-                    if follow_end {
-                        // 流式右跟随:摘要槽 overflow_hidden + justify_end,
-                        // 文本不收缩不折行——溢出从左缘裁掉(尾行恒可见)
-                        div()
-                            .min_w(px(0.))
-                            .flex_1()
-                            .overflow_hidden()
-                            .justify_end()
-                            .child(text(div().flex_shrink_0().whitespace_nowrap(), summary))
-                            .into_any_element()
-                    } else {
-                        text(div().min_w(px(0.)).flex_1().truncate(), summary).into_any_element()
-                    },
-                    false,
-                ),
+            let text = |el: Div, summary: String| {
+                let el = el.text_size(px(13.)).text_color(summary_color);
+                if hover_upgrade {
+                    el.group_hover(group.clone(), |s| s.text_color(theme::label_2(cx)))
+                        .child(summary)
+                } else {
+                    el.child(summary)
+                }
+            };
+            let slot: AnyElement = match summary {
+                MemberSummary::Text(summary) => {
+                    text(div().min_w(px(0.)).flex_1().truncate(), summary).into_any_element()
+                }
+                MemberSummary::Streaming(summary) => {
+                    // 流式摘要:左锚定增长,右缘 48px 渐隐(无省略号;
+                    // 溢出裁剪)
+                    div()
+                        .min_w(px(0.))
+                        .flex_1()
+                        .relative()
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .whitespace_nowrap()
+                                .text_size(px(13.))
+                                .text_color(summary_color)
+                                .child(summary),
+                        )
+                        .child(div().absolute().top_0().bottom_0().right_0().w(px(48.)).bg(
+                            gpui_kit::linear_gradient(
+                                90.,
+                                gpui_kit::linear_color_stop(gpui_kit::transparent_black(), 0.),
+                                gpui_kit::linear_color_stop(theme::base(cx), 1.),
+                            ),
+                        ))
+                        .into_any_element()
+                }
                 MemberSummary::File { text, path } => {
                     // 链接槽不收缩(shrink-to-fit);点击开预览,
                     // stop_propagation 防触发行折叠
                     let s = store.clone();
-                    (
-                        div()
-                            .id(SharedString::from(format!("link-{group}")))
-                            .flex_shrink_0()
-                            .text_size(px(13.))
-                            .text_color(theme::label_2(cx))
-                            .underline()
-                            .child(text)
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(move |_, _, cx| {
-                                let p = path.clone();
-                                s.update(cx, |st, cx| st.open_deliverable(&p, cx));
-                            })
-                            .into_any_element(),
-                        true,
-                    )
+                    div()
+                        .id(SharedString::from(format!("link-{group}")))
+                        .flex_shrink_0()
+                        .text_size(px(13.))
+                        .text_color(theme::label_2(cx))
+                        .underline()
+                        .child(text)
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(move |_, _, cx| {
+                            let p = path.clone();
+                            s.update(cx, |st, cx| st.open_deliverable(&p, cx));
+                        })
+                        .into_any_element()
                 }
             };
             row = row.child(
                 div()
                     .flex_shrink_0()
+                    .mx(px(2.))
                     .size(px(2.))
                     .rounded_full()
                     .bg(theme::caption(cx)),
             );
-            if fill {
-                // 链接槽后补弹性占位:行尾空白仍是展开热区
-                row = row.child(slot).child(div().flex_1());
-                row
-            } else {
-                row.child(slot)
-            }
+            row.child(slot)
         }
         None => row.child(div().min_w(px(0.)).flex_1()),
     };
     if let Some(suffix) = suffix {
         row = row.child(suffix);
     }
-    // 折叠态 hover 才淡入 chevron(先例 compaction 行);展开态常显向下
-    row.child(
-        div()
-            .flex_shrink_0()
-            .when(open, |el| {
-                el.child(fixed(IconName::ChevronDown, 14.).text_color(theme::caption(cx)))
-            })
-            .when(!open, |el| {
-                el.opacity(0.)
-                    .group_hover(group, |style| style.opacity(1.))
-                    .child(fixed(IconName::ChevronRight, 14.).text_color(theme::caption(cx)))
-            }),
-    )
+    // 非 leading 模式保留尾随 chevron(折叠态 hover 才淡入;展开态
+    // 常显向下)。leading 模式 chevron 已在图标位交叉淡化
+    if !chevron_leading {
+        row = row.child(
+            div()
+                .flex_shrink_0()
+                .when(open, |el| {
+                    el.child(fixed(IconName::ChevronDown, 14.).text_color(theme::caption(cx)))
+                })
+                .when(!open, |el| {
+                    el.opacity(0.)
+                        .group_hover(group, |style| style.opacity(1.))
+                        .child(fixed(IconName::ChevronRight, 14.).text_color(theme::caption(cx)))
+                }),
+        );
+    }
+    row
 }
 
 /// 状态点:10px 双层——外圈同色 10% 光晕 +
@@ -1521,91 +1578,387 @@ fn summary_line(text: &str) -> String {
     }
 }
 
-/// 行槽 → 入场动画门控 key:Node/GroupMember 沿用节点 key(查 born 表);
-/// 组行无 born 记录(折叠不产生新节点)→ 动画自然跳过
+/// 行槽 → 入场动画门控 key:Node 沿用节点 key(查 born 表);组座位
+/// 无 born 记录(折叠不产生新节点)→ 动画自然跳过
 fn slot_key_for_anim(slot: &RowSlot, nodes: &[ChatNode]) -> String {
     match slot {
-        RowSlot::Node(n) | RowSlot::GroupMember(n) => nodes
-            .get(*n)
+        RowSlot::Node { ix, .. } => nodes
+            .get(*ix)
             .map(|nd| nd.key().to_string())
             .unwrap_or_default(),
-        RowSlot::Group { turn_key, .. } | RowSlot::GroupOpen { turn_key, .. } => turn_key.clone(),
+        RowSlot::Group { key, .. } => key.clone(),
+        RowSlot::TurnHead { turn_key, .. } => turn_key.clone(),
     }
 }
 
-/// 轮过程组摘要行(节标题样式):
-/// h33 + 底部发丝分隔线 + Workflow 图标 +「N 次工具调用 · M 条消息」
-/// (工具为 0 → 消息计数;全 0 →「已思考」兜底)+ 展开箭头;
-/// 成员展开后与正文同左缘平铺。
-/// 点击展开/收拢该轮(行数回缩走 store 侧锚定 reset)
-fn turn_group_row(
+/// 活动归类 → 组头标签
+fn activity_label(a: ProcessActivity) -> std::borrow::Cow<'static, str> {
+    match a {
+        ProcessActivity::Thinking => t!("chat.step_thinking"),
+        ProcessActivity::Read => t!("chat.step_read"),
+        ProcessActivity::ReadImage => t!("chat.step_read_image"),
+        ProcessActivity::Write => t!("chat.step_write"),
+        ProcessActivity::Edit => t!("chat.step_edit"),
+        ProcessActivity::Search => t!("chat.step_search"),
+        ProcessActivity::Commands => t!("chat.step_commands"),
+        ProcessActivity::Code => t!("chat.step_code"),
+        ProcessActivity::WebSearch => t!("chat.step_web_search"),
+        ProcessActivity::WebFetch => t!("chat.step_web_fetch"),
+        ProcessActivity::Subagents => t!("chat.step_subagents"),
+        ProcessActivity::Plan => t!("chat.step_plan"),
+        ProcessActivity::Questions => t!("chat.step_questions"),
+        ProcessActivity::Tools => t!("chat.step_tools"),
+    }
+}
+
+/// 活动归类 → 14px 图标(工具族沿用工具行图标口径;思考独用 Think 形)
+fn activity_icon(a: ProcessActivity) -> AnyElement {
+    match a {
+        ProcessActivity::Thinking => fixed(LiumaIcon::Think, 14.).into_any_element(),
+        ProcessActivity::Commands => icons::tool_icon("bash").into(),
+        ProcessActivity::Read => icons::tool_icon("file_read").into(),
+        ProcessActivity::ReadImage => icons::tool_icon("read_image").into(),
+        ProcessActivity::Search => icons::tool_icon("grep").into(),
+        ProcessActivity::Write => icons::tool_icon("write").into(),
+        ProcessActivity::Edit => icons::tool_icon("file_edit").into(),
+        ProcessActivity::Code => icons::tool_icon("code").into(),
+        ProcessActivity::WebSearch => icons::tool_icon("web_search").into(),
+        ProcessActivity::WebFetch => icons::tool_icon("web_fetch").into(),
+        ProcessActivity::Subagents => icons::tool_icon("subagent").into(),
+        ProcessActivity::Plan => icons::tool_icon("todo_write").into(),
+        ProcessActivity::Questions => icons::tool_icon("ask").into(),
+        ProcessActivity::Tools => fixed(LiumaIcon::Sparkles, 14.).into_any_element(),
+    }
+}
+
+/// 座位体渐隐遮罩(顶/底 24px;页面底色向透明过渡,纯 div 无
+/// hitbox 不挡点击)
+fn fade_v(top: bool, base: Rgba) -> AnyElement {
+    div()
+        .absolute()
+        .left_0()
+        .right_0()
+        .h(px(24.))
+        .when(top, |el| el.top_0())
+        .when(!top, |el| el.bottom_0())
+        .when(top, |el| {
+            el.bg(gpui_kit::linear_gradient(
+                180.,
+                gpui_kit::linear_color_stop(base, 0.),
+                gpui_kit::linear_color_stop(gpui_kit::transparent_black(), 1.),
+            ))
+        })
+        .when(!top, |el| {
+            el.bg(gpui_kit::linear_gradient(
+                180.,
+                gpui_kit::linear_color_stop(gpui_kit::transparent_black(), 0.),
+                gpui_kit::linear_color_stop(base, 1.),
+            ))
+        })
+        .into_any_element()
+}
+
+/// 座位体限高上限(视口高的一半与之取小)
+const SEAT_BODY_MAX_H: f32 = 400.;
+
+/// 轮控制行(「已完成，用时 X」/「已停止」/「处理失败」)。
+///
+/// 参照流的轮级折叠入口:一行 33px、下缘 0.5px 发丝线、右缘 chevron
+/// 随开合旋转;正常完成轮点它展开过程(默认收拢),中断/错误轮不可收
+/// (过程恒在,结局由「已停止」/错误行自己交代)。
+#[allow(clippy::too_many_arguments)]
+fn turn_head_row(
     store: &Entity<AppStore>,
     cx: &App,
     turn_key: &str,
-    first: usize,
-    last: usize,
-    open: bool,
+    end: TurnEnd,
+    run_ms: u64,
+    _vh: Pixels,
+    col_w: Pixels,
 ) -> impl IntoElement {
-    let (_, tools) = super::projection::group_counts(store.read(cx).current_nodes(), first, last);
-    let msgs = super::projection::group_message_count(store.read(cx).current_nodes(), first, last);
-    // 文案拼装(有则拼,连接符 ·;全 0 → 兜底)
-    let mut label = if tools > 0 {
-        t!("chat.tool_calls_count", n = tools).into_owned()
-    } else {
-        String::new()
+    let open = store.read(cx).chat.open_turns.contains(turn_key);
+    let label: String = match end {
+        TurnEnd::Aborted => t!("chat.turn_stopped").to_string(),
+        TurnEnd::Failed => t!("chat.turn_head_failed").to_string(),
+        TurnEnd::Completed if run_ms > 0 => t!(
+            "chat.turn_done_for",
+            duration = crate::shell::reducer::format_run_duration_wide(
+                std::time::Duration::from_millis(run_ms),
+            )
+        )
+        .to_string(),
+        TurnEnd::Completed => t!("chat.turn_done").to_string(),
     };
-    if msgs > 0 {
-        if !label.is_empty() {
-            label.push_str(" · ");
-        }
-        label.push_str(&t!("chat.messages_count", n = msgs));
-    }
-    if label.is_empty() {
-        label = t!("chat.thought_fallback").to_string();
-    }
+    let foldable = end == TurnEnd::Completed;
     let s = store.clone();
     let key = turn_key.to_string();
-    let sel = format!("turn-group-{turn_key}");
-    div()
+    let chevron = if foldable {
+        div()
+            .flex_shrink_0()
+            .ml(px(4.))
+            .text_color(theme::label_3(cx))
+            .child(fixed(
+                if open {
+                    IconName::ChevronUp
+                } else {
+                    IconName::ChevronDown
+                },
+                14.,
+            ))
+            .into_any_element()
+    } else {
+        div().into_any_element()
+    };
+    let mut row = div()
+        .id(SharedString::from(format!("turn-head-{turn_key}")))
+        .debug_selector(move || format!("turn-head-{turn_key}"))
+        .w(col_w)
+        .h(px(33.))
+        .flex()
+        .items_center()
+        .pb(px(8.))
+        .border_b(px(0.5))
+        .border_color(theme::border(cx))
+        .text_size(px(14.))
+        .text_color(theme::label_3(cx))
+        .when(foldable, |el| {
+            el.cursor_pointer()
+                .hover(|s| s.text_color(theme::label_2(cx)))
+        })
+        .child(div().min_w(px(0.)).truncate().flex_1().child(label))
+        .child(chevron);
+    if foldable {
+        row = row.on_click(move |_, _, cx| {
+            let key = key.clone();
+            s.update(cx, |st, cx| st.toggle_turn_group(&key, cx));
+        });
+    }
+    row
+}
+
+/// 轮过程组座位(组头 + 可选展开体):
+/// - 未收口的运行(直播尾段):组头 = 「正在运行命令 · 动态详情」(归类
+///   标签 + 运行中工具参数详情,无运行工具回退思考摘要),扫光;
+/// - 已收口的运行:组头 = 分类并词(「执行了命令」/「执行了命令并已读取
+///   文件」/«已读取文件，已搜索代码，执行了命令等»),与参照流同字号同色;
+/// - **默认收拢成一行组头**(参照流:组不铺开成员);点组头展开 → 限高
+///   `min(400px, 50vh)` 内滚 + 顶/底 24px 渐隐(直播尾段贴底跟随);
+///   成员行 gap 6,零高节点跳过。
+#[allow(clippy::too_many_arguments)]
+fn group_seat(
+    store: &Entity<AppStore>,
+    cx: &App,
+    key: &str,
+    first: usize,
+    last: usize,
+    closed: bool,
+    open: bool,
+    vh: Pixels,
+    col_w: Pixels,
+) -> Div {
+    let grp = format!("seat-{first}");
+    let sel = format!("turn-group-{first}");
+    let (icon, label, sweep) = if !closed {
+        let (activity, detail) = live_header(store.read(cx).current_nodes(), first, last);
+        let mut label = activity_label(activity).to_string();
+        if let Some(d) = detail {
+            label.push_str(" · ");
+            label.push_str(&d);
+        }
+        (activity_icon(activity), label, true)
+    } else {
+        let st = store.read(cx);
+        let categories = group_categories(st.current_nodes(), first, last);
+        let label = process_title(&categories);
+        // 图标口径与参照实现一致:分类首项,无工具(只有思考)时回退
+        // thinking——**不能**换别的图标,否则同一活动在直播/收口两态下
+        // 会长得不一样
+        let activity = categories
+            .first()
+            .copied()
+            .unwrap_or(ProcessActivity::Thinking);
+        let icon = activity_icon(activity);
+        (icon, label, false)
+    };
+    let s = store.clone();
+    let click_key = key.to_string();
+    let header = div()
         .id(("turn-group", first))
         .flex()
-        .min_h(px(33.))
-        .pb(px(8.))
-        .border_b_1()
-        .border_color(theme::border(cx))
+        .min_h(px(24.))
         .flex_shrink_0()
         .items_center()
         .gap(px(6.))
         .cursor_pointer()
-        // 素行:无底色无圆角(hover 铺色会让组头呈选中观感)
+        .group(grp.clone())
         .text_size(px(14.))
+        .text_color(theme::label_3(cx))
+        .group_hover(grp.clone(), |s| s.text_color(theme::label_2(cx)))
+        // 展开态组头下留 8px(参照实现 padding-bottom: 8px)
+        .when(open, |el| el.pb(px(8.)))
         .debug_selector(move || sel.clone())
-        .child(fixed(LiumaIcon::Workflow, 14.).text_color(theme::caption(cx)))
+        .child(leading_swap_box(&grp, icon, open, cx))
         .child(
             div()
                 .min_w(px(0.))
                 .flex_1()
-                .text_color(theme::label_2(cx))
+                .truncate()
+                .text_color(theme::label_3(cx))
                 .child(label),
         )
-        .child(
-            fixed(
-                if open {
-                    IconName::ChevronDown
-                } else {
-                    IconName::ChevronRight
-                },
-                14.,
-            )
-            .text_color(theme::caption(cx)),
-        )
-        .on_click(move |_, _, cx| {
-            let key = key.clone();
-            s.update(cx, |st, cx| st.toggle_turn_group(&key, cx));
+        .when(sweep, |el| {
+            el.relative()
+                .overflow_hidden()
+                .child(sweep_band(("liuma-seat-sweep", first), None, cx))
         })
+        .on_click(move |_, _, cx| {
+            let key = click_key.clone();
+            s.update(cx, |st, cx| st.toggle_group(&key, cx));
+        });
+    let mut seat = div().w(col_w).v_flex();
+    seat = seat.child(header);
+    // 收拢 = 只有组头(参照流默认形态);展开才建组体
+    if !open {
+        return seat;
+    }
+    let handle = store
+        .read(cx)
+        .chat
+        .group_scrolls
+        .get(key)
+        .cloned()
+        .unwrap_or_default();
+    let off_y = f32::from(handle.offset().y);
+    let max_y = f32::from(handle.max_offset().y);
+    let at_bottom = off_y >= -max_y - 2.0;
+    // 直播尾段:展开时贴底跟随
+    if !closed && (at_bottom || max_y <= 1.0) {
+        handle.scroll_to_bottom();
+    }
+    let can_up = off_y < -0.5;
+    let can_down = max_y > 1.0 && -off_y < max_y - 0.5;
+    let st = store.read(cx);
+    let compact_settled = st.current_chat().and_then(|c| c.compact_settled.clone());
+    let mut body = div()
+        .id(("group-body", first))
+        .debug_selector(move || format!("group-body-{first}"))
+        .flex()
+        .v_flex()
+        .gap(px(6.))
+        .max_h(px(SEAT_BODY_MAX_H).min(vh / 2.))
+        .overflow_y_scroll()
+        .track_scroll(&handle);
+    for (k, node) in st
+        .current_nodes()
+        .iter()
+        .enumerate()
+        .take(last + 1)
+        .skip(first)
+    {
+        if crate::features::chat::projection::invisible_node(node) {
+            continue;
+        }
+        // 组内助手节点只露思考行(正文已切开在组外)
+        let part = match node {
+            ChatNode::Assistant { text, .. } if !text.is_empty() => NodePart::Reasoning,
+            _ => NodePart::Full,
+        };
+        let child = render_node(
+            store,
+            cx,
+            &st.chat.open_reasoning,
+            &st.chat.open_context,
+            compact_settled.as_ref(),
+            &st.chat.expanded_tools,
+            &st.chat.open_retries,
+            k,
+            node,
+            part,
+            col_w,
+        )
+        .into_any_element();
+        // 布局回归测试钩子与外层平铺行同款:成员按 node-{n} 检索
+        #[cfg(test)]
+        let child = {
+            use gpui_kit::InteractiveElement as _;
+            div()
+                .debug_selector(move || format!("node-{k}"))
+                .child(child)
+                .into_any_element()
+        };
+        body = body.child(child);
+    }
+    let base = theme::base(cx);
+    let body = div()
+        .relative()
+        .child(body)
+        .when(can_up, |el| el.child(fade_v(true, base)))
+        .when(can_down, |el| el.child(fade_v(false, base)));
+    seat.child(body)
 }
 
-/// 单节点分发
+/// 运行状态行(流尾伪行,随内容滚动):顶部发丝分隔线 + 圆环 spinner +
+/// 「工作中,用时 X ···」——用时恒显(<1s 显示 0 秒),扫光带
+/// 表达进行中;running 消失即伪行随行数收缩卸载
+fn run_status_row(elapsed: std::time::Duration, cx: &App) -> Div {
+    let label = crate::shell::reducer::format_run_duration_wide(elapsed);
+    div()
+        .debug_selector(|| "turn-status".to_string())
+        .w_full()
+        .v_flex()
+        .child(div().h(px(1.)).w_full().bg(theme::border(cx)))
+        .child(
+            div()
+                .mt(px(10.))
+                .relative()
+                .overflow_hidden()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .text_size(px(12.))
+                .text_color(theme::label_2(cx))
+                .child(
+                    Spinner::new()
+                        .icon(IconName::LoaderCircle)
+                        .small()
+                        .color(theme::label_2(cx).into()),
+                )
+                .child(t!("chat.working_for", duration = label).to_string())
+                .child(sweep_band(("liuma-run-status", 0), None, cx)),
+        )
+}
+
+/// 单节点分发(`part` 只对助手节点有意义:正文半边 / 思考半边)
+#[allow(clippy::too_many_arguments)]
+fn render_node_part(
+    store: &Entity<AppStore>,
+    cx: &App,
+    open_reasoning: &std::collections::HashSet<String>,
+    open_context: &std::collections::HashSet<String>,
+    compact_settled: Option<&(String, std::time::Instant)>,
+    expanded_tools: &std::collections::HashSet<String>,
+    open_retries: &std::collections::HashSet<String>,
+    ix: usize,
+    node: &ChatNode,
+    part: NodePart,
+    col_w: Pixels,
+) -> impl IntoElement {
+    render_node(
+        store,
+        cx,
+        open_reasoning,
+        open_context,
+        compact_settled,
+        expanded_tools,
+        open_retries,
+        ix,
+        node,
+        part,
+        col_w,
+    )
+}
+
+/// 单节点分发(整块)
 #[allow(clippy::too_many_arguments)]
 fn render_node(
     store: &Entity<AppStore>,
@@ -1617,6 +1970,7 @@ fn render_node(
     open_retries: &std::collections::HashSet<String>,
     ix: usize,
     node: &ChatNode,
+    part: NodePart,
     col_w: Pixels,
 ) -> impl IntoElement {
     match node {
@@ -1682,6 +2036,7 @@ fn render_node(
                 *streaming,
                 interrupted_after,
                 hide_reasoning,
+                part,
                 col_w,
             )
             .into_any_element()
@@ -2198,8 +2553,13 @@ fn assistant_block(
     streaming: bool,
     interrupted_after: bool,
     hide_reasoning: bool,
+    part: NodePart,
     col_w: Pixels,
 ) -> impl IntoElement {
+    // 槽层只露半边时另一半整体不建节点:Body = 只出正文(思考已归组),
+    // Reasoning = 只出思考行(正文已切开在组外)
+    let show_reasoning = part != NodePart::Body;
+    let show_body = part != NodePart::Reasoning;
     let open = open_reasoning.contains(key);
     let s = store.clone();
     let key = key.to_string();
@@ -2217,28 +2577,29 @@ fn assistant_block(
         .relative()
         .w(col_w)
         .gap(px(10.));
-    if !reasoning.is_empty() && !hide_reasoning {
+    if show_reasoning && !reasoning.is_empty() && !hide_reasoning {
         let grp = format!("mr-think-{ix}");
         let row_sel = format!("think-row-{key}");
-        // 折叠摘要:直播中取**尾部**(右对齐跟随——新文本自右进入,
-        // 旧行从左缘推出);定稿后取**开头**
-        // (思考首句与正文主题呼应——尾部是下一步动作预告,常与正文
-        // 措辞对不上,实测观感「thinking 和输出对不上」)
+        // 折叠摘要:直播中取最后一个**已完成段落**的首行(段落收行才
+        // 前进,不随逐字抖动);定稿取全文首行。`**` 一律去除,反引号
+        // 等原样保留为纯文本。空摘要 = 行内只剩标题(圆点连摘要消失)
         let summary = if streaming {
-            format!("{}▍", tail_line(reasoning))
+            let s = streaming_think_summary(reasoning);
+            (!s.is_empty()).then_some(MemberSummary::Streaming(s))
         } else {
-            head_line(reasoning)
+            let s = settled_think_summary(reasoning);
+            (!s.is_empty()).then_some(MemberSummary::Text(s))
         };
         let row = member_row(
             store,
-            fixed(LiumaIcon::Brain, 14.).into_any_element(),
+            fixed(LiumaIcon::Think, 14.).into_any_element(),
             grp,
             t!("chat.think_label").to_string(),
-            Some(MemberSummary::Text(summary)),
+            summary,
             None,
             None,
             open,
-            streaming,
+            true,
             Some(row_sel),
             cx,
         )
@@ -2264,7 +2625,7 @@ fn assistant_block(
     }
     // 正文区:仅在有内容时出现——推理期活动指示由 Think 行的
     // 尾部摘要 + 光标承担(此前的孤立 ▍ 行视觉上不成指示)
-    if !text.is_empty() {
+    if show_body && !text.is_empty() {
         // 正文 = gpui-kit TextView(流式经渲染前 flush 的 push_str 增量
         // 驱动,见 ChatStore::sync_chat_list;定稿幂等)。流式光标在
         // 文档尾外层追加(试验形态;mermaid 待插件批次接入)
@@ -2492,7 +2853,7 @@ fn tool_block(
         failure_line.map(|_| theme::danger(cx)),
         suffix_el,
         expanded,
-        false,
+        true,
         Some(row_sel),
         cx,
     )
@@ -4225,37 +4586,6 @@ fn notice_error(detail: &str, cx: &App) -> impl IntoElement {
         )
 }
 
-/// 尾部摘要:最后一条非空行,超 60 字取**末** 60 字(推理实时进行时
-/// 看到的是正在思考的末尾,而非静态开头)
-fn tail_line(s: &str) -> String {
-    let Some(l) = s.lines().rev().find(|l| !l.trim().is_empty()) else {
-        return String::new();
-    };
-    let chars: Vec<char> = l.chars().collect();
-    if chars.len() > 60 {
-        let tail: String = chars[chars.len() - 60..].iter().collect();
-        format!("…{tail}")
-    } else {
-        l.to_string()
-    }
-}
-
-/// 头部摘要:首条非空行,超 60 字取**前** 60 字(定稿思考摘要与正文
-/// 主题呼应;与 [`tail_line`] 对称)
-fn head_line(s: &str) -> String {
-    let Some(l) = s.lines().find(|l| !l.trim().is_empty()) else {
-        return String::new();
-    };
-    let l = l.trim();
-    let chars: Vec<char> = l.chars().collect();
-    if chars.len() > 60 {
-        let head: String = chars[..60].iter().collect();
-        format!("{head}…")
-    } else {
-        l.to_string()
-    }
-}
-
 /// JSON 串美化(失败原样)
 fn pretty_json(s: &str) -> String {
     serde_json::from_str::<serde_json::Value>(s)
@@ -4390,41 +4720,35 @@ fn tool_display_name(name: &str) -> Option<std::borrow::Cow<'static, str>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{context_provenance, estimate_user_lines, head_line, tail_line};
+    use super::{context_provenance, estimate_user_lines};
+    use crate::features::chat::projection::{settled_think_summary, streaming_think_summary};
     use serde_json::json;
 
-    /// 折叠 Think 摘要 = 尾部内容(流式实时跟随)
+    /// 流式 Think 摘要 = 最后一个已完成段落的首行(段落收行才前进)
     #[test]
-    fn tail_line_takes_last_content() {
+    fn think_summary_streaming_advances_per_paragraph() {
         assert_eq!(
-            tail_line("开头静态内容\n中间\n正在思考的末尾"),
-            "正在思考的末尾"
+            streaming_think_summary("开头静态内容\n中间\n正在思考的末尾"),
+            "开头静态内容",
+            "首行收行后即为当前摘要"
         );
-        // 尾部空白行跳过
-        assert_eq!(tail_line("行一\n行二\n\n"), "行二");
-        // 超长取末 60 字带前缀省略
-        let long = "字".repeat(100);
-        let out = tail_line(&long);
-        assert_eq!(out.chars().count(), 61);
-        assert!(out.starts_with('…'));
-        assert_eq!(tail_line(""), "");
+        assert_eq!(
+            streaming_think_summary("第一段\n\n第二段首行\n还没收行"),
+            "第二段首行"
+        );
+        assert_eq!(streaming_think_summary("还没收行"), "");
+        assert_eq!(streaming_think_summary(""), "");
     }
 
-    /// 定稿摘要 = 头部内容(与正文主题呼应;与 tail_line 对称)
+    /// 定稿 Think 摘要 = 首个非空行
     #[test]
-    fn head_line_takes_first_content() {
+    fn think_summary_settled_takes_first_content() {
         assert_eq!(
-            head_line("正在思考的开头\n中间\n结尾预告"),
+            settled_think_summary("正在思考的开头\n中间\n结尾预告"),
             "正在思考的开头"
         );
-        // 首部空白行跳过
-        assert_eq!(head_line("\n \n行二"), "行二");
-        // 超长取前 60 字带后缀省略
-        let long = "字".repeat(100);
-        let out = head_line(&long);
-        assert_eq!(out.chars().count(), 61);
-        assert!(out.ends_with('…'));
-        assert_eq!(head_line(""), "");
+        assert_eq!(settled_think_summary("\n \n行二"), "行二");
+        assert_eq!(settled_think_summary(""), "");
     }
 
     /// 4a:provenance 派生 — recall(session-reference)/ inject(其余)与 label。

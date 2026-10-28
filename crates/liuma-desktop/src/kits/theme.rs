@@ -667,10 +667,6 @@ pub fn on_brand(cx: &App) -> Rgba {
 pub fn danger(cx: &App) -> Rgba {
     cx.theme().colors.danger.into()
 }
-/// 危险填充面前景(主题 `danger.foreground`)
-pub fn on_danger(cx: &App) -> Rgba {
-    cx.theme().colors.danger_foreground.into()
-}
 /// 成功色
 pub fn success(cx: &App) -> Rgba {
     cx.theme().colors.success.into()

@@ -20,6 +20,21 @@ time:
     zh-CN: "%{hours}时%{mins}分%{secs}秒"
     en: "%{hours}h %{mins}m %{secs}s"
 
+  # 时长(宽排:数字与单位空格分隔、秒位不零填充;聊天运行状态行)
+  duration_wide_s:
+    zh-CN: "%{v} 秒"
+    en: "%{v}s"
+
+  # 时长(宽排,分 + 秒)
+  duration_wide_ms:
+    zh-CN: "%{mins} 分 %{secs} 秒"
+    en: "%{mins}m %{secs}s"
+
+  # 时长(宽排,时 + 分 + 秒)
+  duration_wide_hms:
+    zh-CN: "%{hours} 时 %{mins} 分 %{secs} 秒"
+    en: "%{hours}h %{mins}m %{secs}s"
+
   # 消息时钟(同年跨日)
   clock_md:
     zh-CN: "%{month}月%{day}日 %{time}"

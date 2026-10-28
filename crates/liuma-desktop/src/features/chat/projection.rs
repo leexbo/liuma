@@ -364,7 +364,7 @@ pub struct ChatState {
     pub nodes: Vec<ChatNode>,
     /// 节点内容版本(任一节点的文本/思考就地变更即递增)。节点数与
     /// 末键之外的第三类变更:流式定稿把已有节点从空文本改到有文本,
-    /// 行槽派生(process_mask 的答案归属/可见性)依赖文本内容,
+    /// 行槽派生(答复切组/可见性)依赖文本内容,
     /// 行槽缓存签名须随内容变化失效
     pub content_ver: u64,
     /// todo 列表(todo/write 全量替换)
@@ -1199,214 +1199,605 @@ impl ChatState {
 /// 生成成员行,渲染层据此整行跳过(否则 py(8) 留 16px 空隙,
 /// 展开组行间疏密不均)。
 pub(crate) fn invisible_node(n: &ChatNode) -> bool {
-    matches!(n, ChatNode::Assistant { text, reasoning, streaming, .. }
-        if text.is_empty() && reasoning.is_empty() && !streaming)
+    match n {
+        // 注入行(AGENTS.md / runtime-context / skill 目录 / 时钟 / 后台
+        // 任务通知)**不进聊天流**:可见性判据对 context 节点只放行携带
+        // 工具增删的条目,系统提示与普通注入一律不产行。注入仍是
+        // **过程项**(不切组),只是没有可见行;原文在检查器/轨迹里可查。
+        ChatNode::Context { .. } => true,
+        ChatNode::Assistant {
+            text,
+            reasoning,
+            streaming,
+            ..
+        } => text.is_empty() && reasoning.is_empty() && !streaming,
+        _ => false,
+    }
+}
+
+/// 直播组保留键(未收口尾段的合成组键;turn key 域为 `turn-end:<seq>`
+/// 形,前缀控制字符保证永不与之相撞)
+pub(crate) const LIVE_TURN_KEY: &str = "\u{0}live";
+
+/// 直播组头活动归类(组头标签 + 活动图标;无运行工具时回退 thinking)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ProcessActivity {
+    /// 正在分析请求(无运行工具的回退)
+    Thinking,
+    /// 正在读取文件
+    Read,
+    /// 正在读取图片
+    ReadImage,
+    /// 正在写入文件
+    Write,
+    /// 正在编辑文件
+    Edit,
+    /// 正在搜索代码
+    Search,
+    /// 正在运行命令
+    Commands,
+    /// 正在运行代码
+    Code,
+    /// 正在搜索网页
+    WebSearch,
+    /// 正在访问网页
+    WebFetch,
+    /// 正在协调子智能体
+    Subagents,
+    /// 正在更新计划
+    Plan,
+    /// 等待你的操作
+    Questions,
+    /// 正在调用工具(未归类兜底)
+    Tools,
+}
+
+/// 工具名 → 活动归类(组头标签口径;shell 工具模型面名随平台,
+/// 与 [`crate::kits::icons::tool_path`] 的图标归类同源不同用)
+pub(crate) fn activity_of(name: &str) -> ProcessActivity {
+    if name == liuma_sandbox::shell::tool_name() || name == "bash" || name == "shell" {
+        return ProcessActivity::Commands;
+    }
+    match name {
+        "file_read" | "read" => ProcessActivity::Read,
+        "read_image" => ProcessActivity::ReadImage,
+        "grep" | "glob" | "file_search" => ProcessActivity::Search,
+        "write" => ProcessActivity::Write,
+        "file_edit" | "edit" => ProcessActivity::Edit,
+        "code" => ProcessActivity::Code,
+        "web_search" => ProcessActivity::WebSearch,
+        "web_fetch" => ProcessActivity::WebFetch,
+        "subagent" | "subagent_list" => ProcessActivity::Subagents,
+        "todo_write" | "goal" => ProcessActivity::Plan,
+        "ask" | "ask_user_question" => ProcessActivity::Questions,
+        _ => ProcessActivity::Tools,
+    }
+}
+
+/// 组头详情截断上限(字符)
+const LIVE_DETAIL_MAX_CHARS: usize = 160;
+
+/// 直播组头详情:参数 JSON 按展示键序取首个非空值(字符串或字符串
+/// 数组),空白折叠、超长截断。取值键序 = 人读参数优先(标题/描述/
+/// 任务),命令与路径殿后
+pub(crate) fn live_detail(arguments: &str) -> Option<String> {
+    const DETAIL_KEYS: [&str; 20] = [
+        "title",
+        "description",
+        "objective",
+        "task",
+        "task_name",
+        "name",
+        "question",
+        "questions",
+        "prompt",
+        "message",
+        "command",
+        "cmd",
+        "queries",
+        "query",
+        "pattern",
+        "url",
+        "uri",
+        "file_path",
+        "path",
+        "target",
+    ];
+    let args: Value = serde_json::from_str(arguments).ok()?;
+    for key in DETAIL_KEYS {
+        let Some(v) = args.get(key) else {
+            continue;
+        };
+        let text = match v {
+            Value::String(s) => Some(s.as_str().to_string()),
+            Value::Array(a) if !a.is_empty() && a.iter().all(|i| i.is_string()) => Some(
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+            _ => None,
+        };
+        if let Some(t) = text {
+            let normalized = t.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !normalized.is_empty() {
+                return Some(truncate_live_detail(&normalized));
+            }
+        }
+    }
+    None
+}
+
+/// 按字符截断加省略号(截断点去尾空白)
+fn truncate_live_detail(s: &str) -> String {
+    if s.chars().count() <= LIVE_DETAIL_MAX_CHARS {
+        return s.to_string();
+    }
+    let cut: String = s.chars().take(LIVE_DETAIL_MAX_CHARS - 1).collect();
+    format!("{}…", cut.trim_end())
+}
+
+/// 思考摘要去强调标记(`**` 删除;反引号等其余标记原样保留)
+fn strip_bold(s: &str) -> String {
+    s.replace("**", "")
+}
+
+/// 空行分段范围(段分隔 = 换行 + 空白列 + 换行;返回 `(起, 止)`
+/// 字节区间,不含分隔序列)
+fn paragraph_ranges(text: &str) -> Vec<(usize, usize)> {
+    let b = text.as_bytes();
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != b'\n' {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < b.len() && matches!(b[j], b' ' | b'\t' | b'\r') {
+            j += 1;
+        }
+        if j < b.len() && b[j] == b'\n' {
+            ranges.push((start, i));
+            start = j + 1;
+            i = start;
+        } else {
+            i += 1;
+        }
+    }
+    ranges.push((start, b.len()));
+    ranges
+}
+
+/// 流式思考摘要:最后一个**首行已收行**段落的首行(去 `**`)。段落
+/// 首行写完(段内有换行,或段落已被空行分隔收口)才参与;全部行未
+/// 收行时为空——摘要随段落收行逐段前进,不随流内逐字抖动
+pub(crate) fn streaming_think_summary(text: &str) -> String {
+    let ranges = paragraph_ranges(text);
+    let last = ranges.len().saturating_sub(1);
+    ranges
+        .iter()
+        .enumerate()
+        .rev()
+        .filter_map(|(idx, &(s, e))| match text[s..e].find('\n') {
+            Some(off) => Some(text[s..s + off].trim()),
+            // 单行段:被分隔序列收口的段,其首行必已收行(分隔以换行
+            // 起始);唯尾段例外——尾段行未写完不参与
+            None if idx < last => Some(text[s..e].trim()),
+            None => None,
+        })
+        .find(|l| !l.is_empty())
+        .map(strip_bold)
+        .unwrap_or_default()
+}
+
+/// 定稿思考摘要:首个非空行(去 `**`)
+pub(crate) fn settled_think_summary(text: &str) -> String {
+    text.lines()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| strip_bold(l.trim()))
+        .unwrap_or_default()
+}
+
+/// 直播组头:`(活动, 详情)`。段内最后运行中工具的归类 + 参数详情;
+/// 无运行工具回退 thinking + 最后一段已完成思考首行(运行中工具缺
+/// 详情不回退——标题单独成立)
+pub(crate) fn live_header(
+    nodes: &[ChatNode],
+    first: usize,
+    last: usize,
+) -> (ProcessActivity, Option<String>) {
+    let mut activity = ProcessActivity::Thinking;
+    let mut detail = None;
+    let range = nodes.get(first..=last).unwrap_or(&[]);
+    for node in range.iter().rev() {
+        if let ChatNode::Tool {
+            name,
+            state: ToolState::Running,
+            arguments,
+            ..
+        } = node
+        {
+            activity = activity_of(name);
+            detail = live_detail(arguments);
+            break;
+        }
+    }
+    if activity == ProcessActivity::Thinking {
+        for node in range.iter().rev() {
+            if let ChatNode::Assistant { reasoning, .. } = node
+                && !reasoning.is_empty()
+            {
+                let summary = streaming_think_summary(reasoning);
+                if !summary.is_empty() {
+                    detail = Some(summary);
+                }
+                break;
+            }
+        }
+    }
+    (activity, detail)
+}
+
+/// 行槽内助手节点的可见部分。回复正文会**切开**过程组、思考行留在
+/// 组内——同一节点因此在槽层可能只露一半。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodePart {
+    /// 整块(非助手节点;或思考/正文只有其一)
+    Full,
+    /// 仅思考行(过程组内;正文已切开在组外)
+    Reasoning,
+    /// 仅正文(过程组外的助手回复)
+    Body,
+}
+
+/// 轮结束口径(轮控制行文案与折叠默认值的来源)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnEnd {
+    /// 正常完成(有定稿答复):默认收拢,点控制行展开
+    Completed,
+    /// 用户中断:恒展开(中断语义由「已停止」pill 承担,过程不藏)
+    Aborted,
+    /// 错误收尾:恒展开
+    Failed,
 }
 
 /// 渲染行槽(读取层派生):`ChatNode` 平铺流 → 虚拟化列表行。
-/// 已收口轮的过程项默认收成一行组摘要(open_turns 例外展开),直播末段
-/// 恒平铺;nodes 本体不动(增量投影/merge 幂等根基)。
+/// 每次「连续过程运行」收进一个**组座位**(组头 + 限高滚动体);
+/// 助手回复正文留在组外(并由此切开相邻两组);收口轮在多组之前
+/// 多一行**轮控制行**。nodes 本体不动(增量投影/merge 幂等根基)。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowSlot {
-    /// 平铺节点(携带节点下标;debug selector/element id 用原始序号)
-    Node(usize),
-    /// 折叠的轮过程组(单行摘要;first..=last = 段内首末成员节点下标,
-    /// 含端点,成员间可穿插内容节点)
+    /// 平铺节点(携带节点下标与可见部分;debug selector/element id
+    /// 用原始序号)
+    Node {
+        /// 节点下标
+        ix: usize,
+        /// 可见部分(Full = 整块)
+        part: NodePart,
+    },
+    /// 轮控制行:「已完成，用时 X」/「已停止」/「处理失败」。
+    /// 折叠态只留这一行 + 最终答复;中断/错误轮不折叠。
+    TurnHead {
+        /// 收口节点 key(turn-end:<seq> / turn-error:<seq>)
+        turn_key: String,
+        /// 结束口径
+        end: TurnEnd,
+        /// 轮墙钟用时(毫秒;0 = 未知)
+        run_ms: u64,
+    },
+    /// 过程组座位:一次连续过程运行(`first..=last` 全是过程项,回复
+    /// 正文已在槽层切开)。
     Group {
-        /// 段收口节点 key(turn-end:<seq> / turn-error:<seq>)
+        /// 组键(按运行起点稳定:`g:<first>`;开合与滚动句柄按它存)
+        key: String,
+        /// 所属轮键(直播段为 [`LIVE_TURN_KEY`])
         turn_key: String,
+        /// 运行内首成员下标
         first: usize,
+        /// 运行内末成员下标
         last: usize,
+        /// 运行已收口(其后有回复正文,或整轮已收口):组头走分类并词、
+        /// 不带扫光;未收口的尾段运行才是「正在X · 详情」
+        closed: bool,
+        /// 展开态(默认收拢成一行组头,点开才铺成员)
+        open: bool,
     },
-    /// 展开的轮过程组头(成员行紧随其后按事件原序平铺)
-    GroupOpen {
-        turn_key: String,
-        first: usize,
-        last: usize,
-    },
-    /// 展开态的组成员行(渲染时缩进 + 左侧引导线,表达「属于上方组」
-    /// 的层级;与组外平铺节点视觉区分,防展开后迷失)
-    GroupMember(usize),
 }
 
-impl RowSlot {
-    /// 本槽位对应的节点下标(组摘要行/组头无单一节点 → None)。
-    /// 变更节点 → 槽位映射用(流式重测范围收窄)
-    pub(crate) fn node_ix(&self) -> Option<usize> {
-        match self {
-            RowSlot::Node(n) | RowSlot::GroupMember(n) => Some(*n),
-            RowSlot::Group { .. } | RowSlot::GroupOpen { .. } => None,
-        }
+/// 过程项:注入上下文 / 工具调用 / 重试 / **不带正文**的助手步。
+///
+/// 只有带正文的助手步才是组边界。不带正文的助手步(纯 tool_calls 步、
+/// 正文与思考都空)属于过程:它只是没有可见行,**不得切断相邻工具**——
+/// 否则「同一段连续过程」会被切成好几个组(实测:一次 git 状态检查 +
+/// 一次读文件被拆成「执行了命令」「已读取文件」两个组头)。
+fn is_process_node(n: &ChatNode) -> bool {
+    match n {
+        ChatNode::Context { .. } | ChatNode::Tool { .. } | ChatNode::Retry { .. } => true,
+        ChatNode::Assistant { text, .. } => text.is_empty(),
+        _ => false,
     }
 }
 
-/// 每节点「过程项」标记(纯函数,build_row_slots 与 group_counts 共用
-/// 同一口径)。过程项 = Context / Tool / 非最终答复的 Assistant;
-/// **段内最后一个 text 非空的 Assistant = 最终答复**(留在外面)——
-/// DeepSeek 每步都带 reasoning + 过渡文本,若按「text 空才算过程」
-/// 中间叙述会全部漏收(实测 72 步只收走 51 个工具)。
-/// **答案豁免只对正常完成(TurnTail 非 aborted)段生效**:error 收尾
-/// (Notice)与用户取消/中断(aborted TurnTail)的轮没有最终答复,
-/// 整段在 `build_row_slots` 倒扫即不归组(恒平铺),此处的 mask 值
-/// 对这些段不再被消费(保留计算纯函数语义,注释记录口径)。
-pub(crate) fn process_mask(nodes: &[ChatNode]) -> Vec<bool> {
-    let mut mask = vec![false; nodes.len()];
-    let mut answer_taken = false;
-    for i in (0..nodes.len()).rev() {
-        match &nodes[i] {
-            // 正常完成:答案豁免生效(重置);取消/错误收尾:无答案(占用)
-            ChatNode::TurnTail { aborted, .. } => {
-                answer_taken = *aborted;
-                continue;
+/// 段收口:从 `start` 起第一个收口节点(含)之后的排他下标 + 结束口径。
+/// 无收口 = 直播段(未收口尾段)。
+fn segment_end(nodes: &[ChatNode], start: usize) -> (usize, Option<(TurnEnd, String, u64)>) {
+    for (k, n) in nodes.iter().enumerate().skip(start) {
+        match n {
+            ChatNode::TurnTail {
+                key,
+                aborted,
+                run_ms,
+                ..
+            } => {
+                let end = if *aborted {
+                    TurnEnd::Aborted
+                } else {
+                    TurnEnd::Completed
+                };
+                return (k + 1, Some((end, key.clone(), (*run_ms).max(0) as u64)));
             }
-            ChatNode::Notice { .. } => {
-                answer_taken = true;
-                continue;
+            // 只有轮错误通告是段的收口;压缩/本地通告是段内普通行
+            ChatNode::Notice {
+                key,
+                kind: NoticeKind::TurnError { .. },
+            } => {
+                return (k + 1, Some((TurnEnd::Failed, key.clone(), 0)));
             }
-            ChatNode::Context { .. } => mask[i] = true,
-            ChatNode::Tool { .. } | ChatNode::Retry { .. } => mask[i] = true,
-            ChatNode::Assistant { text, .. } => {
-                let is_answer = !text.is_empty() && !answer_taken;
-                if is_answer {
-                    answer_taken = true;
-                }
-                mask[i] = !is_answer;
-            }
-            _ => mask[i] = false,
+            _ => {}
         }
     }
-    mask
+    (nodes.len(), None)
 }
 
-/// 节点流 → 渲染行槽(纯函数)。「段」= 上一收口节点之后至下一收口
-/// 之间的全部节点;不依赖 turn 号(Context/Tool 节点不携带),倒扫
-/// 标定后正向拼装。**仅正常完成(TurnTail 非 aborted)的轮可折叠**
-/// ——折叠门槛 = 有定稿答案;中断/错误收口段恒平铺,中断语义由
-/// 轮尾徽标与正文尾「已停止」pill 承担。末尾未收口的段
-/// = 直播段,恒平铺——「默认收 + 手动展开例外」由此天然实现
-/// turn/end 自动收拢,无需事件 hook。
+/// 节点流 → 渲染行槽(纯函数)。
+///
+/// 分段:「段」= 上一收口节点之后至下一收口之间的全部节点(收口节点
+/// 属前段)。段内再按**过程运行**切组:过程项(Context / Tool / Retry /
+/// 只有思考的助手步)连续成一组;带正文的助手步是边界——正文平铺在
+/// 组外,它的思考行留在组内(同一助手步在槽层只露正文半边)。
+///
+/// 每段:轮前散件(attach 基线注入等)与首个用户消息平铺 → 收口段
+/// 一行轮控制行 → 组与正文按原序。正常完成且未展开的轮收拢成控制行
+/// 加最终答复;中断/错误收口轮不折叠(过程不藏,「已停止」/错误行
+/// 自己交代结局);末尾未收口段 = 直播段,无控制行、组恒在。
 pub fn build_row_slots(
     nodes: &[ChatNode],
     open_turns: &std::collections::HashSet<String>,
+    open_groups: &std::collections::HashSet<String>,
 ) -> Vec<RowSlot> {
-    let mask = process_mask(nodes);
-    // 倒扫:每节点所属段的收口 key(收口自身也标自己,但收口非过程项,
-    // 恒走 Node 分支)。aborted TurnTail 与 Notice 不下发收口,且截断
-    // 向前的传播(错误段不得并入相邻轮的组)
-    let mut close_key: Vec<Option<&str>> = vec![None; nodes.len()];
-    let mut cur: Option<&str> = None;
-    for (i, n) in nodes.iter().enumerate().rev() {
-        match n {
-            ChatNode::TurnTail { key, aborted, .. } => {
-                cur = (!*aborted).then_some(key.as_str());
-            }
-            ChatNode::Notice { .. } => cur = None,
-            _ => {}
-        }
-        close_key[i] = cur;
-    }
-    // 段内首个用户消息下标 = 轮次开始(导航锚点同语义)。组区间不得
-    // 跨越它:其前的段成员(attach 基线注入等轮前过程项)不属于任何
-    // 轮,连同用户消息一起平铺;steering 插话不是段内首个,不受影响
-    // (保留「区间内穿插内容节点」的既有语义)。
-    let mut seg_first_user: std::collections::HashMap<&str, usize> =
-        std::collections::HashMap::new();
-    for (i, n) in nodes.iter().enumerate() {
-        if matches!(n, ChatNode::User { .. })
-            && let Some(key) = close_key[i]
-            && !seg_first_user.contains_key(key)
-        {
-            seg_first_user.insert(key, i);
-        }
-    }
     let mut slots: Vec<RowSlot> = Vec::with_capacity(nodes.len());
     let mut i = 0;
     while i < nodes.len() {
-        // 非过程项,或直播段(close_key 缺):平铺
-        let Some(key) = close_key[i].filter(|_| mask[i]) else {
-            slots.push(RowSlot::Node(i));
-            i += 1;
+        let (seg_end, ended) = segment_end(nodes, i);
+        // 段内首个用户消息 = 轮次开始;其前的段成员(attach 基线注入等)
+        // 不属于任何轮,连同用户消息一起平铺
+        let first_user = (i..seg_end).find(|&k| matches!(nodes[k], ChatNode::User { .. }));
+        let proc_start = first_user.map_or(i, |u| u + 1);
+        for k in i..proc_start {
+            slots.push(RowSlot::Node {
+                ix: k,
+                part: NodePart::Full,
+            });
+        }
+        i = seg_end;
+        let Some((end, turn_key, run_ms)) = ended else {
+            // 直播段:无控制行,过程照常成组
+            push_runs(
+                nodes,
+                proc_start,
+                seg_end,
+                LIVE_TURN_KEY,
+                false,
+                open_groups,
+                &mut slots,
+            );
             continue;
         };
-        // 组起点落在轮次开始之前:轮前成员 + 用户消息平铺,其后照常归组
-        if let Some(&u) = seg_first_user.get(key)
-            && i < u
-        {
-            while i <= u {
-                slots.push(RowSlot::Node(i));
-                i += 1;
+        // 空轮(只有收口节点:无过程项也无回复)不产控制行——没有可收的
+        // 东西,一行禁用的「已停止」只是噪声
+        let has_content = nodes[proc_start..seg_end].iter().any(|n| {
+            is_process_node(n) || matches!(n, ChatNode::Assistant { text, .. } if !text.is_empty())
+        });
+        if !has_content {
+            for k in proc_start..seg_end {
+                slots.push(RowSlot::Node {
+                    ix: k,
+                    part: NodePart::Full,
+                });
             }
             continue;
         }
-        // 首个成员起,收集段内首末成员下标(中间可穿插内容节点)
-        let first = i;
-        let mut last = i;
-        let mut j = i;
-        while j < nodes.len() && close_key[j] == Some(key) {
-            if mask[j] {
-                last = j;
-            }
-            j += 1;
-        }
-        let open = open_turns.contains(key);
-        slots.push(if open {
-            RowSlot::GroupOpen {
-                turn_key: key.to_string(),
-                first,
-                last,
-            }
-        } else {
-            RowSlot::Group {
-                turn_key: key.to_string(),
-                first,
-                last,
-            }
+        // 正常完成 + 未点开 → 收拢:控制行 + 回复正文,过程组收起
+        let folded = end == TurnEnd::Completed && !open_turns.contains(&turn_key);
+        slots.push(RowSlot::TurnHead {
+            turn_key: turn_key.clone(),
+            end,
+            run_ms,
         });
-        // 折叠态:组行后补输出区间内穿插的内容节点(保持原序);
-        // 展开态:组头后逐项平铺全部成员(含交错内容节点,原序)——
-        // 成员行用 GroupMember 槽(渲染层缩进+引导线,层级可辨)
-        for (k, &m) in (first..=last).zip(mask[first..=last].iter()) {
-            if open || !m {
-                slots.push(if open {
-                    RowSlot::GroupMember(k)
-                } else {
-                    RowSlot::Node(k)
-                });
+        if folded {
+            // 折叠只收过程组:回复正文照旧平铺(最终答复与中途叙述都在),
+            // 收口节点自己交代结局
+            for (k, node) in nodes.iter().enumerate().take(seg_end).skip(proc_start) {
+                match node {
+                    ChatNode::TurnTail { .. } | ChatNode::Notice { .. } => {
+                        slots.push(RowSlot::Node {
+                            ix: k,
+                            part: NodePart::Full,
+                        })
+                    }
+                    ChatNode::Assistant { text, .. } if !text.is_empty() => {
+                        slots.push(RowSlot::Node {
+                            ix: k,
+                            part: NodePart::Body,
+                        })
+                    }
+                    _ => {}
+                }
             }
+            continue;
         }
-        i = last + 1;
+        push_runs(
+            nodes,
+            proc_start,
+            seg_end,
+            &turn_key,
+            true,
+            open_groups,
+            &mut slots,
+        );
     }
     slots
 }
 
-/// 组区间统计:(过程步数, 工具调用数)——组摘要行计数口径,
-/// 与 trajectory「N 步 · M 个工具调用」同构
-pub fn group_counts(nodes: &[ChatNode], first: usize, last: usize) -> (usize, usize) {
-    let mask = process_mask(nodes);
-    let span = first..=last;
-    let steps = span.clone().filter(|&k| mask.get(k) == Some(&true)).count();
-    let tools = nodes
-        .get(first..=last)
-        .map(|s| {
-            s.iter()
-                .filter(|n| matches!(n, ChatNode::Tool { .. }))
-                .count()
-        })
-        .unwrap_or(0);
-    (steps, tools)
+/// 段内过程运行切组 + 回复正文平铺(见 [`build_row_slots`])。
+///
+/// 运行被回复正文切开时**已收口**(组头走分类并词);段末仍在跑的运行
+/// 才继承段的收口态——直播段里它仍是「正在X · 详情」。
+fn push_runs(
+    nodes: &[ChatNode],
+    start: usize,
+    end: usize,
+    turn_key: &str,
+    segment_closed: bool,
+    open_groups: &std::collections::HashSet<String>,
+    slots: &mut Vec<RowSlot>,
+) {
+    let mut run: Option<(usize, usize)> = None;
+    let flush = |run: &mut Option<(usize, usize)>, closed: bool, slots: &mut Vec<RowSlot>| {
+        if let Some((first, last)) = run.take() {
+            let key = format!("g:{first}");
+            slots.push(RowSlot::Group {
+                open: open_groups.contains(&key),
+                key,
+                turn_key: turn_key.to_string(),
+                first,
+                last,
+                closed,
+            });
+        }
+    };
+    for (k, node) in nodes.iter().enumerate().take(end).skip(start) {
+        if is_process_node(node) {
+            run = Some(match run {
+                Some((first, _)) => (first, k),
+                None => (k, k),
+            });
+            continue;
+        }
+        // 带正文的助手步:思考行归前一组,正文切开组
+        let split = matches!(
+            node,
+            ChatNode::Assistant { text, reasoning, .. }
+                if !text.is_empty() && !reasoning.is_empty()
+        );
+        if split {
+            run = Some(match run {
+                Some((first, _)) => (first, k),
+                None => (k, k),
+            });
+        }
+        // 回复正文切开运行 = 该运行已收口
+        flush(&mut run, true, slots);
+        slots.push(RowSlot::Node {
+            ix: k,
+            part: if split {
+                NodePart::Body
+            } else {
+                NodePart::Full
+            },
+        });
+    }
+    flush(&mut run, segment_closed, slots);
 }
 
-/// 组区间内中间叙述条数(非空正文的 Assistant)——组头「M 条消息」
-/// 计数口径(最终答复在组外,不计入)
-pub fn group_message_count(nodes: &[ChatNode], first: usize, last: usize) -> usize {
-    nodes
-        .get(first..=last)
-        .map(|s| {
-            s.iter()
-                .filter(|n| matches!(n, ChatNode::Assistant { text, .. } if !text.is_empty()))
-                .count()
-        })
-        .unwrap_or(0)
+/// 组内活动的分类计数(按调用数降序、同数按首现——组头文案口径;
+/// 只数工具,思考不是一类活动)
+pub fn group_categories(nodes: &[ChatNode], first: usize, last: usize) -> Vec<ProcessActivity> {
+    let mut order: Vec<ProcessActivity> = Vec::new();
+    let mut counts: std::collections::HashMap<ProcessActivity, usize> =
+        std::collections::HashMap::new();
+    for n in nodes.get(first..=last).into_iter().flatten() {
+        let ChatNode::Tool { name, .. } = n else {
+            continue;
+        };
+        let activity = activity_of(name);
+        let slot = counts.entry(activity).or_insert(0);
+        if *slot == 0 {
+            order.push(activity);
+        }
+        *slot += 1;
+    }
+    order.sort_by_key(|a| std::cmp::Reverse(counts.get(a).copied().unwrap_or(0)));
+    order
+}
+
+/// 收口组头文案:按并词规则拼前三个分类。
+///
+/// - 空 → 「已完成分析」(只有思考)
+/// - 一个 → 该分类
+/// - 两个 → `%{first}并%{second}`;两者同以「已」开头时第二项去掉
+///   前缀并把首字母小写(中文无变化),避免「已…并已…」
+/// - 三个以上 → 逗号连接(后续项仅首字母小写,前缀保留),超出
+///   三个以「等」收尾
+pub fn process_title(categories: &[ProcessActivity]) -> String {
+    let label = |a: ProcessActivity| match a {
+        ProcessActivity::Thinking => t!("chat.step_done_thinking").to_string(),
+        ProcessActivity::Read => t!("chat.step_done_read").to_string(),
+        ProcessActivity::ReadImage => t!("chat.step_done_read_image").to_string(),
+        ProcessActivity::Write => t!("chat.step_done_write").to_string(),
+        ProcessActivity::Edit => t!("chat.step_done_edit").to_string(),
+        ProcessActivity::Search => t!("chat.step_done_search").to_string(),
+        ProcessActivity::Commands => t!("chat.step_done_commands").to_string(),
+        ProcessActivity::Code => t!("chat.step_done_code").to_string(),
+        ProcessActivity::WebSearch => t!("chat.step_done_web_search").to_string(),
+        ProcessActivity::WebFetch => t!("chat.step_done_web_fetch").to_string(),
+        ProcessActivity::Subagents => t!("chat.step_done_subagents").to_string(),
+        ProcessActivity::Plan => t!("chat.step_done_plan").to_string(),
+        ProcessActivity::Questions => t!("chat.step_done_questions").to_string(),
+        ProcessActivity::Tools => t!("chat.step_done_tools").to_string(),
+    };
+    let continuation = |s: &str| {
+        let mut chars = s.chars();
+        match chars.next() {
+            Some(c) => c.to_lowercase().collect::<String>() + chars.as_str(),
+            None => String::new(),
+        }
+    };
+    let labels: Vec<String> = categories.iter().map(|a| label(*a)).collect();
+    let Some(first) = labels.first() else {
+        return t!("chat.step_done_thinking").to_string();
+    };
+    let Some(second) = labels.get(1) else {
+        return first.clone();
+    };
+    if labels.len() == 2 {
+        let prefix = t!("chat.step_done_shared_prefix").to_string();
+        let shared = !prefix.is_empty()
+            && first.starts_with(prefix.as_str())
+            && second.starts_with(prefix.as_str());
+        let second = if shared {
+            continuation(&second[prefix.len()..])
+        } else {
+            second.clone()
+        };
+        return t!(
+            "chat.step_done_join_two",
+            first = first.as_str(),
+            second = second.as_str()
+        )
+        .to_string();
+    }
+    let title = std::iter::once(first.clone())
+        .chain(labels.iter().skip(1).map(|l| continuation(l)))
+        .collect::<Vec<_>>()
+        .join(t!("chat.step_done_comma").as_ref());
+    if categories.len() > 3 {
+        t!("chat.step_done_more", title = title.as_str()).to_string()
+    } else {
+        title
+    }
 }
 
 // ---- 导航轨锚点(读取层派生)----
@@ -1500,7 +1891,7 @@ pub fn current_nav_ix_clamped(anchor_slots: &[Option<usize>], top: usize) -> usi
 pub fn nav_anchors(slots: &[RowSlot], nodes: &[ChatNode]) -> Vec<NavAnchor> {
     let mut out = Vec::new();
     for (slot_ix, slot) in slots.iter().enumerate() {
-        let RowSlot::Node(n) = slot else {
+        let RowSlot::Node { ix: n, .. } = slot else {
             continue;
         };
         let Some(ChatNode::User { key, text, .. }) = nodes.get(*n) else {
@@ -3307,28 +3698,40 @@ mod tests {
 
     use std::collections::HashSet as SlotSet;
 
-    /// 简写断言:槽序列 → 可读形
+    /// 简写断言:槽序列 → 可读形(t = 轮控制行,u = 放开限高的组)
     fn slot_shapes(slots: &[RowSlot]) -> Vec<String> {
         slots
             .iter()
             .map(|s| match s {
-                RowSlot::Node(n) | RowSlot::GroupMember(n) => format!("n{n}"),
+                RowSlot::Node { ix, part } => match part {
+                    NodePart::Full => format!("n{ix}"),
+                    NodePart::Reasoning => format!("r{ix}"),
+                    NodePart::Body => format!("b{ix}"),
+                },
+                RowSlot::TurnHead { turn_key, .. } => format!("t[{turn_key}]"),
                 RowSlot::Group {
                     turn_key,
                     first,
                     last,
+                    open,
+                    ..
                 } => {
-                    format!("g[{first}..={last}]{turn_key}")
-                }
-                RowSlot::GroupOpen {
-                    turn_key,
-                    first,
-                    last,
-                } => {
-                    format!("G[{first}..={last}]{turn_key}")
+                    // 大写 = 展开态(组体可见),小写 = 收拢成一行组头
+                    let head = if *open { "G" } else { "g" };
+                    let key = if turn_key == LIVE_TURN_KEY {
+                        "live"
+                    } else {
+                        turn_key.as_str()
+                    };
+                    format!("{head}[{first}..={last}]{key}")
                 }
             })
             .collect()
+    }
+
+    /// 全收(无放开组)的行槽
+    fn slots_all_folded(nodes: &[ChatNode], open_turns: &SlotSet<String>) -> Vec<RowSlot> {
+        build_row_slots(nodes, open_turns, &SlotSet::new())
     }
 
     /// 事件序列 → 投影节点
@@ -3420,23 +3823,350 @@ mod tests {
             "通知不得产出 Context 节点"
         );
 
-        let slots = build_row_slots(&nodes, &none);
+        let slots = slots_all_folded(&nodes, &none);
         let shapes = slot_shapes(&slots);
         // 节点序(通知剔除后):user0 a1(starting) tool2 a3(答案)
-        // tail4 | a5(noted) tail6——轮 1 有过程项照常折叠;轮 2(原
-        // 通知-only)只剩答案,平铺不产组(无「已思考」空组头)
+        // tail4 | a5(noted) tail6。两轮都收口 → 各一行轮控制行;
+        // 收拢态只收过程组,回复正文(中途叙述 + 最终答复)照旧平铺
         assert_eq!(
             shapes,
             vec![
-                "n0",                 // 用户消息
-                "g[1..=2]turn-end:7", // 轮 1 过程组(插叙 + bash)
-                "n3",
-                "n4", // 轮 1 答案 + 收尾行
-                "n5",
-                "n6", // 轮 2 纯答案平铺 + 收尾行
+                "n0",             // 用户消息
+                "t[turn-end:7]",  // 轮 1 控制行
+                "b1",             // 轮 1 中途叙述
+                "b3",             // 轮 1 最终答复
+                "n4",             // 轮 1 收尾行
+                "t[turn-end:10]", // 轮 2 控制行(纯答案轮同样有)
+                "b5",             // 轮 2 答复
+                "n6",             // 轮 2 收尾行
             ],
             "通知剔除后的槽形状: {shapes:?}"
         );
+    }
+
+    /// 一轮多组回归锁:**每段回复正文切一个组**,所以一轮可以有多个组,
+    /// 不是「一轮一个组」——2 轮、第 1 轮两次回复 + steering(用户中途
+    /// 插话),共 3 个组。带正文的助手步即刻收口当前过程运行并自成一个
+    /// 平铺正文节点。
+    #[test]
+    fn reply_text_segments_split_groups() {
+        let nodes = vec![
+            ChatNode::User {
+                key: "user:1".into(),
+                text: "old question".into(),
+                images: vec![],
+                files: Vec::new(),
+                time: 0,
+            },
+            ChatNode::Assistant {
+                key: "a:1:1".into(),
+                text: String::new(),
+                text_ver: 0,
+                reasoning: "old analysis".into(),
+                streaming: false,
+                usage: None,
+                message_id: String::new(),
+            },
+            ChatNode::Assistant {
+                key: "a:1:2".into(),
+                text: "old progress".into(),
+                text_ver: 1,
+                reasoning: String::new(),
+                streaming: false,
+                usage: None,
+                message_id: String::new(),
+            },
+            ChatNode::User {
+                key: "user:4".into(),
+                text: "old direction".into(),
+                images: vec![],
+                files: Vec::new(),
+                time: 0,
+            },
+            ChatNode::Assistant {
+                key: "a:1:3".into(),
+                text: String::new(),
+                text_ver: 0,
+                reasoning: "old follow-up analysis".into(),
+                streaming: false,
+                usage: None,
+                message_id: String::new(),
+            },
+            ChatNode::Assistant {
+                key: "a:1:4".into(),
+                text: "old answer".into(),
+                text_ver: 1,
+                reasoning: String::new(),
+                streaming: false,
+                usage: None,
+                message_id: String::new(),
+            },
+            ChatNode::User {
+                key: "user:8".into(),
+                text: "current question".into(),
+                images: vec![],
+                files: Vec::new(),
+                time: 0,
+            },
+            ChatNode::Assistant {
+                key: "a:2:1".into(),
+                text: String::new(),
+                text_ver: 0,
+                reasoning: "current analysis".into(),
+                streaming: false,
+                usage: None,
+                message_id: String::new(),
+            },
+        ];
+        let none = SlotSet::new();
+        let shapes = slot_shapes(&slots_all_folded(&nodes, &none));
+        let groups: Vec<&String> = shapes.iter().filter(|s| s.starts_with('g')).collect();
+        assert_eq!(groups.len(), 3, "2 轮 → 3 个组,实得 {shapes:?}");
+        assert_eq!(
+            shapes,
+            vec![
+                "n0",
+                "g[1..=1]live",
+                "n2",
+                "n3",
+                "g[4..=4]live",
+                "n5",
+                "n6",
+                "g[7..=7]live"
+            ],
+            "回复正文切开组,steering 点也切开;尾段组未收口"
+        );
+    }
+
+    /// 组不许多切:纯 tool_calls 的助手步(正文与思考都空)是**过程**
+    /// 不是边界——一段「命令 + 空步 + 读文件」必须只产出一个组头。
+    /// 回归锁:此前把空助手步当边界,同一段被拆成「执行了命令」
+    /// 「已读取文件」两个组,整轮组数随空步数量漂移。
+    #[test]
+    fn empty_assistant_steps_never_split_a_group() {
+        let evs = vec![
+            ev("turn/start", 1, json!({ "turn": 1 })),
+            ev("user/message", 2, json!({ "content": "接下来做什么" })),
+            ev(
+                "tool/call",
+                3,
+                json!({ "turn": 1, "step": 1, "callId": "a", "name": "bash", "arguments": "{}" }),
+            ),
+            // 纯 tool_calls 步(无正文、无思考)
+            ev(
+                "assistant/message",
+                4,
+                json!({
+                    "turn": 1, "step": 1,
+                    "message": { "id": "m1", "role": "assistant",
+                        "content": [ { "type": "tool-call", "id": "b", "name": "read",
+                            "arguments": "{}" } ] },
+                }),
+            ),
+            ev(
+                "tool/call",
+                5,
+                json!({ "turn": 1, "step": 2, "callId": "b", "name": "file_read", "arguments": "{}" }),
+            ),
+            ev(
+                "assistant/message",
+                6,
+                json!({ "turn": 1, "step": 2,
+                    "message": { "id": "m2", "role": "assistant",
+                        "content": [ { "type": "text", "text": "" } ] } }),
+            ),
+            ev(
+                "turn/end",
+                7,
+                json!({ "turn": 1, "reason": { "kind": "done" } }),
+            ),
+        ];
+        let nodes = project(evs);
+        // 0 user / 1 call:a / 2 空步 / 3 call:b / 4 空答案步 / 5 tail
+        let none = SlotSet::new();
+        assert_eq!(
+            slot_shapes(&slots_all_folded(&nodes, &none)),
+            vec!["n0", "t[turn-end:7]", "n5"],
+            "无正文轮:控制行 + 收尾行;两个工具属同一组(折叠态不可见)"
+        );
+        let mut open = SlotSet::new();
+        open.insert("turn-end:7".to_string());
+        assert_eq!(
+            slot_shapes(&slots_all_folded(&nodes, &open)),
+            vec!["n0", "t[turn-end:7]", "g[1..=4]turn-end:7", "n5"],
+            "命令 + 空步 + 读文件必须同属一个组"
+        );
+        // 组头分类:执行了命令 + 已读取文件 → 并词
+        assert_eq!(
+            group_categories(&nodes, 1, 4),
+            vec![ProcessActivity::Commands, ProcessActivity::Read]
+        );
+    }
+
+    /// 标准轮回放回归锁:一轮内「思考组 + 各类工具组」与 5 段回复正文
+    /// 交错,投影后的组序列与组头并词逐字锁定——
+    ///
+    ///   user / 轮控制行 / 已完成分析 / 正文 / 执行了命令，已调用工具，
+    ///   已读取文件 / 正文 / 执行了命令并已调用工具 / 正文 / 执行了命令
+    ///   ×2 与正文交错 / 收尾
+    ///
+    /// 覆盖:纯思考组(组内无工具 → 「已完成分析」)、三类并词(逗号连
+    /// 接,计数降序、同数按首现序)、两类并词(「并」连接,首项不带
+    /// 「已」前缀时第二项保留前缀)。**不得**改成「一轮一组」或按空助
+    /// 手步切组——那会改变组数与组头文案。
+    #[test]
+    fn standard_turn_replay_locks_group_titles_and_rows() {
+        // 带正文回复步(切组边界)
+        fn reply_step(evs: &mut Vec<SessionEvent>, seq: &mut u64, step: u64, text: &str) {
+            *seq += 1;
+            evs.push(ev(
+                "assistant/message",
+                *seq,
+                json!({
+                    "turn": 1, "step": step,
+                    "message": { "id": format!("m{step}"), "role": "assistant",
+                        "content": [ { "type": "text", "text": text } ] },
+                }),
+            ));
+        }
+        // 过程步:空正文助手步 + 可选思考 + 工具调用(每调用独立 callId)
+        fn process_step(
+            evs: &mut Vec<SessionEvent>,
+            seq: &mut u64,
+            step: u64,
+            think: &str,
+            tools: &[&str],
+        ) {
+            *seq += 1;
+            evs.push(ev(
+                "assistant/message",
+                *seq,
+                json!({
+                    "turn": 1, "step": step,
+                    "message": { "id": format!("m{step}"), "role": "assistant",
+                        "content": [ { "type": "text", "text": "" } ] },
+                }),
+            ));
+            if !think.is_empty() {
+                *seq += 1;
+                evs.push(ev(
+                    "assistant/reasoning",
+                    *seq,
+                    json!({ "turn": 1, "step": step, "text": think }),
+                ));
+            }
+            for &name in tools {
+                *seq += 1;
+                evs.push(ev(
+                    "tool/call",
+                    *seq,
+                    json!({
+                        "turn": 1, "step": step, "callId": format!("c{}", *seq),
+                        "name": name, "arguments": "{}"
+                    }),
+                ));
+            }
+        }
+        let mut evs = vec![
+            ev("turn/start", 1, json!({ "turn": 1 })),
+            ev(
+                "user/message",
+                2,
+                json!({ "content": [ { "type": "text", "text": "把构建问题再查一遍" } ] }),
+            ),
+        ];
+        let (mut seq, mut step) = (evs.len() as u64, 0u64);
+        step += 1;
+        process_step(&mut evs, &mut seq, step, "先梳理构建链路", &[]);
+        step += 1;
+        reply_step(&mut evs, &mut seq, step, "构建链路梳理完毕");
+        // 命令×2 压序,未归类工具、读文件各一 → 三类并词按 计数,首现序
+        step += 1;
+        process_step(
+            &mut evs,
+            &mut seq,
+            step,
+            "",
+            &["bash", "run_tests", "bash", "file_read"],
+        );
+        step += 1;
+        reply_step(&mut evs, &mut seq, step, "第一段进展");
+        step += 1;
+        process_step(&mut evs, &mut seq, step, "", &["bash", "run_tests"]);
+        step += 1;
+        reply_step(&mut evs, &mut seq, step, "第二段进展");
+        step += 1;
+        process_step(&mut evs, &mut seq, step, "", &["bash", "bash"]);
+        step += 1;
+        reply_step(&mut evs, &mut seq, step, "第三段进展");
+        step += 1;
+        process_step(&mut evs, &mut seq, step, "", &["bash"]);
+        step += 1;
+        reply_step(&mut evs, &mut seq, step, "最终结论");
+        seq += 1;
+        evs.push(ev(
+            "turn/end",
+            seq,
+            json!({ "turn": 1, "reason": { "kind": "done" } }),
+        ));
+        let nodes = project(evs);
+        // 展开态(turn 点开):控制行 + 组与正文交错
+        let mut open = SlotSet::new();
+        for n in &nodes {
+            if let ChatNode::TurnTail {
+                key,
+                aborted: false,
+                ..
+            } = n
+            {
+                open.insert(key.clone());
+            }
+        }
+        let slots = build_row_slots(&nodes, &open, &SlotSet::new());
+        let titles: Vec<String> = slots
+            .iter()
+            .filter_map(|s| match s {
+                RowSlot::Group {
+                    first,
+                    last,
+                    closed,
+                    ..
+                } => {
+                    assert!(*closed, "该轮已收口,组应为 closed");
+                    Some(process_title(&group_categories(&nodes, *first, *last)))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            titles,
+            vec![
+                "已完成分析",
+                "执行了命令，已调用工具，已读取文件",
+                "执行了命令并已调用工具",
+                "执行了命令",
+                "执行了命令",
+            ],
+            "组头并词文案逐字锁定"
+        );
+        let replies = slots
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s,
+                    RowSlot::Node { ix, .. } if matches!(nodes.get(*ix), Some(ChatNode::Assistant { text, .. }) if !text.is_empty())
+                )
+            })
+            .count();
+        assert_eq!(replies, 5, "5 段回复正文各自平铺在组外");
+        // 收拢态:过程整段收起,只留控制行 + 回复正文 + 收尾
+        let folded = build_row_slots(&nodes, &SlotSet::new(), &SlotSet::new());
+        assert!(
+            !folded.iter().any(|s| matches!(s, RowSlot::Group { .. })),
+            "收拢态不得残留组座位"
+        );
+        assert!(folded.iter().any(|s| matches!(s, RowSlot::TurnHead { .. })));
+        assert_eq!(folded.len(), 8, "user + 控制行 + 5 段回复 + 收尾");
     }
 
     /// 基本收拢:think-only + 工具收进组行;正文与收尾行在外;
@@ -3478,31 +4208,330 @@ mod tests {
         let nodes = project(evs);
         // 节点序:user:2, a:1:1(空正文+reasoning → 过程项), call:8, turn-end:6
         assert_eq!(nodes.len(), 4);
-        let mask = process_mask(&nodes);
-        assert!(mask[1] && mask[2]);
+        assert!(is_process_node(&nodes[1]) && is_process_node(&nodes[2]));
 
-        // open_turns 空 = 全收:正文前平铺,过程项收成组,收尾行在外
+        // open_turns 空 = 全收:控制行在场,过程项收进折叠;无定稿答复
+        // (本段助手正文为空)故只余控制行与收尾行
         let none = SlotSet::new();
         assert_eq!(
-            slot_shapes(&build_row_slots(&nodes, &none)),
-            vec!["n0", "g[1..=2]turn-end:6", "n3"]
+            slot_shapes(&slots_all_folded(&nodes, &none)),
+            vec!["n0", "t[turn-end:6]", "n3"]
         );
-        // 计数:2 步 · 1 工具
-        assert_eq!(group_counts(&nodes, 1, 2), (2, 1));
 
-        // 展开:组头 + 成员逐项平铺
+        // 展开:控制行 + 组座位(成员收进座位体,仅收尾行在外)
         let mut open = SlotSet::new();
         open.insert("turn-end:6".to_string());
         assert_eq!(
-            slot_shapes(&build_row_slots(&nodes, &open)),
-            vec!["n0", "G[1..=2]turn-end:6", "n1", "n2", "n3"]
+            slot_shapes(&slots_all_folded(&nodes, &open)),
+            vec!["n0", "t[turn-end:6]", "g[1..=2]turn-end:6", "n3"]
         );
 
-        // 直播段(截掉收尾事件):恒平铺
+        // 直播段(截掉收尾事件):无控制行,过程直接成组
         let live = &nodes[..3];
         assert_eq!(
-            slot_shapes(&build_row_slots(live, &none)),
-            vec!["n0", "n1", "n2"]
+            slot_shapes(&slots_all_folded(live, &none)),
+            vec!["n0", "g[1..=2]live"]
+        );
+        assert_eq!(
+            slot_shapes(&build_row_slots(live, &none, &SlotSet::new())),
+            vec!["n0", "g[1..=2]live"]
+        );
+    }
+
+    /// 活动归类:shell 模型面名(随平台)+ 各工具族 + 兜底
+    #[test]
+    fn activity_of_maps_tool_families() {
+        assert_eq!(
+            activity_of(liuma_sandbox::shell::tool_name()),
+            ProcessActivity::Commands
+        );
+        assert_eq!(activity_of("bash"), ProcessActivity::Commands);
+        assert_eq!(activity_of("file_read"), ProcessActivity::Read);
+        assert_eq!(activity_of("read"), ProcessActivity::Read);
+        assert_eq!(activity_of("read_image"), ProcessActivity::ReadImage);
+        assert_eq!(activity_of("grep"), ProcessActivity::Search);
+        assert_eq!(activity_of("glob"), ProcessActivity::Search);
+        assert_eq!(activity_of("file_search"), ProcessActivity::Search);
+        assert_eq!(activity_of("write"), ProcessActivity::Write);
+        assert_eq!(activity_of("file_edit"), ProcessActivity::Edit);
+        assert_eq!(activity_of("code"), ProcessActivity::Code);
+        assert_eq!(activity_of("web_search"), ProcessActivity::WebSearch);
+        assert_eq!(activity_of("web_fetch"), ProcessActivity::WebFetch);
+        assert_eq!(activity_of("subagent"), ProcessActivity::Subagents);
+        assert_eq!(activity_of("subagent_list"), ProcessActivity::Subagents);
+        assert_eq!(activity_of("todo_write"), ProcessActivity::Plan);
+        assert_eq!(activity_of("goal"), ProcessActivity::Plan);
+        assert_eq!(activity_of("ask"), ProcessActivity::Questions);
+        assert_eq!(activity_of("ask_user_question"), ProcessActivity::Questions);
+        assert_eq!(activity_of("present"), ProcessActivity::Tools);
+        assert_eq!(activity_of("nonexistent"), ProcessActivity::Tools);
+    }
+
+    /// 组头详情:展示键序取首个非空值;字符串数组拼接;空白折叠;
+    /// 超长按字符截断加省略号(截断点去尾空白)
+    #[test]
+    fn live_detail_follows_key_priority_and_truncates() {
+        assert_eq!(live_detail("{}"), None);
+        assert_eq!(live_detail("not json"), None);
+        assert_eq!(
+            live_detail(r#"{"command":"ls -la","title":"Find jar"}"#),
+            Some("Find jar".to_string()),
+            "title 先于 command"
+        );
+        assert_eq!(
+            live_detail(r#"{"command":"ls   -la\n"}"#),
+            Some("ls -la".to_string()),
+            "空白折叠去尾"
+        );
+        assert_eq!(
+            live_detail(r#"{"queries":["a","b"]}"#),
+            Some("a, b".to_string())
+        );
+        assert_eq!(
+            live_detail(r#"{"title":"  "}"#),
+            None,
+            "纯空白值跳过,继续后键"
+        );
+        let long = "字".repeat(200);
+        let got = live_detail(&format!(r#"{{"description":"{long}"}}"#)).unwrap();
+        assert_eq!(got.chars().count(), 160);
+        assert!(got.ends_with('…'));
+        let spaced = format!("{}  ", "a".repeat(159));
+        let got = live_detail(&format!(r#"{{"description":"{spaced}b"}}"#)).unwrap();
+        assert!(got.ends_with('…'), "截断点尾空白应去除: {got:?}");
+        assert!(!got.ends_with(" …"));
+    }
+
+    /// 组头分类计数:按调用数降序,同数按首现(决定文案里谁领起)
+    #[test]
+    fn group_categories_rank_by_count_then_first_seen() {
+        let mk = |name: &str| ChatNode::Tool {
+            key: format!("call:{name}"),
+            name: name.into(),
+            summary: String::new(),
+            state: ToolState::Done,
+            arguments: "{}".into(),
+            output: None,
+            view: None,
+            images: Vec::new(),
+        };
+        let nodes = vec![
+            mk("bash"),
+            mk("grep"),
+            mk("bash"),
+            mk("file_read"),
+            mk("bash"),
+        ];
+        assert_eq!(
+            group_categories(&nodes, 0, 4),
+            vec![
+                ProcessActivity::Commands,
+                ProcessActivity::Search,
+                ProcessActivity::Read
+            ]
+        );
+    }
+
+    /// 收口组头文案:单类直出、两类并词(同前缀去重)、三类逗号、
+    /// 超过三类「等」;无工具 → 「已完成分析」
+    #[test]
+    fn process_title_composes_categories() {
+        use ProcessActivity as A;
+        assert_eq!(process_title(&[]), "已完成分析");
+        assert_eq!(process_title(&[A::Commands]), "执行了命令");
+        assert_eq!(
+            process_title(&[A::Commands, A::Read]),
+            "执行了命令并已读取文件",
+            "首项不以「已」开头 → 第二项保留前缀"
+        );
+        assert_eq!(
+            process_title(&[A::Read, A::Search]),
+            "已读取文件并搜索代码",
+            "同「已」前缀 → 第二项去前缀"
+        );
+        // 三类以上只把首字母小写(中文无变化),前缀一律保留
+        assert_eq!(
+            process_title(&[A::Read, A::Search, A::Commands]),
+            "已读取文件，已搜索代码，执行了命令"
+        );
+        assert_eq!(
+            process_title(&[A::Read, A::Search, A::Commands, A::Plan]),
+            "已读取文件，已搜索代码，执行了命令，更新了计划等"
+        );
+    }
+
+    /// 组默认收拢成一行;点开才产展开槽
+    #[test]
+    fn open_groups_expand_the_seat() {
+        let nodes = vec![
+            ChatNode::User {
+                key: "user:1".into(),
+                text: "hi".into(),
+                images: vec![],
+                files: Vec::new(),
+                time: 0,
+            },
+            ChatNode::Tool {
+                key: "call:a".into(),
+                name: "bash".into(),
+                summary: String::new(),
+                state: ToolState::Done,
+                arguments: "{}".into(),
+                output: None,
+                view: None,
+                images: Vec::new(),
+            },
+        ];
+        let mut groups = SlotSet::new();
+        groups.insert("g:1".to_string());
+        assert_eq!(
+            slot_shapes(&build_row_slots(&nodes, &SlotSet::new(), &groups)),
+            vec!["n0", "G[1..=1]live"],
+            "展开态标记为 G"
+        );
+        assert_eq!(
+            slot_shapes(&build_row_slots(&nodes, &SlotSet::new(), &SlotSet::new())),
+            vec!["n0", "g[1..=1]live"],
+            "默认收拢只占一行组头"
+        );
+    }
+
+    /// 流式思考摘要:首行收行前为空;随段落收行逐段前进;`**` 去除
+    #[test]
+    fn streaming_think_summary_advances_per_paragraph() {
+        assert_eq!(streaming_think_summary("还没写完的一行"), "");
+        assert_eq!(streaming_think_summary("第一行\n第二行还在写"), "第一行");
+        assert_eq!(streaming_think_summary("第一段\n\n第二段开头"), "第一段");
+        assert_eq!(
+            streaming_think_summary("第一段\n\n第二段首行\n第二段次行"),
+            "第二段首行"
+        );
+        assert_eq!(
+            streaming_think_summary("`code` 与 **加粗** 混排\n后续行"),
+            "`code` 与 加粗 混排",
+            "只去 `**`,反引号原样"
+        );
+        assert_eq!(streaming_think_summary(""), "");
+        assert_eq!(
+            streaming_think_summary("\n\n\n第二段"),
+            "",
+            "空段不参与,唯一行未收行为空"
+        );
+    }
+
+    /// 定稿思考摘要:首个非空行(去 `**`)
+    #[test]
+    fn settled_think_summary_takes_first_nonempty_line() {
+        assert_eq!(settled_think_summary("首行\n次行"), "首行");
+        assert_eq!(settled_think_summary("\n \n次行"), "次行");
+        assert_eq!(settled_think_summary("**结论** 是对的"), "结论 是对的");
+        assert_eq!(settled_think_summary(""), "");
+    }
+
+    /// 直播组头:运行中工具 → 归类 + 参数详情;无运行工具 → thinking
+    /// + 最后一段已完成思考首行
+    #[test]
+    fn live_header_prefers_running_tool_then_reasoning() {
+        let mk_tool = |name: &str, state: ToolState, args: &str| ChatNode::Tool {
+            key: format!("call:{name}"),
+            name: name.to_string(),
+            summary: String::new(),
+            state,
+            arguments: args.to_string(),
+            output: None,
+            view: None,
+            images: Vec::new(),
+        };
+        let mk_asst = |reasoning: &str| ChatNode::Assistant {
+            key: "a:1:1".into(),
+            text: String::new(),
+            text_ver: 0,
+            reasoning: reasoning.to_string(),
+            streaming: true,
+            usage: None,
+            message_id: String::new(),
+        };
+        // 运行中工具优先(即使更早有思考)
+        let nodes = vec![
+            mk_asst("想想\n\n第二段"),
+            mk_tool("bash", ToolState::Running, r#"{"description":"Find jar"}"#),
+        ];
+        assert_eq!(
+            live_header(&nodes, 0, 1),
+            (ProcessActivity::Commands, Some("Find jar".to_string()))
+        );
+        // 无运行工具 → thinking + 最后一段已完成思考首行(流式尾段
+        // 未收行不参与)
+        let nodes = vec![mk_asst("想想\n\n第二段开头还没完")];
+        assert_eq!(
+            live_header(&nodes, 0, 0),
+            (ProcessActivity::Thinking, Some("想想".to_string()))
+        );
+        // 无运行工具且无已完成思考行 → 详情缺席(标题单独成立)
+        let nodes = vec![mk_asst("还没收行")];
+        assert_eq!(live_header(&nodes, 0, 0), (ProcessActivity::Thinking, None));
+        // 运行中工具缺详情 → 不回退思考
+        let nodes = vec![mk_asst("想想"), mk_tool("grep", ToolState::Running, "{}")];
+        assert_eq!(live_header(&nodes, 0, 1), (ProcessActivity::Search, None));
+        // 已落定工具不算运行中
+        let nodes = vec![mk_tool(
+            "bash",
+            ToolState::Done,
+            r#"{"description":"done cmd"}"#,
+        )];
+        assert_eq!(live_header(&nodes, 0, 0), (ProcessActivity::Thinking, None));
+    }
+
+    /// 直播段混入中断死段:中断收口(TurnTail aborted)界前恒平铺,
+    /// 界后过程项才归直播组——「中断不折叠」语义不被直播组吞掉
+    #[test]
+    fn live_group_starts_after_aborted_boundary() {
+        let mut evs = vec![
+            ev("turn/start", 1, json!({ "turn": 1 })),
+            ev("user/message", 2, json!({ "content": "第一问" })),
+            ev(
+                "assistant/reasoning",
+                3,
+                json!({ "turn": 1, "step": 1, "text": "想想" }),
+            ),
+            ev(
+                "tool/call",
+                4,
+                json!({ "turn": 1, "step": 1, "callId": "1", "name": "bash", "arguments": "{}" }),
+            ),
+            ev(
+                "turn/end",
+                5,
+                json!({ "turn": 1, "reason": { "kind": "aborted" } }),
+            ),
+            ev("turn/start", 6, json!({ "turn": 2 })),
+            ev("user/message", 7, json!({ "content": "第二问" })),
+            ev(
+                "assistant/reasoning",
+                8,
+                json!({ "turn": 2, "step": 1, "text": "再想" }),
+            ),
+            ev(
+                "tool/call",
+                9,
+                json!({ "turn": 2, "step": 1, "callId": "2", "name": "grep", "arguments": "{}" }),
+            ),
+        ];
+        let nodes = project(std::mem::take(&mut evs));
+        // 0 user1, 1 think1, 2 tool1, 3 tail(aborted), 4 user2, 5 think2, 6 tool2
+        let none = SlotSet::new();
+        // 中断轮也成组(控制行「已停止」+ 组,恒展开);界后直播段
+        // 无控制行,过程直接成组
+        assert_eq!(
+            slot_shapes(&slots_all_folded(&nodes, &none)),
+            vec![
+                "n0",
+                "t[turn-end:5]",
+                "g[1..=2]turn-end:5",
+                "n3",
+                "n4",
+                "g[5..=6]live"
+            ]
         );
     }
 
@@ -3584,23 +4613,32 @@ mod tests {
         // 0 基线注入, 1 用户消息, 2 轮内注入, 3 call, 4 答复, 5 turn-end
         assert_eq!(nodes.len(), 6);
         let none = SlotSet::new();
+        // 收拢:基线注入与用户消息在组外,控制行 + 最终答复
         assert_eq!(
-            slot_shapes(&build_row_slots(&nodes, &none)),
-            vec!["n0", "n1", "g[2..=3]turn-end:7", "n4", "n5"]
+            slot_shapes(&slots_all_folded(&nodes, &none)),
+            vec!["n0", "n1", "t[turn-end:7]", "b4", "n5"]
         );
-        // 展开态:组成员按原序平铺,基线注入与用户消息保持组外
+        // 展开态:成员收进座位体,基线注入与用户消息保持组外
         let mut open = SlotSet::new();
         open.insert("turn-end:7".to_string());
         assert_eq!(
-            slot_shapes(&build_row_slots(&nodes, &open)),
-            vec!["n0", "n1", "G[2..=3]turn-end:7", "n2", "n3", "n4", "n5"]
+            slot_shapes(&slots_all_folded(&nodes, &open)),
+            vec![
+                "n0",
+                "n1",
+                "t[turn-end:7]",
+                "g[2..=3]turn-end:7",
+                "n4",
+                "n5"
+            ]
         );
     }
 
-    /// 整轮一组:正文交错不打断组;折叠态组行后的穿插正文保持原序;
-    /// **error 收口段不折叠**(无定稿答案 → 恒平铺,与中断轮同门槛)
+    /// 错误收口轮:仍按过程运行成组(错误轮不折叠,过程行照常归组),
+    /// 正文切开相邻两组,归属由错误行交代。
+    /// **不得回退成平铺**:平铺会让行距从 6px 涨到 16px、并丢掉组头。
     #[test]
-    fn row_slots_whole_turn_group_with_error_tail_flat() {
+    fn row_slots_error_tail_turn_groups_like_plain_turns() {
         let mut evs = vec![
             ev("turn/start", 1, json!({ "turn": 1 })),
             ev("user/message", 2, json!({ "content": "hi" })),
@@ -3658,18 +4696,26 @@ mod tests {
         let nodes = project(std::mem::take(&mut evs));
         // 0 user, 1 ctx, 2 正文, 3 call:a, 4 think-only, 5 call:b, 6 notice
         let none = SlotSet::new();
-        // error 收口段无定稿答案:不归组,恒平铺(语义由 Notice 行承担)
+        // 错误控制行 + 两个过程组(注入 / call+think+call),正文切开
+        // 两组且留在组外
         assert_eq!(
-            slot_shapes(&build_row_slots(&nodes, &none)),
-            vec!["n0", "n1", "n2", "n3", "n4", "n5", "n6"]
+            slot_shapes(&slots_all_folded(&nodes, &none)),
+            vec![
+                "n0",
+                "t[turn-error:9]",
+                "g[1..=1]turn-error:9",
+                "n2",
+                "g[3..=5]turn-error:9",
+                "n6"
+            ]
         );
     }
 
-    /// 取消收尾(aborted TurnTail)不折叠:轮无定稿答案,段内过程行
-    /// 恒平铺(折叠门槛 = 有定稿答案);直播 → 中断过渡
-    /// 无行数跳动,中断语义由轮尾徽标与正文尾「已停止」pill 承担。
+    /// 取消收尾(aborted TurnTail):过程照常成组且**不折叠**——
+    /// 中断轮的结局由「已停止」pill 与轮控制行交代,过程不藏。**不得
+    /// 回退成平铺**。
     #[test]
-    fn row_slots_aborted_turn_stays_flat() {
+    fn row_slots_aborted_turn_groups_but_never_folds() {
         let mut evs = vec![
             ev("turn/start", 1, json!({ "turn": 1 })),
             ev("user/message", 2, json!({ "content": "接下来做什么" })),
@@ -3687,7 +4733,8 @@ mod tests {
             evs.push(ev(
                 "assistant/chunk",
                 seq + 1,
-                json!({ "turn": 1, "step": step, "delta": text }),
+                json!({ "turn": 1, "step": step,
+                    "chunk": { "type": "text-delta", "index": 0, "text": text } }),
             ));
             evs.push(ev(
                 "tool/call",
@@ -3702,11 +4749,22 @@ mod tests {
             json!({ "turn": 1, "reason": { "kind": "aborted" } }),
         ));
         let nodes = project(evs);
-        // 0 user, 1 叙①, 2 tool1, 3 叙②, 4 tool2, 5 tail(aborted)——全平铺
+        // 0 user, 1 叙①, 2 tool1, 3 叙②, 4 tool2, 5 tail(aborted)
+        // 正文切开过程组,思考行留组内;控制行恒在场且 open_turns
+        // 为空也照样展开(中断轮不收)
         let none = SlotSet::new();
         assert_eq!(
-            slot_shapes(&build_row_slots(&nodes, &none)),
-            vec!["n0", "n1", "n2", "n3", "n4", "n5"]
+            slot_shapes(&slots_all_folded(&nodes, &none)),
+            vec![
+                "n0",
+                "t[turn-end:10]",
+                "g[1..=1]turn-end:10",
+                "b1",
+                "g[2..=3]turn-end:10",
+                "b3",
+                "g[4..=4]turn-end:10",
+                "n5"
+            ]
         );
     }
 
@@ -3823,18 +4881,28 @@ mod tests {
         let nodes = project(evs);
         // 0 user, 1 叙①(reasoning+text), 2 tool, 3 叙②, 4 答案, 5 tail
         let none = SlotSet::new();
-        // 叙①②皆过程项收进组;最终答复与收尾在外
+        // 收拢:控制行 + 回复正文(折叠只收过程组;中途叙述与最终答复
+        // 都是回复正文,照旧平铺)
         assert_eq!(
-            slot_shapes(&build_row_slots(&nodes, &none)),
-            vec!["n0", "g[1..=3]turn-end:9", "n4", "n5"]
+            slot_shapes(&slots_all_folded(&nodes, &none)),
+            vec!["n0", "t[turn-end:9]", "b1", "b3", "b4", "n5"]
         );
-        assert_eq!(group_counts(&nodes, 1, 3), (3, 1));
-        // 展开态:中间叙述按原序平铺在组头之后、答复之前
+        // 展开:正文切开过程组——叙①/叙② 各自成组,其思考行留在组内,
+        // 正文半边平铺在组外
         let mut open = SlotSet::new();
         open.insert("turn-end:9".to_string());
         assert_eq!(
-            slot_shapes(&build_row_slots(&nodes, &open)),
-            vec!["n0", "G[1..=3]turn-end:9", "n1", "n2", "n3", "n4", "n5"]
+            slot_shapes(&slots_all_folded(&nodes, &open)),
+            vec![
+                "n0",
+                "t[turn-end:9]",
+                "g[1..=1]turn-end:9",
+                "b1",
+                "g[2..=3]turn-end:9",
+                "b3",
+                "n4",
+                "n5"
+            ]
         );
     }
 
@@ -3988,13 +5056,19 @@ mod tests {
             st.apply(e);
         }
         let nodes = st.nodes.clone();
-        let mask = process_mask(&nodes);
-        assert!(mask[1], "重试行应为过程项");
+        assert!(is_process_node(&nodes[1]), "重试行应为过程项");
         let none = SlotSet::new();
-        // 0 user, 1 retry(过程), 2 答案, 3 tail → 组 [1..=1]
+        // 0 user, 1 retry(过程), 2 答案, 3 tail → 收拢态:控制行 + 答复
         assert_eq!(
-            slot_shapes(&build_row_slots(&nodes, &none)),
-            vec!["n0", "g[1..=1]turn-end:5", "n2", "n3"]
+            slot_shapes(&slots_all_folded(&nodes, &none)),
+            vec!["n0", "t[turn-end:5]", "b2", "n3"]
+        );
+        // 展开态:重试行随过程收进组
+        let mut open = SlotSet::new();
+        open.insert("turn-end:5".to_string());
+        assert_eq!(
+            slot_shapes(&slots_all_folded(&nodes, &open)),
+            vec!["n0", "t[turn-end:5]", "g[1..=1]turn-end:5", "n2", "n3"]
         );
     }
 
@@ -4055,7 +5129,7 @@ mod tests {
         ];
         let nodes = project(std::mem::take(&mut evs));
         let none = SlotSet::new();
-        let slots = build_row_slots(&nodes, &none);
+        let slots = slots_all_folded(&nodes, &none);
         let anchors = nav_anchors(&slots, &nodes);
         // 两轮 → 恰好两个用户消息锚点;key 为用户节点稳定 key
         assert_eq!(anchors.len(), 2);
@@ -4070,7 +5144,7 @@ mod tests {
         // 轮2 展开:成员行不占点,用户锚点仍在(槽位按当时行槽计)
         let mut open = SlotSet::new();
         open.insert("turn-end:12".to_string());
-        let anchors_open = nav_anchors(&build_row_slots(&nodes, &open), &nodes);
+        let anchors_open = nav_anchors(&slots_all_folded(&nodes, &open), &nodes);
         assert_eq!(anchors_open.len(), 2, "展开不减用户锚点");
     }
 

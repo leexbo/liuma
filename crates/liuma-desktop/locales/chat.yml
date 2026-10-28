@@ -132,9 +132,152 @@ chat:
     zh-CN: "已排队,回合结束后压缩"
     en: "Queued — compaction starts after this turn"
 
-  exploring:
-    zh-CN: "深入探索中…"
-    en: "Digging deeper…"
+  working_for:
+    zh-CN: "工作中，用时 %{duration} ···"
+    en: "Working · %{duration} ···"
+
+  turn_done:
+    zh-CN: "已完成"
+    en: "Completed"
+
+  turn_done_for:
+    zh-CN: "已完成，用时 %{duration}"
+    en: "Completed in %{duration}"
+  turn_stopped:
+    zh-CN: "已停止"
+    en: "Stopped"
+
+  turn_head_failed:
+    zh-CN: "处理失败"
+    en: "Failed"
+
+  step_thinking:
+    zh-CN: "正在分析请求"
+    en: "Thinking through the request"
+
+  step_read:
+    zh-CN: "正在读取文件"
+    en: "Reading files"
+
+  step_read_image:
+    zh-CN: "正在读取图片"
+    en: "Reading images"
+
+  step_write:
+    zh-CN: "正在写入文件"
+    en: "Writing files"
+
+  step_edit:
+    zh-CN: "正在编辑文件"
+    en: "Editing files"
+
+  step_search:
+    zh-CN: "正在搜索代码"
+    en: "Searching code"
+
+  step_commands:
+    zh-CN: "正在运行命令"
+    en: "Running commands"
+
+  step_code:
+    zh-CN: "正在运行代码"
+    en: "Running code"
+
+  step_web_search:
+    zh-CN: "正在搜索网页"
+    en: "Searching the web"
+
+  step_web_fetch:
+    zh-CN: "正在访问网页"
+    en: "Fetching a web page"
+
+  step_subagents:
+    zh-CN: "正在协调子智能体"
+    en: "Coordinating subagents"
+
+  step_plan:
+    zh-CN: "正在更新计划"
+    en: "Updating the plan"
+
+  step_questions:
+    zh-CN: "等待你的操作"
+    en: "Waiting for you"
+
+  step_tools:
+    zh-CN: "正在调用工具"
+    en: "Calling tools"
+
+  step_done_thinking:
+    zh-CN: "已完成分析"
+    en: "Analyzed the request"
+
+  step_done_read:
+    zh-CN: "已读取文件"
+    en: "Read files"
+
+  step_done_read_image:
+    zh-CN: "已读取图片"
+    en: "Read images"
+
+  step_done_write:
+    zh-CN: "已写入文件"
+    en: "Wrote files"
+
+  step_done_edit:
+    zh-CN: "修改了文件"
+    en: "Modified files"
+
+  step_done_search:
+    zh-CN: "已搜索代码"
+    en: "Searched code"
+
+  step_done_commands:
+    zh-CN: "执行了命令"
+    en: "Ran commands"
+
+  step_done_code:
+    zh-CN: "运行了代码"
+    en: "Ran code"
+
+  step_done_web_search:
+    zh-CN: "已搜索网页"
+    en: "Searched the web"
+
+  step_done_web_fetch:
+    zh-CN: "已访问网页"
+    en: "Fetched pages"
+
+  step_done_subagents:
+    zh-CN: "已协调子智能体"
+    en: "Coordinated subagents"
+
+  step_done_plan:
+    zh-CN: "更新了计划"
+    en: "Updated the plan"
+
+  step_done_questions:
+    zh-CN: "向用户提出了问题"
+    en: "Asked the user"
+
+  step_done_tools:
+    zh-CN: "已调用工具"
+    en: "Called tools"
+
+  step_done_join_two:
+    zh-CN: "%{first}并%{second}"
+    en: "%{first} and %{second}"
+
+  step_done_comma:
+    zh-CN: "，"
+    en: ", "
+
+  step_done_shared_prefix:
+    zh-CN: "已"
+    en: ""
+
+  step_done_more:
+    zh-CN: "%{title}等"
+    en: "%{title} and more"
 
   child_readonly:
     zh-CN: "子会话为只读回放:消息请回主线发送,或由代理间 send_message 互发。"
@@ -143,18 +286,6 @@ chat:
   think_label:
     zh-CN: "思考"
     en: "Think"
-
-  tool_calls_count:
-    zh-CN: "%{n} 次工具调用"
-    en: "%{n} tool calls"
-
-  thought_fallback:
-    zh-CN: "已思考"
-    en: "Thought for a while"
-
-  messages_count:
-    zh-CN: "%{n} 条消息"
-    en: "%{n} messages"
 
   message_stopped:
     zh-CN: "已停止"
@@ -347,7 +478,7 @@ chat:
     en: "Tool call"
 
   tool_bash:
-    zh-CN: "Bash"
+    zh-CN: "运行命令"
     en: "Bash"
 
   tool_read:
@@ -383,11 +514,11 @@ chat:
     en: "All %{n} files"
 
   tool_grep:
-    zh-CN: "Grep"
+    zh-CN: "搜索文件内容"
     en: "Grep"
 
   tool_glob:
-    zh-CN: "Glob"
+    zh-CN: "查找文件"
     en: "Glob"
 
   tool_search:

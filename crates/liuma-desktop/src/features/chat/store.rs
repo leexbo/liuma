@@ -150,11 +150,18 @@ pub(crate) struct ChatStore {
     pub user_unfolded: HashSet<String>,
     /// 展开的上下文注入行 key(ctx:<seq>)
     pub open_context: HashSet<String>,
-    /// 展开的轮过程组(键 = 段收口节点 key,如 turn-end:11)。**空集 =
+    /// 展开的轮控制行(键 = 段收口节点 key,如 turn-end:11)。**空集 =
     /// 全收**:历史会话载入即收、turn/end 收口出现即收(「默认收 + 手动
-    /// 展开例外」天然实现自动收拢,无需事件 hook);点组头展开后持久,
-    /// 不再被自动收回。内存态,不持久化
+    /// 展开例外」天然实现自动收拢,无需事件 hook);点控制行展开后持久,
+    /// 不再被自动收回。中断/错误收口轮不受此集约束(恒展开)。内存态
     pub open_turns: HashSet<String>,
+    /// 放开限高的组座位(键 = `g:<首成员下标>`)。空 = 全部按 400px
+    /// 内滚窗口收着——收拢不等于隐藏:组体恒在,「收」只限高(同参照流)
+    pub open_groups: HashSet<String>,
+    /// 组座位滚动体持续句柄(键 = 组 turn_key,含直播键):座位体限高
+    /// 内滚动,句柄须跨帧存活(每帧新建 = 滚动位丢失)。行槽重建时按
+    /// 在位组键修剪
+    pub(crate) group_scrolls: HashMap<String, gpui_kit::ScrollHandle>,
     /// 导航轨 hover 点(锚点所属行槽下标;None = 未悬停)。摘要卡显隐
     /// 与定位由渲染层按它比对;悬停移出清空
     pub nav_hover: Option<usize>,
@@ -375,6 +382,8 @@ impl Default for ChatStore {
             user_unfolded: HashSet::new(),
             open_context: HashSet::new(),
             open_turns: HashSet::new(),
+            open_groups: HashSet::new(),
+            group_scrolls: HashMap::new(),
             nav_hover: None,
             nav_track: None,
             nav_reflow: None,
@@ -383,11 +392,19 @@ impl Default for ChatStore {
             open_turns_ver: 0,
             anchor_index: Vec::new(),
             todo_open: false,
-            chat_list: gpui_kit::ListState::new(
-                0,
-                gpui_kit::ListAlignment::Bottom,
-                gpui_kit::px(600.),
-            ),
+            // 尾随跟随交给 list 自身(FollowMode::Tail):Bottom 对齐只在
+            // logical_scroll_top=None 时跟随,末项(直播组座位)自身长高
+            // 不属于「追加」——不跟随时状态行被长高的座位顶出视口(实测)。
+            // 用户上滚自动脱钩,回底 1px 内自动重挂
+            chat_list: {
+                let list = gpui_kit::ListState::new(
+                    0,
+                    gpui_kit::ListAlignment::Bottom,
+                    gpui_kit::px(600.),
+                );
+                list.set_follow_mode(gpui_kit::FollowMode::Tail);
+                list
+            },
             track_h: 0.,
             chat_list_count: 0,
             chat_list_session: None,
@@ -910,8 +927,9 @@ impl AppStore {
             self.chat.tv_subs.push((key, sub));
         }
         let sid = self.state.current_id.clone();
-        // 列表行数 = 行槽 + 流尾伪行(插队气泡 + 乐观用户气泡;前者
-        // session/queue 帧驱动,后者 RPC 回执/user/message 替换驱动)
+        // 列表行数 = 行槽 + 流尾伪行(插队气泡 + 乐观用户气泡 + 运行
+        // 状态行;前者 session/queue 帧驱动,次者 RPC 回执/user/message
+        // 替换驱动,状态行 running 布尔驱动)
         let (steering, optimistic) = self
             .current_chat()
             .map(|c| {
@@ -924,7 +942,12 @@ impl AppStore {
                 )
             })
             .unwrap_or((0, 0));
-        let count = self.chat.row_slots.len() + steering + optimistic;
+        let status_tail = self
+            .state
+            .current_id
+            .as_deref()
+            .is_some_and(|id| self.is_running(id)) as usize;
+        let count = self.chat.row_slots.len() + steering + optimistic + status_tail;
         if self.chat.chat_list_session.as_deref() != sid.as_deref() {
             // 全量加载打开:未测项带固定行高 hint——滚动范围/导航轨
             // 显隐立即成立(按可见性测高下未测行 0 高,总高塌着),真实
@@ -986,15 +1009,47 @@ impl AppStore {
         if self.chat.row_slots_sig.as_ref() == Some(&sig) {
             return;
         }
-        self.chat.row_slots = build_row_slots(nodes, &self.chat.open_turns);
+        self.chat.row_slots = build_row_slots(nodes, &self.chat.open_turns, &self.chat.open_groups);
         self.chat.row_slots_sig = Some(sig);
-        // key → 槽位映射(重测范围映射用;与行槽同签名,一次建齐)
+        // 组滚动句柄修剪:只保留在位组键(跨会话残留一并清掉)
+        let live_keys: HashSet<String> = self
+            .chat
+            .row_slots
+            .iter()
+            .filter_map(|s| match s {
+                RowSlot::Group { key, .. } => Some(key.clone()),
+                RowSlot::Node { .. } | RowSlot::TurnHead { .. } => None,
+            })
+            .collect();
+        self.chat.group_scrolls.retain(|k, _| live_keys.contains(k));
+        // 组座位滚动句柄:为每个在位组备好跨帧句柄(渲染期只读克隆,
+        // 每帧新建 = 滚动位丢失)
+        for slot in &self.chat.row_slots {
+            if let RowSlot::Group { key, .. } = slot
+                && !self.chat.group_scrolls.contains_key(key)
+            {
+                self.chat
+                    .group_scrolls
+                    .insert(key.clone(), gpui_kit::ScrollHandle::new());
+            }
+        }
+        // key → 槽位映射(重测范围映射用;与行槽同签名,一次建齐)。
+        // 组内成员落座位整行:成员在座位体内渲染,无独立外层行高,
+        // 单成员变更的重测以座位为单位
         self.chat.node_slot.clear();
         for (slot_ix, slot) in self.chat.row_slots.iter().enumerate() {
-            if let Some(n) = slot.node_ix()
-                && let Some(node) = nodes.get(n)
-            {
-                self.chat.node_slot.insert(node.key().to_string(), slot_ix);
+            match slot {
+                RowSlot::Node { ix: n, .. } => {
+                    if let Some(node) = nodes.get(*n) {
+                        self.chat.node_slot.insert(node.key().to_string(), slot_ix);
+                    }
+                }
+                RowSlot::Group { first, last, .. } => {
+                    for n in nodes.get(*first..=*last).into_iter().flatten() {
+                        self.chat.node_slot.insert(n.key().to_string(), slot_ix);
+                    }
+                }
+                RowSlot::TurnHead { .. } => {}
             }
         }
     }
@@ -1039,12 +1094,9 @@ impl AppStore {
         let top = list.logical_scroll_top();
         let nodes = self.current_nodes();
         let key = match self.chat.row_slots.get(top.item_ix) {
-            Some(RowSlot::Node(n) | RowSlot::GroupMember(n)) => {
-                nodes.get(*n).map(|nd| nd.key().to_string())
-            }
-            Some(RowSlot::Group { turn_key, .. } | RowSlot::GroupOpen { turn_key, .. }) => {
-                Some(turn_key.clone())
-            }
+            Some(RowSlot::Node { ix: n, .. }) => nodes.get(*n).map(|nd| nd.key().to_string()),
+            Some(RowSlot::Group { key, .. }) => Some(key.clone()),
+            Some(RowSlot::TurnHead { turn_key, .. }) => Some(turn_key.clone()),
             None => None,
         };
         key.map(|k| (k, f32::from(top.offset_in_item)))
@@ -1056,12 +1108,9 @@ impl AppStore {
         let nodes = self.current_nodes();
         let slot_key = |s: &RowSlot| -> Option<String> {
             match s {
-                RowSlot::Node(n) | RowSlot::GroupMember(n) => {
-                    nodes.get(*n).map(|nd| nd.key().to_string())
-                }
-                RowSlot::Group { turn_key, .. } | RowSlot::GroupOpen { turn_key, .. } => {
-                    Some(turn_key.clone())
-                }
+                RowSlot::Node { ix: n, .. } => nodes.get(*n).map(|nd| nd.key().to_string()),
+                RowSlot::Group { key, .. } => Some(key.clone()),
+                RowSlot::TurnHead { turn_key, .. } => Some(turn_key.clone()),
             }
         };
         if let Some(ix) = self
@@ -1130,12 +1179,24 @@ impl AppStore {
         // 条目比例映射,与测高解耦)
     }
 
-    /// 轮过程组展开/收拢(组头点击)
+    /// 轮控制行展开/收拢(「已完成，用时 X」行点击)
     pub fn toggle_turn_group(&mut self, key: &str, cx: &mut Context<Self>) {
         // 锚须在行槽重建前读(旧槽位)
         let anchor = self.viewport_anchor();
         if !self.chat.open_turns.insert(key.to_string()) {
             self.chat.open_turns.remove(key);
+        }
+        self.chat.open_turns_ver += 1;
+        self.ensure_row_slots();
+        self.reset_chat_list_anchored(anchor);
+        cx.notify();
+    }
+
+    /// 组座位放开/收回限高(组头点击;`g:<first>` 键)
+    pub fn toggle_group(&mut self, key: &str, cx: &mut Context<Self>) {
+        let anchor = self.viewport_anchor();
+        if !self.chat.open_groups.insert(key.to_string()) {
+            self.chat.open_groups.remove(key);
         }
         self.chat.open_turns_ver += 1;
         self.ensure_row_slots();
@@ -1404,6 +1465,12 @@ impl AppStore {
         let running_at_send = self.state.running_by_id.get(&id).copied().unwrap_or(false);
         if !is_command {
             self.state.running_by_id.insert(id.clone(), true);
+            // 乐观置运行态的同时**必须**立起记时起点:否则 turn/start
+            // 到达时已非上升沿,运行时长永远不会开始走(恒「用时 0 秒」)
+            self.state
+                .running_since_by_id
+                .entry(id.clone())
+                .or_insert_with(std::time::Instant::now);
             // 用户消息强制钉底(新内容 toBottom)
             self.chat.pinned = true;
         }

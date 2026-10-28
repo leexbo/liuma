@@ -43,9 +43,6 @@ REQUIRED_LOCALES = ("zh-CN", "en")
 # 同形值登记:zh-CN 与 en 逐字相同的键(双语中立:缩写/专名/单位)。
 SAME_VALUE_KEYS = {
     "settings.nav_mcp",     # MCP:三字母缩写(产品名,两档同形)
-    "chat.tool_bash",       # 工具专名:模型面命令名,两档逐字同形
-    "chat.tool_glob",
-    "chat.tool_grep",
     "chat.tool_ralph",
     "chat.tok_share",       # `数 · 百分数`:两语言同形,无实词
     "trajectory.seq_range",  # `seq %{a}–%{b}`:数据标签,两语言同形
