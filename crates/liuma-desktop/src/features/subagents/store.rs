@@ -12,6 +12,9 @@ use crate::shell::store::AppStore;
 pub(crate) struct SubagentsStore {
     /// 任务条列表展开态(默认展开——运行中子代理直观可见)
     pub task_bar_open: bool,
+    /// 任务条已结束折叠区开态(None = 跟随自动规则:有运行中行时
+    /// 收起,全结束后展开;Some = 用户手动开合覆盖)
+    pub settled_open: Option<bool>,
     /// 页头家族切换器开态(受控;标题栏拖拽区上 popover 须受控,
     /// 见 session_menu_button 同款说明)
     pub family_menu_open: bool,
@@ -21,6 +24,7 @@ impl Default for SubagentsStore {
     fn default() -> Self {
         Self {
             task_bar_open: true,
+            settled_open: None,
             family_menu_open: false,
         }
     }
@@ -68,6 +72,15 @@ impl AppStore {
             return;
         }
         self.subagents.task_bar_open = open;
+        cx.notify();
+    }
+
+    /// 已结束折叠区手动开合(覆盖自动规则;同值幂当)
+    pub fn set_settled_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.subagents.settled_open == Some(open) {
+            return;
+        }
+        self.subagents.settled_open = Some(open);
         cx.notify();
     }
 

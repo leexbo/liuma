@@ -83,11 +83,10 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
     let anchor = st.subagent_anchor_of(&current);
     let viewing_child = anchor != current;
     let rows = st.lineage_rows(&anchor);
-    // 集合:运行中全部 + shell job 全生命周期(终态行保留可见——磁盘
-    // 日志是持久事实,任务条是它的唯一 UI 面;落定即消失曾是 D48d
-    // 语义,因「桌面看不到任何 job 运行记录」被否)+ 驻留待命(idle
-    // 可继续;对等寻址面:待命代理仍可收消息,行副行摘要的价值恰在
-    // 空闲期)+ 当前查看的子会话补位高亮
+    // 集合:运行中全部 + shell job 全生命周期(终态行不删——任务事实
+    // 仍可达,但收进「已结束」折叠区,不再平铺越攒越多;有运行中行时
+    // 默认收起)+ 驻留待命(idle 可继续;对等寻址面:待命代理仍可收
+    // 消息,行副行摘要的价值恰在空闲期)+ 当前查看的子会话补位高亮
     let mut chips: Vec<LineageRow> = rows
         .iter()
         .filter(|r| {
@@ -104,6 +103,19 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
     if chips.is_empty() {
         return None;
     }
+    // 分区:运行中置顶(查看中补位行始终可见);已结束按终态时刻
+    // 新→旧排序收进折叠区
+    let live: Vec<LineageRow> = chips
+        .iter()
+        .filter(|r| r.running || r.session_id == current)
+        .cloned()
+        .collect();
+    let mut settled: Vec<LineageRow> = chips
+        .iter()
+        .filter(|r| !r.running && r.session_id != current)
+        .cloned()
+        .collect();
+    settled.sort_by_key(|r| std::cmp::Reverse(r.finished_at));
     let running_n = chips.iter().filter(|r| r.running).count();
     let standby_n = chips
         .iter()
@@ -181,144 +193,180 @@ pub(crate) fn task_bar(store: &Entity<AppStore>, cx: &App) -> Option<gpui_kit::A
                 .child(t!("misc.mainline")),
         );
     }
-    // 行元素先建(闭包 move 所有权,避免借用 chips 越过函数尾)
-    let list_rows: Vec<gpui_kit::AnyElement> = chips
-        .iter()
-        .map(|chip| {
-            let s_chip = store.clone();
-            let chip = chip.clone();
-            let chip_id = chip.session_id.clone();
-            let is_shell = chip.kind == "shell";
-            // shell 行选择器带 id(终态可见性断言按行定位);子代理行
-            // 保持裸 "task-chip"(既有测试按它点击切换)
-            let sel_id = chip.session_id.clone();
-            let running = chip.running;
-            let viewing = chip.session_id == current;
-            let timing = duration_text(&chip);
-            let last_message = chip.last_message.clone();
+    // 行渲染闭包:live/settled 两组共用;借用 store/current,逐行克隆
+    let render_row = |chip: &LineageRow, cx: &App| -> gpui_kit::AnyElement {
+        let s_chip = store.clone();
+        let chip_id = chip.session_id.clone();
+        let is_shell = chip.kind == "shell";
+        // shell 行选择器带 id(终态可见性断言按行定位);子代理行
+        // 保持裸 "task-chip"(既有测试按它点击切换)
+        let sel_id = chip.session_id.clone();
+        let running = chip.running;
+        let viewing = chip.session_id == current;
+        let timing = duration_text(chip);
+        let last_message = chip.last_message.clone();
+        div()
+            .id(gpui_kit::SharedString::from(format!(
+                "task-row-{}",
+                chip.session_id
+            )))
+            .debug_selector(move || {
+                if is_shell {
+                    format!("task-chip-{sel_id}")
+                } else {
+                    "task-chip".to_string()
+                }
+            })
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .rounded(px(8.))
+            .px(px(10.))
+            .py(px(4.))
+            .bg(if viewing {
+                theme::dock(cx)
+            } else {
+                theme::TRANSPARENT
+            })
+            // shell job 行非会话,无跳转(点击不响应,不显手型)
+            .when(chip.kind != "shell", |el| {
+                el.cursor_pointer()
+                    .hover(|st| st.bg(theme::dock(cx)))
+                    .on_click(move |_, _, cx| {
+                        let id = chip_id.clone();
+                        s_chip.update(cx, |st, cx| st.open_session(&id, cx));
+                    })
+            })
+            .when_some(chip.dot, |el, dot| el.child(state_dot(dot, cx)))
+            // shell 行缀公文包图标:与子代理行同列时可辨
+            .when(chip.kind == "shell", |el| {
+                el.child(fixed(LiumaIcon::Briefcase, 12.).text_color(theme::label_2(cx)))
+            })
+            // 主列两行:任务名 + 最近入站消息摘要(对等互发呈现,
+            // 通知不进转录——行副行承担可见性)
+            .child(
+                div()
+                    .min_w(px(0.))
+                    .flex_1()
+                    .v_flex()
+                    .when_some(last_message, |el, msg| {
+                        el.child(
+                            div()
+                                .id("task-chip-lastmsg")
+                                .min_w(px(0.))
+                                .text_size(px(10.))
+                                .text_color(theme::caption(cx))
+                                .truncate()
+                                .child(msg),
+                        )
+                    })
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .text_size(px(12.))
+                            .text_color(if viewing {
+                                theme::label(cx)
+                            } else {
+                                theme::label_2(cx)
+                            })
+                            .truncate()
+                            .child(chip.label.clone()),
+                    ),
+            )
+            .when(!timing.is_empty(), |el| {
+                el.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(px(11.))
+                        .text_color(theme::caption(cx))
+                        .child(timing),
+                )
+            })
+            .when(viewing, |el| {
+                el.child(
+                    fixed(gpui_kit::component::IconName::Check, 12.).text_color(theme::brand(cx)),
+                )
+            })
+            // 运行中行尾打断钮(豁免冒泡——点击不触发行切换;
+            // 打断 = 只停当前 turn,子代理保持可续话)
+            .when(running, |el| {
+                let s_stop = store.clone();
+                let stop_id = chip.session_id.clone();
+                let stop_kind = chip.kind.clone();
+                el.child(
+                    div()
+                        .id(gpui_kit::SharedString::from(format!(
+                            "task-stop-{}",
+                            chip.session_id
+                        )))
+                        .debug_selector(|| "task-stop".to_string())
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .h(px(20.))
+                        .px(px(8.))
+                        .rounded(px(10.))
+                        .border_1()
+                        .border_color(theme::border_2(cx))
+                        .cursor_pointer()
+                        .hover(|st| st.bg(theme::danger(cx)).border_color(theme::danger(cx)))
+                        .text_size(px(11.))
+                        .text_color(theme::label_2(cx))
+                        .child(t!("misc.interrupt"))
+                        .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation()
+                        })
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            let id = stop_id.clone();
+                            let kind = stop_kind.clone();
+                            s_stop.update(cx, |st, cx| st.interrupt_task(&kind, &id, cx));
+                        }),
+                )
+            })
+            .into_any_element()
+    };
+    let mut list_rows: Vec<gpui_kit::AnyElement> = live.iter().map(|c| render_row(c, cx)).collect();
+    // 已结束折叠区:有运行中行时默认收起(仅计数行),全部结束后默认
+    // 展开;手动开合覆盖自动规则(存 store,不随状态漂移)
+    if !settled.is_empty() {
+        let expanded = st.subagents.settled_open.unwrap_or(running_n == 0);
+        let s_settled = store.clone();
+        list_rows.push(
             div()
-                .id(gpui_kit::SharedString::from(format!(
-                    "task-row-{}",
-                    chip.session_id
-                )))
-                .debug_selector(move || {
-                    if is_shell {
-                        format!("task-chip-{sel_id}")
-                    } else {
-                        "task-chip".to_string()
-                    }
-                })
+                .id("task-settled-toggle")
+                .debug_selector(|| "task-settled-toggle".to_string())
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .rounded(px(8.))
+                .gap(px(6.))
                 .px(px(10.))
                 .py(px(4.))
-                .bg(if viewing {
-                    theme::dock(cx)
-                } else {
-                    theme::TRANSPARENT
-                })
-                // shell job 行非会话,无跳转(点击不响应,不显手型)
-                .when(chip.kind != "shell", |el| {
-                    el.cursor_pointer()
-                        .hover(|st| st.bg(theme::dock(cx)))
-                        .on_click(move |_, _, cx| {
-                            let id = chip_id.clone();
-                            s_chip.update(cx, |st, cx| st.open_session(&id, cx));
-                        })
-                })
-                .when_some(chip.dot, |el, dot| el.child(state_dot(dot, cx)))
-                // shell 行缀公文包图标:与子代理行同列时可辨
-                .when(chip.kind == "shell", |el| {
-                    el.child(fixed(LiumaIcon::Briefcase, 12.).text_color(theme::label_2(cx)))
-                })
-                // 主列两行:任务名 + 最近入站消息摘要(对等互发呈现,
-                // 通知不进转录——行副行承担可见性)
+                .rounded(px(8.))
+                .cursor_pointer()
+                .hover(|st| st.bg(theme::dock(cx)))
+                .text_size(px(11.))
+                .text_color(theme::label_2(cx))
+                .child(t!("misc.settled_n", n = settled.len()).to_string())
                 .child(
-                    div()
-                        .min_w(px(0.))
-                        .flex_1()
-                        .v_flex()
-                        .when_some(last_message, |el, msg| {
-                            el.child(
-                                div()
-                                    .id("task-chip-lastmsg")
-                                    .min_w(px(0.))
-                                    .text_size(px(10.))
-                                    .text_color(theme::caption(cx))
-                                    .truncate()
-                                    .child(msg),
-                            )
-                        })
-                        .child(
-                            div()
-                                .min_w(px(0.))
-                                .text_size(px(12.))
-                                .text_color(if viewing {
-                                    theme::label(cx)
-                                } else {
-                                    theme::label_2(cx)
-                                })
-                                .truncate()
-                                .child(chip.label.clone()),
-                        ),
+                    fixed(
+                        if expanded {
+                            gpui_kit::component::IconName::ChevronUp
+                        } else {
+                            gpui_kit::component::IconName::ChevronDown
+                        },
+                        11.,
+                    )
+                    .text_color(theme::label_3(cx)),
                 )
-                .when(!timing.is_empty(), |el| {
-                    el.child(
-                        div()
-                            .flex_shrink_0()
-                            .text_size(px(11.))
-                            .text_color(theme::caption(cx))
-                            .child(timing),
-                    )
+                .on_click(move |_, _, cx| {
+                    s_settled.update(cx, |st, cx| st.set_settled_open(!expanded, cx));
                 })
-                .when(viewing, |el| {
-                    el.child(
-                        fixed(gpui_kit::component::IconName::Check, 12.)
-                            .text_color(theme::brand(cx)),
-                    )
-                })
-                // 运行中行尾打断钮(豁免冒泡——点击不触发行切换;
-                // 打断 = 只停当前 turn,子代理保持可续话)
-                .when(running, |el| {
-                    let s_stop = store.clone();
-                    let stop_id = chip.session_id.clone();
-                    let stop_kind = chip.kind.clone();
-                    el.child(
-                        div()
-                            .id(gpui_kit::SharedString::from(format!(
-                                "task-stop-{}",
-                                chip.session_id
-                            )))
-                            .debug_selector(|| "task-stop".to_string())
-                            .flex()
-                            .items_center()
-                            .gap(px(4.))
-                            .h(px(20.))
-                            .px(px(8.))
-                            .rounded(px(10.))
-                            .border_1()
-                            .border_color(theme::border_2(cx))
-                            .cursor_pointer()
-                            .hover(|st| st.bg(theme::danger(cx)).border_color(theme::danger(cx)))
-                            .text_size(px(11.))
-                            .text_color(theme::label_2(cx))
-                            .child(t!("misc.interrupt"))
-                            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-                                cx.stop_propagation()
-                            })
-                            .on_click(move |_, _, cx| {
-                                cx.stop_propagation();
-                                let id = stop_id.clone();
-                                let kind = stop_kind.clone();
-                                s_stop.update(cx, |st, cx| st.interrupt_task(&kind, &id, cx));
-                            }),
-                    )
-                })
-                .into_any_element()
-        })
-        .collect();
+                .into_any_element(),
+        );
+        if expanded {
+            list_rows.extend(settled.iter().map(|c| render_row(c, cx)));
+        }
+    }
     Some(collapse_strip::strip(
         "task-bar",
         open,

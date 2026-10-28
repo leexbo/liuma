@@ -40,6 +40,10 @@ misc:
     zh-CN: "已结束"
     en: "Ended"
 
+  settled_n:
+    zh-CN: "已结束 %{n}"
+    en: "Ended · %{n}"
+
   mainline:
     zh-CN: "主线"
     en: "Main"
