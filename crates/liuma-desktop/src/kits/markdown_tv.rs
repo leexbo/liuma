@@ -19,13 +19,13 @@ use gpui_kit::{
 };
 
 /// 正文排版(手调渲染器指标,双盘):
-/// 正文 14px/1.75、标题同字号加粗、块距 8px、代码块 12px/主题底。
+/// 正文 13.6px/1.75、标题同字号加粗、块距 8px、代码块 12px/主题底。
 /// TextView 的正文字号/行高/颜色走继承,由外层包装承担;标题/间距/
 /// 代码块经 [`TextViewStyle`] 调
 fn styled_view(view: TextView) -> gpui_kit::AnyElement {
     div()
         .w_full()
-        .text_size(px(14.))
+        .text_size(px(13.6))
         .line_height(relative(1.75))
         // 宽度只靠 w_full 传导(assistant_block 已显式确定宽,锚链完好:
         // 探针实测 asst-body = tv-body = col_w)。**不设 overflow_hidden、
@@ -47,7 +47,7 @@ fn view_style(cx: &App) -> TextViewStyle {
     TextViewStyle {
         // 块距 16(旧值 8 过密)
         paragraph_gap: gpui_kit::rems(1.),
-        heading_base_font_size: px(14.),
+        heading_base_font_size: px(13.6),
         // 标题与正文同字号,仅粗细区分(多级字号混排显「大大小小」)
         heading_font_size: Some(std::sync::Arc::new(|_level: u8, base| base)),
         // 代码块字号 13;配色全部走 theme 派生默认(不另行改色)

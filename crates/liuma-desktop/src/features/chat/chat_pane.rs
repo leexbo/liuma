@@ -307,7 +307,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         };
         let anim_key = slot_key_for_anim(slot, st.current_nodes());
         let el = enter_anim(el, &anim_key, st.current_chat());
-        // 行距(参照流的 top-margin 节奏,折进上内边距):
+        // 行距(折进上内边距):
         // 过程行 6px、助手正文前后 12px、轮控制行前 16px(其下自带发丝
         // 分隔线),其余行沿用 8/8。组座位自身不带下边距(body 自带 mt)
         let (row_pt, row_pb) = match slot {
@@ -1663,8 +1663,8 @@ const SEAT_BODY_MAX_H: f32 = 400.;
 
 /// 轮控制行(「已完成，用时 X」/「已停止」/「处理失败」)。
 ///
-/// 参照流的轮级折叠入口:一行 33px、下缘 0.5px 发丝线、右缘 chevron
-/// 随开合旋转;正常完成轮点它展开过程(默认收拢),中断/错误轮不可收
+/// 轮级折叠入口:一行 33px、下缘 0.5px 发丝线、右缘 chevron 随开合
+/// 旋转;正常完成轮点它展开过程(默认收拢),中断/错误轮不可收
 /// (过程恒在,结局由「已停止」/错误行自己交代)。
 #[allow(clippy::too_many_arguments)]
 fn turn_head_row(
@@ -1719,7 +1719,7 @@ fn turn_head_row(
         .pb(px(8.))
         .border_b(px(0.5))
         .border_color(theme::border(cx))
-        .text_size(px(14.))
+        .text_size(px(13.6))
         .text_color(theme::label_3(cx))
         .when(foldable, |el| {
             el.cursor_pointer()
@@ -1740,8 +1740,8 @@ fn turn_head_row(
 /// - 未收口的运行(直播尾段):组头 = 「正在运行命令 · 动态详情」(归类
 ///   标签 + 运行中工具参数详情,无运行工具回退思考摘要),扫光;
 /// - 已收口的运行:组头 = 分类并词(「执行了命令」/「执行了命令并已读取
-///   文件」/«已读取文件，已搜索代码，执行了命令等»),与参照流同字号同色;
-/// - **默认收拢成一行组头**(参照流:组不铺开成员);点组头展开 → 限高
+///   文件」/«已读取文件，已搜索代码，执行了命令等»);
+/// - **默认收拢成一行组头**;点组头展开 → 限高
 ///   `min(400px, 50vh)` 内滚 + 顶/底 24px 渐隐(直播尾段贴底跟随);
 ///   成员行 gap 6,零高节点跳过。
 #[allow(clippy::too_many_arguments)]
@@ -1770,7 +1770,7 @@ fn group_seat(
         let st = store.read(cx);
         let categories = group_categories(st.current_nodes(), first, last);
         let label = process_title(&categories);
-        // 图标口径与参照实现一致:分类首项,无工具(只有思考)时回退
+        // 图标取分类首项,无工具(只有思考)时回退
         // thinking——**不能**换别的图标,否则同一活动在直播/收口两态下
         // 会长得不一样
         let activity = categories
@@ -1791,10 +1791,10 @@ fn group_seat(
         .gap(px(6.))
         .cursor_pointer()
         .group(grp.clone())
-        .text_size(px(14.))
+        .text_size(px(13.6))
         .text_color(theme::label_3(cx))
         .group_hover(grp.clone(), |s| s.text_color(theme::label_2(cx)))
-        // 展开态组头下留 8px(参照实现 padding-bottom: 8px)
+        // 展开态组头下留 8px
         .when(open, |el| el.pb(px(8.)))
         .debug_selector(move || sel.clone())
         .child(leading_swap_box(&grp, icon, open, cx))
@@ -1817,7 +1817,7 @@ fn group_seat(
         });
     let mut seat = div().w(col_w).v_flex();
     seat = seat.child(header);
-    // 收拢 = 只有组头(参照流默认形态);展开才建组体
+    // 收拢 = 只有组头;展开才建组体
     if !open {
         return seat;
     }
@@ -2332,7 +2332,7 @@ fn user_bubble(
                 .bg(theme::bubble(cx))
                 .px(px(16.))
                 .py(px(10.))
-                .text_size(px(14.))
+                .text_size(px(13.6))
                 .text_color(theme::label(cx))
                 // 统一行高 = 1.5(24px @16px 同比例):
                 // 文本 div 不再继承 gpui 默认 phi()(1.618→22.5px),避免
@@ -4632,7 +4632,7 @@ fn pending_bubble(
                 .bg(theme::bubble(cx))
                 .px(px(16.))
                 .py(px(10.))
-                .text_size(px(14.))
+                .text_size(px(13.6))
                 .text_color(theme::label(cx))
                 .line_height(relative(1.5))
                 .v_flex()
