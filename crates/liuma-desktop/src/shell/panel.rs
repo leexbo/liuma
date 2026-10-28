@@ -160,7 +160,7 @@ pub fn render(store: &Entity<AppStore>, window: &mut Window, cx: &mut App) -> im
         return div().into_any_element();
     }
     // 快捷键徽标文案从键表生成(单一事实源,不手写;未绑定时回落 action 名)
-    let shortcut = window.keystroke_text_for(&OpenPanelPlan);
+    let shortcut = window.keystroke_text_for(&OpenPanelPlan, cx);
     let (s_resize, s_resize_move) = (store.clone(), store.clone());
     let mut col = div()
         .debug_selector(|| "right-panel".to_string())
@@ -289,7 +289,7 @@ fn panel_header(
                 .content({
                     let store = store.clone();
                     move |_, window, cx| {
-                        let shortcut = window.keystroke_text_for(&OpenPanelPlan);
+                        let shortcut = window.keystroke_text_for(&OpenPanelPlan, cx);
                         let pop = cx.entity();
                         plus_menu_card(&store, pop, shortcut, cx).into_any_element()
                     }

@@ -7636,7 +7636,7 @@ fn finalized_nodes_do_not_retain_duplicate_bodies(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn trajectory_wheel_scroll_does_not_reenter_list_state(cx: &mut TestAppContext) {
     use crate::features::trajectory::TrajectoryView;
-    use gpui_kit::{ScrollDelta, ScrollWheelEvent};
+    use gpui_kit::{ScrollDelta, ScrollEvent};
     use liuma_core::trajectory::TrajectoryRecord;
 
     let (store, mut wcx, root) = menu_harness(cx, "traj-wheel");
@@ -7705,7 +7705,7 @@ fn trajectory_wheel_scroll_does_not_reenter_list_state(cx: &mut TestAppContext) 
     );
     let wheel = |wcx: &mut gpui_kit::VisualTestContext, dy: f32| {
         // 崩溃点:handler 里回读 ListState 时此调用直接 panic
-        wcx.simulate_event(ScrollWheelEvent {
+        wcx.simulate_event(ScrollEvent {
             position: center,
             delta: ScrollDelta::Pixels(gpui_kit::point(px(0.), px(dy))),
             ..Default::default()
@@ -7977,7 +7977,7 @@ fn trajectory_paging_is_not_self_triggered(cx: &mut TestAppContext) {
         bounds.origin.x + bounds.size.width / 2.,
         bounds.origin.y + bounds.size.height / 2.,
     );
-    wcx.simulate_event(gpui_kit::ScrollWheelEvent {
+    wcx.simulate_event(gpui_kit::ScrollEvent {
         position: center,
         // 负 delta = 向下滚(离开顶部)
         delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-20.))),
@@ -11467,7 +11467,7 @@ fn ws_menu_single_workspace_items(cx: &mut TestAppContext) {
 /// 保留位移、可继续上滚、下滚甩底恢复钉底。
 #[gpui_kit::test]
 fn chat_scroll_survives_window_width_change(cx: &mut TestAppContext) {
-    use gpui_kit::{ScrollDelta, ScrollWheelEvent, size};
+    use gpui_kit::{ScrollDelta, ScrollEvent, size};
     cx.update(|app| {
         gpui_kit::component::init(app);
         theme::init(app);
@@ -11583,7 +11583,7 @@ fn chat_scroll_survives_window_width_change(cx: &mut TestAppContext) {
             cc.origin.x + cc.size.width / 2.,
             cc.origin.y + cc.size.height / 2.,
         );
-        wcx.simulate_event(ScrollWheelEvent {
+        wcx.simulate_event(ScrollEvent {
             position: p,
             delta: ScrollDelta::Pixels(gpui_kit::point(px(0.), px(dy))),
             ..Default::default()
@@ -14650,7 +14650,7 @@ fn real_log_full_load_direct_anchor_and_stable_scrollbar(cx: &mut TestAppContext
 /// at_bottom() 双保险(初排瞬态 is_following_tail=false 不得误显)。
 #[gpui_kit::test]
 fn back_to_bottom_button_tracks_scroll(cx: &mut TestAppContext) {
-    use gpui_kit::{ScrollDelta, ScrollWheelEvent};
+    use gpui_kit::{ScrollDelta, ScrollEvent};
     cx.update(|app| {
         gpui_kit::component::init(app);
         theme::init(app);
@@ -14716,7 +14716,7 @@ fn back_to_bottom_button_tracks_scroll(cx: &mut TestAppContext) {
         let cc = wcx
             .debug_bounds("content-card")
             .expect("content-card bounds 缺失");
-        wcx.simulate_event(ScrollWheelEvent {
+        wcx.simulate_event(ScrollEvent {
             position: gpui_kit::point(
                 cc.origin.x + cc.size.width / 2.,
                 cc.origin.y + cc.size.height / 2.,

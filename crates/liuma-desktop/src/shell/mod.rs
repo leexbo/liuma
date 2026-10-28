@@ -49,15 +49,19 @@ pub(crate) fn tip(
     }
 }
 
-/// 平台主修饰键名(macOS = `cmd`;Windows/Linux = `ctrl`)。
+/// 平台主修饰键名(macOS = `cmd`;Windows/Linux = `ctrl`)。测试模拟键序用
+/// (`layout_tests` 经 `use super::*` 取用);生产绑定改走 `secondary-`
+/// 别名,由 gpui 按宿主 OS 解析,见 [`bind_global_keys`]。
 ///
 /// gpui **不做**归一:`Keystroke::parse("cmd-…")` 恒设 `modifiers.platform`
 /// (非 macOS 上那是 Win 键),而输入框自身绑定在非 macOS 上是 `ctrl-*`
 /// (gpui-base `input/base/state.rs`),`Modifiers::secondary_key()` 也把非
 /// macOS 映射到 `control` —— 字面写 `cmd-` 的绑定在 Windows 上永不命中。
+#[cfg(test)]
 #[cfg(target_os = "macos")]
 pub(crate) const SECONDARY_MOD: &str = "cmd";
 /// 非 macOS:主修饰键是 Ctrl(见上)
+#[cfg(test)]
 #[cfg(not(target_os = "macos"))]
 pub(crate) const SECONDARY_MOD: &str = "ctrl";
 
@@ -75,13 +79,20 @@ pub(crate) fn secondary_modifier_pressed(modifiers: gpui_kit::Modifiers) -> bool
 }
 
 pub fn bind_global_keys(cx: &mut App) {
-    // 面板计划快捷键 = ⇧⌘P / ⇧Ctrl+P(修饰键按平台取,见 [`SECONDARY_MOD`])
-    let shortcut = format!("shift-{SECONDARY_MOD}-p");
-    cx.bind_keys([gpui_kit::KeyBinding::new(
-        &shortcut,
-        panel::OpenPanelPlan,
+    // 面板计划快捷键 = ⇧⌘P / ⇧Ctrl+P。`secondary-` 由 gpui 按宿主 OS 解析
+    // (macOS = Cmd,Windows/Linux = Ctrl,语义同 [`SECONDARY_MOD`]);
+    // `KeyBinding::new` 只收静态串,动态键序统一走 `load`(需 cx)。
+    #[allow(clippy::expect_used)]
+    let binding = gpui_kit::KeyBinding::load(
+        "shift-secondary-p",
+        Box::new(panel::OpenPanelPlan),
         None,
-    )]);
+        false,
+        None,
+        cx,
+    )
+    .expect("固定字面量 shift-secondary-p 语法合法,恒可解析");
+    cx.bind_keys([binding]);
 }
 
 /// 拖选实时刷新驱动器。

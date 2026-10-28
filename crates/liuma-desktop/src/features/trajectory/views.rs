@@ -17,7 +17,7 @@ use gpui_kit::component::{Icon, IconName, Sizable as _, StyledExt};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Bounds, CursorStyle, Div, Entity, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Rgba, ScrollWheelEvent,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Rgba, ScrollEvent,
     StatefulInteractiveElement, Styled, Window, div, px,
 };
 use liuma_core::trajectory::{TrajectoryRecord, TrajectoryRequest, TrajectoryUsage};
@@ -1839,7 +1839,7 @@ fn timeline(
                 right_store.update(cx, |st, cx| st.set_timeline_selection(None, cx));
             }
         })
-        .on_scroll_wheel(move |ev: &ScrollWheelEvent, _, cx| {
+        .on_scroll(move |ev: &ScrollEvent, _, cx| {
             // 滚轮缩放:光标锚点,domain × exp(ΔY×0.0015),下限 4 操作
             let Some(b) = wheel_bounds.get() else { return };
             let w = f32::from(b.size.width).max(1.) as f64;

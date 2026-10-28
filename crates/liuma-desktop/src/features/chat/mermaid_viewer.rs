@@ -17,7 +17,7 @@
 //! 免光栅)算 contain 倍数回写;**滚轮一律缩放**且**视口中心锚定**(缩放
 //! 前后中心指向同一图点,见 `store::set_mermaid_zoom`);**拖拽平移**
 //! 双向钳制 [0, 整图−视口]。画布不设内建 overflow scroll——滚轮专用于
-//! 缩放(自定义 `on_scroll_wheel` 已 `stop_propagation`,内建 scroll
+//! 缩放(自定义 `on_scroll` 已 `stop_propagation`,内建 scroll
 //! offset 不监听它,但双通道仍会抢事件)。
 
 use gpui_kit::InteractiveElement;
@@ -283,7 +283,7 @@ fn chart_view(
                 store.update(cx, |s, cx| s.set_mermaid_drag(None, cx));
             }
         })
-        .on_scroll_wheel({
+        .on_scroll({
             let wheel_store = store.clone();
             move |ev, _window, cx| {
                 let dy = match ev.delta {

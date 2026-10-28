@@ -24,8 +24,8 @@ use gpui_kit::component::{IconName, Sizable};
 use gpui_kit::{
     App, Bounds, Entity, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, ScrollDelta,
-    ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _, StyledText,
-    Window, div, px,
+    ScrollEvent, SharedString, StatefulInteractiveElement as _, Styled as _, StyledText, Window,
+    div, px,
 };
 
 use crate::features::terminal::palette::{
@@ -230,9 +230,9 @@ pub(crate) fn render(
         })
         // 滚轮:行增量为历史方向(alt-screen 时 Term 自理);Pixels 态
         // 按单元格高折算
-        .on_scroll_wheel({
+        .on_scroll({
             let s = store.clone();
-            move |ev: &ScrollWheelEvent, _window: &mut Window, cx: &mut App| {
+            move |ev: &ScrollEvent, _window: &mut Window, cx: &mut App| {
                 let lines = match ev.delta {
                     ScrollDelta::Lines(p) => (p.y * 3.).round() as i32,
                     ScrollDelta::Pixels(p) => {

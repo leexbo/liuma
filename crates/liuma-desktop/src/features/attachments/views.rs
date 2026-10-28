@@ -108,7 +108,7 @@ pub fn draft_rail(store: &Entity<AppStore>, cx: &App) -> impl IntoElement {
                         .overflow_hidden()
                         .overflow_x_scroll()
                         .track_scroll(&st.attachments.scroll_handle)
-                        .on_scroll_wheel(move |event, window, cx| {
+                        .on_scroll(move |event, window, cx| {
                             // 轨道上滚轮独占消费(背后的
                             // 会话列表不得跟滚),纵向滚轮横移。gpui 的
                             // 内部滚动监听注册在前、本回调在后,Bubble 相

@@ -507,7 +507,7 @@ impl AppStore {
 
     /// 装台账滚动回调(list 生命期只装一次)。
     ///
-    /// 用 list 的 `set_scroll_handler` 而非包裹层 `on_scroll_wheel`:滚轮、
+    /// 用 list 的 `set_scroll_handler` 而非包裹层 `on_scroll`:滚轮、
     /// 触控板、滚动条拖拽三者都触发,且回调在滚动时机(窗口/handler 齐备)
     /// 内跑。回调闭包持 store 实体(与既有 `tv_subs` 订阅同类,生命期 = 应用)。
     ///
