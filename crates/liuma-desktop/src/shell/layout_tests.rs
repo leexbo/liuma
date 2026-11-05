@@ -2591,9 +2591,11 @@ macro_rules! rail_settle {
                     st.attachments.scroll_handle.offset().x.as_f32(),
                 )
             });
-            // 弹簧步进用 Instant::now() 真实时钟(executor 假时钟管不
-            // 着),必须喂真实时间;预算须远大于弹簧收敛(~0.6s)
-            std::thread::sleep(std::time::Duration::from_millis(120));
+            // 弹簧步进读执行器时钟(gpui-pre 0.3.11 起 Animation 不再读
+            // Instant::now(),墙钟睡眠管不着),推进测试时钟喂帧;预算须
+            // 远大于弹簧收敛(~0.6s)
+            $cx.executor()
+                .advance_clock(std::time::Duration::from_millis(120));
             $wcx.refresh().expect("刷新失败");
             $cx.run_until_parked();
             $wcx.refresh().expect("刷新失败");
