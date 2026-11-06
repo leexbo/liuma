@@ -105,6 +105,9 @@ fn main() {
             // 必须先于任何 gpui-component 组件使用(gpui_kit::init 按
             // feature 转发 component::init,官方入口形态)
             gpui_kit::init(cx);
+            // 图标解析器接管(folder-open/wrench 全局改道自有变体;
+            // 先于任何窗口绘制)
+            kits::icons::install_icon_resolver(cx);
             // 界面语言:开窗前读持久化档位(缺省 zh;切换 = 设置页,
             // 经 i18n::apply 全窗即时生效)——先于任何窗口文案渲染
             kits::i18n::init(&bridge.host().language());

@@ -1,9 +1,10 @@
 //! 自定义图标与资产合并。
 //!
-//! gpui-component 0.5.1 未内置的 lucide 图标(ISC,
-//! `assets/icons/` 下 24x24 stroke 图;图标集已定格)经 [`LiumaIcon`] + [`IconNamed`]
-//! 提供;资产经 [`MergedAssets`](自有 include_bytes! 静态表优先,
-//! miss 回落 gpui-component 内置),零新增依赖。
+//! [`LiumaIcon`] 提供上游缺名与刻意变体(自有 include_bytes! 静态表
+//! [`LIUMA_ICONS`]);与上游 lucide 同名同形者不再本地抄份,直接取
+//! gpui-kit 内嵌全量 lucide 资产(0.9.0 起)。[`install_icon_resolver`]
+//! 把 [`LIUMA_OVERRIDES`] 两个形制级变体接管为全局改道(IconName 与
+//! LiumaIcon 两条入口同一枚),资产经 [`MergedAssets`] 合并,零新增依赖。
 //!
 //! 尺寸纪律:0.5.1 的 `with_size` 经 render 链恒覆盖
 //! em 回退,独立渲染的 Icon 尺寸确定性成立;但宿主组件(Button/
@@ -14,7 +15,39 @@ use gpui_kit::component::{Icon, IconName, IconNamed, Sizable};
 use gpui_kit::{AssetSource, Result, SharedString, px};
 use std::borrow::Cow;
 
-/// liuma 自有图标(仅内置 [`IconName`] 缺失者;内置的直接用 `IconName::X`)
+/// 必须走自有内嵌资产的名字:上游 lucide 集没有的名字(自研/
+/// duotone 16 网格族),加 [`LIUMA_OVERRIDES`] 里两个刻意不同形的
+/// 变体(folder-open 填充 16 网格、wrench 细描边)。其余枚举变体
+/// 与上游同名同形,直接引用上游内嵌资产
+const LIUMA_ONLY: &[&str] = &[
+    "agent-preset",
+    "circle-help",
+    "command-prompt",
+    "decision",
+    "folder-close",
+    "folder-open",
+    "hook",
+    "loader-ring",
+    "logo",
+    "mcp",
+    "new-chat",
+    "personalization",
+    "project-add",
+    "search-outline",
+    "think",
+    "trace",
+    "wrench",
+];
+
+/// 解析器接管清单:上游同名路径全局改道自有变体。仅两枚,皆
+/// 形制级差异(非 lucide 版本漂移):`folder-open` = 16 网格填充
+/// 双色调(侧栏族),上游为 24 网格描边;`wrench` = 1.8 细描边
+/// (12px 行内尺寸与界面笔画同量级),上游 2.0。经 resolver 改道
+/// 后,IconName 与 LiumaIcon 两条入口画出同一枚
+pub const LIUMA_OVERRIDES: &[&str] = &["folder-open", "wrench"];
+
+/// liuma 图标:上游缺名或刻意变体走自有资产,同名同形直接取上游
+/// (上游清单见 [`LIUMA_ONLY`];解析器接管见 [`LIUMA_OVERRIDES`])
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LiumaIcon {
     /// preset `standard` 徽章 / 未注册工具兜底
@@ -81,9 +114,8 @@ pub enum LiumaIcon {
     Wrench,
     /// 附件入口(输入卡底排独立钮)
     Paperclip,
-    /// token 用量(statusbar chip/详情卡、聊天尾部用量 pill;database.svg,
-    /// lucide 同源。组件默认集不含——gpui_kit::assets 全目录变体在本应用
-    /// 静默空白,见 liuma-icon-asset 教训)
+    /// token 用量(statusbar chip/详情卡、聊天尾部用量 pill;lucide
+    /// 同源,经 [`MergedAssets`] 全量目录回落加载)
     Database,
     // ── 文件类型族(lucide;组件默认 101 图标集缺,自有内嵌)──
     /// 文件树标签/目录树
@@ -224,215 +256,67 @@ impl IconNamed for LiumaIcon {
             Self::Think => "think",
             Self::LoaderRing => "loader-ring",
         };
-        format!("icons/_liuma/{name}.svg").into()
+        // 自研变体(上游无此名,或刻意不同形——见 [`LIUMA_OVERRIDES`])
+        // 走 `icons/_liuma/`;其余与上游 lucide 同源同名,直接取上游
+        // 内嵌资产(0.9.0 起全量 lucide 随包,不再本地抄一份)
+        if LIUMA_ONLY.contains(&name) {
+            format!("icons/_liuma/{name}.svg").into()
+        } else {
+            format!("icons/{name}.svg").into()
+        }
     }
 }
 
-/// 合并资产源:liuma 自有图标(编译期内嵌)优先,其余回落
-/// gpui-component 内置资产(86 个 IconName SVG)
+/// 合并资产源:liuma 自有图标(编译期内嵌,见 [`LIUMA_ICONS`])优先,
+/// 其余回落 gpui-kit 内置资产(全量 lucide)
 pub struct MergedAssets;
 
-/// 自有图标静态表(路径 ↔ SVG 字节,与 [`LiumaIcon::path`] 一一对应)
+/// 自有图标静态表(路径 ↔ SVG 字节):仅上游缺名与刻意变体
+/// ([`LIUMA_ONLY`]);同名同形者已迁移上游内嵌资产,不再本地抄份
 const LIUMA_ICONS: &[(&str, &[u8])] = &[
     (
-        "icons/_liuma/sparkles.svg",
-        include_bytes!("../../assets/icons/sparkles.svg"),
-    ),
-    (
-        "icons/_liuma/zap.svg",
-        include_bytes!("../../assets/icons/zap.svg"),
-    ),
-    (
-        "icons/_liuma/brain.svg",
-        include_bytes!("../../assets/icons/brain.svg"),
-    ),
-    (
-        "icons/_liuma/gauge.svg",
-        include_bytes!("../../assets/icons/gauge.svg"),
-    ),
-    (
-        "icons/_liuma/shield.svg",
-        include_bytes!("../../assets/icons/shield.svg"),
-    ),
-    (
-        "icons/_liuma/shield-alert.svg",
-        include_bytes!("../../assets/icons/shield-alert.svg"),
-    ),
-    (
-        "icons/_liuma/shield-check.svg",
-        include_bytes!("../../assets/icons/shield-check.svg"),
-    ),
-    (
-        "icons/_liuma/file-pen.svg",
-        include_bytes!("../../assets/icons/file-pen.svg"),
-    ),
-    (
-        "icons/_liuma/pin.svg",
-        include_bytes!("../../assets/icons/pin.svg"),
-    ),
-    (
-        "icons/_liuma/pin-off.svg",
-        include_bytes!("../../assets/icons/pin-off.svg"),
-    ),
-    (
-        "icons/_liuma/settings.svg",
-        include_bytes!("../../assets/icons/settings.svg"),
-    ),
-    (
-        "icons/_liuma/git-branch.svg",
-        include_bytes!("../../assets/icons/git-branch.svg"),
-    ),
-    (
-        "icons/_liuma/archive.svg",
-        include_bytes!("../../assets/icons/archive.svg"),
-    ),
-    (
-        "icons/_liuma/archive-restore.svg",
-        include_bytes!("../../assets/icons/archive-restore.svg"),
-    ),
-    (
-        "icons/_liuma/trash.svg",
-        include_bytes!("../../assets/icons/trash.svg"),
-    ),
-    (
-        "icons/_liuma/list-checks.svg",
-        include_bytes!("../../assets/icons/list-checks.svg"),
-    ),
-    (
-        "icons/_liuma/message-circle.svg",
-        include_bytes!("../../assets/icons/message-circle.svg"),
-    ),
-    (
-        "icons/_liuma/logo.svg",
-        include_bytes!("../../assets/logo.svg"),
-    ),
-    (
-        "icons/_liuma/download.svg",
-        include_bytes!("../../assets/icons/download.svg"),
-    ),
-    (
-        "icons/_liuma/clock.svg",
-        include_bytes!("../../assets/icons/clock.svg"),
-    ),
-    (
-        "icons/_liuma/code.svg",
-        include_bytes!("../../assets/icons/code.svg"),
+        "icons/_liuma/agent-preset.svg",
+        include_bytes!("../../assets/icons/agent-preset.svg"),
     ),
     (
         "icons/_liuma/circle-help.svg",
         include_bytes!("../../assets/icons/circle-help.svg"),
     ),
     (
-        "icons/_liuma/target.svg",
-        include_bytes!("../../assets/icons/target.svg"),
+        "icons/_liuma/command-prompt.svg",
+        include_bytes!("../../assets/icons/command-prompt.svg"),
     ),
     (
-        "icons/_liuma/briefcase.svg",
-        include_bytes!("../../assets/icons/briefcase.svg"),
+        "icons/_liuma/decision.svg",
+        include_bytes!("../../assets/icons/decision.svg"),
     ),
     (
-        "icons/_liuma/workflow.svg",
-        include_bytes!("../../assets/icons/workflow.svg"),
+        "icons/_liuma/folder-close.svg",
+        include_bytes!("../../assets/icons/folder-close.svg"),
     ),
     (
-        "icons/_liuma/infinity.svg",
-        include_bytes!("../../assets/icons/infinity.svg"),
+        "icons/_liuma/folder-open.svg",
+        include_bytes!("../../assets/icons/folder-open.svg"),
     ),
     (
-        "icons/_liuma/monitor.svg",
-        include_bytes!("../../assets/icons/monitor.svg"),
+        "icons/_liuma/hook.svg",
+        include_bytes!("../../assets/icons/hook.svg"),
     ),
     (
-        "icons/_liuma/agent-preset.svg",
-        include_bytes!("../../assets/icons/agent-preset.svg"),
+        "icons/_liuma/loader-ring.svg",
+        include_bytes!("../../assets/icons/loader-ring.svg"),
     ),
     (
-        "icons/_liuma/refresh-cw.svg",
-        include_bytes!("../../assets/icons/refresh-cw.svg"),
+        "icons/_liuma/logo.svg",
+        include_bytes!("../../assets/logo.svg"),
     ),
     (
-        "icons/_liuma/wrench.svg",
-        include_bytes!("../../assets/icons/wrench.svg"),
+        "icons/_liuma/mcp.svg",
+        include_bytes!("../../assets/icons/mcp.svg"),
     ),
     (
-        "icons/_liuma/paperclip.svg",
-        include_bytes!("../../assets/icons/paperclip.svg"),
-    ),
-    (
-        "icons/_liuma/database.svg",
-        include_bytes!("../../assets/icons/database.svg"),
-    ),
-    (
-        "icons/_liuma/folder-tree.svg",
-        include_bytes!("../../assets/icons/folder-tree.svg"),
-    ),
-    (
-        "icons/_liuma/file-image.svg",
-        include_bytes!("../../assets/icons/file-image.svg"),
-    ),
-    (
-        "icons/_liuma/file-code.svg",
-        include_bytes!("../../assets/icons/file-code.svg"),
-    ),
-    (
-        "icons/_liuma/file-archive.svg",
-        include_bytes!("../../assets/icons/file-archive.svg"),
-    ),
-    (
-        "icons/_liuma/file-braces.svg",
-        include_bytes!("../../assets/icons/file-braces.svg"),
-    ),
-    (
-        "icons/_liuma/file-cog.svg",
-        include_bytes!("../../assets/icons/file-cog.svg"),
-    ),
-    (
-        "icons/_liuma/file-diff.svg",
-        include_bytes!("../../assets/icons/file-diff.svg"),
-    ),
-    (
-        "icons/_liuma/file-key.svg",
-        include_bytes!("../../assets/icons/file-key.svg"),
-    ),
-    (
-        "icons/_liuma/file-lock.svg",
-        include_bytes!("../../assets/icons/file-lock.svg"),
-    ),
-    (
-        "icons/_liuma/file-terminal.svg",
-        include_bytes!("../../assets/icons/file-terminal.svg"),
-    ),
-    (
-        "icons/_liuma/file-spreadsheet.svg",
-        include_bytes!("../../assets/icons/file-spreadsheet.svg"),
-    ),
-    (
-        "icons/_liuma/file-video-camera.svg",
-        include_bytes!("../../assets/icons/file-video-camera.svg"),
-    ),
-    (
-        "icons/_liuma/file-volume.svg",
-        include_bytes!("../../assets/icons/file-volume.svg"),
-    ),
-    (
-        "icons/_liuma/file-symlink.svg",
-        include_bytes!("../../assets/icons/file-symlink.svg"),
-    ),
-    (
-        "icons/_liuma/file-chart-column.svg",
-        include_bytes!("../../assets/icons/file-chart-column.svg"),
-    ),
-    (
-        "icons/_liuma/file-type.svg",
-        include_bytes!("../../assets/icons/file-type.svg"),
-    ),
-    (
-        "icons/_liuma/text-wrap.svg",
-        include_bytes!("../../assets/icons/text-wrap.svg"),
-    ),
-    (
-        "icons/_liuma/search-outline.svg",
-        include_bytes!("../../assets/icons/search-outline.svg"),
+        "icons/_liuma/new-chat.svg",
+        include_bytes!("../../assets/icons/new-chat.svg"),
     ),
     (
         "icons/_liuma/personalization.svg",
@@ -443,52 +327,20 @@ const LIUMA_ICONS: &[(&str, &[u8])] = &[
         include_bytes!("../../assets/icons/project-add.svg"),
     ),
     (
-        "icons/_liuma/new-chat.svg",
-        include_bytes!("../../assets/icons/new-chat.svg"),
-    ),
-    (
-        "icons/_liuma/folder-open.svg",
-        include_bytes!("../../assets/icons/folder-open.svg"),
-    ),
-    (
-        "icons/_liuma/folder-close.svg",
-        include_bytes!("../../assets/icons/folder-close.svg"),
-    ),
-    (
-        "icons/_liuma/trace.svg",
-        include_bytes!("../../assets/icons/trace.svg"),
-    ),
-    (
-        "icons/_liuma/mcp.svg",
-        include_bytes!("../../assets/icons/mcp.svg"),
-    ),
-    (
-        "icons/_liuma/decision.svg",
-        include_bytes!("../../assets/icons/decision.svg"),
-    ),
-    (
-        "icons/_liuma/hook.svg",
-        include_bytes!("../../assets/icons/hook.svg"),
-    ),
-    (
-        "icons/_liuma/box.svg",
-        include_bytes!("../../assets/icons/box.svg"),
-    ),
-    (
-        "icons/_liuma/sliders-horizontal.svg",
-        include_bytes!("../../assets/icons/sliders-horizontal.svg"),
-    ),
-    (
-        "icons/_liuma/command-prompt.svg",
-        include_bytes!("../../assets/icons/command-prompt.svg"),
+        "icons/_liuma/search-outline.svg",
+        include_bytes!("../../assets/icons/search-outline.svg"),
     ),
     (
         "icons/_liuma/think.svg",
         include_bytes!("../../assets/icons/think.svg"),
     ),
     (
-        "icons/_liuma/loader-ring.svg",
-        include_bytes!("../../assets/icons/loader-ring.svg"),
+        "icons/_liuma/trace.svg",
+        include_bytes!("../../assets/icons/trace.svg"),
+    ),
+    (
+        "icons/_liuma/wrench.svg",
+        include_bytes!("../../assets/icons/wrench.svg"),
     ),
 ];
 
@@ -497,11 +349,11 @@ impl AssetSource for MergedAssets {
         if let Some((_, data)) = LIUMA_ICONS.iter().find(|(p, _)| *p == path) {
             return Ok(Some(Cow::Borrowed(data)));
         }
-        gpui_kit::assets::Assets.load(path)
+        gpui_kit::assets::AllAssets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        let mut out = gpui_kit::assets::Assets.list(path)?;
+        let mut out = gpui_kit::assets::AllAssets.list(path)?;
         out.extend(
             LIUMA_ICONS
                 .iter()
@@ -510,6 +362,21 @@ impl AssetSource for MergedAssets {
         );
         Ok(out)
     }
+}
+
+/// 安装图标路径解析器(应用启动、`gpui_kit::init` 后调用一次):
+/// [`LIUMA_OVERRIDES`] 清单内的上游路径全局改道自有变体——`Icon::new`
+/// 与任何裸路径绘制(含组件库内部图标)统一画 liuma 形;其余路径
+/// 原样放行(每帧绘制期调用,须保持 O(清单) 级廉价)
+pub fn install_icon_resolver(cx: &mut gpui_kit::App) {
+    gpui_kit::component::set_icon_resolver(cx, |path, _| {
+        let name = path
+            .strip_prefix("icons/")
+            .and_then(|rest| rest.strip_suffix(".svg"))?;
+        LIUMA_OVERRIDES
+            .contains(&name)
+            .then(|| SharedString::from(format!("icons/_liuma/{name}.svg")))
+    });
 }
 
 /// 定尺寸图标(独立渲染必经此处,见模块文档尺寸纪律)
@@ -661,12 +528,23 @@ mod tests {
         ];
         for icon in ALL {
             let p = icon.path();
-            assert!(
-                LIUMA_ICONS
-                    .iter()
-                    .any(|(ep, data)| p == *ep && !data.is_empty()),
-                "{icon:?} path {p:?} 未在 LIUMA_ICONS 静态表或内容为空"
-            );
+            if p.starts_with("icons/_liuma/") {
+                // 自研路径:必须在静态表内且字节非空(防加变体忘加 SVG)
+                assert!(
+                    LIUMA_ICONS
+                        .iter()
+                        .any(|(ep, data)| p == *ep && !data.is_empty()),
+                    "{icon:?} path {p:?} 未在 LIUMA_ICONS 静态表或内容为空"
+                );
+            } else {
+                // 上游同源路径:必须能从 gpui-kit 全量内嵌资产加载
+                // (防上游改名后枚举悬空指向空白)
+                let hit = gpui_kit::assets::AllAssets
+                    .load(&p)
+                    .expect("上游资产查询不应失败")
+                    .is_some_and(|d| !d.is_empty());
+                assert!(hit, "{icon:?} path {p:?} 在上游内嵌资产中不存在");
+            }
         }
         // 反向:静态表条目也应对得上某个枚举变体(防残留孤儿资产)
         for (ep, _) in LIUMA_ICONS {
@@ -675,6 +553,47 @@ mod tests {
                 "静态表条目 {ep:?} 无对应枚举变体"
             );
         }
+        // 接管清单必须是自研名单的子集(改道目标必有自有字节),
+        // 且解析器确已生效(回归锁:IconName 路径全局画 liuma 形)
+        for name in LIUMA_OVERRIDES {
+            assert!(
+                LIUMA_ONLY.contains(name),
+                "接管项 {name} 不在 LIUMA_ONLY 自研名单内"
+            );
+        }
+    }
+
+    /// 解析器接管:清单内上游路径改道自有变体,其余原样放行;
+    /// 未安装时一切路径原样(测试壳不装 resolver,生产在 init 后装)
+    #[gpui_kit::test]
+    fn icon_resolver_redirects_only_overrides(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            assert_eq!(
+                gpui_kit::component::resolve_icon_path("icons/folder-open.svg".into(), cx),
+                "icons/folder-open.svg",
+                "未安装时路径应原样"
+            );
+            install_icon_resolver(cx);
+            assert_eq!(
+                gpui_kit::component::resolve_icon_path("icons/folder-open.svg".into(), cx),
+                "icons/_liuma/folder-open.svg",
+                "接管清单内路径应改道自有变体"
+            );
+            assert_eq!(
+                gpui_kit::component::resolve_icon_path("icons/wrench.svg".into(), cx),
+                "icons/_liuma/wrench.svg"
+            );
+            assert_eq!(
+                gpui_kit::component::resolve_icon_path("icons/archive.svg".into(), cx),
+                "icons/archive.svg",
+                "同源路径应原样放行"
+            );
+            assert_eq!(
+                gpui_kit::component::resolve_icon_path("icons/_liuma/logo.svg".into(), cx),
+                "icons/_liuma/logo.svg",
+                "自有路径不应二次改道"
+            );
+        });
     }
 
     /// 工具名映射:12 个 spec 工具 + web 遗留别名 + 兜底,逐条断言资产路径
@@ -688,29 +607,29 @@ mod tests {
                 "icons/_liuma/command-prompt.svg",
             ),
             ("file_read", "icons/book-open.svg"),
-            ("file_edit", "icons/_liuma/file-pen.svg"),
+            ("file_edit", "icons/file-pen.svg"),
             ("file_search", "icons/search.svg"),
-            ("todo_write", "icons/_liuma/list-checks.svg"),
-            ("exit_plan_mode", "icons/_liuma/list-checks.svg"),
-            ("goal", "icons/_liuma/target.svg"),
-            ("jobs", "icons/_liuma/briefcase.svg"),
-            ("workflow", "icons/_liuma/workflow.svg"),
-            ("ralph", "icons/_liuma/infinity.svg"),
-            ("present", "icons/_liuma/box.svg"),
+            ("todo_write", "icons/list-checks.svg"),
+            ("exit_plan_mode", "icons/list-checks.svg"),
+            ("goal", "icons/target.svg"),
+            ("jobs", "icons/briefcase.svg"),
+            ("workflow", "icons/workflow.svg"),
+            ("ralph", "icons/infinity.svg"),
+            ("present", "icons/box.svg"),
             ("subagent", "icons/bot.svg"),
             ("subagent_list", "icons/gallery-vertical-end.svg"),
             // 遗留/扩展别名
             ("read", "icons/book-open.svg"),
             ("web_fetch", "icons/book-open.svg"),
-            ("edit", "icons/_liuma/file-pen.svg"),
-            ("write", "icons/_liuma/file-pen.svg"),
+            ("edit", "icons/file-pen.svg"),
+            ("write", "icons/file-pen.svg"),
             ("grep", "icons/search.svg"),
             ("glob", "icons/search.svg"),
             ("web_search", "icons/globe.svg"),
             ("ask", "icons/_liuma/circle-help.svg"),
-            ("code", "icons/_liuma/code.svg"),
+            ("code", "icons/code.svg"),
             // 兜底
-            ("mystery-tool", "icons/_liuma/sparkles.svg"),
+            ("mystery-tool", "icons/sparkles.svg"),
         ];
         for (name, path) in expected {
             assert_eq!(tool_path(name).as_ref(), *path, "工具 {name} 图标映射不符");
@@ -721,13 +640,19 @@ mod tests {
     #[test]
     fn merged_assets_fallback() {
         let own = MergedAssets
-            .load("icons/_liuma/sparkles.svg")
+            .load("icons/sparkles.svg")
             .expect("自有图标应可加载");
         assert!(own.is_some());
         let builtin = MergedAssets
             .load("icons/arrow-up.svg")
             .expect("内置图标应经回落加载");
         assert!(builtin.is_some());
+        // 全量目录回落:组件默认 106 清单外的 lucide 图标也能加载
+        // (历史教训:默认源只嵌清单内文件,清单外静默空白)
+        let catalog = MergedAssets
+            .load("icons/sparkles.svg")
+            .expect("目录级图标应经 AllAssets 回落加载");
+        assert!(catalog.is_some());
         // list 合并两边
         let names = MergedAssets.list("icons/_liuma/").expect("list 不应失败");
         assert_eq!(names.len(), LIUMA_ICONS.len());
@@ -736,32 +661,20 @@ mod tests {
     /// 权限 / 模型两组语义映射 + trio 模式图标路径
     #[test]
     fn preset_permission_model_mapping() {
-        assert_eq!(
-            permission_path("read-only").as_ref(),
-            "icons/_liuma/shield.svg"
-        );
+        assert_eq!(permission_path("read-only").as_ref(), "icons/shield.svg");
         assert_eq!(
             permission_path("workspace-write").as_ref(),
-            "icons/_liuma/shield-check.svg"
+            "icons/shield-check.svg"
         );
         assert_eq!(
             permission_path("full-access").as_ref(),
-            "icons/_liuma/shield-alert.svg"
+            "icons/shield-alert.svg"
         );
 
-        assert_eq!(
-            model_path("gemini-2.5-flash").as_ref(),
-            "icons/_liuma/zap.svg"
-        );
-        assert_eq!(
-            model_path("deepseek-reasoner").as_ref(),
-            "icons/_liuma/brain.svg"
-        );
-        assert_eq!(
-            model_path("DeepSeek-V4-Pro").as_ref(),
-            "icons/_liuma/brain.svg"
-        );
-        assert_eq!(model_path("deepseek-v4").as_ref(), "icons/_liuma/gauge.svg");
+        assert_eq!(model_path("gemini-2.5-flash").as_ref(), "icons/zap.svg");
+        assert_eq!(model_path("deepseek-reasoner").as_ref(), "icons/brain.svg");
+        assert_eq!(model_path("DeepSeek-V4-Pro").as_ref(), "icons/brain.svg");
+        assert_eq!(model_path("deepseek-v4").as_ref(), "icons/gauge.svg");
         // trio preset 模式图标
         assert_eq!(
             LiumaIcon::AgentPreset.path().as_ref(),
