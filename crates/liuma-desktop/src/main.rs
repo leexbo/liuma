@@ -108,6 +108,8 @@ fn main() {
             // 界面语言:开窗前读持久化档位(缺省 zh;切换 = 设置页,
             // 经 i18n::apply 全窗即时生效)——先于任何窗口文案渲染
             kits::i18n::init(&bridge.host().language());
+            // 光标闪烁偏好(开机即生效;落盘在设置页开关,registry 持有)
+            kits::theme::set_cursor_steady(bridge.host().cursor_steady(), cx);
             // 内置主题集进 registry(liuma 双盘 + 官方 21 套;
             // 先于任何 apply)
             kits::theme::load_builtin_themes(cx);

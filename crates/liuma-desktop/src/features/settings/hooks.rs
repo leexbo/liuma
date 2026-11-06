@@ -223,7 +223,7 @@ pub(crate) fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
                         .bg(theme::label(cx))
                         .cursor_pointer()
                         .text_size(px(12.))
-                        .text_color(theme::INK)
+                        .text_color(theme::base(cx))
                         .hover(|s| s.opacity(0.9))
                         .on_click({
                             let st_open = st_add.clone();
@@ -519,7 +519,7 @@ pub(crate) fn hooks_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElem
                 .bg(theme::label(cx))
                 .cursor_pointer()
                 .text_size(px(12.))
-                .text_color(theme::INK)
+                .text_color(theme::base(cx))
                 .hover(|s| s.opacity(0.9))
                 .on_click({
                     let st_save = st_save.clone();

@@ -256,6 +256,9 @@ pub(crate) struct SettingsStore {
     /// 重建判据——用户主题热装载后下拉即时跟进;ensure_pref_selects
     /// 写入)
     pub theme_selects_sig: u64,
+    /// 输入光标常亮(会话级;false = 按库默认节奏闪烁)。生效链 =
+    /// theme::set_cursor_steady(静态偏好 + Theme 全局)
+    pub cursor_steady: bool,
     /// 权限选 full-access 的风险确认。
     /// Some 记录确认来源:设置页默认预设 / composer 会话权限——确认后
     /// 各自落不同的目标(默认预设落盘 / 会话 set_permission)
@@ -354,6 +357,7 @@ impl Default for SettingsStore {
             theme_dark_select: None,
             selects_lang: i18n::DEFAULT,
             theme_selects_sig: 0,
+            cursor_steady: false,
             full_access_confirm: None,
             archived: None,
             archived_loading: false,

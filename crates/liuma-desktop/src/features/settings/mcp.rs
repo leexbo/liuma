@@ -31,8 +31,15 @@ pub struct McpDetailState {
     pub json_input: Option<Entity<EditorState>>,
     /// JSON 页签预填文本(编辑模式 = 当前配置;新建 = None 显示占位示例)
     pub json_draft: Option<String>,
-    /// JSON 实时解析预览(None = 未解析;Err = 错误文案)
-    pub json_preview: Option<Result<Vec<liuma_core::settings::McpServerEntry>, String>>,
+    /// JSON 实时解析预览(None = 未解析;Err = 结构化诊断,含行定位)
+    pub json_preview: Option<
+        Result<Vec<liuma_core::settings::McpServerEntry>, liuma_core::settings::McpJsonError>,
+    >,
+    /// 行号条装饰集合(建编辑器时占条带,错误行整批 set;切回 Form
+    /// 页签随 json_input 一并弃置)
+    pub json_gutter: Option<GutterDecorationCollection>,
+    /// 滚动条轨道装饰集合(错误行在轨道上的定位点,与行号条同源)
+    pub json_ruler: Option<OverviewRulerDecorationCollection>,
 }
 
 /// 详情页页签
@@ -76,6 +83,8 @@ impl AppStore {
             json_input: None,
             json_draft: None,
             json_preview: None,
+            json_gutter: None,
+            json_ruler: None,
         });
         cx.notify();
     }
@@ -164,6 +173,8 @@ impl AppStore {
             json_input: None,
             json_draft,
             json_preview: None,
+            json_gutter: None,
+            json_ruler: None,
         });
         cx.notify();
     }
@@ -269,6 +280,12 @@ impl AppStore {
             return;
         };
         detail.mode = mode;
+        let prefill = mode == McpDetailMode::Json && detail.json_input.is_none();
+        let prefill_draft = if prefill {
+            detail.json_draft.clone()
+        } else {
+            None
+        };
         if mode == McpDetailMode::Json && detail.json_input.is_none() {
             // 文档标准用法:创建时 default_value 预填(编辑模式 = 当前
             // 配置);新增模式无草稿 → placeholder 显示示例
@@ -282,16 +299,26 @@ impl AppStore {
                     ),
                 }
             });
-            cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
-                if let InputEvent::Change = event {
-                    let text = input.read(cx).value().to_string();
-                    let preview = liuma_core::settings::parse_mcp_servers_json(&text);
-                    let Some(d) = this.settings.mcp_detail.as_mut() else {
-                        return;
-                    };
-                    d.json_preview = Some(preview);
-                }
-                cx.notify();
+            // 行号条/滚动条轨道条带占位(空集合即保留条带,文本不抖动);
+            // 错误标记由 validate_mcp_json 整批 set
+            let (gutter, ruler) = input.update(cx, |state, cx| {
+                (
+                    state.create_gutter_decorations_collection(Vec::new(), cx),
+                    state.create_overview_ruler_decorations_collection(Vec::new(), cx),
+                )
+            });
+            detail.json_gutter = Some(gutter);
+            detail.json_ruler = Some(ruler);
+            cx.subscribe(&input, |this, _input, event: &InputEditsEvent, cx| {
+                // 校验取事件携带的编辑后文档(批量语义:一次 IME 提交/
+                // 粘贴 = 一批 edits = 一次校验),预览与装饰从同一份快照
+                // 推导,不再回读输入态
+                let text = event
+                    .edits()
+                    .last()
+                    .map(|(_, doc)| doc.to_string())
+                    .unwrap_or_default();
+                this.validate_mcp_json(&text, cx);
             })
             .detach();
             detail.json_input = Some(input);
@@ -299,8 +326,62 @@ impl AppStore {
         if mode == McpDetailMode::Form {
             detail.json_input = None;
             detail.json_preview = None;
+            detail.json_gutter = None;
+            detail.json_ruler = None;
+        }
+        // 预填草稿即时校验(编辑模式带出的当前配置可能本身已失效);
+        // 新增占位态不预校验(空文本不报缺 mcpServers)
+        if prefill && let Some(text) = prefill_draft {
+            self.validate_mcp_json(&text, cx);
         }
         cx.notify();
+    }
+
+    /// MCP JSON 校验收口:解析 + 预览 + 行号条/轨道装饰整批重置。
+    /// 错误行(1-based)换算成 UTF-8 字节半开区间(整行),行号条与
+    /// 轨道同源同色;成功或未解析则清空标记
+    pub fn validate_mcp_json(&mut self, text: &str, cx: &mut Context<Self>) {
+        let preview = if text.is_empty() {
+            None
+        } else {
+            Some(liuma_core::settings::parse_mcp_servers_json(text))
+        };
+        let Some(detail) = self.settings.mcp_detail.as_mut() else {
+            return;
+        };
+        detail.json_preview = preview;
+        let danger = theme::danger(cx);
+        let mut marks: Vec<std::ops::Range<usize>> = Vec::new();
+        if let Some(Err(e)) = &detail.json_preview
+            && let Some(line) = e.line
+        {
+            let mut start = 0usize;
+            for (i, l) in text.lines().enumerate() {
+                if i + 1 == line {
+                    marks.push(start..start + l.len());
+                    break;
+                }
+                start += l.len() + 1;
+            }
+        }
+        let gutters: Vec<GutterDecoration> = marks
+            .iter()
+            .map(|r| GutterDecoration::new(r.clone()).with_color(danger.into()))
+            .collect();
+        let rulers: Vec<OverviewRulerDecoration> = marks
+            .iter()
+            .map(|r| {
+                OverviewRulerDecoration::new(r.clone())
+                    .with_lane(OverviewRulerLane::Right)
+                    .with_color(danger.into())
+            })
+            .collect();
+        if let Some(g) = &detail.json_gutter {
+            g.set(gutters, cx);
+        }
+        if let Some(r) = &detail.json_ruler {
+            r.set(rulers, cx);
+        }
     }
 
     /// 导入 JSON(逐条 upsert;任一非法整体拒绝,错误进页内通告)
@@ -484,7 +565,10 @@ impl AppStore {
     ) {
         let msg: gpui_kit::SharedString = msg.into();
         if let Some(detail) = self.settings.mcp_detail.as_mut() {
-            detail.json_preview = Some(Err(msg.to_string()));
+            detail.json_preview = Some(Err(liuma_core::settings::McpJsonError {
+                message: msg.to_string(),
+                line: None,
+            }));
         }
         cx.notify();
     }
@@ -569,7 +653,7 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                         .bg(theme::label(cx))
                         .cursor_pointer()
                         .text_size(px(12.))
-                        .text_color(theme::INK)
+                        .text_color(theme::base(cx))
                         .hover(|s| s.opacity(0.9))
                         .on_click({
                             let st_open = st_add.clone();
@@ -939,14 +1023,6 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                     ),
             );
         }
-        if let Some(Err(e)) = &detail.json_preview {
-            card = card.child(
-                div()
-                    .text_size(px(11.))
-                    .text_color(theme::danger(cx))
-                    .child(format!("⚠ {e}")),
-            );
-        }
         if let Some(Ok(entries)) = &detail.json_preview {
             let mut list = div().v_flex().gap(px(4.));
             for e in entries {
@@ -1314,6 +1390,21 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
                 ),
         );
     }
+    // 页内错误通告(两页签共享:JSON 校验诊断 / 表单字段校验;错误行
+    // 同时由行号条与滚动条轨道装饰定位,见 validate_mcp_json)。
+    // test_text 供测试侧 painted-text 查询(非 test-support 构建原样返回)
+    if let Some(Err(e)) = &detail.json_preview {
+        let msg = format!("⚠ {e}");
+        card = card.child(
+            div()
+                .id("mcp-detail-error")
+                .debug_selector(|| "mcp-detail-error".to_string())
+                .text_size(px(11.))
+                .text_color(theme::danger(cx))
+                .child(msg.clone())
+                .test_text(msg),
+        );
+    }
     // 底部按钮组:左 = 卸载(编辑态);右 = 保存(统一动作)+ 取消
     let mut footer = div().flex().items_center().gap(px(8.));
     if detail.editing.is_some() {
@@ -1349,7 +1440,7 @@ pub(crate) fn mcp_section(store: &Entity<AppStore>, cx: &App) -> impl IntoElemen
             .px(px(18.))
             .cursor_pointer()
             .text_size(px(12.))
-            .text_color(theme::INK)
+            .text_color(theme::base(cx))
             .hover(|s| s.opacity(0.9))
             .on_click(move |_, _, cx| {
                 st_save.update(cx, |st, cx| st.save_mcp_detail(cx));

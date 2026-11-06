@@ -120,6 +120,14 @@ settings:
     zh-CN: "未知主题:%{name}"
     en: "Unknown theme: %{name}"
 
+  cursor_blink_title:
+    zh-CN: "输入光标闪烁"
+    en: "Caret blinking"
+
+  cursor_blink_desc:
+    zh-CN: "光标按 500ms 节奏闪烁;关闭后输入光标保持常亮"
+    en: "The caret blinks at a 500ms rhythm; turn off to keep it steady while typing"
+
   registry_empty:
     zh-CN: "注册表为空——「添加 Provider」,或重启后恢复内置默认。"
     en: "Registry is empty — use “Add provider”, or restart to restore built-ins."

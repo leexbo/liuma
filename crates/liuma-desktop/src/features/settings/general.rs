@@ -191,6 +191,7 @@ impl AppStore {
         self.settings.settings_open = !self.settings.settings_open;
         if self.settings.settings_open {
             self.settings.settings_snapshot = self.bridge.host().settings_view();
+            self.settings.cursor_steady = self.bridge.host().cursor_steady();
             self.recalc_onboarding();
             // 决策区是常驻表单(无「打开编辑卡」事件),开页落在该区即回填
             if self.settings.settings_nav == SettingsNav::Decision {
@@ -345,6 +346,7 @@ impl AppStore {
     /// 设置快照重拉 + onboarding 重估
     pub fn settings_refresh(&mut self, cx: &mut Context<Self>) {
         self.settings.settings_snapshot = self.bridge.host().settings_view();
+        self.settings.cursor_steady = self.bridge.host().cursor_steady();
         self.recalc_onboarding();
         cx.notify();
     }
@@ -494,6 +496,7 @@ pub(crate) fn general_section(store: &Entity<AppStore>, cx: &App) -> impl IntoEl
         .child(appearance_group(store, appearance, cx))
         // 主题两行跟外观组(浅盘/深盘各自选一个 registry 主题)
         .child(theme_rows(st, cx))
+        .child(cursor_blink_row(store, st, cx))
         .child(selector_row(
             "busy-enter",
             t!("settings.busy_title"),
@@ -529,6 +532,79 @@ fn theme_rows(st: &AppStore, cx: &App) -> impl IntoElement {
             st.settings.theme_dark_select.as_ref(),
             cx,
         ))
+}
+
+/// 光标闪烁开关行(左 title+desc / 右 Switch)。会话级偏好,生效链
+/// = theme::set_cursor_steady(静态偏好 + Theme 全局,主题翻盘重钉)
+fn cursor_blink_row(store: &Entity<AppStore>, st: &AppStore, cx: &App) -> impl IntoElement {
+    let steady = st.settings.cursor_steady;
+    div()
+        .id("pref-row-cursor-blink")
+        .debug_selector(|| "pref-row-cursor-blink".to_string())
+        .v_flex()
+        .py(px(16.))
+        .border_b_1()
+        .border_color(theme::border(cx))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .v_flex()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .child(t!("settings.cursor_blink_title")),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(theme::caption(cx))
+                                .child(t!("settings.cursor_blink_desc")),
+                        ),
+                )
+                .child(
+                    // 包装层只为布局回归测试持有 selector:库 Switch 的内部
+                    // track 不注册 debug bounds
+                    div()
+                        .id("cursor-blink-switch")
+                        .debug_selector(|| "cursor-blink-switch".to_string())
+                        .flex_shrink_0()
+                        .child(
+                            Switch::new("cursor-blink-toggle")
+                                .small()
+                                .checked(steady)
+                                .on_click({
+                                    let store = store.clone();
+                                    move |_, _, cx| {
+                                        store.update(cx, |st, cx| {
+                                            st.settings.cursor_steady = !st.settings.cursor_steady;
+                                            theme::set_cursor_steady(st.settings.cursor_steady, cx);
+                                            if st
+                                                .bridge
+                                                .host()
+                                                .set_cursor_steady(st.settings.cursor_steady)
+                                                .is_err()
+                                            {
+                                                // 落盘失败:回弹内存态并按回弹值重钉 Theme
+                                                st.settings.cursor_steady =
+                                                    !st.settings.cursor_steady;
+                                                theme::set_cursor_steady(
+                                                    st.settings.cursor_steady,
+                                                    cx,
+                                                );
+                                            }
+                                            cx.notify();
+                                        });
+                                    }
+                                }),
+                        ),
+                ),
+        )
 }
 
 /// 快照选项数组 → (id, name)

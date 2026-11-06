@@ -13,11 +13,15 @@
 //! token);diff 无横幅(浮动复制钮)。
 
 use gpui_kit::AppContext as _;
-use gpui_kit::component::StyledExt;
-use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
+use gpui_kit::base::TestTextExt as _;
+use gpui_kit::component::diff::{
+    Diff, DiffDecoration, DiffFile, DiffGutterMarker, DiffLinePosition, DiffLineRange, DiffSide,
+    DiffState,
+};
+use gpui_kit::component::{Icon, IconName, Sizable as _, StyledExt};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
+    App, Entity, Hsla, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
     Styled, div, px,
 };
 
@@ -944,6 +948,82 @@ pub(crate) fn render_diff(
     };
 
     let files = paths.len();
+    // footer 统计行文案(复数为手动键对,库无 CLDR:中文不随数变形,
+    // 英文 file/files 分列——旧的 `%{s}` 后缀把英文复数形态漏进了中文档)
+    let stat = if files == 1 {
+        t!(
+            "chat.diff_stat_one",
+            added = added,
+            removed = removed,
+            files = files
+        )
+    } else {
+        t!(
+            "chat.diff_stat_other",
+            added = added,
+            removed = removed,
+            files = files
+        )
+    };
+
+    // hunk 标记簿(与 unified_patch 同一口径:new_at 逐 hunk 累计,path
+    // 换段归零;modified 侧 1-based)。每段一枚行内标记 = 复制该段新文
+    // 本;最近复制的段以半透明 success 行背景高亮(装饰的交互挂钩)
+    let copied_key = store.read(cx).chat.copied_key.clone();
+    let mut new_at = 0usize;
+    let mut prev_path: Option<&str> = None;
+    // (起点行, path, hunk_key, modified 侧区间, 新文本)
+    let mut hunks: Vec<(usize, String, String, DiffLineRange, String)> = Vec::new();
+    for d in card.diffs.iter() {
+        let old_lines: Vec<&str> = d.old_text.as_deref().map(content_lines).unwrap_or_default();
+        let new_lines = content_lines(&d.new_text);
+        if old_lines.is_empty() && new_lines.is_empty() {
+            continue;
+        }
+        if prev_path != Some(d.path.as_str()) {
+            new_at = 0;
+        }
+        if !new_lines.is_empty() {
+            let start = new_at + 1;
+            let end = (new_at + new_lines.len()).max(1);
+            hunks.push((
+                start,
+                d.path.clone(),
+                format!("{key}·hunk-{start}"),
+                DiffLineRange::new(d.path.clone(), DiffSide::Modified, start, end),
+                d.new_text.clone(),
+            ));
+        }
+        new_at += new_lines.len();
+        prev_path = Some(d.path.as_str());
+    }
+    let hunk_texts: std::collections::HashMap<usize, String> = hunks
+        .iter()
+        .map(|(start, _, _, _, text)| (*start, text.clone()))
+        .collect();
+    let markers: Vec<DiffGutterMarker> = hunks
+        .iter()
+        .map(|(start, path, hunk_key, _, _)| {
+            DiffGutterMarker::new(
+                hunk_key.clone(),
+                DiffLinePosition::new(path.clone(), DiffSide::Modified, *start),
+            )
+            .with_label(t!("chat.diff_hunk_copy"))
+        })
+        .collect();
+    let decorations: Vec<DiffDecoration> = hunks
+        .iter()
+        .filter(|(_, _, hunk_key, ..)| copied_key.as_deref() == Some(hunk_key.as_str()))
+        .map(|(_, _, _, range, _)| {
+            DiffDecoration::new(range.clone()).with_background(Hsla {
+                a: 0.2,
+                ..theme::success(cx).into()
+            })
+        })
+        .collect();
+    let st_hunk = store.clone();
+    let card_key = key.to_string();
+
     div()
         .id(("diff-card", ix))
         .relative()
@@ -969,7 +1049,45 @@ pub(crate) fn render_diff(
                         .header_visible(false)
                         .line_number(false)
                         .bg(theme::code(cx))
-                        .border_0(),
+                        .border_0()
+                        .decorations(decorations)
+                        .gutter_markers(markers)
+                        .render_gutter_marker(move |marker, _, cx| {
+                            // 标记点按 = 复制该段新文本(copy_message:写
+                            // 剪贴板 + copied_key 1.2s 反馈;对勾图标与
+                            // 行高亮装饰同源该键)
+                            let line = marker.position().line();
+                            let card_key = card_key.clone();
+                            let hunk_key = format!("{card_key}·hunk-{line}");
+                            let copied = copied_key.as_deref() == Some(hunk_key.as_str());
+                            let text = hunk_texts.get(&line).cloned().unwrap_or_default();
+                            let st_hunk = st_hunk.clone();
+                            div()
+                                .id(marker.id().clone())
+                                .debug_selector(move || {
+                                    format!("diff-hunk-marker-{card_key}-{line}")
+                                })
+                                .flex()
+                                .cursor_pointer()
+                                .on_click(move |_, _, cx| {
+                                    st_hunk.update(cx, |st, cx| {
+                                        st.copy_message(&hunk_key, &text, cx);
+                                    });
+                                })
+                                .child(
+                                    Icon::new(if copied {
+                                        IconName::Check
+                                    } else {
+                                        IconName::Copy
+                                    })
+                                    .small()
+                                    .text_color(if copied {
+                                        theme::success(cx)
+                                    } else {
+                                        theme::label_2(cx)
+                                    }),
+                                )
+                        }),
                 ),
         )
         // footer:└ +A -R · N file(s)。字号钉 11px 等宽 = 折叠行尾
@@ -983,23 +1101,9 @@ pub(crate) fn render_diff(
                 .text_size(px(11.))
                 .font_family("Menlo")
                 .text_color(theme::label_3(cx))
-                // 复数为手动键对(库无 CLDR):中文不随数变形,英文
-                // file/files 分列——旧的 `%{s}` 后缀把英文复数形态漏进了中文档
-                .child(if files == 1 {
-                    t!(
-                        "chat.diff_stat_one",
-                        added = added,
-                        removed = removed,
-                        files = files
-                    )
-                } else {
-                    t!(
-                        "chat.diff_stat_other",
-                        added = added,
-                        removed = removed,
-                        files = files
-                    )
-                }),
+                .child(stat.clone())
+                // 布局测试 painted-text 观测口(TestTextExt 只收标注元素)
+                .test_text(stat.to_string()),
         )
         .when(!copy_text.is_empty(), |el| {
             el.child(

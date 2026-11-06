@@ -223,11 +223,11 @@ fn note_editor_card(
                         .items_center()
                         .justify_center()
                         .rounded(px(14.))
-                        // 白色主按钮(白底深字)
+                        // 反色主钮(前景底 × 背景字,深浅盘恒可读)
                         .bg(theme::label(cx))
                         .px(px(16.))
                         .text_size(px(13.))
-                        .text_color(gpui_kit::black())
+                        .text_color(theme::base(cx))
                         .cursor_pointer()
                         .hover(|s| s.bg(theme::label_2(cx)))
                         .on_click(move |_, window, cx| {

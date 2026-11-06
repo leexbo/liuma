@@ -3036,6 +3036,7 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
             "appearance": file.appearance,
             "themeLight": file.theme_light,
             "themeDark": file.theme_dark,
+            "cursorSteady": file.cursor_steady,
             "pinnedSessions": file.pinned_sessions,
             "pinnedWorkspaces": file.pinned_workspaces,
             "sessionOrder": file.session_order,
@@ -3107,6 +3108,18 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
         self.settings
             .update(|s| s.theme_dark = name.to_string())
             .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))
+    }
+
+    /// 光标常亮偏好(落盘;生效链在桌面侧 Theme 全局)
+    pub fn set_cursor_steady(&self, steady: bool) -> Result<(), RpcError> {
+        self.settings
+            .update(|s| s.cursor_steady = steady)
+            .map_err(|e| RpcError::internal(format!("设置落盘失败:{e}")))
+    }
+
+    /// 光标常亮偏好(开机应用;与 [`Self::set_cursor_steady`] 同源)
+    pub fn cursor_steady(&self) -> bool {
+        self.settings.read().cursor_steady
     }
 
     /// 默认工作区的默认 preset(设置通用区 Agent 预设行)
@@ -3224,8 +3237,8 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
     /// 从 JSON 批量导入 MCP servers(mcpServers 映射或单 server 形态;
     /// 任一条目非法整体拒绝)。返回导入数量。导入完成统一同步端口池。
     pub fn import_mcp_servers_json(self: &Arc<Self>, text: &str) -> Result<usize, RpcError> {
-        let entries =
-            crate::settings::parse_mcp_servers_json(text).map_err(RpcError::bad_request)?;
+        let entries = crate::settings::parse_mcp_servers_json(text)
+            .map_err(|e| RpcError::bad_request(e.to_string()))?;
         let count = entries.len();
         for entry in entries {
             self.upsert_mcp_server_entry(entry)?;
@@ -10974,6 +10987,33 @@ mod tests {
             "glm",
             "工作区绑定生效"
         );
+    }
+
+    /// 光标常亮偏好:setter 落盘 + 视图暴露 + 重启(重开 host)读回;
+    /// 回归锁:设置页开关持久化链(桌面开关 → registry → settings_view)
+    #[test]
+    fn cursor_steady_pref_roundtrips() {
+        let dir =
+            std::env::temp_dir().join(format!("liuma-core-cursor-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sroot = std::env::temp_dir().join(format!(
+            "liuma-core-cursor-sroot-{}",
+            Uuid::new_v4().simple()
+        ));
+        let host = AppHost::new_at(dir.clone(), true, "test-key", sroot.clone()).unwrap();
+        assert!(!host.cursor_steady(), "默认常规闪烁");
+        assert_eq!(host.settings_view()["cursorSteady"], Value::Bool(false));
+        host.set_cursor_steady(true).unwrap();
+        assert!(host.cursor_steady());
+        assert_eq!(
+            host.settings_view()["cursorSteady"],
+            Value::Bool(true),
+            "视图应反映落盘值"
+        );
+        drop(host);
+        // 重开宿主 = 重启读回(落盘链断不得)
+        let host2 = AppHost::new_at(dir, true, "test-key", sroot).unwrap();
+        assert!(host2.cursor_steady(), "重启后偏好应读回");
     }
 
     /// 决策模型设置进快照(设置页数据源):apiKey 明文不出视图,

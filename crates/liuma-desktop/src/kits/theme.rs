@@ -10,8 +10,10 @@
 
 use std::rc::Rc;
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::time::Duration;
 
+use gpui_kit::base::input::CursorBlink;
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeConfig, ThemeMode, ThemeRegistry};
 use gpui_kit::{App, Hsla, Rgba, WindowAppearance, px, rgba};
 
@@ -396,7 +398,7 @@ fn watch_user_themes(dir: std::path::PathBuf, cx: &mut App) {
             }
             // 去抖:排空在途事件,静默片刻再排一次,合并成一轮重扫
             while rx.try_recv().is_ok() {}
-            smol::Timer::after(std::time::Duration::from_millis(200)).await;
+            smol::Timer::after(Duration::from_millis(200)).await;
             while rx.try_recv().is_ok() {}
             // AsyncApp::update 直接透传闭包返回值;App 消亡时此处
             // panic 被任务框架接住,watcher 随任务一同终结
@@ -482,6 +484,9 @@ fn apply_theme_config(t: &mut Theme, cfg: &Rc<ThemeConfig>) {
     // 圆角防御:主题未给 radius 时兜底(liuma 主题已烤进 8/12)
     t.radius = px(8.);
     t.radius_lg = px(12.);
+    // 光标闪烁偏好(见 [`set_cursor_steady`]):主题 config 不携带该
+    // 字段,从静态偏好重钉,翻盘不冲掉用户选择
+    t.cursor_blink = cursor_blink_pref();
 }
 
 /// 逐 HSLA 字段线性混合(f = a 的比重;派生场景均为同族中性灰,
@@ -813,6 +818,30 @@ pub fn set_theme(m: ThemeMode, name: &str, cx: &mut App) -> bool {
     true
 }
 
+/// 光标闪烁节奏(库默认,steady 开关只在其与常亮间切换)
+const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
+
+/// 光标常亮偏好(会话级,默认关 = 按库默认节奏闪烁)。静态存放:
+/// [`apply_theme_config`] 重钉时读它,主题切换不冲掉用户选择
+static CURSOR_STEADY: AtomicBool = AtomicBool::new(false);
+
+fn cursor_blink_pref() -> CursorBlink {
+    if CURSOR_STEADY.load(Ordering::Relaxed) {
+        CursorBlink::steady()
+    } else {
+        CursorBlink::blinking(CURSOR_BLINK_INTERVAL)
+    }
+}
+
+/// 切输入光标闪烁策略(true = 常亮不闪)。立即对全体存活输入生效:
+/// 组件库光标观察 Theme 全局动态跟随,本函数经 `Theme::update` 走
+/// reconcile + sync_base + 全窗刷新;此后的主题装载由
+/// [`apply_theme_config`] 从静态偏好续钉
+pub fn set_cursor_steady(steady: bool, cx: &mut App) {
+    CURSOR_STEADY.store(steady, Ordering::Relaxed);
+    Theme::update(cx, |t| t.cursor_blink = cursor_blink_pref());
+}
+
 /// 测试装配:固定深色盘(UI 测试同源基线;生产入口走 main.rs 直读
 /// settings.yaml 档位的 apply)。**不走 [`apply`]**:幂等守卫是进程级
 /// 静态,并行用例互相把守卫写成已应用态、短路掉对方全新 App 的首次
@@ -908,6 +937,43 @@ mod tests {
             assert_ne!(label(cx), d_label);
             assert_ne!(brand(cx), d_brand);
             assert_ne!(code(cx), d_code);
+        });
+    }
+
+    /// 编辑器表面与光标(回归锁):liuma 自有主题曾缺 highlight 段,
+    /// apply_config 不更新 highlight_theme → 编辑器恒停初始亮色默认
+    /// (default_light),深盘 JSON 编辑器白底白字;光标 = 白底黑灰、
+    /// 暗底白(用户指定;与前景同族,原蓝色系系 DSH 惯例非 liuma 品牌)
+    #[gpui_kit::test]
+    fn editor_surface_and_caret_follow_theme(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let apply = |m: ThemeMode, cx: &mut App| {
+                setup(cx);
+                let cfg = config_for_mode(m, cx);
+                Theme::update(cx, |t| apply_theme_config(t, &cfg));
+            };
+            apply(ThemeMode::Dark, cx);
+            {
+                let t = cx.theme();
+                let bg = t
+                    .highlight_theme
+                    .style
+                    .editor_background
+                    .expect("深盘编辑器表面应随 highlight 段生效");
+                assert_close(bg.into(), rgba(0x1C1C1EFF), "深盘编辑器表面");
+                assert_close(t.caret.into(), rgba(0xFFFFFFFF), "深盘光标=白");
+            }
+            apply(ThemeMode::Light, cx);
+            {
+                let t = cx.theme();
+                let bg = t
+                    .highlight_theme
+                    .style
+                    .editor_background
+                    .expect("浅盘编辑器表面应随 highlight 段生效");
+                assert_close(bg.into(), rgba(0xFFFFFFFF), "浅盘编辑器表面");
+                assert_close(t.caret.into(), rgba(0x1D1D1FFF), "浅盘光标=黑灰");
+            }
         });
     }
 
@@ -1062,6 +1128,29 @@ mod tests {
                 rgba(0xFFFFFFFF),
                 "tokens.background",
             );
+        });
+    }
+
+    /// 光标闪烁偏好链(回归锁):静态偏好 → `Theme::update` 立即生效
+    /// → 主题重钉(apply_theme_config 路径)不冲掉 → 关回恢复默认节奏
+    #[gpui_kit::test]
+    fn cursor_blink_pref_pins_global_and_survives_theme_apply(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            setup(cx);
+            let cfg = config_for_mode(ThemeMode::Dark, &*cx);
+            Theme::update(cx, |t| apply_theme_config(t, &cfg));
+            assert!(!Theme::global(cx).cursor_blink.is_steady());
+
+            set_cursor_steady(true, cx);
+            assert!(Theme::global(cx).cursor_blink.is_steady());
+
+            // 翻盘重钉(apply 的 Theme::update 闭包同款路径)不冲掉偏好
+            let cfg = config_for_mode(ThemeMode::Light, &*cx);
+            Theme::update(cx, |t| apply_theme_config(t, &cfg));
+            assert!(Theme::global(cx).cursor_blink.is_steady());
+
+            set_cursor_steady(false, cx);
+            assert!(!Theme::global(cx).cursor_blink.is_steady());
         });
     }
 

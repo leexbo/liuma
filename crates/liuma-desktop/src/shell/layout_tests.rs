@@ -773,6 +773,113 @@ fn diff_card_body_holds_bounded_height(cx: &mut TestAppContext) {
         fh <= 32.,
         "diff footer 应为 11px 小字行盒(≈29px 含 pb12),实测 {fh}"
     );
+    // painted-text 观测:footer 统计行文案确实绘制(11px Menlo 小字,
+    // 且为单文件键 chat.diff_stat_one 形态——复数键对回归观测量)
+    let painted = wcx.update(|window, _| {
+        gpui_kit::base::test_support::texts(window)
+            .iter()
+            .any(|t| t.text().contains("└ +") && t.visible())
+    });
+    assert!(painted, "footer 统计行应实际绘制(diff_stat 文案)");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// diff 卡 hunk 行内标记(回归锁):每段一枚复制标记,点按 → 该段新
+/// 文本进剪贴板 + copied_key 反馈态(图标对勾与行高亮装饰同源该键)
+#[gpui_kit::test]
+fn diff_card_hunk_copy_marker_copies_hunk_text(cx: &mut TestAppContext) {
+    use crate::features::chat::projection::{ChatNode, ToolState};
+    let (store, mut wcx, root) = menu_harness(cx, "diff-hunk-copy");
+    let redraw = |cx: &mut TestAppContext, wcx: &mut gpui_kit::VisualTestContext| {
+        wcx.refresh().expect("刷新失败");
+        cx.run_until_parked();
+        // gpui-fast:换帧在 update 边界落地;标记点击靠 hit-testing 命中
+        // 当前帧 hitbox,这里同步强制完整绘制(上游 decoration_tests
+        // 同款 draw 三连),防 hitbox 停留旧帧
+        wcx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        wcx.update(|_, _| ());
+    };
+
+    let diff_view = serde_json::json!({
+        "card": "diff",
+        "diffs": [ {
+            "path": "src/lib.rs",
+            "oldText": "fn old() {}\n",
+            "newText": "fn new() {\n    let s = 1;\n}\n",
+        } ],
+    });
+    cx.update(|app| {
+        store.update(app, |st, _| {
+            let id = st.state.current_id.clone().expect("当前会话");
+            let mut chat = ChatState::default();
+            chat.nodes.push(ChatNode::Tool {
+                key: "call:d2".into(),
+                name: "edit_file".into(),
+                summary: "src/lib.rs".into(),
+                state: ToolState::Done,
+                arguments: "{}".into(),
+                output: None,
+                view: Some(diff_view),
+                images: Vec::new(),
+            });
+            // 带正文的助手步切开运行 → 运行已收口(closed):座位体不再
+            // 贴底跟随,卡头与标记常驻视口内,行内标记可点
+            chat.nodes.push(ChatNode::Assistant {
+                key: "a:d2".into(),
+                text: "done".into(),
+                text_ver: 0,
+                reasoning: String::new(),
+                streaming: false,
+                usage: None,
+                message_id: String::new(),
+            });
+            st.state.chats.insert(id.clone(), chat);
+            st.chat.expanded_tools.insert("call:d2".into());
+            st.chat.card_expanded.insert("call:d2".into());
+        });
+    });
+    open_all_groups(cx, &store);
+
+    // DiffState 后台落 store,轮询等真实帧
+    let body_sel: &'static str = "diff-body-call:d2";
+    for _ in 0..150 {
+        redraw(cx, &mut wcx);
+        if wcx.debug_bounds(body_sel).is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(wcx.debug_bounds(body_sel).is_some(), "diff-body 应在场");
+    // 行内标记在场(modified 侧第 1 行 = hunk 起点)。运行已收口,座位体
+    // 不贴底,标记应整体落在座位视口内(hitbox 视口外 hover 恒假)
+    let marker_sel: &'static str = "diff-hunk-marker-call:d2-1";
+    let body_box = wcx.debug_bounds("group-body-0").expect("座位视口应在场");
+    let marker_box = wcx
+        .debug_bounds(marker_sel)
+        .filter(|m| {
+            m.origin.y >= body_box.origin.y
+                && m.origin.y + m.size.height <= body_box.origin.y + body_box.size.height
+        })
+        .expect("滚回顶后标记应整体可见");
+    wcx.simulate_click(marker_box.center(), gpui_kit::Modifiers::default());
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+
+    let text = wcx.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(
+        text.as_deref(),
+        Some("fn new() {\n    let s = 1;\n}\n"),
+        "点按标记应复制该段新文本"
+    );
+    let copied = cx.update(|app| store.read(app).chat.copied_key.clone());
+    assert_eq!(
+        copied.as_deref(),
+        Some("call:d2·hunk-1"),
+        "copied_key 反馈态应指向该 hunk"
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -11036,6 +11143,160 @@ fn mcp_json_editor_accepts_cjk_typing(cx: &mut TestAppContext) {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// MCP JSON 校验回归锁(行号条/轨道装饰 + InputEdits 驱动):键入非法
+/// JSON → 结构化诊断带行号,行号条与轨道各挂一条错误标记,错误文案
+/// 实际画出;补全为合法配置 → 预览转 Ok、标记清空。占位态不预解析
+#[gpui_kit::test]
+fn mcp_json_validation_marks_error_line_and_clears(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "mcpjson");
+    click_sel(&mut wcx, "settings-row");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "settings-nav-Mcp");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "mcp-add");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "mcp-tab-json");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    let b = wcx
+        .debug_bounds("mcp-json-input")
+        .expect("JSON 粘贴区不在场");
+    wcx.simulate_click(
+        gpui_kit::Point {
+            x: b.origin.x + b.size.width / 2.,
+            y: b.origin.y + b.size.height / 2.,
+        },
+        gpui_kit::Modifiers::default(),
+    );
+    wcx.run_until_parked();
+
+    // 新增占位态:无预填 → 未解析、零标记
+    let (preview_none, ranges) = cx.update(|app| {
+        let d = store
+            .read(app)
+            .settings
+            .mcp_detail
+            .as_ref()
+            .expect("详情态");
+        (
+            d.json_preview.is_none(),
+            d.json_gutter
+                .as_ref()
+                .map(|g| g.get_ranges(app))
+                .unwrap_or_default(),
+        )
+    });
+    assert!(preview_none, "占位态不应预解析");
+    assert!(ranges.is_empty(), "占位态行号条应无标记");
+
+    // 非法前缀 → 诊断带行号 + 行号条/轨道同源标记 + 错误文案画出
+    wcx.simulate_input("{\"mcp");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    let (line, ranges, ruler_ranges) = cx.update(|app| {
+        let d = store
+            .read(app)
+            .settings
+            .mcp_detail
+            .as_ref()
+            .expect("详情态");
+        (
+            d.json_preview
+                .as_ref()
+                .and_then(|r| r.as_ref().err())
+                .and_then(|e| e.line),
+            d.json_gutter
+                .as_ref()
+                .map(|g| g.get_ranges(app))
+                .unwrap_or_default(),
+            d.json_ruler
+                .as_ref()
+                .map(|r| r.get_ranges(app))
+                .unwrap_or_default(),
+        )
+    });
+    assert_eq!(line, Some(1), "语法错误应定位到第 1 行");
+    // 标记 = 第 1 行整行(终点随编辑器 JSON 自动配对的实际文本长度,
+    // 不硬编码字节;起点恒 0、恰一条)
+    assert!(
+        ranges.len() == 1 && ranges[0].start == 0 && ranges[0].end > 0,
+        "行号条应恰标记第 1 行: {ranges:?}"
+    );
+    assert_eq!(ruler_ranges, ranges, "轨道应与行号条同源同范围");
+    assert!(
+        wcx.debug_bounds("mcp-detail-error").is_some(),
+        "错误行未绘制"
+    );
+    let painted = wcx.update(|window, _| {
+        gpui_kit::base::test_support::texts(window)
+            .iter()
+            .any(|s| s.text().contains("JSON 解析失败") && s.visible())
+    });
+    assert!(painted, "错误文案应出现在画出的文本里");
+
+    // 补全为合法配置 → 预览转 Ok、行号条/轨道标记清空
+    wcx.simulate_input("Servers\":{\"fs\":{\"command\":\"npx\"}}}");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    let (ok, ranges) = cx.update(|app| {
+        let d = store
+            .read(app)
+            .settings
+            .mcp_detail
+            .as_ref()
+            .expect("详情态");
+        (
+            d.json_preview.as_ref().is_some_and(|r| r.is_ok()),
+            d.json_gutter
+                .as_ref()
+                .map(|g| g.get_ranges(app))
+                .unwrap_or_default(),
+        )
+    });
+    assert!(ok, "补全后应解析成功");
+    assert!(ranges.is_empty(), "成功后行号条标记应清空");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Form 页签错误通告共享(回归锁):表单字段校验失败的红字行在表单
+/// 页签同样可见(历史缺陷:push_mcp_form_notice 只写 json_preview,
+/// 表单分支不渲染它,校验失败无任何可见反馈)
+#[gpui_kit::test]
+fn mcp_form_validation_error_is_visible(cx: &mut TestAppContext) {
+    let (_store, mut wcx, root) = menu_harness(cx, "mcpform");
+    click_sel(&mut wcx, "settings-row");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "settings-nav-Mcp");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "mcp-add");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    // 表单页签直接保存(id 为空 → 校验失败)
+    click_sel(&mut wcx, "mcp-submit");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("mcp-detail-error").is_some(),
+        "表单校验失败的红字行应在表单页签可见"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// 编辑卡姿态流:首运行 setup 卡 / 取消后回退普通行 /
 /// 行内编辑再展开 / 添加卡 / 删除确认模态
 #[gpui_kit::test]
@@ -11424,6 +11685,55 @@ fn general_rows_present(cx: &mut TestAppContext) {
             && st.settings.language_select.is_some()
             && st.settings.busy_enter_select.is_some()
     }));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 光标闪烁开关(回归锁):点击 → store 偏好与 Theme 全局同时转常亮;
+/// 主题重钉后偏好仍常亮;再点恢复默认节奏
+#[gpui_kit::test]
+fn cursor_blink_switch_pins_theme_global(cx: &mut TestAppContext) {
+    let (store, mut wcx, root) = menu_harness(cx, "curblink");
+    click_sel(&mut wcx, "settings-row");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    click_sel(&mut wcx, "settings-nav-General");
+    wcx.run_until_parked();
+    wcx.refresh().expect("刷新失败");
+    wcx.run_until_parked();
+    assert!(
+        wcx.debug_bounds("pref-row-cursor-blink").is_some(),
+        "光标闪烁行在场"
+    );
+
+    let steady = |cx: &mut TestAppContext, store: &Entity<AppStore>| {
+        cx.update(|app| {
+            store.read(app).settings.cursor_steady
+                && gpui_kit::component::Theme::global(app)
+                    .cursor_blink
+                    .is_steady()
+        })
+    };
+    assert!(!steady(cx, &store), "默认应为闪烁节奏");
+
+    let click_switch = |wcx: &mut gpui_kit::VisualTestContext| {
+        let at = wcx
+            .debug_bounds("cursor-blink-switch")
+            .expect("开关 bounds")
+            .center();
+        wcx.simulate_click(at, gpui_kit::Modifiers::default());
+        wcx.run_until_parked();
+        wcx.refresh().expect("刷新失败");
+        wcx.run_until_parked();
+    };
+    click_switch(&mut wcx);
+    assert!(
+        steady(cx, &store),
+        "开启后 store 偏好与 Theme 全局应同时常亮"
+    );
+
+    click_switch(&mut wcx);
+    assert!(!steady(cx, &store), "关闭后应恢复默认节奏");
     let _ = std::fs::remove_dir_all(root);
 }
 

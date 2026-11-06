@@ -613,6 +613,10 @@ chat:
     zh-CN: "└ +%{added} -%{removed} · %{files} 个文件"
     en: "└ +%{added} -%{removed} · %{files} files"
 
+  diff_hunk_copy:
+    zh-CN: "复制此段变更"
+    en: "Copy this hunk"
+
   skill_failed:
     zh-CN: "skill 加载失败"
     en: "Skill failed to load"

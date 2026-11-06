@@ -29,13 +29,17 @@ pub(crate) use crate::kits::popup::PopTrigger;
 pub(crate) use crate::kits::theme;
 pub(crate) use crate::shell::store::AppStore;
 pub(crate) use gpui_kit::AppContext;
+pub(crate) use gpui_kit::base::TestTextExt as _;
 pub(crate) use gpui_kit::component::IconName;
 pub(crate) use gpui_kit::component::IndexPath;
 pub(crate) use gpui_kit::component::InteractiveElementExt as _;
 pub(crate) use gpui_kit::component::Sizable;
 pub(crate) use gpui_kit::component::StyledExt;
 pub(crate) use gpui_kit::component::button::{Button, ButtonVariants as _};
-pub(crate) use gpui_kit::component::input::{EditorState, InputEvent, MaskPattern};
+pub(crate) use gpui_kit::component::input::{
+    EditorState, GutterDecoration, GutterDecorationCollection, InputEditsEvent, InputEvent,
+    MaskPattern, OverviewRulerDecoration, OverviewRulerDecorationCollection, OverviewRulerLane,
+};
 pub(crate) use gpui_kit::component::input::{Input, InputState};
 pub(crate) use gpui_kit::component::popover::{Popover, PopoverState};
 pub(crate) use gpui_kit::component::radio::{Radio, RadioGroup};

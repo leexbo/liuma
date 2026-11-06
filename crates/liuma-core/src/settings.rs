@@ -351,6 +351,10 @@ pub struct SettingsFile {
     /// 深盘主题名(同 [`Self::theme_light`])
     #[serde(default)]
     pub theme_dark: String,
+    /// 光标常亮(设置页光标闪烁开关;false = 常规闪烁。纯桌面渲染
+    /// 偏好,registry 只存字符串/布尔,生效面在桌面侧 Theme 全局)
+    #[serde(default)]
+    pub cursor_steady: bool,
     /// MCP server 注册表(enabled 才会在 attach 时桥接;缺失 = 空)
     #[serde(default)]
     pub mcp_servers: Vec<McpServerEntry>,
@@ -445,14 +449,41 @@ impl McpServerEntry {
     }
 }
 
+/// MCP JSON 校验诊断:message 供页内红字行,line 供行号条/滚动条轨道
+/// 装饰定位(None = 定位不到具体行)。
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpJsonError {
+    /// 错误文案(与旧 String 通道同词汇)
+    pub message: String,
+    /// 1-based 行号:语法错误 = serde 定位,语义错误 = 条目 id 键所在行
+    pub line: Option<usize>,
+}
+
+impl std::fmt::Display for McpJsonError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// 源文本中首个含 `"needle"` 字面量的行(1-based;JSON 顶层键与条目
+/// id 都以带引号形态出现在源文本里)
+fn quoted_line(text: &str, needle: &str) -> Option<usize> {
+    text.lines()
+        .position(|l| l.contains(&format!("\"{needle}\"")))
+        .map(|i| i + 1)
+}
+
 /// 解析 mcpServers JSON(兼容 Claude Code / Codex 形状):
 /// `{"mcpServers": {"<名>": {"command","args","env","cwd"}}}`(stdio)或
 /// `{"url","headers"}`(http;`transport`/`type` 键为 `"http"`/
 /// `"streamable-http"` 显式认 http,`"sse"` 明确拒绝);单 server 亦可直接
 /// 给 `{"id"|"name", ...}`。任一条目非法 → 整体拒绝(fail-closed,不做
 /// 部分导入)。
-pub fn parse_mcp_servers_json(text: &str) -> Result<Vec<McpServerEntry>, String> {
-    let v: Value = serde_json::from_str(text).map_err(|e| format!("JSON 解析失败:{e}"))?;
+pub fn parse_mcp_servers_json(text: &str) -> Result<Vec<McpServerEntry>, McpJsonError> {
+    let v: Value = serde_json::from_str(text).map_err(|e| McpJsonError {
+        message: format!("JSON 解析失败:{e}"),
+        line: Some(e.line()),
+    })?;
     let map: serde_json::Map<String, Value> =
         if let Some(m) = v.get("mcpServers").and_then(|m| m.as_object()) {
             m.clone()
@@ -466,18 +497,32 @@ pub fn parse_mcp_servers_json(text: &str) -> Result<Vec<McpServerEntry>, String>
                 .get("id")
                 .or_else(|| v.get("name"))
                 .and_then(|n| n.as_str())
-                .ok_or_else(|| "单 server 形态需要 id 或 name 字段".to_string())?;
+                .ok_or_else(|| McpJsonError {
+                    message: "单 server 形态需要 id 或 name 字段".into(),
+                    line: None,
+                })?;
             let mut single = serde_json::Map::new();
             single.insert(name.to_string(), v.clone());
             single
         } else {
-            return Err("缺少 mcpServers 映射".into());
+            return Err(McpJsonError {
+                message: "缺少 mcpServers 映射".into(),
+                line: quoted_line(text, "mcpServers"),
+            });
         };
     if map.is_empty() {
-        return Err("mcpServers 为空".into());
+        return Err(McpJsonError {
+            message: "mcpServers 为空".into(),
+            line: quoted_line(text, "mcpServers"),
+        });
     }
     let mut out = Vec::new();
     for (name, spec) in &map {
+        // 条目级错误的行定位:条目 id 键所在行
+        let entry_err = |message: String| McpJsonError {
+            message,
+            line: quoted_line(text, name),
+        };
         // 传输判定:显式 transport/type 键优先;否则 url 在场 = http
         let declared = spec
             .get("transport")
@@ -485,9 +530,9 @@ pub fn parse_mcp_servers_json(text: &str) -> Result<Vec<McpServerEntry>, String>
             .and_then(|t| t.as_str())
             .map(str::to_ascii_lowercase);
         if matches!(declared.as_deref(), Some("sse")) {
-            return Err(format!(
+            return Err(entry_err(format!(
                 "{name}: 暂不支持 SSE 传输(仅 stdio / streamable-http)"
-            ));
+            )));
         }
         let is_http = matches!(declared.as_deref(), Some("http") | Some("streamable-http"))
             || (declared.is_none() && spec.get("url").is_some());
@@ -495,7 +540,7 @@ pub fn parse_mcp_servers_json(text: &str) -> Result<Vec<McpServerEntry>, String>
         if is_http {
             let url = url
                 .filter(|u| !u.trim().is_empty())
-                .ok_or_else(|| format!("{name}: http 传输需要 url"))?;
+                .ok_or_else(|| entry_err(format!("{name}: http 传输需要 url")))?;
             let headers = spec
                 .get("headers")
                 .and_then(|h| h.as_object())
@@ -521,7 +566,7 @@ pub fn parse_mcp_servers_json(text: &str) -> Result<Vec<McpServerEntry>, String>
         let command = spec
             .get("command")
             .and_then(|c| c.as_str())
-            .ok_or_else(|| format!("{name}: 缺少 command(http 传输需 url)"))?
+            .ok_or_else(|| entry_err(format!("{name}: 缺少 command(http 传输需 url)")))?
             .to_string();
         let args = spec
             .get("args")
@@ -623,6 +668,7 @@ impl Default for SettingsFile {
             appearance: default_appearance(),
             theme_light: String::new(),
             theme_dark: String::new(),
+            cursor_steady: false,
             mcp_servers: Vec::new(),
             hook_bridges: Vec::new(),
             decision: DecisionEntry::default(),
@@ -817,14 +863,26 @@ mod tests {
         let entries =
             parse_mcp_servers_json(r#"{"mcpServers":{"r2":{"url":"https://host/mcp"}}}"#).unwrap();
         assert!(entries[0].is_http());
-        // type: sse → 明确拒绝
+        // type: sse → 明确拒绝(诊断带条目 id 行定位)
         let err = parse_mcp_servers_json(
             r#"{"mcpServers":{"r3":{"type":"sse","url":"https://host/sse"}}}"#,
         )
         .unwrap_err();
-        assert!(err.contains("SSE"), "{err}");
+        assert!(err.message.contains("SSE"), "{}", err.message);
+        assert_eq!(err.line, Some(1));
         // http 缺 url → 拒
         assert!(parse_mcp_servers_json(r#"{"mcpServers":{"r4":{"transport":"http"}}}"#).is_err());
+        // 语法错误:serde 行定位
+        let err = parse_mcp_servers_json("{\n  \"mcpServers\": {\n    oops\n  }\n}").unwrap_err();
+        assert!(err.message.contains("JSON 解析失败"), "{}", err.message);
+        assert_eq!(err.line, Some(3), "{}", err.message);
+        // 多行语义错误:定位到条目 id 键所在行
+        let err = parse_mcp_servers_json(
+            "{\n  \"mcpServers\": {\n    \"a\": {\"command\": \"npx\"},\n    \"b\": {\"transport\": \"http\"}\n  }\n}",
+        )
+        .unwrap_err();
+        assert!(err.message.contains('b'), "{}", err.message);
+        assert_eq!(err.line, Some(4), "{}", err.message);
         // roundtrip:serde 落盘读回形态不变
         let text = serde_json::to_string(&entries[0]).unwrap();
         let back: McpServerEntry = serde_json::from_str(&text).unwrap();
@@ -1183,6 +1241,8 @@ mod tests {
         let store2 = SettingsStore::open(path);
         let s = store2.read();
         assert_eq!(s.theme_light, "Catppuccin Latte");
+        // 光标常亮偏好:默认 false,反序列化缺字段不回弹(serde default)
+        assert!(!s.cursor_steady);
         assert_eq!(s.theme_dark, "Catppuccin Mocha");
         let _ = std::fs::remove_dir_all(&dir);
     }
