@@ -1302,12 +1302,11 @@ fn menu_separator(cx: &App) -> impl IntoElement {
     div().h(px(1.)).my(px(2.)).bg(theme::border(cx))
 }
 
-/// 发送/停止圆钮,三态同一语言:26px 品牌填充圆 + 白色中心字形,
-/// 回合进行中细描边旋转圆环**套在圆外**(40px 图标 ≈ 31.7px 弧外
-/// 沿、描边 ~1.7px,与圆缘留 ~1.6px 气隙;排版面 32px,三态同尺寸
-/// 不跳版)。环用自有 loader-ring 资产——组件库 LoaderCircle 描边
-/// 恒为视窗 2/24,放大后粗于中心笔画。字形随态切换——空闲/插话 =
-/// 上箭头 14px,停止 = 自绘终止方块 8px;点按判定用 `stop_mode`
+/// 发送/停止圆钮,32px 排版面,三态同一尺寸不跳版。空闲 = 26px 反色
+/// 实心圆(label 底 + base 色上箭头,主钮反色对);回合进行中 = 素底,
+/// 22px 旋转环居中套住中心字形(loader-ring 资产 24px 视窗原比渲染:
+/// 外径 22px、描边 2px、90° 弧口)——插话(运行中带草稿)= 环 + 前景
+/// 色上箭头 14px,停止 = 自绘终止方块 8px。点按判定用 `stop_mode`
 /// (运行中且无草稿)
 fn send_or_stop(
     store: &Entity<AppStore>,
@@ -1316,15 +1315,35 @@ fn send_or_stop(
     cx: &App,
 ) -> impl IntoElement {
     let s = store.clone();
-    let bg = theme::brand(cx);
-    let fg = theme::on_brand(cx);
+    let fg = theme::label(cx);
     let (id, glyph) = if stop_mode {
         (
             "stop",
             div().size(px(8.)).rounded(px(2.)).bg(fg).into_any_element(),
         )
     } else {
-        ("send", fixed(IconName::ArrowUp, 14.).into_any_element())
+        let arrow = fixed(IconName::ArrowUp, 14.);
+        let glyph = if running {
+            // 插话:素底箭头随环
+            arrow.text_color(fg).into_any_element()
+        } else {
+            // 空闲:反色实心圆内的 base 色箭头
+            arrow.text_color(theme::base(cx)).into_any_element()
+        };
+        ("send", glyph)
+    };
+    let center = if running {
+        glyph
+    } else {
+        div()
+            .size(px(26.))
+            .rounded_full()
+            .bg(fg)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(glyph)
+            .into_any_element()
     };
     div()
         .id(id)
@@ -1341,19 +1360,17 @@ fn send_or_stop(
         .children(running.then(|| {
             Spinner::new()
                 .icon(LiumaIcon::LoaderRing)
-                .with_size(px(40.))
+                .with_size(px(24.))
                 .color(fg.into())
         }))
         .child(
             div()
                 .absolute()
-                .size(px(26.))
-                .rounded_full()
-                .bg(bg)
+                .size_full()
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(glyph),
+                .child(center),
         )
         .on_click(move |_, _, cx| {
             s.update(cx, |st, cx| {
