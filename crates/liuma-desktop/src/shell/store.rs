@@ -1143,6 +1143,15 @@ impl AppStore {
         });
         cx.spawn(async move |this, cx| {
             let Ok((sid, result)) = rx.await else {
+                // 通道断(宿主退出/桥关闭)与宿主拒同形:明面通告,
+                // 不静默吞——模型点击「无反应」的可观测缺口即此
+                this.update(cx, |st, cx| {
+                    st.push_local_notice(
+                        crate::kits::i18n::t!("shell.switch_failed", msg = "bridge closed"),
+                        cx,
+                    );
+                })
+                .ok();
                 return;
             };
             let _ = this.update(cx, |st, cx| match result {
