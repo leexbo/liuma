@@ -105,12 +105,11 @@ alacritty_terminal = "=0.26.0"
 # Mermaid → SVG(引擎选型见 kits/mermaid.rs);精确锁死防漂移。
 # 0.8 起家族选择器是独立维度(output/layout feature 不再隐含语言解析),
 # default-features 关掉是为了避开默认集里的 ELK 编译(EPL-2.0);
-# 布局锁 cytoscape。usvg ^0.47(merman 必依赖)与自家 0.48 并存:
-# gpui 生态自身就 resvg 0.45.1/0.46.0 两版,SVG 仅字符串交换无类型冲突
+# 布局锁 cytoscape(锁定版 merman 树内无 usvg,resvg/usvg 纯属自家光栅档)
 merman = { version = "=0.9.0", default-features = false, features = ["all-diagrams", "svg", "layout-cytoscape"] }
 # Mermaid 查看器视口裁剪光栅(自家光栅档;gpui 链自带 0.45/0.46,并存)
-resvg = "0.48.1"
-usvg = "0.48.1"
+resvg = "0.49.0"
+usvg = "0.49.0"
 # macOS Dock 图标运行时绘制(objc2 系与 gpui 同源锁定)
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "objc2-core-graphics"] }
