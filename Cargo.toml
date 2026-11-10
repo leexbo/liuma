@@ -90,7 +90,7 @@ liuma-mcp = { path = "crates/liuma-mcp" }
 liuma-skill = { path = "crates/liuma-skill" }
 liuma-sandbox = { path = "crates/liuma-sandbox" }
 portable-pty = "0.9.0"
-ignore = "0.4.33"
+ignore = "0.4"
 grep-searcher = "0.1.17"
 grep-regex = "0.1.14"
 uuid = { version = "1", features = ["v4", "v7"] }
